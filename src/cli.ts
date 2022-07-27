@@ -360,7 +360,7 @@ const main = async () => {
           });
         }
         if (lastName !== name || lastSubname !== subname) {
-          stdout.write(format(color("[%s] @%s"), levelText, name));
+          stdout.write(format(color("[%s] @%s"), levelText, subname || name));
           fixable && stdout.write(chalk.green(" [可自动完成]"));
           stdout.write(format(" %s", description));
 
@@ -433,7 +433,7 @@ const main = async () => {
       {
         type: "confirm",
         name: "again",
-        message: "是否重新扫描",
+        message: "是否重新扫描？",
         default: false,
       },
     ]);
