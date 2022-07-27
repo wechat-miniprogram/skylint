@@ -8,6 +8,8 @@ import { parse } from "./parser";
 import lineColumn from "line-column";
 
 // WXML rules
+import RuleNoInlineText from "./rules/no-inline-text";
+import RuleNoSvgStyleTag from "./rules/no-svg-style-tag";
 import RuleScrollView from "./rules/scroll-view";
 // WXSS rules
 import RuleBoxSizing from "./rules/box-sizing";
@@ -42,6 +44,8 @@ interface ICliOptions {
 
 const Rules = [
   // WXML rules
+  RuleNoInlineText,
+  RuleNoSvgStyleTag,
   RuleScrollView,
   // WXSS rules
   RuleBoxSizing,
