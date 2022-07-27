@@ -1,13 +1,13 @@
-import { type Node as WXMLNode } from "../walker/html";
-import { type Node as WXSSNode } from "../walker/css";
-import { type Node as JSONNode } from "../walker/json";
+import { HTMLWalker, type Node as WXMLNode } from "../walker/html";
+import { CSSWalker, type Node as WXSSNode } from "../walker/css";
+import { JSONWalker, type Node as JSONNode } from "../walker/json";
 import { Patch, PatchStatus } from "../patch";
 
 export const enum RuleLevel {
-  Verbose,
-  Info,
-  Warn,
-  Error,
+  Verbose = 0,
+  Info = 1,
+  Warn = 2,
+  Error = 3,
 }
 
 export type SourceCodeLocation = Record<"startLn" | "endLn" | "startCol" | "endCol", number>;
@@ -31,16 +31,16 @@ export const enum RuleType {
 }
 
 interface HookType {
-  [RuleType.WXML]: WXMLNode;
-  [RuleType.WXSS]: WXSSNode;
-  [RuleType.JSON]: JSONNode;
+  [RuleType.WXML]: Parameters<HTMLWalker>[1];
+  [RuleType.WXSS]: Parameters<CSSWalker>[1];
+  [RuleType.JSON]: Parameters<JSONWalker>[1];
   [RuleType.Node]: any;
   [RuleType.Unknown]: never;
 }
 
 interface Hooks<T extends RuleType> {
   before?: () => void;
-  onVisit?: (node: HookType[T]) => boolean | void;
+  onVisit?: HookType[T];
   after?: () => void;
 }
 
@@ -70,8 +70,11 @@ type QuickPatch = Pick<Patch, "loc" | "patchedStr">;
 export type RuleBasicInfoWithOptionalLevel<T extends RuleType> = Pick<RuleBasicInfo<T>, "name" | "type">;
 
 export const defineRule =
-  <K, T extends RuleType = RuleType>(info: RuleBasicInfoWithOptionalLevel<T>, init: (ctx: RuleContext<T, K>) => void) =>
-  (env?: K) => {
+  <Env, T extends RuleType = RuleType>(
+    info: RuleBasicInfoWithOptionalLevel<T>,
+    init: (ctx: RuleContext<T, Env>) => void
+  ) =>
+  (env?: Env) => {
     const { name, type } = info;
     let hooks: Hooks<T> = {};
     let results: RuleResultItem[] = [];

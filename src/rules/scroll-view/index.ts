@@ -1,3 +1,4 @@
+import { DomUtils, isType } from "src/walker/html";
 import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
 
 let scrollViewCount = 0;
@@ -23,16 +24,9 @@ export default defineRule({ name: "scroll-view", type: RuleType.WXML }, (ctx) =>
       scrollViewCount = 0;
     },
     onVisit: (node) => {
-      if (node.nodeName !== "scroll-view") return;
+      if (!isType(node, "Tag") || node.name !== "scroll-view") return;
       scrollViewCount++;
-      let hasTypeList = false;
-      let typeAttr = node.attrs.find((attr) => {
-        const { name, value } = attr;
-        if (name === "type") {
-          if (value === "list") hasTypeList = true;
-          return true;
-        }
-      });
+      let hasTypeList = DomUtils.getAttributeValue(node, "type") === "list";
 
       if (!hasTypeList) {
         const loc = node.sourceCodeLocation!;
@@ -48,21 +42,9 @@ export default defineRule({ name: "scroll-view", type: RuleType.WXML }, (ctx) =>
         ctx.addPatch({
           patchedStr: ` type="list"`,
           loc: {
-            start: node.sourceCodeLocation!.startTag!.endOffset - 1,
-            end: node.sourceCodeLocation!.startTag!.endOffset - 1,
-            // start: node.sourceCodeLocation!.startTag!.startOffset,
-            // end: node.sourceCodeLocation!.startTag!.endOffset,
+            start: node.startIndex! - 1,
+            end: node.startIndex! - 1,
           },
-        });
-        ctx.addASTPatch(() => {
-          if (typeAttr) {
-            typeAttr.value = "";
-          } else {
-            node.attrs.push({
-              name: "type",
-              value: "list",
-            });
-          }
         });
       }
     },

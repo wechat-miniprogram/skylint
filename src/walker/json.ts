@@ -1,4 +1,4 @@
-import { Walker } from "./interface";
+import { DefaultWalkerContext, Walker } from "./interface";
 import { ArrayNode, IdentifierNode, LiteralNode, ObjectNode, PropertyNode } from "json-to-ast";
 
 interface JSONNodeMap {
@@ -15,17 +15,21 @@ export const isType = <T extends keyof JSONNodeMap>(node: Node, type: T): node i
   return node.type === type;
 };
 
-export const walk: Walker<Node> = (node, callback) => {
-  if (callback(node) === false) {
+export type JSONWalker = Walker<Node, DefaultWalkerContext<Node>>
+
+export const walk: JSONWalker = (node, callback, ctx = { parent: node }) => {
+  if (!ctx) ctx = { parent: node };
+  if (callback(node, ctx) === false) {
     return false;
   } else {
+    const newCtx = { parent: node };
     if ("children" in node) {
       for (const childNode of node.children ?? []) {
-        if (walk(childNode, callback) === false) return false;
+        if (walk(childNode, callback, { ...newCtx }) === false) return false;
       }
     } else if (isType(node, "Property")) {
-      if (walk(node.key, callback) === false) return false;
-      if (walk(node.value, callback) === false) return false;
+      if (walk(node.key, callback, { ...newCtx }) === false) return false;
+      if (walk(node.value, callback, { ...newCtx }) === false) return false;
     }
     return true;
   }

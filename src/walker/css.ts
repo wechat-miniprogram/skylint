@@ -1,5 +1,5 @@
 import { Walker } from "./interface";
-import { walk as walkCSS, type CssNode as Node } from "css-tree";
+import { walk as walkCSS, type CssNode as Node, type WalkContext } from "css-tree";
 import * as CssTree from "css-tree";
 
 interface CSSNodeTypeMap {
@@ -49,19 +49,13 @@ export const isType = <T extends keyof CSSNodeTypeMap>(node: Node, type: T): nod
   return node.type === type;
 };
 
-export const walk: Walker<Node> = (node, callback) => {
-  return walkCSS(node, callback);
-  //   if (callback(node) === false) {
-  //     return false;
-  //   } else {
-  //     if ("childNodes" in node) {
-  //       for (const childNode of node.childNodes ?? []) {
-  //         const ret = walk(childNode, callback);
-  //         if (ret === false) return ret;
-  //       }
-  //     }
-  //     return true;
-  //   }
+export type CSSWalker = Walker<Node, WalkContext>;
+
+export const walk: CSSWalker = (node, callback) => {
+  return walkCSS(node, function () {
+    const self = this;
+    callback(node, self);
+  });
 };
 
 export { type CssNode as Node } from "css-tree";

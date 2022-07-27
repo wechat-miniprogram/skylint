@@ -1,8 +1,8 @@
 import { parse as parseCSS, CssNode } from "css-tree";
-import { DefaultTreeAdapterMap, parseFragment as parseHTML } from "parse5";
+import { parseDocument as parseXML } from "htmlparser2";
 import parseJSON, { type ValueNode } from "json-to-ast";
 import { Rule, RuleType } from "./rules/interface";
-import { walk as walkHTML } from "./walker/html";
+import { NodeTypeMap, walk as walkHTML } from "./walker/html";
 import { walk as walkCSS } from "./walker/css";
 import { walk as walkJSON } from "./walker/json";
 import { Walker } from "./walker/interface";
@@ -44,13 +44,17 @@ const classifyRules = (rules: Rule<any>[]) => {
   return { wxmlRules, wxssRules, nodeRules, jsonRules, anyRules };
 };
 
-const runLifetimeHooks = <T>(rules: Rule<any>[], ast: any, walker: Walker<T>) => {
+const runLifetimeHooks = <T, K = null>(rules: Rule<any>[], ast: any, walker: Walker<T, K>) => {
   rules.forEach((rule) => rule.before?.());
-  walker(ast, (node) => {
-    rules.forEach((rule) => {
-      rule.onVisit?.(node);
-    });
-  });
+  walker(
+    ast,
+    (node) => {
+      rules.forEach((rule) => {
+        rule.onVisit?.(node);
+      });
+    },
+    null as any
+  );
   rules.forEach((rule) => rule.after?.());
 };
 
@@ -58,11 +62,11 @@ export const parse = <T>(options: IParseOptions<T>) => {
   const { wxml, wxss, json, Rules = [], env } = options;
   const rules = Rules.map((Rule) => Rule(env)); // inject env into rules
   const { wxmlRules, wxssRules, nodeRules, jsonRules, anyRules } = classifyRules(rules);
-  let astWXML: DefaultTreeAdapterMap["documentFragment"] | undefined;
+  let astWXML: NodeTypeMap["Root"] | undefined;
   let astWXSS: CssNode | undefined;
   let astJSON: ValueNode | undefined;
   if (wxml) {
-    astWXML = parseHTML(wxml, { sourceCodeLocationInfo: true });
+    astWXML = parseXML(wxml, { xmlMode: true });
     runLifetimeHooks(wxmlRules, astWXML, walkHTML);
   }
 
