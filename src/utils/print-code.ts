@@ -9,6 +9,8 @@ interface PrintCodeOptions {
   alternativeFilename?: string;
 }
 
+const MAX_CODE_FRAME_LENGTH = 1024;
+
 export const formatSourceCodeLocation = (rawStr: string, loc: SourceCodeLocation, options: PrintCodeOptions = {}) => {
   const { withCodeFrame = false, alternativeFilename } = options;
   let ret = "";
@@ -44,7 +46,7 @@ export const formatSourceCodeLocation = (rawStr: string, loc: SourceCodeLocation
     }
   );
 
-  if (codeFrame.length > 256) return filenameWithLnCol;
+  if (codeFrame.length > MAX_CODE_FRAME_LENGTH) return filenameWithLnCol;
 
   return [filenameWithLnCol, codeFrame].join("\n");
 };
