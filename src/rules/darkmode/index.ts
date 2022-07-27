@@ -1,5 +1,5 @@
-import { RuleType, createResultItem, RuleLevel } from "../interface";
-import { generateBasicJsonConfigCheck } from "../templates/json";
+import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
+import { isType } from "src/walker/css";
 
 const result = createResultItem({
   subname: "",
@@ -8,7 +8,22 @@ const result = createResultItem({
   level: RuleLevel.Info,
 });
 
-export default generateBasicJsonConfigCheck(
-  { name: "darkmode", type: RuleType.JSON },
-  { result, key: "darkmode", value: false, allowUndefined: true, autoPatch: false }
-);
+export default defineRule({ name: "darkmode", type: RuleType.WXSS }, (ctx) => {
+  ctx.lifetimes({
+    onVisit: (node) => {
+      if (isType(node, "MediaFeature") && node.name === "prefers-color-scheme") {
+        const loc = node.loc!;
+        ctx.addResult({
+          ...result,
+          loc: {
+            startLn: loc.start.line,
+            endLn: loc.end.line,
+            startCol: loc.start.column,
+            endCol: loc.end.column,
+            path: ctx.env.path,
+          },
+        });
+      }
+    },
+  });
+});

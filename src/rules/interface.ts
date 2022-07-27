@@ -4,7 +4,7 @@ import { JSONWalker, type Node as JSONNode } from "src/walker/json";
 import { Patch, PatchStatus } from "../patch";
 import { BasicParseEnv } from "src/parser";
 
-export const enum RuleLevel {
+export enum RuleLevel {
   Verbose = 0,
   Info = 1,
   Warn = 2,

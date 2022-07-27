@@ -14,6 +14,7 @@ import RuleScrollView from "./rules/scroll-view";
 import RuleUnsupportedComponent from "./rules/unsupported-component";
 // WXSS rules
 import RuleBoxSizing from "./rules/box-sizing";
+import RuleDarkMode from "./rules/darkmode";
 import RuleDisplayFlex from "./rules/display-flex";
 import RuleDisplayInline from "./rules/display-inline";
 import RuleMarkWxFor from "./rules/mark-wx-for";
@@ -24,7 +25,6 @@ import RulePositionFixed from "./rules/position-fixed";
 import RuleTextOverflowEllipse from "./rules/text-overflow-ellipse";
 // JSON rules
 import RuleNoNativeNav from "./rules/no-native-nav";
-import RuleDarkMode from "./rules/darkmode";
 import RuleDisableScroll from "./rules/disable-scroll";
 import RuleRendererSkyline from "./rules/renderer-skyline";
 // Mixed rules
@@ -62,6 +62,7 @@ const Rules = [
   RuleUnsupportedComponent,
   // WXSS rules
   RuleBoxSizing,
+  RuleDarkMode,
   RuleDisplayFlex,
   RuleDisplayInline,
   RuleMarkWxFor,
@@ -72,7 +73,6 @@ const Rules = [
   RuleTextOverflowEllipse,
   // JSON rules
   RuleNoNativeNav,
-  RuleDarkMode,
   RuleDisableScroll,
   RuleRendererSkyline,
   // Mixed rules
@@ -128,7 +128,7 @@ const main = async () => {
     .prompt<Record<"path", string>>({
       type: "input",
       name: "path",
-      message: "工程的根目录:",
+      message: "请输入工程的根目录:",
       default: cwd(),
       when: !options.path,
       validate: async (input) => {
@@ -161,57 +161,32 @@ const main = async () => {
   const answers = await inquirer.prompt<PromptAnswer>([
     {
       type: "confirm",
-      name: "autoAppJson",
-      message: "自动配置 app.json?",
-      default: false,
-      when: options.path,
-    },
-    {
-      type: "confirm",
       name: "appJsonEnableDynamicInjection",
-      message: "开启按需注入?",
+      message: `skyline 依赖按需注入特性，立即开启？
+💡 按需注入特性详见文档 https://developers.weixin.qq.com/miniprogram/dev/framework/ability/lazyload.html`,
       default: false,
       when: (hash) => {
-        const flag = !hash.autoAppJson && appJsonObject["lazyCodeLoading"] !== "requiredCompoents";
-        if (!flag) stdout.write(chalk.green("检测到按需注入已开启\n"));
+        const flag = appJsonObject["lazyCodeLoading"] !== "requiredCompoents";
+        if (!flag) stdout.write(chalk.green("✅ skyline 依赖按需注入特性，已开启\n"));
         return flag;
       },
     },
     {
       type: "confirm",
       name: "globalSkyline",
-      message: "开启全局 Skyline?",
+      message: `是否全局开启 skyline?
+💡 全局开启 skyline 意味着整个小程序需要适配 skyline，建议存量工程逐个页面开启，全新工程可全局开启`,
       default: false,
       when: (hash) => {
-        const flag = !hash.autoAppJson && !globalSkyline;
-        if (!flag) stdout.write(chalk.green("检测到全局 Skyline 已开启，跳过页面选择\n"));
+        const flag = !globalSkyline;
+        if (!flag) stdout.write(chalk.green("✅ 已全局开启 skyline\n"));
         return flag;
       },
     },
     {
-      type: "confirm",
-      name: "usePageSelector",
-      message: "使用列表视图选择应用 Skyline 的页面路径？",
-      default: true,
-      when: (hash) => {
-        return !hash.autoAppJson && !globalSkyline;
-      },
-    },
-    {
-      type: "checkbox",
-      name: "skylinePages",
-      message: "应用 Skyline 的页面路径",
-      choices: () => Object.keys(pageJsonObjects),
-      default: () =>
-        Object.entries(pageJsonObjects)
-          .filter(([k, v]) => v["renderer"] === "skyline")
-          .map(([k]) => k),
-      when: (hash) => appJsonObject["renderer"] !== "skyline" && hash.usePageSelector,
-    },
-    {
       type: "input",
       name: "skylinePages",
-      message: "应用 Skyline 的页面路径（使用半角逗号分隔）",
+      message: "请输入需要迁移的页面（用英文逗号分隔）",
       filter: (input: string | string[]) => {
         if (Array.isArray(input)) return input;
         return input.split(",").map((page) => page.trim());
@@ -227,7 +202,7 @@ const main = async () => {
         Object.entries(pageJsonObjects)
           .filter(([k, v]) => v["renderer"] === "skyline")
           .map(([k]) => k),
-      when: (hash) => appJsonObject["renderer"] !== "skyline" && !hash.usePageSelector,
+      when: () => appJsonObject["renderer"] !== "skyline",
     },
   ]);
 
@@ -237,11 +212,11 @@ const main = async () => {
 
   if (answers.globalSkyline) globalSkyline = answers.globalSkyline;
 
-  if (answers.autoAppJson || answers.appJsonEnableDynamicInjection) {
+  if (answers.appJsonEnableDynamicInjection) {
     appJsonObject["lazyCodeLoading"] = "requiredCompoents";
   }
 
-  if (answers.autoAppJson || globalSkyline) {
+  if (globalSkyline) {
     appJsonObject["renderer"] = "skyline";
     answers.skylinePages = Object.keys(pageJsonObjects);
   }
@@ -372,6 +347,7 @@ const main = async () => {
         const { name, level, fixable, filename, withCodeFrame } = result;
         if (options.logLevel > level) continue;
         const color = logColor[level];
+        const levelText = RuleLevel[level].toUpperCase();
         const { subname, loc, advice, description } = result;
         let filePath = "";
         // const rawStr = stringPatchesMap.get(result.filename)!.raw;
@@ -384,9 +360,11 @@ const main = async () => {
           });
         }
         if (lastName !== name || lastSubname !== subname) {
-          stdout.write(format("@%s %s\n", color(name), description));
-          advice && stdout.write(format("💡 %s\n", chalk.gray(advice)));
-          fixable && stdout.write(format("🔧 %s\n", chalk.green("自动修复可用")));
+          stdout.write(format(color("[%s] @%s"), levelText, name));
+          fixable && stdout.write(chalk.green(" [可自动完成]"));
+          stdout.write(format(" %s", description));
+
+          advice && stdout.write(format("\n[提示] %s\n", chalk.gray(advice)));
         }
         stdout.write(format("  %s\n\n", filePath));
         lastSubname = subname;
@@ -415,7 +393,7 @@ const main = async () => {
       const jobs = [...importedWXSS].map((filename) => runOnFile(filename));
       const results = (await Promise.all(jobs)).flat();
       if (results.length) {
-        stdout.write(format(chalk.bold("\n============ %s ============\n"), "Imported"));
+        stdout.write(format(chalk.bold("\n============ %s ============\n"), "Imported WXSS"));
         printResults(sortResults(results));
       }
     }
