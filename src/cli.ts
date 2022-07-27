@@ -30,7 +30,7 @@ import { format } from "util";
 // import { serialize as serializeJSON } from "./serilizer/json";
 
 import inquirer from "inquirer";
-import { resolve, dirname, relative } from "path";
+import { resolve, dirname, relative, join } from "path";
 import { Patch, applyPatchesOnString } from "./patch";
 import { existsSync } from "fs";
 import { collectImportedWXSS } from "./utils/collect-wxss";
@@ -69,7 +69,7 @@ const cli = new Command();
 cli.name(pkg.name);
 cli.version(pkg.version);
 
-cli.option("-p, --path [string]", "path to source directory");
+cli.option("-p, --path [string]", "path to source directory", resolve);
 cli.option("-l, --log-level [number]", "from 0 to 2", parseInt, 0);
 
 cli.parse(argv);
@@ -127,6 +127,7 @@ interface PromptAnswer {
 
         return true;
       },
+      filter: (input) => resolve(input),
     })
     .then((answer) => {
       if (answer.path) {
@@ -236,7 +237,15 @@ interface PromptAnswer {
   // collect used components
   // const usedComponents: string[] = [];
   const dfs = async (base: string, obj: any, isDir = false) => {
-    const pathDirname = isDir ? base : dirname(base);
+    let pathDirname = base;
+    if (!isDir) {
+      if (base.startsWith(options.path!)) {
+        pathDirname = dirname(base);
+      } else {
+        pathDirname = dirname(join("./", base));
+      }
+    }
+
     const compList: string[] = Object.values(obj?.["usingComponents"] ?? {});
     for (const comp of compList) {
       const path = resolve(pathDirname, comp);

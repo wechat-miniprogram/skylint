@@ -96,7 +96,6 @@ export const defineRule =
       hooks = { ...hooks, ...newHooks };
     };
     const addResult = (...newResults: Omit<RuleResultItem[], "level">) => {
-      console.log(info.name, info.type, results)
       results.push(...newResults);
     };
     const addASTPatch = (...newPatches: Function[]) => astPatches.push(...newPatches);

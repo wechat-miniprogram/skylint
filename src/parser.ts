@@ -61,19 +61,17 @@ const runLifetimeHooks = <T, K = null>(rules: Rule<any>[], ast: any, walker: Wal
 export const parse = <T>(options: IParseOptions<T>) => {
   const { wxml, wxss, json, Rules = [], env } = options;
   const rules = Rules.map((Rule) => Rule(env)); // inject env into rules
-  console.log
   const { wxmlRules, wxssRules, nodeRules, jsonRules, anyRules } = classifyRules(rules);
   let astWXML: NodeTypeMap["Root"] | undefined;
   let astWXSS: CssNode | undefined;
   let astJSON: ValueNode | undefined;
   if (wxml) {
-    astWXML = parseXML(wxml, { xmlMode: true });
+    astWXML = parseXML(wxml, { xmlMode: true, withStartIndices: true, withEndIndices: true });
     runLifetimeHooks(wxmlRules, astWXML, walkHTML);
   }
 
   if (wxss) {
     astWXSS = parseCSS(wxss, { positions: true });
-    console.log(wxss)
     runLifetimeHooks(wxssRules, astWXSS, walkCSS);
   }
 
