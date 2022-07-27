@@ -19,9 +19,13 @@ export const formatSelector = (selector: Selector) => {
       if (node.flags) tmp += ` ${node.flags}`;
       str += `[${tmp}]`;
     } else if (isType(node, "PseudoClassSelector")) {
-      str += `:${node.name}`;
+      // temporally ignored because
+      // nth-check has bug with pseudo class/element
+      //   return;
+      //   str += `:${node.name}`;
     } else if (isType(node, "PseudoElementSelector")) {
-      str += `::${node.name}`;
+      //   return;
+      //   str += `::${node.name}`;
     }
   });
   return str;
