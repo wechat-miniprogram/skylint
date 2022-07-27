@@ -19,6 +19,9 @@
   ],
   "author": "maniacata",
   "license": "MIT",
+  "files": [
+    "./dist"
+  ],
   "dependencies": {
     "@babel/code-frame": "^7.18.6",
     "@babel/preset-typescript": "^7.18.6",
