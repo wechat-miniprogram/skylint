@@ -2,6 +2,7 @@ import { defineRule, RuleType, RuleResultItem } from "../interface";
 import { isType } from "../../walker/css";
 
 const result: RuleResultItem = {
+  subname: "",
   description: "存在不支持的 calc 表达式",
   advice: "改为静态值",
 };

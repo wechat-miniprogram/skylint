@@ -2,6 +2,7 @@ import { defineRule, RuleType, RuleResultItem } from "../interface";
 import { isType } from "../../walker/css";
 
 const result: RuleResultItem = {
+  subname: "",
   description: "存在不支持的 display: inline-block",
   advice: "改为 display: flex + flex-direction: row",
 };

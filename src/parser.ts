@@ -1,21 +1,29 @@
-import { parse as parseCSS } from "css-tree";
-import { parseFragment as parseHTML } from "parse5";
+import { parse as parseCSS, CssNode } from "css-tree";
+import { DefaultTreeAdapterMap, parseFragment as parseHTML } from "parse5";
+import parseJSON, {type ValueNode} from "json-to-ast";
 import { Rule, RuleType } from "./rules/interface";
 import { walk as walkHTML } from "./walker/html";
 import { walk as walkCSS } from "./walker/css";
+import { walk as walkJSON } from "./walker/json";
 import { Walker } from "./walker/interface";
 
 interface IParseOptions {
   wxml?: string;
   wxss?: string;
-  rules?: Rule<any>[];
+  json?: string;
+  Rules?: (() => Rule<any>)[];
 }
 
-const classifyRules = (rules: Rule<any>[]) => {
+const classifyRules = (Rules: (() => Rule<any>)[]) => {
   const wxmlRules: Rule<RuleType.WXML>[] = [];
   const wxssRules: Rule<RuleType.WXSS>[] = [];
   const nodeRules: Rule<RuleType.Node>[] = [];
-  for (const rule of rules) {
+  const jsonRules: Rule<RuleType.JSON>[] = [];
+  const anyRules: Rule<RuleType.Unknown>[] = [];
+
+  for (const Rule of Rules) {
+    const rule = Rule();
+    anyRules.push(rule);
     switch (rule.type) {
       case RuleType.WXML:
         wxmlRules.push(rule);
@@ -26,11 +34,14 @@ const classifyRules = (rules: Rule<any>[]) => {
       case RuleType.Node:
         nodeRules.push(rule);
         continue;
+      case RuleType.JSON:
+        jsonRules.push(rule);
+        continue;
       default:
         break;
     }
   }
-  return { wxmlRules, wxssRules, nodeRules };
+  return { wxmlRules, wxssRules, nodeRules, jsonRules, anyRules };
 };
 
 const runLifetimeHooks = <T>(rules: Rule<any>[], ast: any, walker: Walker<T>) => {
@@ -44,24 +55,31 @@ const runLifetimeHooks = <T>(rules: Rule<any>[], ast: any, walker: Walker<T>) =>
 };
 
 export const parse = (options: IParseOptions) => {
-  const { wxml, wxss, rules = [] } = options;
-  const { wxmlRules, wxssRules, nodeRules } = classifyRules(rules);
-
+  const { wxml, wxss, json, Rules = [] } = options;
+  const { wxmlRules, wxssRules, nodeRules, jsonRules, anyRules } = classifyRules(Rules);
+  let astWXML: DefaultTreeAdapterMap["documentFragment"] | undefined;
+  let astWXSS: CssNode | undefined;
+  let astJSON: ValueNode | undefined;
   if (wxml) {
-    const astWXML = parseHTML(wxml, { sourceCodeLocationInfo: true });
+    astWXML = parseHTML(wxml, { sourceCodeLocationInfo: true });
     runLifetimeHooks(wxmlRules, astWXML, walkHTML);
   }
 
   if (wxss) {
-    const astWXSS = parseCSS(wxss, { positions: true });
+    astWXSS = parseCSS(wxss, { positions: true });
     runLifetimeHooks(wxssRules, astWXSS, walkCSS);
   }
 
-  const ret: Pick<Rule<any>, "name" | "level" | "results">[] = [];
-  rules.forEach((rule) => {
-    const { name, level, results } = rule;
-    if (results.length) ret.push({ name, level, results });
+  if (json) {
+    astJSON = parseJSON(json);
+    runLifetimeHooks(jsonRules, astJSON, walkJSON);
+  }
+
+  const ruleResults: Pick<Rule<any>, "name" | "level" | "results" | "patches">[] = [];
+  anyRules.forEach((rule) => {
+    const { name, level, results, patches } = rule;
+    if (results.length) ruleResults.push({ name, level, results, patches });
   });
 
-  return ret;
+  return { ruleResults, astWXML, astWXSS, astJSON };
 };

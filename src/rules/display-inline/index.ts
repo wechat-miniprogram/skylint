@@ -2,6 +2,7 @@ import { defineRule, RuleType, RuleResultItem } from "../interface";
 import { isType } from "../../walker/css";
 
 const result: RuleResultItem = {
+  subname: "",
   description: "存在不支持的 display: inline",
   advice: "改为 text 文本嵌套",
 };
