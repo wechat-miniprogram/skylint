@@ -20,7 +20,9 @@
   "author": "maniacata",
   "license": "MIT",
   "files": [
-    "./dist"
+    "./dist",
+    "./LICENSE",
+    "./third-party-licenses.txt"
   ],
   "dependencies": {
     "@babel/code-frame": "^7.18.6",
