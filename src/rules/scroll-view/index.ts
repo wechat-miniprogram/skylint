@@ -1,17 +1,20 @@
-import { defineRule, RuleType, RuleResultItem } from "../interface";
+import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
 
 let scrollViewCount = 0;
 
-const resultScrollViewNotFound: RuleResultItem = {
+const resultScrollViewNotFound = createResultItem({
   subname: "resultScrollViewNotFound",
   description: "未找到 scroll-view",
-  advice: "使用 scroll-view 改善性能",
-};
+  advice: "使用 scroll-view 实现滚动",
+  level: RuleLevel.Warn,
+});
 
-const resultScrollViewImproperType: RuleResultItem = {
+const resultScrollViewImproperType = createResultItem({
   subname: "resultScrollViewImproperType",
-  description: "scroll-view 的 type 不为 list",
-};
+  description: `scroll-view 的 type 不为 "list"`,
+  advice: `设置 type 为 "list"`,
+  level: RuleLevel.Error,
+});
 
 export default defineRule({ name: "scroll-view", type: RuleType.WXML }, (ctx) => {
   ctx.lifetimes({

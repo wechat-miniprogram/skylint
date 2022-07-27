@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { cwd, argv, chdir, stdout } from "process";
+import { cwd, argv, chdir, stdout, exit } from "process";
 import { globby } from "globby";
 import { readFile, writeFile } from "fs/promises";
 import chalk from "chalk";
@@ -54,7 +54,8 @@ const Rules = [
 ];
 
 const logColor = {
-  [RuleLevel.Verbose]: (str?: string) => str,
+  [RuleLevel.Verbose]: chalk.gray,
+  [RuleLevel.Info]: (str?: string) => str,
   [RuleLevel.Warn]: chalk.yellow,
   [RuleLevel.Error]: chalk.red,
 };
@@ -221,46 +222,57 @@ interface PromptAnswer {
         } else if (filename.endsWith("json")) {
           json = raw;
         }
+
         const { astWXML, astWXSS, astJSON, ruleResults } = parse({ wxml, wxss, json, Rules });
         const stringPatches: Patch[] = [];
 
-        const sortedRuleResults = ruleResults
-          .sort((a, b) => {
-            return a.level !== b.level ? b.level - a.level : a.name.localeCompare(b.name);
-          })
-          .map((item) => {
-            return {
+        // const sortedRuleResults = ruleResults.flatMap(ruleResult=>ruleResult.)
+        const resultItems = [];
+
+        for (const { patches, results, name } of ruleResults) {
+          stringPatches.push(...patches);
+          for (const item of results) {
+            resultItems.push({
+              name,
               ...item,
-              results: item.results.sort((a, b) => a.subname.localeCompare(b.subname)),
-            };
-          });
+            });
+          }
+        }
+
+        if (resultItems.length) stdout.write(format(chalk.bold("\nFile %s\n"), chalk.cyan(filename)));
+
+        resultItems.sort((a, b) => {
+          return a.level !== b.level
+            ? b.level - a.level
+            : a.name !== b.name
+            ? a.name.localeCompare(b.name)
+            : a.subname.localeCompare(b.subname);
+        });
 
         let lastName: string | null = null;
-        for (const result of sortedRuleResults) {
-          const { name, level, results, patches } = result;
+        for (const result of resultItems) {
+          const { name, level, fixable } = result;
           if (options.logLevel > level) continue;
           const color = logColor[level];
           let lastSubname: string | null = null;
-          for (const result of results) {
-            const { subname, loc, advice, description } = result;
-            let filePath = "";
-            if (loc) {
-              filePath = format("%s:%d:%d", filename, loc.startLn, loc.startCol);
-            } else {
-              filePath = format("%s", filename);
-            }
-
-            if (lastSubname !== subname) {
-              stdout.write(format("\n@%s %s\n", color(name), description));
-              advice && stdout.write(format(" 💡 %s\n", chalk.gray(advice)));
-              patches.length && stdout.write(format(" 🔧 %s\n", chalk.green("自动修复可用")));
-            }
-            stdout.write(format("  %s\n", filePath));
-            lastSubname = subname;
+          const { subname, loc, advice, description } = result;
+          let filePath = "";
+          if (loc) {
+            filePath = format("%s:%d:%d", filename, loc.startLn, loc.startCol);
+          } else {
+            filePath = format("%s", filename);
           }
-          stringPatches.push(...patches);
+
+          if (lastSubname !== subname) {
+            stdout.write(format("@%s %s\n", color(name), description));
+            advice && stdout.write(format("💡 %s\n", chalk.gray(advice)));
+            fixable && stdout.write(format("🔧 %s\n", chalk.green("自动修复可用")));
+          }
+          stdout.write(format("  %s\n", filePath));
+          lastSubname = subname;
           lastName = name;
         }
+
         stringPatchesMap.set(filename, { raw, patches: stringPatches });
         // const patchedString = applyPatchesOnString(fileContent, stringPatches);
       })

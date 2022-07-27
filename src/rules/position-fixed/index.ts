@@ -1,13 +1,12 @@
-
-
-import { defineRule, RuleType, RuleResultItem } from "../interface";
+import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
 import { isType } from "../../walker/css";
 
-const result: RuleResultItem = {
+const result = createResultItem({
   subname: "",
   description: "使用了 position: fixed",
   advice: "注意将其移动到 scroll-view 外",
-};
+  level: RuleLevel.Warn,
+});
 
 export default defineRule({ name: "position-fixed", type: RuleType.WXSS }, (ctx) => {
   ctx.lifetimes({

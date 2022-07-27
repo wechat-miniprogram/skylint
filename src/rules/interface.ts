@@ -5,6 +5,7 @@ import { Patch, PatchStatus } from "../patch";
 
 export const enum RuleLevel {
   Verbose,
+  Info,
   Warn,
   Error,
 }
@@ -17,6 +18,8 @@ export interface RuleResultItem {
   advice?: string;
   patchHint?: string;
   loc?: SourceCodeLocation;
+  level: RuleLevel;
+  fixable?: boolean;
 }
 
 export const enum RuleType {
@@ -63,13 +66,12 @@ export interface RuleContext<T extends RuleType> {
 
 type QuickPatch = Pick<Patch, "loc" | "patchedStr">;
 
-export type RuleBasicInfoWithOptionalLevel<T extends RuleType> = Pick<RuleBasicInfo<T>, "name" | "type"> &
-  Partial<Pick<RuleBasicInfo<T>, "level">>;
+export type RuleBasicInfoWithOptionalLevel<T extends RuleType> = Pick<RuleBasicInfo<T>, "name" | "type">;
 
 export const defineRule =
   <T extends RuleType>(info: RuleBasicInfoWithOptionalLevel<T>, init: (ctx: RuleContext<T>) => void) =>
   () => {
-    const { name, type, level = RuleLevel.Warn } = info;
+    const { name, type } = info;
     let hooks: Hooks<T> = {};
     let results: RuleResultItem[] = [];
     let patches: Patch[] = [];
@@ -77,7 +79,9 @@ export const defineRule =
     const lifetimes = (newHooks: Hooks<T>) => {
       hooks = { ...hooks, ...newHooks };
     };
-    const addResult = (...newResults: RuleResultItem[]) => results.push(...newResults);
+    const addResult = (...newResults: Omit<RuleResultItem[], "level">) => {
+      results.push(...newResults);
+    };
     const addASTPatch = (...newPatches: Function[]) => astPatches.push(...newPatches);
     const addPatch = (...newPatches: QuickPatch[]) =>
       patches.push(
@@ -95,7 +99,6 @@ export const defineRule =
     return {
       name,
       type,
-      level,
       get results() {
         return results;
       },
@@ -111,3 +114,12 @@ export const defineRule =
       ...hooks,
     } as Rule<T>;
   };
+
+export const createResultItem = (
+  params: Omit<RuleResultItem, "level"> & Partial<Exclude<RuleResultItem, "level">>
+): RuleResultItem => {
+  return {
+    level: RuleLevel.Warn,
+    ...params,
+  };
+};

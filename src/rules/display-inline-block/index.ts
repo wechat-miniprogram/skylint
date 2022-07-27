@@ -1,11 +1,12 @@
-import { defineRule, RuleType, RuleResultItem } from "../interface";
+import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
 import { isType } from "../../walker/css";
 
-const result: RuleResultItem = {
+const result = createResultItem({
   subname: "",
   description: "存在不支持的 display: inline-block",
   advice: "改为 display: flex + flex-direction: row",
-};
+  level: RuleLevel.Error,
+});
 
 export default defineRule({ name: "display-inline-block", type: RuleType.WXSS }, (ctx) => {
   ctx.lifetimes({

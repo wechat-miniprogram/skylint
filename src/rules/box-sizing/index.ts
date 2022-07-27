@@ -1,11 +1,12 @@
-import { defineRule, RuleType, RuleResultItem } from "../interface";
+import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
 import { isType } from "../../walker/css";
 
-const result: RuleResultItem = {
+const result = createResultItem({
   subname: "",
   description: "存在不支持的 box-sizing: content-box",
   advice: "改为 border-box",
-};
+  level: RuleLevel.Warn,
+});
 
 export default defineRule({ name: "box-sizing", type: RuleType.WXSS }, (ctx) => {
   ctx.lifetimes({
