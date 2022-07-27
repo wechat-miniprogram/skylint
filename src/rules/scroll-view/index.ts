@@ -26,6 +26,12 @@ const resultScrollViewOptimize = createResultItem({
   advice: `scroll-view 会根据直接子节点是否在屏来按需渲染，若只有一个直接子节点则性能会退化，如 <scroll-view type=list scroll-y> <view wx:for=""/> </scroll-view>`,
   level: RuleLevel.Verbose,
 });
+const resultScrollViewXY = createResultItem({
+  subname: "scroll-view-x-y",
+  description: `scroll-view 暂不支持水平垂直方向同时滚动`,
+  advice: `skyline 后续版本会支持`,
+  level: RuleLevel.Info,
+});
 
 export default defineRule({ name: "scroll-view", type: RuleType.WXML }, (ctx) => {
   ctx.lifetimes({
@@ -51,6 +57,20 @@ export default defineRule({ name: "scroll-view", type: RuleType.WXML }, (ctx) =>
           loc: {
             start: node.startIndex! - 1,
             end: node.startIndex! - 1,
+          },
+        });
+      }
+      if (
+        DomUtils.getAttributeValue(node, "scroll-x") === "true" &&
+        DomUtils.getAttributeValue(node, "scroll-x") === "true"
+      ) {
+        const { start, end, path } = getLocationByNode(node);
+        ctx.addResult({
+          ...resultScrollViewXY,
+          loc: {
+            startIndex: start!,
+            endIndex: end!,
+            path,
           },
         });
       }
