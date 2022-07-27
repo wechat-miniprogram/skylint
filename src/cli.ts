@@ -281,6 +281,8 @@ const main = async () => {
 
     // collet patches
     const stringPatchesMap = new Map<string, { raw: string; patches: Patch[] }>();
+    
+    let resultCount = 0 
 
     interface ExtendedRuleResultItem extends RuleResultItem {
       name: string;
@@ -347,6 +349,7 @@ const main = async () => {
       });
 
     const printResults = (resultItems: ExtendedRuleResultItem[]) => {
+      resultCount += resultItems.length
       let lastName: string | null = null;
       let lastSubname: string | null = null;
       for (const result of resultItems) {
@@ -416,8 +419,9 @@ const main = async () => {
     let tmp = [...stringPatchesMap.values()].map((obj) => obj.patches.length);
     const totalPatchlength = tmp.length ? tmp.reduce((a, b) => a + b) : 0;
     const fixMessage = format(
-      "%d 个文件中共有 %d 处问题可以自动修复，是否进行？\n",
+      "%d 个文件中共有 %d 处问题，其中 %d 处可以自动修复，是否进行？\n",
       stringPatchesMap.size,
+      resultCount,
       totalPatchlength
     );
 
