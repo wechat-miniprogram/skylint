@@ -52,7 +52,7 @@ export const isType = <T extends keyof CSSNodeTypeMap>(node: Node, type: T): nod
 export type CSSWalker = Walker<Node, WalkContext>;
 
 export const walk: CSSWalker = (node, callback) => {
-  return walkCSS(node, function () {
+  return walkCSS(node, function (node) {
     const self = this;
     callback(node, self);
   });
