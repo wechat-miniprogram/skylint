@@ -18,7 +18,7 @@ export const collectImportedWXSS = async (wxssPaths: string[], base?: string) =>
   const originPaths = wxssPaths.slice();
   const wxssSet = new Set(wxssPaths);
 
-  const rule = defineRule<RuleEnv>({ name: "collect-imported-wxss", type: RuleType.WXSS }, (ctx) => {
+  const rule = defineRule<RuleEnv, RuleType.WXSS>({ name: "collect-imported-wxss", type: RuleType.WXSS }, (ctx) => {
     ctx.lifetimes({
       onVisit: (node) => {
         if (
