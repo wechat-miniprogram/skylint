@@ -57,11 +57,12 @@ export interface Rule<T extends RuleType = RuleType> extends Hooks<T>, RuleBasic
   clear(): void;
 }
 
-export interface RuleContext<T extends RuleType> {
+export interface RuleContext<T extends RuleType, K> {
   lifetimes(hooks: Hooks<T>): void;
   addResult(...results: RuleResultItem[]): void;
   addPatch(...patches: QuickPatch[]): void;
   addASTPatch(...patches: Function[]): void;
+  env?: K;
 }
 
 type QuickPatch = Pick<Patch, "loc" | "patchedStr">;
@@ -69,8 +70,8 @@ type QuickPatch = Pick<Patch, "loc" | "patchedStr">;
 export type RuleBasicInfoWithOptionalLevel<T extends RuleType> = Pick<RuleBasicInfo<T>, "name" | "type">;
 
 export const defineRule =
-  <T extends RuleType>(info: RuleBasicInfoWithOptionalLevel<T>, init: (ctx: RuleContext<T>) => void) =>
-  () => {
+  <K, T extends RuleType = RuleType>(info: RuleBasicInfoWithOptionalLevel<T>, init: (ctx: RuleContext<T, K>) => void) =>
+  (env?: K) => {
     const { name, type } = info;
     let hooks: Hooks<T> = {};
     let results: RuleResultItem[] = [];
@@ -95,6 +96,7 @@ export const defineRule =
       addASTPatch,
       addPatch,
       addResult,
+      env,
     });
     return {
       name,

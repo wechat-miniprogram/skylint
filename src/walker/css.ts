@@ -2,8 +2,6 @@ import { Walker } from "./interface";
 import { walk as walkCSS, type CssNode as Node } from "css-tree";
 import * as CssTree from "css-tree";
 
-type d = keyof Node;
-
 interface CSSNodeTypeMap {
   AnPlusB: CssTree.AnPlusB;
   Atrule: CssTree.Atrule;
@@ -27,7 +25,7 @@ interface CSSNodeTypeMap {
   MediaQuery: CssTree.MediaQuery;
   MediaQueryList: CssTree.MediaQueryList;
   Nth: CssTree.Nth;
-  NumberNode: CssTree.NumberNode;
+  Number: CssTree.NumberNode;
   Operator: CssTree.Operator;
   Parentheses: CssTree.Parentheses;
   Percentage: CssTree.Percentage;
@@ -38,7 +36,7 @@ interface CSSNodeTypeMap {
   Rule: CssTree.Rule;
   Selector: CssTree.Selector;
   SelectorList: CssTree.SelectorList;
-  StringNode: CssTree.StringNode;
+  String: CssTree.StringNode;
   StyleSheet: CssTree.StyleSheet;
   TypeSelector: CssTree.TypeSelector;
   UnicodeRange: CssTree.UnicodeRange;

@@ -1,5 +1,5 @@
 import { Command } from "commander";
-import { cwd, argv, chdir, stdout, exit } from "process";
+import { cwd, argv, stdout } from "process";
 import { globby } from "globby";
 import { readFile, writeFile } from "fs/promises";
 import chalk from "chalk";
@@ -21,15 +21,17 @@ import RuleNoNativeNav from "./rules/no-native-nav";
 import RuleDisableScroll from "./rules/disable-scroll";
 import RuleRendererSkyline from "./rules/renderer-skyline";
 
-import { RuleLevel } from "./rules/interface";
+import { RuleLevel, RuleResultItem } from "./rules/interface";
 import { format } from "util";
-import { serialize as serializeHTML } from "./serilizer/html";
-import { serialize as serializeCSS } from "./serilizer/css";
-import { serialize as serializeJSON } from "./serilizer/json";
+// import { serialize as serializeHTML } from "./serilizer/html";
+// import { serialize as serializeCSS } from "./serilizer/css";
+// import { serialize as serializeJSON } from "./serilizer/json";
 
 import inquirer from "inquirer";
-import { resolve, join } from "path";
+import { resolve, dirname, relative } from "path";
 import { Patch, applyPatchesOnString } from "./patch";
+import { existsSync } from "fs";
+import { collectImportedWXSS } from "./utils/collect-wxss";
 
 interface ICliOptions {
   path?: string;
@@ -81,8 +83,22 @@ interface PromptAnswer {
 
 (async () => {
   let appJsonPath: string = "";
-  let appJsonObject: any = {};
+  let appJsonObject: any = null;
   let pageJsonObjects: Record<string, any> = [];
+
+  const getAppJsonFromPath = async (path: string) => {
+    try {
+      appJsonPath = resolve(path, "app.json");
+      const appJsonFile = await readFile(appJsonPath);
+      appJsonObject = JSON.parse(appJsonFile.toString());
+    } catch (e) {
+      return "无效 app.json，请检查路径和语法是否正确";
+    }
+  };
+
+  if (options.path && existsSync(options.path)) {
+    if (!(await getAppJsonFromPath(options.path))) return;
+  }
 
   await inquirer
     .prompt<Record<"path", string>>({
@@ -92,17 +108,11 @@ interface PromptAnswer {
       default: cwd(),
       when: !options.path,
       validate: async (input) => {
-        try {
-          appJsonPath = resolve(input, "app.json");
-          const appJsonFile = await readFile(appJsonPath);
-          appJsonObject = JSON.parse(appJsonFile.toString());
-        } catch (e) {
-          return "未找到 app.json，请检查路径是否正确";
-        }
-        const pages: string[] = appJsonObject["pages"];
+        const err = await getAppJsonFromPath(input);
+        if (err) return err;
+        const pages: string[] = appJsonObject["pages"] ?? [];
         for (const page of pages) {
           const pageJsonPath = resolve(input, page + ".json");
-
           try {
             const pageJsonFile = await readFile(pageJsonPath);
             const pageJsonObject = JSON.parse(pageJsonFile.toString());
@@ -192,6 +202,8 @@ interface PromptAnswer {
     },
   ]);
 
+  if (!appJsonObject) return;
+
   if (answers.globalSkyline) globalSkyline = answers.globalSkyline;
 
   if (answers.autoAppJson || answers.appJsonEnableDynamicInjection) {
@@ -203,83 +215,161 @@ interface PromptAnswer {
     answers.skylinePages = Object.keys(pageJsonObjects);
   }
 
-  writeFile(appJsonPath, serializeJSON(appJsonObject));
+  // writeFile(appJsonPath, serializeJSON(appJsonObject));
 
+  const checkList: string[] = [];
+
+  type FileType = "page" | "comp" | "imported";
+
+  const fileMap = new Map<string, FileType>();
+
+  // collect pages
+  // const pages: string[] = answers.skylinePages.map((page) => resolve(options.path!, page));
+  for (const page of answers.skylinePages) {
+    const path = resolve(options.path!, page);
+    checkList.push(path);
+    fileMap.set(path, "page");
+  }
+  // collect used components
+  // const usedComponents: string[] = [];
+  const dfs = async (base: string, obj: any, isDir = false) => {
+    const pathDirname = isDir ? base : dirname(base);
+    const compList: string[] = Object.values(obj?.["usingComponents"] ?? {});
+    for (const comp of compList) {
+      const path = resolve(pathDirname, comp);
+      if (fileMap.has(path)) continue;
+      checkList.push(path);
+      fileMap.set(path, "comp");
+      const json = JSON.parse((await readFile(`${path}.json`)).toString());
+      await dfs(path, json);
+    }
+  };
+  await dfs(options.path!, appJsonObject, true);
+  for (const page of answers.skylinePages) {
+    const pagePath = resolve(options.path!, page);
+    pageJsonObjects[page] && (await dfs(pagePath, pageJsonObjects[page]));
+  }
+
+  // collect imported wxss
+  const wxssFiles: string[] = [];
+  for (const pageOrComp of checkList) {
+    // wxssFiles.push(`${pageOrComp}.wxss`);
+    wxssFiles.push(...(await globby([`${pageOrComp}.wxss`])));
+  }
+  const importedWXSS = await collectImportedWXSS(wxssFiles);
+
+  // collet patches
   const stringPatchesMap = new Map<string, { raw: string; patches: Patch[] }>();
 
-  for (const page of answers.skylinePages) {
-    const files = await globby([`${options.path}/${page}.(wxss|wxml|json)`]);
-    const jobs = files
-      .map((filename) => async () => {
-        let wxss = "";
-        let wxml = "";
-        let json = "";
-        const raw = (await readFile(filename)).toString();
-        if (filename.endsWith("wxss")) {
-          wxss = raw;
-        } else if (filename.endsWith("wxml")) {
-          wxml = raw;
-        } else if (filename.endsWith("json")) {
-          json = raw;
-        }
+  interface ExtendedRuleResultItem extends RuleResultItem {
+    name: string;
+    filename: string;
+  }
 
-        const { astWXML, astWXSS, astJSON, ruleResults } = parse({ wxml, wxss, json, Rules });
-        const stringPatches: Patch[] = [];
+  const runOnFile = async (filename: string) => {
+    let wxss = "";
+    let wxml = "";
+    let json = "";
+    const raw = (await readFile(filename)).toString();
+    if (filename.endsWith("wxss")) {
+      wxss = raw;
+    } else if (filename.endsWith("wxml")) {
+      wxml = raw;
+    } else if (filename.endsWith("json")) {
+      json = raw;
+    }
 
-        // const sortedRuleResults = ruleResults.flatMap(ruleResult=>ruleResult.)
-        const resultItems = [];
+    const { astWXML, astWXSS, astJSON, ruleResults } = parse({ wxml, wxss, json, Rules });
+    const stringPatches: Patch[] = [];
 
-        for (const { patches, results, name } of ruleResults) {
-          stringPatches.push(...patches);
-          for (const item of results) {
-            resultItems.push({
-              name,
-              ...item,
-            });
-          }
-        }
+    // const sortedRuleResults = ruleResults.flatMap(ruleResult=>ruleResult.)
+    const resultItems: ExtendedRuleResultItem[] = [];
 
-        if (resultItems.length) stdout.write(format(chalk.bold("\nFile %s\n"), chalk.cyan(filename)));
-
-        resultItems.sort((a, b) => {
-          return a.level !== b.level
-            ? b.level - a.level
-            : a.name !== b.name
-            ? a.name.localeCompare(b.name)
-            : a.subname.localeCompare(b.subname);
+    for (const { patches, results, name } of ruleResults) {
+      stringPatches.push(...patches);
+      for (const item of results) {
+        resultItems.push({
+          name,
+          filename,
+          ...item,
         });
+      }
+    }
 
-        let lastName: string | null = null;
-        for (const result of resultItems) {
-          const { name, level, fixable } = result;
-          if (options.logLevel > level) continue;
-          const color = logColor[level];
-          let lastSubname: string | null = null;
-          const { subname, loc, advice, description } = result;
-          let filePath = "";
-          if (loc) {
-            filePath = format("%s:%d:%d", filename, loc.startLn, loc.startCol);
-          } else {
-            filePath = format("%s", filename);
-          }
+    // if (resultItems.length) stdout.write(format(chalk.bold("\nFile %s\n"), chalk.cyan(filename)));
 
-          if (lastSubname !== subname) {
-            stdout.write(format("@%s %s\n", color(name), description));
-            advice && stdout.write(format("💡 %s\n", chalk.gray(advice)));
-            fixable && stdout.write(format("🔧 %s\n", chalk.green("自动修复可用")));
-          }
-          stdout.write(format("  %s\n", filePath));
-          lastSubname = subname;
-          lastName = name;
-        }
+    resultItems.sort((a, b) => {
+      return a.level !== b.level
+        ? b.level - a.level
+        : a.name !== b.name
+        ? a.name.localeCompare(b.name)
+        : a.subname.localeCompare(b.subname);
+    });
 
-        stringPatchesMap.set(filename, { raw, patches: stringPatches });
-        // const patchedString = applyPatchesOnString(fileContent, stringPatches);
-      })
-      .map((fn) => fn());
+    stringPatchesMap.set(filename, { raw, patches: stringPatches });
+    // const patchedString = applyPatchesOnString(fileContent, stringPatches);
 
-    stdout.write(format(chalk.bold("\n============ Page %s ============\n"), chalk.blue(page)));
-    await Promise.allSettled(jobs);
+    return resultItems;
+  };
+
+  const sortResults = (resultItems: ExtendedRuleResultItem[]) =>
+    resultItems.sort((a, b) => {
+      return a.level !== b.level
+        ? b.level - a.level
+        : a.name !== b.name
+        ? a.name.localeCompare(b.name)
+        : a.subname.localeCompare(b.subname);
+    });
+
+  const printResults = (resultItems: ExtendedRuleResultItem[]) => {
+    let lastName: string | null = null;
+    let lastSubname: string | null = null;
+    for (const result of resultItems) {
+      const { name, level, fixable, filename } = result;
+      if (options.logLevel > level) continue;
+      const color = logColor[level];
+      const { subname, loc, advice, description } = result;
+      let filePath = "";
+      if (loc) {
+        filePath = format("%s:%d:%d", filename, loc.startLn, loc.startCol);
+      } else {
+        filePath = format("%s", filename);
+      }
+      if (lastName !== name || lastSubname !== subname) {
+        stdout.write(format("@%s %s\n", color(name), description));
+        advice && stdout.write(format("💡 %s\n", chalk.gray(advice)));
+        fixable && stdout.write(format("🔧 %s\n", chalk.green("自动修复可用")));
+      }
+      stdout.write(format("  %s\n", filePath));
+      lastSubname = subname;
+      lastName = name;
+    }
+  };
+
+  for (const pageOrComp of checkList) {
+    const type = fileMap.get(pageOrComp);
+    const files = await globby([`${pageOrComp}.(wxss|wxml|json)`]);
+    const jobs = files.map((filename) => runOnFile(filename));
+    const results = (await Promise.all(jobs)).flat();
+    if (results.length) {
+      stdout.write(
+        format(
+          chalk.bold("\n============ %s %s ============\n"),
+          type?.toUpperCase(),
+          chalk.blue(relative(options.path!, pageOrComp))
+        )
+      );
+      printResults(sortResults(results));
+    }
+  }
+
+  {
+    const jobs = [...importedWXSS].map((filename) => runOnFile(filename));
+    const results = (await Promise.all(jobs)).flat();
+    if (results.length) {
+      stdout.write(format(chalk.bold("\n============ %s ============\n"), "Imported"));
+      printResults(sortResults(results));
+    }
   }
 
   stdout.write("\n");
