@@ -1,6 +1,6 @@
-import { HTMLWalker, type Node as WXMLNode } from "../walker/html";
-import { CSSWalker, type Node as WXSSNode } from "../walker/css";
-import { JSONWalker, type Node as JSONNode } from "../walker/json";
+import { HTMLWalker, type Node as WXMLNode } from "src/walker/html";
+import { CSSWalker, type Node as WXSSNode } from "src/walker/css";
+import { JSONWalker, type Node as JSONNode } from "src/walker/json";
 import { Patch, PatchStatus } from "../patch";
 
 export const enum RuleLevel {

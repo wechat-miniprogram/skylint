@@ -1,4 +1,4 @@
-import { isType } from "../..//walker/json";
+import { isType } from "src/walker/json";
 import { ObjectNode, PropertyNode } from "json-to-ast";
 import { defineRule, RuleType, RuleResultItem, RuleBasicInfoWithOptionalLevel } from "../interface";
 

@@ -1,7 +1,7 @@
 import { readFile } from "fs/promises";
-import { defineRule, RuleType } from "../rules/interface";
-import { isType } from "../walker/css";
-import { parse } from "../parser";
+import { defineRule, RuleType } from "src/rules/interface";
+import { isType } from "src/walker/css";
+import { parse } from "src/parser";
 import { existsSync } from "fs";
 import { resolvePath } from "./resolve";
 

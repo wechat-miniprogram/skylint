@@ -1,5 +1,5 @@
 import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
-import { isType, Node } from "../../walker/html";
+import { isType, Node } from "src/walker/html";
 import { hasChildren } from "domhandler";
 
 const result = createResultItem({

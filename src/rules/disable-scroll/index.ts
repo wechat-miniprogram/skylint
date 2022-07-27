@@ -3,8 +3,8 @@ import { generateBasicJsonConfigCheck } from "../templates/json";
 
 const result = createResultItem({
   subname: "",
-  description: "不支持的页面全局滚动",
-  advice: `将配置项 disableScroll 置为 true，在需要滚动的区域使用 scroll-view 实现`,
+  description: "不支持页面全局滚动",
+  advice: `需将页面配置中的 disableScroll 置为 true，并在需要滚动的区域使用 scroll-view 实现，详见文档（链接待定）`,
   patchHint: `将配置项 disableScroll 置为 true`,
   fixable: true,
   level: RuleLevel.Error,

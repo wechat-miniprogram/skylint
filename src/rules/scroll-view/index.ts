@@ -1,19 +1,19 @@
-import { DomUtils, isType } from "../../../src/walker/html";
+import { DomUtils, isType } from "src/walker/html";
 import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
 
 let scrollViewCount = 0;
 
 const resultScrollViewNotFound = createResultItem({
-  subname: "resultScrollViewNotFound",
-  description: "未找到 scroll-view",
-  advice: "使用 scroll-view 实现滚动",
+  subname: "@scroll-view-not-found",
+  description: "当前页面未使用 scroll-view 组件",
+  advice: "skyline 不支持页面全局滚动，若页面超过一屏，需要使用 scroll-view 组件实现滚动",
   level: RuleLevel.Warn,
 });
 
 const resultScrollViewImproperType = createResultItem({
-  subname: "resultScrollViewImproperType",
-  description: `scroll-view 的 type 不为 "list"`,
-  advice: `设置 type 为 "list"`,
+  subname: "@scroll-view-type",
+  description: `scroll-view 未显式指定 type 类型`,
+  advice: `当前 scroll-view 只支持 type=list 且需显式指定，详见文档（链接待定）`,
   fixable: true,
   level: RuleLevel.Error,
 });

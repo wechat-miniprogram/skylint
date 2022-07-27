@@ -1,5 +1,5 @@
 import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
-import { isType } from "../../walker/css";
+import { isType } from "src/walker/css";
 
 const resultNoPseudoClass = createResultItem({
   subname: "resultNoPseudoClass",

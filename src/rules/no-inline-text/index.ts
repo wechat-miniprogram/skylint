@@ -1,5 +1,5 @@
 import { hasChildren } from "domhandler";
-import { DomUtils, isType } from "../../../src/walker/html";
+import { DomUtils, isType } from "src/walker/html";
 import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
 
 let scrollViewCount = 0;

@@ -1,3 +1,4 @@
+import path from "path";
 import { defineBuildConfig } from "unbuild";
 
 export default defineBuildConfig({
@@ -13,7 +14,14 @@ export default defineBuildConfig({
     //   outDir: "./build/components",
     // },
   ],
-
+  rootDir: "./",
+  rollup: {
+    alias: {
+      entries: {
+        "src": path.resolve("./src"),
+      },
+    },
+  },
   // Change outDir, default is 'dist'
   outDir: "dist",
 

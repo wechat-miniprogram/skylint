@@ -1,9 +1,9 @@
 import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
-import { isType } from "../../walker/css";
+import { isType } from "src/walker/css";
 
 const result = createResultItem({
   subname: "",
-  description: "存在不支持的 box-sizing: content-box",
+  description: "存在不支持的 box-sizing 值，skyline 只支持 border-box",
   advice: "改为 border-box",
   fixable: true,
   level: RuleLevel.Warn,

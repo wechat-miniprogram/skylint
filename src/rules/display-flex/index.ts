@@ -1,11 +1,11 @@
 import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
-import { isType } from "../../walker/css";
+import { isType } from "src/walker/css";
 import { Identifier, List, Value } from "css-tree";
 
 const result = createResultItem({
   subname: "",
-  description: "未显式指定 flex-direction",
-  advice: "默认值为 column",
+  description: "flex 布局下未显式指定 flex-direction",
+  advice: "目前 flex-direction 默认为 column，而在 web 下默认值为 row 故一般不会显式指定，因此这里需要显式指定为 row",
   fixable: true,
   level: RuleLevel.Warn,
 });

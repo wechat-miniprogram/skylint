@@ -1,9 +1,9 @@
 import chalk from "chalk";
 import { readFileSync } from "fs";
-import { parse } from "../parser";
-import { defineRule, RuleType } from "../rules/interface";
-import { serialize } from "../serilizer/html";
-import { isType, Node } from "../walker/html";
+import { parse } from "src/parser";
+import { defineRule, RuleType } from "src/rules/interface";
+import { serialize } from "src/serilizer/html";
+import { isType, Node } from "src/walker/html";
 import { ChildNode, ParentNode } from "domhandler";
 import { resolvePath } from "./resolve";
 
