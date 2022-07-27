@@ -27,10 +27,10 @@ import { RuleLevel, RuleResultItem } from "./rules/interface";
 import { format } from "util";
 // import { serialize as serializeHTML } from "./serilizer/html";
 // import { serialize as serializeCSS } from "./serilizer/css";
-// import { serialize as serializeJSON } from "./serilizer/json";
+import { serialize as serializeJSON } from "./serilizer/json";
 
 import inquirer from "inquirer";
-import { resolve, dirname, relative, join } from "path";
+import path, { resolve, dirname, relative, join } from "path";
 import { Patch, applyPatchesOnString } from "./patch";
 import { existsSync } from "fs";
 import { collectImportedWXSS } from "./utils/collect-wxss";
@@ -151,7 +151,9 @@ interface PromptAnswer {
       message: "开启按需注入?",
       default: false,
       when: (hash) => {
-        return !hash.autoAppJson && appJsonObject["lazyCodeLoading"] !== "requiredCompoents";
+        const flag = !hash.autoAppJson && appJsonObject["lazyCodeLoading"] !== "requiredCompoents";
+        if (!flag) stdout.write(chalk.green("检测到按需注入已开启\n"));
+        return flag;
       },
     },
     {
@@ -160,7 +162,9 @@ interface PromptAnswer {
       message: "开启全局 Skyline?",
       default: false,
       when: (hash) => {
-        return !hash.autoAppJson && appJsonObject["renderer"] !== "skyline";
+        const flag = !hash.autoAppJson && !globalSkyline;
+        if (!flag) stdout.write(chalk.green("检测到全局 Skyline 已开启，跳过页面选择\n"));
+        return flag;
       },
     },
     {
@@ -206,6 +210,8 @@ interface PromptAnswer {
     },
   ]);
 
+  if (!existsSync(options.path!)) return;
+
   if (!appJsonObject) return;
 
   if (answers.globalSkyline) globalSkyline = answers.globalSkyline;
@@ -219,7 +225,7 @@ interface PromptAnswer {
     answers.skylinePages = Object.keys(pageJsonObjects);
   }
 
-  // writeFile(appJsonPath, serializeJSON(appJsonObject));
+  writeFile(appJsonPath, serializeJSON(appJsonObject));
 
   const checkList: string[] = [];
 

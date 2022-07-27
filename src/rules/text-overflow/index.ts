@@ -10,9 +10,6 @@ const result = createResultItem({
 
 export default defineRule({ name: "text-overflow", type: RuleType.WXSS }, (ctx) => {
   ctx.lifetimes({
-    before: () => {
-      console.log('wtf')
-    },
     onVisit: (node, walkCtx) => {
       if (isType(node, "Declaration") && node.property === "text-overflow") {
         const loc = node.loc!;
