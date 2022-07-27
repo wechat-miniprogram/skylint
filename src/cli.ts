@@ -80,8 +80,8 @@ const Rules = [
 ].flat();
 
 const logColor = {
-  [RuleLevel.Verbose]: chalk.gray,
-  [RuleLevel.Info]: (str?: string) => str,
+  [RuleLevel.Verbose]: chalk.cyan,
+  [RuleLevel.Info]: chalk.blue,
   [RuleLevel.Warn]: chalk.yellow,
   [RuleLevel.Error]: chalk.red,
 };
@@ -356,7 +356,6 @@ const main = async () => {
         const { name, level, fixable, filename, withCodeFrame } = result;
         if (options.logLevel > level) continue;
         const color = logColor[level];
-        const levelText = RuleLevel[level].toUpperCase();
         const { subname, loc, advice, description } = result;
         let filePath = "";
         // const rawStr = stringPatchesMap.get(result.filename)!.raw;
@@ -371,11 +370,9 @@ const main = async () => {
         }
         if (lastName !== name || lastSubname !== subname) {
           stdout.write("\n");
-          stdout.write(format(color("[%s] @%s"), levelText, subname || name));
+          stdout.write(format(color("@%s %s"), subname || name, description));
           fixable && stdout.write(chalk.green(" [可自动完成]"));
-          stdout.write(format(" %s", description));
-
-          advice && stdout.write(format("\n[提示] %s\n", chalk.gray(advice)));
+          advice && stdout.write(format("\n💡 %s\n", chalk.gray(advice)));
         }
         stdout.write(format("  %s\n", filePath));
         lastSubname = subname;
