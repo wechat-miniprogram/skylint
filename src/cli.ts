@@ -135,6 +135,12 @@ const main = async () => {
         const err = await getAppJsonFromPath(input);
         if (err) return err;
         const pages: string[] = appJsonObject["pages"] ?? [];
+        const subPackages = appJsonObject["subPackages"] ?? [];
+        for (const subPackage of subPackages) {
+          const { root, pages: subPackagePages } = subPackage;
+          pages.push(...subPackagePages.map((page: string) => join(root, page)));
+        }
+
         for (const page of pages) {
           const pageJsonPath = resolve(input, page + ".json");
           try {
@@ -361,13 +367,14 @@ const main = async () => {
           });
         }
         if (lastName !== name || lastSubname !== subname) {
+          stdout.write("\n");
           stdout.write(format(color("[%s] @%s"), levelText, subname || name));
           fixable && stdout.write(chalk.green(" [可自动完成]"));
           stdout.write(format(" %s", description));
 
           advice && stdout.write(format("\n[提示] %s\n", chalk.gray(advice)));
         }
-        stdout.write(format("  %s\n\n", filePath));
+        stdout.write(format("  %s\n", filePath));
         lastSubname = subname;
         lastName = name;
       }
