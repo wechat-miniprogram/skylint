@@ -1,17 +1,9 @@
-import { parse as parseCSS, Rule as CSSRule } from "css-tree";
+import { parse as parseCSS } from "css-tree";
 import { parseFragment as parseHTML } from "parse5";
-import { Rule, RuleResultItem, RuleType } from "./rules/interface";
+import { Rule, RuleType } from "./rules/interface";
 import { walk as walkHTML } from "./walker/html";
 import { walk as walkCSS } from "./walker/css";
-
-import ruleBoxSizing from "./rules/box-sizing";
-import ruleDisplayFlex from "./rules/display-flex";
-import ruleDisplayInline from "./rules/display-inline";
-import ruleDisplayInlineBlock from "./rules/display-inline-block";
-import ruleNoCalc from "./rules/no-calc";
-import ruleNoPseudo from "./rules/no-pseudo";
-import rulePositionFixed from "./rules/position-fixed";
-import ruleScrollView from "./rules/scroll-view";
+import { Walker } from "./walker/interface";
 
 interface IParseOptions {
   wxml?: string;
@@ -19,8 +11,7 @@ interface IParseOptions {
   rules?: Rule<any>[];
 }
 
-export const parse = (options: IParseOptions) => {
-  const { wxml = "", wxss = "", rules = [] } = options;
+const classifyRules = (rules: Rule<any>[]) => {
   const wxmlRules: Rule<RuleType.WXML>[] = [];
   const wxssRules: Rule<RuleType.WXSS>[] = [];
   const nodeRules: Rule<RuleType.Node>[] = [];
@@ -39,25 +30,35 @@ export const parse = (options: IParseOptions) => {
         break;
     }
   }
-  const astWXSS = parseCSS(wxss, { positions: true });
-  const astWXML = parseHTML(wxml, { sourceCodeLocationInfo: true });
+  return { wxmlRules, wxssRules, nodeRules };
+};
 
+const runLifetimeHooks = <T>(rules: Rule<any>[], ast: any, walker: Walker<T>) => {
   rules.forEach((rule) => rule.before?.());
+  walker(ast, (node) => {
+    rules.forEach((rule) => {
+      rule.onVisit?.(node);
+    });
+  });
+  rules.forEach((rule) => rule.after?.());
+};
 
-  walkHTML(astWXML, (node) => {
-    wxmlRules.forEach((rule) => {
-      rule.onVisit?.(node);
-    });
-  });
-  walkCSS(astWXSS, (node) => {
-    wxssRules.forEach((rule) => {
-      rule.onVisit?.(node);
-    });
-  });
+export const parse = (options: IParseOptions) => {
+  const { wxml, wxss, rules = [] } = options;
+  const { wxmlRules, wxssRules, nodeRules } = classifyRules(rules);
+
+  if (wxml) {
+    const astWXML = parseHTML(wxml, { sourceCodeLocationInfo: true });
+    runLifetimeHooks(wxmlRules, astWXML, walkHTML);
+  }
+
+  if (wxss) {
+    const astWXSS = parseCSS(wxss, { positions: true });
+    runLifetimeHooks(wxssRules, astWXSS, walkCSS);
+  }
 
   const ret: Pick<Rule<any>, "name" | "level" | "results">[] = [];
   rules.forEach((rule) => {
-    rule.after?.();
     const { name, level, results } = rule;
     if (results.length) ret.push({ name, level, results });
   });
