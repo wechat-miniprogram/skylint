@@ -5,6 +5,7 @@ import { readFile, writeFile } from "fs/promises";
 import chalk from "chalk";
 import pkg from "../package.json";
 import { parse } from "./parser";
+import lineColumn from "line-column";
 
 // WXML rules
 import RuleScrollView from "./rules/scroll-view";
@@ -16,6 +17,7 @@ import RuleDisplayInlineBlock from "./rules/display-inline-block";
 import RuleNoCalc from "./rules/no-calc";
 import RuleNoPseudo from "./rules/no-pseudo";
 import RulePositionFixed from "./rules/position-fixed";
+import RuleTextOverflow from "./rules/text-overflow";
 // JSON rules
 import RuleNoNativeNav from "./rules/no-native-nav";
 import RuleDisableScroll from "./rules/disable-scroll";
@@ -49,6 +51,7 @@ const Rules = [
   RuleNoCalc,
   RuleNoPseudo,
   RulePositionFixed,
+  RuleTextOverflow,
   // JSON rules
   RuleNoNativeNav,
   RuleDisableScroll,
@@ -330,8 +333,11 @@ interface PromptAnswer {
       const color = logColor[level];
       const { subname, loc, advice, description } = result;
       let filePath = "";
-      if (loc) {
+      if (loc && "startCol" in loc) {
         filePath = format("%s:%d:%d", filename, loc.startLn, loc.startCol);
+      } else if (loc && !("startCol" in loc) && stringPatchesMap.has(result.filename)) {
+        const { line, col } = lineColumn(stringPatchesMap.get(result.filename)!.raw).fromIndex(loc.startIndex)!;
+        filePath = format("%s:%d:%d", filename, line, col);
       } else {
         filePath = format("%s", filename);
       }

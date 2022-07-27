@@ -10,7 +10,19 @@ export const enum RuleLevel {
   Error = 3,
 }
 
-export type SourceCodeLocation = Record<"startLn" | "endLn" | "startCol" | "endCol", number>;
+interface LocationLnColBased {
+  startLn: number;
+  endLn: number;
+  startCol: number;
+  endCol: number;
+}
+
+interface LocationIndexBased {
+  startIndex: number;
+  endIndex: number;
+}
+
+export type SourceCodeLocation = LocationIndexBased | LocationLnColBased;
 
 export interface RuleResultItem {
   subname: string;
@@ -84,6 +96,7 @@ export const defineRule =
       hooks = { ...hooks, ...newHooks };
     };
     const addResult = (...newResults: Omit<RuleResultItem[], "level">) => {
+      console.log(info.name, info.type, results)
       results.push(...newResults);
     };
     const addASTPatch = (...newPatches: Function[]) => astPatches.push(...newPatches);

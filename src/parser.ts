@@ -48,9 +48,9 @@ const runLifetimeHooks = <T, K = null>(rules: Rule<any>[], ast: any, walker: Wal
   rules.forEach((rule) => rule.before?.());
   walker(
     ast,
-    (node) => {
+    (...args: any[]) => {
       rules.forEach((rule) => {
-        rule.onVisit?.(node);
+        rule.onVisit?.(...args);
       });
     },
     null as any
@@ -61,6 +61,7 @@ const runLifetimeHooks = <T, K = null>(rules: Rule<any>[], ast: any, walker: Wal
 export const parse = <T>(options: IParseOptions<T>) => {
   const { wxml, wxss, json, Rules = [], env } = options;
   const rules = Rules.map((Rule) => Rule(env)); // inject env into rules
+  console.log
   const { wxmlRules, wxssRules, nodeRules, jsonRules, anyRules } = classifyRules(rules);
   let astWXML: NodeTypeMap["Root"] | undefined;
   let astWXSS: CssNode | undefined;
@@ -72,6 +73,7 @@ export const parse = <T>(options: IParseOptions<T>) => {
 
   if (wxss) {
     astWXSS = parseCSS(wxss, { positions: true });
+    console.log(wxss)
     runLifetimeHooks(wxssRules, astWXSS, walkCSS);
   }
 

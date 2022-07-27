@@ -1,4 +1,4 @@
-import { DomUtils, isType } from "src/walker/html";
+import { DomUtils, isType } from "../../../src/walker/html";
 import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
 
 let scrollViewCount = 0;
@@ -29,14 +29,11 @@ export default defineRule({ name: "scroll-view", type: RuleType.WXML }, (ctx) =>
       let hasTypeList = DomUtils.getAttributeValue(node, "type") === "list";
 
       if (!hasTypeList) {
-        const loc = node.sourceCodeLocation!;
         ctx.addResult({
           ...resultScrollViewImproperType,
           loc: {
-            startLn: loc.startLine,
-            endLn: loc.endLine,
-            startCol: loc.startCol,
-            endCol: loc.endCol,
+            startIndex: node.startIndex!,
+            endIndex: node.endIndex!,
           },
         });
         ctx.addPatch({
