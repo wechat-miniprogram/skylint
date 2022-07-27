@@ -30,6 +30,7 @@ export default defineRule({ name: "no-pseudo", type: RuleType.WXSS }, (ctx) => {
             endLn: loc.end.line,
             startCol: loc.start.column,
             endCol: loc.end.column,
+            path: ctx.env.path,
           },
         });
       } else if (isType(node, "PseudoElementSelector")) {
@@ -41,6 +42,7 @@ export default defineRule({ name: "no-pseudo", type: RuleType.WXSS }, (ctx) => {
             endLn: loc.end.line,
             startCol: loc.start.column,
             endCol: loc.end.column,
+            path: ctx.env.path,
           },
         });
       }

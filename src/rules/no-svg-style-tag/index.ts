@@ -18,6 +18,7 @@ export default defineRule({ name: "no-svg-style-tag", type: RuleType.WXML }, (ct
         loc: {
           startIndex: node.startIndex!,
           endIndex: node.endIndex!,
+          path: ctx.env.path,
         },
       });
     }

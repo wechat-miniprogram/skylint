@@ -1,5 +1,5 @@
 import { DefaultWalkerContext, Walker } from "./interface";
-import { ArrayNode, IdentifierNode, LiteralNode, ObjectNode, PropertyNode } from "json-to-ast";
+import { ArrayNode, IdentifierNode, LiteralNode, ObjectNode, PropertyNode, ValueNode } from "json-to-ast";
 
 interface JSONNodeMap {
   Array: ArrayNode;
@@ -8,14 +8,14 @@ interface JSONNodeMap {
   Object: ObjectNode;
   Property: PropertyNode;
 }
-
+export { ValueNode } from "json-to-ast";
 export type Node = ArrayNode | IdentifierNode | LiteralNode | ObjectNode | PropertyNode;
 
 export const isType = <T extends keyof JSONNodeMap>(node: Node, type: T): node is JSONNodeMap[T] => {
   return node.type === type;
 };
 
-export type JSONWalker = Walker<Node, DefaultWalkerContext<Node>>
+export type JSONWalker = Walker<Node, DefaultWalkerContext<Node>>;
 
 export const walk: JSONWalker = (node, callback, ctx = { parent: node }) => {
   if (!ctx) ctx = { parent: node };

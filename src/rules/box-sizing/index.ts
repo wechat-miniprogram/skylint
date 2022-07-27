@@ -1,5 +1,6 @@
 import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
 import { isType } from "src/walker/css";
+import { env } from "process";
 
 const result = createResultItem({
   subname: "",
@@ -27,6 +28,7 @@ export default defineRule({ name: "box-sizing", type: RuleType.WXSS }, (ctx) => 
             endLn: loc.end.line,
             startCol: loc.start.column,
             endCol: loc.end.column,
+            path: ctx.env.path,
           },
         });
         ctx.addASTPatch(() => {

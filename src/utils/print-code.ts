@@ -6,11 +6,10 @@ import { format } from "util";
 interface PrintCodeOptions {
   /** @default false */
   withCodeFrame?: boolean;
-  filename?: string;
 }
 
 export const formatSourceCodeLocation = (rawStr: string, loc: SourceCodeLocation, options: PrintCodeOptions = {}) => {
-  const { filename, withCodeFrame = false } = options;
+  const { withCodeFrame = false } = options;
   let ret = "";
   let location: LocationLnColBased;
   if ("startCol" in loc) {
@@ -19,10 +18,10 @@ export const formatSourceCodeLocation = (rawStr: string, loc: SourceCodeLocation
     const finder = lineColumn(rawStr);
     const { line: startLn = -1, col: startCol = -1 } = finder.fromIndex(loc.startIndex) ?? {};
     const { line: endLn = -1, col: endCol = -1 } = finder.fromIndex(loc.endIndex) ?? {};
-    location = { startLn, startCol, endLn, endCol };
+    location = { startLn, startCol, endLn, endCol, path: loc.path };
   }
 
-  const filenameWithLnCol = format("%s:%d:%d", filename, location.startLn, location.startCol);
+  const filenameWithLnCol = format("%s:%d:%d", loc.path, location.startLn, location.startCol);
   if (!withCodeFrame) return filenameWithLnCol;
 
   const codeFrame = codeFrameColumns(

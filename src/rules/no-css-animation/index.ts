@@ -20,6 +20,7 @@ export default defineRule({ name: "no-css-animation", type: RuleType.WXSS }, (ct
             endLn: loc.end.line,
             startCol: loc.start.column,
             endCol: loc.end.column,
+            path: ctx.env.path,
           },
         });
       }

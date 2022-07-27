@@ -22,6 +22,7 @@ export default defineRule({ name: "mark-wx-for", type: RuleType.WXML }, (ctx) =>
               loc: {
                 startIndex: childNode.startIndex!,
                 endIndex: childNode.endIndex!,
+                path: ctx.env.path,
               },
             });
           }
@@ -32,6 +33,7 @@ export default defineRule({ name: "mark-wx-for", type: RuleType.WXML }, (ctx) =>
           loc: {
             startIndex: node.startIndex!,
             endIndex: node.endIndex!,
+            path: ctx.env.path,
           },
         });
       }

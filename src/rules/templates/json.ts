@@ -51,6 +51,7 @@ export const generateBasicJsonConfigCheck = (
               endLn: node.loc!.end.line,
               startCol: node.loc!.start.column,
               endCol: node.loc!.end.column,
+              path: ctx.env.path,
             },
           });
           autoPatch &&

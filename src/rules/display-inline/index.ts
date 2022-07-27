@@ -20,6 +20,7 @@ export default defineRule({ name: "display-inline", type: RuleType.WXSS }, (ctx)
             endLn: loc.end.line,
             startCol: loc.start.column,
             endCol: loc.end.column,
+            path: ctx.env.path,
           },
         });
       }

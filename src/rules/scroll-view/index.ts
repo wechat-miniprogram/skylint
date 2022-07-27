@@ -1,4 +1,5 @@
 import { hasChildren } from "domhandler";
+import { getLocationByNode } from "src/utils/dom-ast";
 import { DomUtils, isType } from "src/walker/html";
 import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
 
@@ -23,7 +24,6 @@ const resultScrollViewOptimize = createResultItem({
   subname: "scroll-view-optimize",
   description: `未能充分利用 scroll-view 按需渲染的机制`,
   advice: `scroll-view 会根据直接子节点是否在屏来按需渲染，若只有一个直接子节点则性能会退化，如 <scroll-view type=list scroll-y> <view wx:for=""/> </scroll-view>`,
-  fixable: true,
   level: RuleLevel.Verbose,
 });
 
@@ -37,11 +37,13 @@ export default defineRule({ name: "scroll-view", type: RuleType.WXML }, (ctx) =>
       scrollViewCount++;
       let hasTypeList = DomUtils.getAttributeValue(node, "type") === "list";
       if (!hasTypeList) {
+        const { start, end, path } = getLocationByNode(node);
         ctx.addResult({
           ...resultScrollViewImproperType,
           loc: {
-            startIndex: node.startIndex!,
-            endIndex: node.endIndex!,
+            startIndex: start!,
+            endIndex: end!,
+            path,
           },
         });
         ctx.addPatch({
@@ -52,19 +54,28 @@ export default defineRule({ name: "scroll-view", type: RuleType.WXML }, (ctx) =>
           },
         });
       }
-      if (
-        hasChildren(node) &&
-        node.childNodes.length === 1 &&
-        isType(node.childNodes[0], "Tag") &&
-        !Reflect.has(node.attribs, "wx:for")
-      ) {
-        ctx.addResult({
-          ...resultScrollViewOptimize,
-          loc: {
-            startIndex: node.startIndex!,
-            endIndex: node.endIndex!,
-          },
+      if (hasChildren(node)) {
+        const trimedChildren = node.childNodes.filter((child) => {
+          if (isType(child, "Tag")) return true;
+          if (isType(child, "Text") && child.data.trim() !== "") return true;
+          return false;
         });
+
+        if (
+          trimedChildren.length === 1 &&
+          isType(trimedChildren[0], "Tag") &&
+          !Reflect.has(trimedChildren[0].attribs, "wx:for")
+        ) {
+          const { start, end, path } = getLocationByNode(node);
+          ctx.addResult({
+            ...resultScrollViewOptimize,
+            loc: {
+              startIndex: start!,
+              endIndex: end!,
+              path,
+            },
+          });
+        }
       }
     },
     after: () => {

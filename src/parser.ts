@@ -6,6 +6,7 @@ import { NodeTypeMap, walk as walkHTML } from "./walker/html";
 import { walk as walkCSS } from "./walker/css";
 import { walk as walkJSON } from "./walker/json";
 import { Walker } from "./walker/interface";
+import { naivePrint } from "./utils/dom-ast";
 
 export interface BasicParseEnv {
   path: string;
@@ -15,8 +16,11 @@ interface IParseOptions<T extends BasicParseEnv> {
   wxml?: string;
   wxss?: string;
   json?: string;
-  Rules?: ((env?: T) => Rule<any>)[];
-  env?: T;
+  Rules?: ((env: T) => Rule<any>)[];
+  env: T;
+  astWXML?: NodeTypeMap["Root"];
+  astWXSS?: CssNode;
+  astJSON?: ValueNode;
 }
 
 const classifyRules = (rules: Rule<any>[]) => {
@@ -62,33 +66,28 @@ const runLifetimeHooks = <T, K = null>(rules: Rule<any>[], ast: any, walker: Wal
   rules.forEach((rule) => rule.after?.());
 };
 
+const extractResultFromRules = (rules: Rule<RuleType.Unknown>[]) => {
+  return rules.flatMap((rule) => {
+    const { name, level, results, patches } = rule;
+    if (!results.length) return [];
+    return { name, level, results, patches };
+  });
+};
+
 export const parse = <T extends BasicParseEnv>(options: IParseOptions<T>) => {
   const { wxml, wxss, json, Rules = [], env } = options;
   const rules = Rules.map((Rule) => Rule(env)); // inject env into rules
   const { wxmlRules, wxssRules, nodeRules, jsonRules, anyRules } = classifyRules(rules);
-  let astWXML: NodeTypeMap["Root"] | undefined;
-  let astWXSS: CssNode | undefined;
-  let astJSON: ValueNode | undefined;
-  if (wxml) {
-    astWXML = parseXML(wxml, { xmlMode: true, withStartIndices: true, withEndIndices: true });
-    runLifetimeHooks(wxmlRules, astWXML, walkHTML);
-  }
+  let { astJSON, astWXML, astWXSS } = options;
 
-  if (wxss) {
-    astWXSS = parseCSS(wxss, { positions: true });
-    runLifetimeHooks(wxssRules, astWXSS, walkCSS);
-  }
+  if (wxml && !astWXML) astWXML = parseXML(wxml, { xmlMode: true, withStartIndices: true, withEndIndices: true });
+  if (astWXML) runLifetimeHooks(wxmlRules, astWXML, walkHTML);
 
-  if (json) {
-    astJSON = parseJSON(json);
-    runLifetimeHooks(jsonRules, astJSON, walkJSON);
-  }
+  if (wxss && !astWXSS) astWXSS = parseCSS(wxss, { positions: true });
+  if (astWXSS) runLifetimeHooks(wxssRules, astWXSS, walkCSS);
 
-  const ruleResults: Pick<Rule<any>, "name" | "level" | "results" | "patches">[] = [];
-  anyRules.forEach((rule) => {
-    const { name, level, results, patches } = rule;
-    if (results.length) ruleResults.push({ name, level, results, patches });
-  });
+  if (json && !astJSON) astJSON = parseJSON(json);
+  if (astJSON) runLifetimeHooks(jsonRules, astJSON, walkJSON);
 
-  return { ruleResults, astWXML, astWXSS, astJSON };
+  return { astWXML, astWXSS, astJSON, ruleResults: extractResultFromRules(anyRules) };
 };

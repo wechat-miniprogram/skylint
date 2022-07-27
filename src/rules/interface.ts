@@ -11,14 +11,18 @@ export const enum RuleLevel {
   Error = 3,
 }
 
-export interface LocationLnColBased {
+interface BasicLocation {
+  path: string | null;
+}
+
+export interface LocationLnColBased extends BasicLocation {
   startLn: number;
   endLn: number;
   startCol: number;
   endCol: number;
 }
 
-export interface LocationIndexBased {
+export interface LocationIndexBased extends BasicLocation {
   startIndex: number;
   endIndex: number;
 }
@@ -33,7 +37,7 @@ export interface RuleResultItem {
   loc?: SourceCodeLocation;
   level: RuleLevel;
   fixable?: boolean;
-  withCodeFrame?: boolean
+  withCodeFrame?: boolean;
 }
 
 export const enum RuleType {
@@ -76,7 +80,7 @@ export interface RuleContext<T extends RuleType, K> {
   addResult(...results: RuleResultItem[]): void;
   addPatch(...patches: QuickPatch[]): void;
   addASTPatch(...patches: Function[]): void;
-  env?: K;
+  env: K;
 }
 
 type QuickPatch = Pick<Patch, "loc" | "patchedStr">;
@@ -88,7 +92,7 @@ export const defineRule =
     info: RuleBasicInfoWithOptionalLevel<T>,
     init: (ctx: RuleContext<T, Env>) => void
   ) =>
-  (env?: Env) => {
+  (env: Env) => {
     const { name, type } = info;
     let hooks: Hooks<T> = {};
     let results: RuleResultItem[] = [];

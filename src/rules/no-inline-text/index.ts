@@ -12,5 +12,5 @@ const result = createResultItem({
 
 export default generateNoInlineTagChildrenCheck(
   { name: "no-inline-text", type: RuleType.WXML },
-  { result, tagName: "text" }
+  { result, parentTagNameShouldBe: "text" }
 );

@@ -58,6 +58,7 @@ export default defineRule({ name: "unsupported-component", type: RuleType.WXML }
           loc: {
             startIndex: node.startIndex!,
             endIndex: node.endIndex!,
+            path: ctx.env.path,
           },
         });
       }

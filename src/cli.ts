@@ -39,9 +39,14 @@ import { serialize as serializeJSON } from "./serilizer/json";
 import inquirer from "inquirer";
 import path, { resolve, dirname, relative, join } from "path";
 import { Patch, applyPatchesOnString } from "./patch";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { collectImportedWXSS } from "./utils/collect-wxss";
 import { formatSourceCodeLocation } from "./utils/print-code";
+import { Document } from "domhandler";
+import { NodeTypeMap } from "./walker/html";
+import { Node as CssNode } from "./walker/css";
+import { Node as JsonNode, ValueNode } from "./walker/json";
+import { collectTemplate } from "./utils/collect-template";
 
 interface ICliOptions {
   path?: string;
@@ -100,7 +105,7 @@ interface PromptAnswer {
   skylinePages: string[];
 }
 
-(async () => {
+const main = async () => {
   let appJsonPath: string = "";
   let appJsonObject: any = null;
   let pageJsonObjects: Record<string, any> = [];
@@ -305,23 +310,32 @@ interface PromptAnswer {
       let wxss = "";
       let wxml = "";
       let json = "";
+      let astWXML: NodeTypeMap["Root"] | undefined;
+      let astWXSS: CssNode | undefined;
+      let astJSON: ValueNode | undefined;
       if (!existsSync(filename)) return [];
       const raw = (await readFile(filename)).toString();
       if (filename.endsWith("wxss")) {
         wxss = raw;
       } else if (filename.endsWith("wxml")) {
         wxml = raw;
+        astWXML = collectTemplate([filename])[0];
       } else if (filename.endsWith("json")) {
         json = raw;
       }
-
-      const { astWXML, astWXSS, astJSON, ruleResults } = parse({ wxml, wxss, json, Rules, env: { path: filename } });
+      let parsed = parse({
+        wxml,
+        wxss,
+        json,
+        astWXML,
+        astWXSS,
+        astJSON,
+        Rules,
+        env: { path: filename },
+      });
       const stringPatches: Patch[] = [];
-
-      // const sortedRuleResults = ruleResults.flatMap(ruleResult=>ruleResult.)
       const resultItems: ExtendedRuleResultItem[] = [];
-
-      for (const { patches, results, name } of ruleResults) {
+      for (const { patches, results, name } of parsed.ruleResults) {
         stringPatches.push(...patches);
         for (const item of results) {
           resultItems.push({
@@ -331,9 +345,6 @@ interface PromptAnswer {
           });
         }
       }
-
-      // if (resultItems.length) stdout.write(format(chalk.bold("\nFile %s\n"), chalk.cyan(filename)));
-
       resultItems.sort((a, b) => {
         return a.level !== b.level
           ? b.level - a.level
@@ -341,10 +352,7 @@ interface PromptAnswer {
           ? a.name.localeCompare(b.name)
           : a.subname.localeCompare(b.subname);
       });
-
       stringPatchesMap.set(filename, { raw, patches: stringPatches });
-      // const patchedString = applyPatchesOnString(fileContent, stringPatches);
-
       return resultItems;
     };
 
@@ -366,13 +374,13 @@ interface PromptAnswer {
         const color = logColor[level];
         const { subname, loc, advice, description } = result;
         let filePath = "";
-        const rawStr = stringPatchesMap.get(result.filename)!.raw;
+        // const rawStr = stringPatchesMap.get(result.filename)!.raw;
+        const rawStr = readFileSync(loc?.path ?? result.filename).toString();
         if (!loc) {
           filePath = filename;
         } else {
           filePath = formatSourceCodeLocation(rawStr, loc, {
             withCodeFrame,
-            filename,
           });
         }
         if (lastName !== name || lastSubname !== subname) {
@@ -455,6 +463,10 @@ interface PromptAnswer {
     if (again) await scan();
   };
   await scan();
-})().catch((err: Error) => {
-  console.error(chalk.blue("❌"), err.message);
+};
+
+main().catch((err: Error) => {
+  console.error(chalk.blue("❌"), err.message, err.stack);
 });
+
+export default main;

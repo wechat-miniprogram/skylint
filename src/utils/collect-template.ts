@@ -6,73 +6,41 @@ import { serialize } from "src/serilizer/html";
 import { isType, Node } from "src/walker/html";
 import { ChildNode, ParentNode } from "domhandler";
 import { resolvePath } from "./resolve";
+import { replaceChildWithChildren } from "./dom-ast";
+
+interface FragmentInfo {
+  fragment: ParentNode;
+  fromFile: string;
+}
 
 interface CollectTemplateEnv extends BasicParseEnv {
   rootPath: string;
   wxmlPaths: string[];
-  tmplFragments: Map<string, ParentNode>;
-  importFragments: Map<string, ParentNode>;
-  includeFragments: Map<string, ParentNode>;
+  tmplFragments: Map<string, FragmentInfo>;
+  importFragments: Map<string, FragmentInfo>;
+  includeFragments: Map<string, FragmentInfo>;
 }
 
 // TODO avoid name conflict
 const getUniqueKey = (path: string, tmplName: string) => `${tmplName}`;
 
-const naivePrint = (ast: Node) => {
-  console.log(
-    JSON.stringify(
-      ast,
-      (key, value) => {
-        if (["parentNode", "parent", "next", "prev", "sourceCodeLocation"].includes(key)) return undefined;
-        if (key === "tagName") return chalk.green(value);
-        return value;
-      },
-      2
-    )
-  );
-};
-
-const replaceChildWithChildren = (child: ChildNode, children: ChildNode[]) => {
-  const parent = child.parentNode;
-  if (!parent) return false;
-  parent.childNodes = parent.children = parent.childNodes.flatMap((childNode) => {
-    if (childNode === child) {
-      const newChildren = children.map((originChild) => {
-        return {
-          ...originChild,
-          parent,
-          parentNode: parent,
-          sourceCodeLocation: null,
-        } as ChildNode;
-      });
-      const firstChild = newChildren.at(0);
-      const lastChild = newChildren.at(-1);
-      if (firstChild) firstChild.previousSibling = firstChild.prev = child.prev;
-      if (lastChild) lastChild.nextSibling = lastChild.next = child.next;
-      return newChildren;
-    }
-    return childNode;
-  });
-  return true;
-};
-
 // TODO scope of import and include
 const Rule = defineRule<CollectTemplateEnv, RuleType.WXML>({ name: "collect-template", type: RuleType.WXML }, (ctx) => {
   ctx.lifetimes({
     onVisit: (node, walkerContext) => {
-      if (!(ctx.env && isType(node, "Tag"))) return;
+      if (!isType(node, "Tag")) return;
       if (node.name === "template") {
         // <template is="tmpl"/>
         const { is, name } = node.attribs;
         if (is) {
           const key = getUniqueKey(ctx.env.path, is);
-          const tmpl = ctx.env.tmplFragments.get(key);
-          if (!tmpl) return;
-          replaceChildWithChildren(node, tmpl.childNodes);
+          const { fragment, fromFile } = ctx.env.tmplFragments.get(key) ?? {};
+          if (!fragment) return;
+          replaceChildWithChildren(node, fragment.childNodes, { attachFilename: fromFile ?? ctx.env.path });
         } else if (name) {
           const key = getUniqueKey(ctx.env.path, name);
           if (ctx.env.tmplFragments.has(key)) return;
-          ctx.env.tmplFragments.set(key, node);
+          ctx.env.tmplFragments.set(key, { fragment: node, fromFile: ctx.env.path });
           replaceChildWithChildren(node, []);
         }
       } else if (node.name === "include") {
@@ -80,15 +48,15 @@ const Rule = defineRule<CollectTemplateEnv, RuleType.WXML>({ name: "collect-temp
         const { src } = node.attribs;
         if (!src) return;
         const srcPath = resolvePath(ctx.env.path, ctx.env.rootPath, src);
-        let srcAST = ctx.env.includeFragments.get(srcPath);
+        let { fragment: srcAST, fromFile } = ctx.env.includeFragments.get(srcPath) ?? {};
         if (!srcAST) [srcAST] = collectTemplate([srcPath], ctx.env);
         // naivePrint(srcAST);
-        replaceChildWithChildren(node, srcAST.childNodes);
+        replaceChildWithChildren(node, srcAST.childNodes, { attachFilename: srcPath });
       } else if (node.name === "import") {
         // <import src="header.wxml"/>
         const { src } = node.attribs;
         const srcPath = resolvePath(ctx.env.path, ctx.env.rootPath, src);
-        let srcAST = ctx.env.importFragments.get(srcPath);
+        let { fragment: srcAST, fromFile } = ctx.env.importFragments.get(srcPath) ?? {};
         if (!srcAST) [srcAST] = collectTemplate([srcPath], ctx.env);
         replaceChildWithChildren(node, []);
       }

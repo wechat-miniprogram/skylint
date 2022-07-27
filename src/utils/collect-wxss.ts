@@ -21,6 +21,7 @@ export const collectImportedWXSS = async (wxssPaths: string[], rootPath: string)
   const rule = defineRule<RuleEnv, RuleType.WXSS>({ name: "collect-imported-wxss", type: RuleType.WXSS }, (ctx) => {
     ctx.lifetimes({
       onVisit: (node) => {
+        if (!ctx.env) return;
         if (
           !isType(node, "Atrule") ||
           node.name !== "import" ||
@@ -29,7 +30,7 @@ export const collectImportedWXSS = async (wxssPaths: string[], rootPath: string)
         ) {
           return;
         }
-        const { path: currentPath, wxssPaths, wxssSet, rootPath } = ctx.env!;
+        const { path: currentPath, wxssPaths, wxssSet, rootPath } = ctx.env;
         node.prelude.children.forEach((child) => {
           // type `String` for `import "style.wxss"`
           let path: string | null = null;
