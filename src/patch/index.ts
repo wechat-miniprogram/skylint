@@ -1,6 +1,10 @@
 import MagicString from "magic-string";
 
-export type PatchLocation = Record<"start" | "end", number>;
+export interface PatchLocation {
+  start: number;
+  end: number;
+  path: string;
+}
 
 export const enum PatchStatus {
   Pending,
@@ -54,16 +58,16 @@ const findOverlaps = (sortedPatches: Patch[]) => {
 export const applyPatchesOnString = (rawString: string, patches: Patch[]) => {
   const str = new MagicString(rawString);
   const sortedPatches = sortPatchesByLoc(patches);
-//   const groups = findOverlaps(sortedPatches);
-//   const overlappedGroups: Patch[][] = [];
+  //   const groups = findOverlaps(sortedPatches);
+  //   const overlappedGroups: Patch[][] = [];
   const nonOverLappedPatches: Patch[] = sortedPatches;
-//   groups.forEach((group) => {
-//     if (group.length > 1) {
-//       overlappedGroups.push(group);
-//     } else {
-//       nonOverLappedPatches.push(...group);
-//     }
-//   });
+  //   groups.forEach((group) => {
+  //     if (group.length > 1) {
+  //       overlappedGroups.push(group);
+  //     } else {
+  //       nonOverLappedPatches.push(...group);
+  //     }
+  //   });
   const len = nonOverLappedPatches.length;
   for (let i = 0; i < len; i++) {
     const { loc, patchedStr } = sortedPatches[i];

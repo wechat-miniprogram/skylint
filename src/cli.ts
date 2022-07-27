@@ -125,6 +125,8 @@ const main = async () => {
     if (!(await getAppJsonFromPath(options.path))) return;
   }
 
+  const pages: string[] = [];
+
   await inquirer
     .prompt<Record<"path", string>>({
       type: "input",
@@ -135,8 +137,8 @@ const main = async () => {
       validate: async (input) => {
         const err = await getAppJsonFromPath(input);
         if (err) return err;
-        const pages: string[] = appJsonObject["pages"] ?? [];
         const subPackages = appJsonObject["subPackages"] ?? [];
+        pages.push(...(appJsonObject["pages"] ?? []));
         for (const subPackage of subPackages) {
           const { root, pages: subPackagePages } = subPackage;
           pages.push(...subPackagePages.map((page: string) => join(root, page)));
@@ -281,9 +283,11 @@ const main = async () => {
     const importedWXSS = await collectImportedWXSS(wxssFiles, options.path!);
 
     // collet patches
-    const stringPatchesMap = new Map<string, { raw: string; patches: Patch[] }>();
-    
-    let resultCount = 0 
+    // const stringPatchesMap = new Map<string, { raw: string; patches: Patch[] }>();
+    const stringPatches: Patch[] = [];
+
+    let fileCount = 0;
+    let resultCount = 0;
 
     interface ExtendedRuleResultItem extends RuleResultItem {
       name: string;
@@ -297,6 +301,7 @@ const main = async () => {
       let astWXML: NodeTypeMap["Root"] | undefined;
       let astWXSS: CssNode | undefined;
       let astJSON: ValueNode | undefined;
+      fileCount++;
       if (!existsSync(filename)) return [];
       const raw = (await readFile(filename)).toString();
       if (filename.endsWith("wxss")) {
@@ -317,7 +322,6 @@ const main = async () => {
         Rules,
         env: { ...env, path: filename },
       });
-      const stringPatches: Patch[] = [];
       const resultItems: ExtendedRuleResultItem[] = [];
       for (const { patches, results, name } of parsed.ruleResults) {
         stringPatches.push(...patches);
@@ -336,7 +340,6 @@ const main = async () => {
           ? a.name.localeCompare(b.name)
           : a.subname.localeCompare(b.subname);
       });
-      stringPatchesMap.set(filename, { raw, patches: stringPatches });
       return resultItems;
     };
 
@@ -350,7 +353,7 @@ const main = async () => {
       });
 
     const printResults = (resultItems: ExtendedRuleResultItem[]) => {
-      resultCount += resultItems.length
+      resultCount += resultItems.length;
       let lastName: string | null = null;
       let lastSubname: string | null = null;
       for (const result of resultItems) {
@@ -414,13 +417,11 @@ const main = async () => {
     }
 
     stdout.write("\n");
-    let tmp = [...stringPatchesMap.values()].map((obj) => obj.patches.length);
-    const totalPatchlength = tmp.length ? tmp.reduce((a, b) => a + b) : 0;
     const fixMessage = format(
       "%d 个文件中共有 %d 处问题，其中 %d 处可以自动修复，是否进行？\n",
-      stringPatchesMap.size,
+      fileCount,
       resultCount,
-      totalPatchlength
+      stringPatches.length
     );
 
     type FixAnswer = Record<"applyFix", boolean>;
@@ -431,13 +432,25 @@ const main = async () => {
         name: "applyFix",
         message: fixMessage,
         default: false,
-        when: totalPatchlength > 0,
+        when: stringPatches.length > 0,
       },
     ]);
 
     if (fixAnswer.applyFix) {
-      for (const [path, { raw, patches }] of stringPatchesMap) {
-        const patchedString = applyPatchesOnString(raw, patches);
+      const filePatchMap = new Map<string, { content: string; patches: Patch[] }>();
+      for (const patch of stringPatches) {
+        const { path } = patch.loc;
+        if (!filePatchMap.has(path)) {
+          if (!existsSync(path)) continue;
+          filePatchMap.set(path, {
+            content: (await readFile(path)).toString(),
+            patches: [],
+          });
+        }
+        filePatchMap.get(path)?.patches.push(patch);
+      }
+      for (const [path, { patches, content }] of filePatchMap) {
+        const patchedString = applyPatchesOnString(content, patches);
         await writeFile(path, patchedString.toString());
       }
       stdout.write(chalk.green("✅ 修复完成"));

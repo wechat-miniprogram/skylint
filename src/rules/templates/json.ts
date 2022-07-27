@@ -60,6 +60,7 @@ export const generateBasicJsonConfigCheck = (
               loc: {
                 start: node.value.loc!.start.offset,
                 end: node.value.loc!.end.offset,
+                path: ctx.env.path,
               },
             });
         } else if (firstNode) {
@@ -72,6 +73,7 @@ export const generateBasicJsonConfigCheck = (
               loc: {
                 start: firstNode.loc!.start.offset + 1,
                 end: firstNode.loc!.start.offset + 1,
+                path: ctx.env.path,
               },
             });
         }

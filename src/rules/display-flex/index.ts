@@ -38,13 +38,13 @@ export default defineRule({ name: "display-flex", type: RuleType.WXSS }, (ctx) =
               path: ctx.env.path,
             },
           });
-
           ctx.addPatch({
             loc: {
-              start: node.loc!.start.offset,
-              end: node.loc!.end.offset,
+              start: loc.start.offset,
+              end: loc.start.offset,
+              path: ctx.env.path,
             },
-            patchedStr: "\nflex-direction: row\n",
+            patchedStr: "flex-direction: row; ",
           });
           ctx.addASTPatch(() => {
             let children = new List<Identifier>();

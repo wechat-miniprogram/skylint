@@ -59,10 +59,11 @@ const RuleScroolViewWXML = defineRule({ name: "scroll-view-wxml", type: RuleType
           },
         });
         ctx.addPatch({
-          patchedStr: ` type="list"`,
+          patchedStr: `<scroll-view type="list"`,
           loc: {
-            start: node.startIndex! - 1,
-            end: node.startIndex! - 1,
+            start: node.startIndex!,
+            end: node.startIndex! + "<scroll-view".length,
+            path: path ?? ctx.env.path,
           },
         });
       }

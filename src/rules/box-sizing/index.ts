@@ -42,6 +42,7 @@ export default defineRule({ name: "box-sizing", type: RuleType.WXSS }, (ctx) => 
           loc: {
             start: loc.start.offset,
             end: loc.end.offset,
+            path: ctx.env.path,
           },
           patchedStr: "box-sizing: border-box",
         });
