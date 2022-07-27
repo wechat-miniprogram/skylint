@@ -1,13 +1,14 @@
 import chalk from "chalk";
 import { readFileSync } from "fs";
-import { dirname, resolve } from "path";
 import { parse } from "../parser";
 import { defineRule, RuleType } from "../rules/interface";
 import { serialize } from "../serilizer/html";
 import { isType, Node } from "../walker/html";
 import { ChildNode, ParentNode } from "domhandler";
+import { resolvePath } from "./resolve";
 
 interface CollectTemplateEnv {
+  rootPath: string;
   currentPath: string;
   wxmlPaths: string[];
   tmplFragments: Map<string, ParentNode>;
@@ -60,8 +61,7 @@ const replaceChildWithChildren = (child: ChildNode, children: ChildNode[]) => {
 const Rule = defineRule<CollectTemplateEnv, RuleType.WXML>({ name: "collect-template", type: RuleType.WXML }, (ctx) => {
   ctx.lifetimes({
     onVisit: (node, walkerContext) => {
-      if (!ctx.env) return;
-      if (!isType(node, "Tag")) return;
+      if (!(ctx.env && isType(node, "Tag"))) return;
       if (node.name === "template") {
         // <template is="tmpl"/>
         const { is, name } = node.attribs;
@@ -80,7 +80,7 @@ const Rule = defineRule<CollectTemplateEnv, RuleType.WXML>({ name: "collect-temp
         // <include src="header.wxml"/>
         const { src } = node.attribs;
         if (!src) return;
-        const srcPath = resolve(dirname(ctx.env.currentPath), src);
+        const srcPath = resolvePath(ctx.env.currentPath, ctx.env.rootPath, src);
         let srcAST = ctx.env.includeFragments.get(srcPath);
         if (!srcAST) [srcAST] = collectTemplate([srcPath], ctx.env);
         // naivePrint(srcAST);
@@ -88,7 +88,7 @@ const Rule = defineRule<CollectTemplateEnv, RuleType.WXML>({ name: "collect-temp
       } else if (node.name === "import") {
         // <import src="header.wxml"/>
         const { src } = node.attribs;
-        const srcPath = resolve(dirname(ctx.env.currentPath), src);
+        const srcPath = resolvePath(ctx.env.currentPath, ctx.env.rootPath, src);
         let srcAST = ctx.env.importFragments.get(srcPath);
         if (!srcAST) [srcAST] = collectTemplate([srcPath], ctx.env);
         replaceChildWithChildren(node, []);
@@ -100,6 +100,7 @@ const Rule = defineRule<CollectTemplateEnv, RuleType.WXML>({ name: "collect-temp
 export const collectTemplate = (wxmlPaths: string[], env?: CollectTemplateEnv) => {
   const originalPaths = [...wxmlPaths];
   const newEnv = env ?? {
+    rootPath: "",
     currentPath: "",
     wxmlPaths,
     importFragments: new Map(),
@@ -113,11 +114,10 @@ export const collectTemplate = (wxmlPaths: string[], env?: CollectTemplateEnv) =
     // astWXML = parse({ wxml, Rules: [Rule], env: { ...env, currentPath } }).astWXML;
 
     // if (!astWXML) return;
-    const content = serialize(astWXML!);
-    console.log(chalk.red(currentPath));
+    // const content = serialize(astWXML!);
+    // console.log(chalk.red(currentPath));
     // naivePrint(astWXML!);
 
-    console.log(content);
     return astWXML!;
   });
 };

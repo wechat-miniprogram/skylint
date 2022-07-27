@@ -254,7 +254,7 @@ interface PromptAnswer {
 
     const compList: string[] = Object.values(obj?.["usingComponents"] ?? {});
     for (const comp of compList) {
-      const path = resolve(pathDirname, comp);
+      const path = comp.startsWith("/") ? join(options.path!, comp) : resolve(pathDirname, comp);
       if (fileMap.has(path)) continue;
       checkList.push(path);
       fileMap.set(path, "comp");
@@ -274,7 +274,7 @@ interface PromptAnswer {
     // wxssFiles.push(`${pageOrComp}.wxss`);
     wxssFiles.push(...(await globby([`${pageOrComp}.wxss`])));
   }
-  const importedWXSS = await collectImportedWXSS(wxssFiles);
+  const importedWXSS = await collectImportedWXSS(wxssFiles, options.path!);
 
   // collet patches
   const stringPatchesMap = new Map<string, { raw: string; patches: Patch[] }>();
