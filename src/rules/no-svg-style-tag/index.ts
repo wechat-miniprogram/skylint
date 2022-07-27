@@ -7,6 +7,7 @@ const result = createResultItem({
   description: "不支持 svg 组件内使用 style 标签",
   advice: "在 wxss 文件内书写样式规则",
   level: RuleLevel.Error,
+  withCodeFrame: true,
 });
 
 export default defineRule({ name: "no-svg-style-tag", type: RuleType.WXML }, (ctx) => {

@@ -1,13 +1,12 @@
 import { readFile } from "fs/promises";
 import { defineRule, RuleType } from "src/rules/interface";
 import { isType } from "src/walker/css";
-import { parse } from "src/parser";
+import { BasicParseEnv, parse } from "src/parser";
 import { existsSync } from "fs";
 import { resolvePath } from "./resolve";
 
-interface RuleEnv {
+interface RuleEnv extends BasicParseEnv {
   rootPath: string;
-  currentPath: string;
   wxssPaths: string[];
   wxssSet: Set<string>;
 }
@@ -30,7 +29,7 @@ export const collectImportedWXSS = async (wxssPaths: string[], rootPath: string)
         ) {
           return;
         }
-        const { currentPath, wxssPaths, wxssSet, rootPath } = ctx.env!;
+        const { path: currentPath, wxssPaths, wxssSet, rootPath } = ctx.env!;
         node.prelude.children.forEach((child) => {
           // type `String` for `import "style.wxss"`
           let path: string | null = null;
@@ -54,7 +53,7 @@ export const collectImportedWXSS = async (wxssPaths: string[], rootPath: string)
 
   for (const wxssPath of wxssPaths) {
     const wxss = (await readFile(wxssPath)).toString();
-    const env = { rootPath, currentPath: wxssPath, wxssSet, wxssPaths };
+    const env = { rootPath, path: wxssPath, wxssSet, wxssPaths };
     parse({ wxss, Rules: [rule], env });
   }
 

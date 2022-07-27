@@ -1,15 +1,14 @@
 import chalk from "chalk";
 import { readFileSync } from "fs";
-import { parse } from "src/parser";
+import { BasicParseEnv, parse } from "src/parser";
 import { defineRule, RuleType } from "src/rules/interface";
 import { serialize } from "src/serilizer/html";
 import { isType, Node } from "src/walker/html";
 import { ChildNode, ParentNode } from "domhandler";
 import { resolvePath } from "./resolve";
 
-interface CollectTemplateEnv {
+interface CollectTemplateEnv extends BasicParseEnv {
   rootPath: string;
-  currentPath: string;
   wxmlPaths: string[];
   tmplFragments: Map<string, ParentNode>;
   importFragments: Map<string, ParentNode>;
@@ -66,12 +65,12 @@ const Rule = defineRule<CollectTemplateEnv, RuleType.WXML>({ name: "collect-temp
         // <template is="tmpl"/>
         const { is, name } = node.attribs;
         if (is) {
-          const key = getUniqueKey(ctx.env.currentPath, is);
+          const key = getUniqueKey(ctx.env.path, is);
           const tmpl = ctx.env.tmplFragments.get(key);
           if (!tmpl) return;
           replaceChildWithChildren(node, tmpl.childNodes);
         } else if (name) {
-          const key = getUniqueKey(ctx.env.currentPath, name);
+          const key = getUniqueKey(ctx.env.path, name);
           if (ctx.env.tmplFragments.has(key)) return;
           ctx.env.tmplFragments.set(key, node);
           replaceChildWithChildren(node, []);
@@ -80,7 +79,7 @@ const Rule = defineRule<CollectTemplateEnv, RuleType.WXML>({ name: "collect-temp
         // <include src="header.wxml"/>
         const { src } = node.attribs;
         if (!src) return;
-        const srcPath = resolvePath(ctx.env.currentPath, ctx.env.rootPath, src);
+        const srcPath = resolvePath(ctx.env.path, ctx.env.rootPath, src);
         let srcAST = ctx.env.includeFragments.get(srcPath);
         if (!srcAST) [srcAST] = collectTemplate([srcPath], ctx.env);
         // naivePrint(srcAST);
@@ -88,7 +87,7 @@ const Rule = defineRule<CollectTemplateEnv, RuleType.WXML>({ name: "collect-temp
       } else if (node.name === "import") {
         // <import src="header.wxml"/>
         const { src } = node.attribs;
-        const srcPath = resolvePath(ctx.env.currentPath, ctx.env.rootPath, src);
+        const srcPath = resolvePath(ctx.env.path, ctx.env.rootPath, src);
         let srcAST = ctx.env.importFragments.get(srcPath);
         if (!srcAST) [srcAST] = collectTemplate([srcPath], ctx.env);
         replaceChildWithChildren(node, []);
@@ -101,16 +100,16 @@ export const collectTemplate = (wxmlPaths: string[], env?: CollectTemplateEnv) =
   const originalPaths = [...wxmlPaths];
   const newEnv = env ?? {
     rootPath: "",
-    currentPath: "",
+    path: "",
     wxmlPaths,
     importFragments: new Map(),
     includeFragments: new Map(),
     tmplFragments: new Map(),
   };
 
-  return wxmlPaths.map((currentPath) => {
-    const wxml = readFileSync(currentPath).toString();
-    let { astWXML } = parse({ wxml, Rules: [Rule], env: { ...newEnv, currentPath } });
+  return wxmlPaths.map((path) => {
+    const wxml = readFileSync(path).toString();
+    let { astWXML } = parse({ wxml, Rules: [Rule], env: { ...newEnv, path } });
     // astWXML = parse({ wxml, Rules: [Rule], env: { ...env, currentPath } }).astWXML;
 
     // if (!astWXML) return;

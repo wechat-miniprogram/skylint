@@ -7,7 +7,11 @@ import { walk as walkCSS } from "./walker/css";
 import { walk as walkJSON } from "./walker/json";
 import { Walker } from "./walker/interface";
 
-interface IParseOptions<T> {
+export interface BasicParseEnv {
+  path: string;
+}
+
+interface IParseOptions<T extends BasicParseEnv> {
   wxml?: string;
   wxss?: string;
   json?: string;
@@ -58,7 +62,7 @@ const runLifetimeHooks = <T, K = null>(rules: Rule<any>[], ast: any, walker: Wal
   rules.forEach((rule) => rule.after?.());
 };
 
-export const parse = <T>(options: IParseOptions<T>) => {
+export const parse = <T extends BasicParseEnv>(options: IParseOptions<T>) => {
   const { wxml, wxss, json, Rules = [], env } = options;
   const rules = Rules.map((Rule) => Rule(env)); // inject env into rules
   const { wxmlRules, wxssRules, nodeRules, jsonRules, anyRules } = classifyRules(rules);

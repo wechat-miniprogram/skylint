@@ -2,6 +2,7 @@ import { HTMLWalker, type Node as WXMLNode } from "src/walker/html";
 import { CSSWalker, type Node as WXSSNode } from "src/walker/css";
 import { JSONWalker, type Node as JSONNode } from "src/walker/json";
 import { Patch, PatchStatus } from "../patch";
+import { BasicParseEnv } from "src/parser";
 
 export const enum RuleLevel {
   Verbose = 0,
@@ -10,14 +11,14 @@ export const enum RuleLevel {
   Error = 3,
 }
 
-interface LocationLnColBased {
+export interface LocationLnColBased {
   startLn: number;
   endLn: number;
   startCol: number;
   endCol: number;
 }
 
-interface LocationIndexBased {
+export interface LocationIndexBased {
   startIndex: number;
   endIndex: number;
 }
@@ -32,6 +33,7 @@ export interface RuleResultItem {
   loc?: SourceCodeLocation;
   level: RuleLevel;
   fixable?: boolean;
+  withCodeFrame?: boolean
 }
 
 export const enum RuleType {
@@ -82,7 +84,7 @@ type QuickPatch = Pick<Patch, "loc" | "patchedStr">;
 export type RuleBasicInfoWithOptionalLevel<T extends RuleType> = Pick<RuleBasicInfo<T>, "name" | "type">;
 
 export const defineRule =
-  <Env, T extends RuleType = RuleType>(
+  <Env extends BasicParseEnv, T extends RuleType = RuleType>(
     info: RuleBasicInfoWithOptionalLevel<T>,
     init: (ctx: RuleContext<T, Env>) => void
   ) =>

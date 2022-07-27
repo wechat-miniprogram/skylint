@@ -3,15 +3,15 @@ import { isType } from "src/walker/css";
 
 const result = createResultItem({
   subname: "",
-  description: "仅 text 组件支持 text-overflow 属性",
-  advice: "检查该规则是否应用于非 text 组件之上",
+  description: "不支持 css animation",
+  advice: "可通过 skyline 的新特性，worklet 动画实现",
   level: RuleLevel.Warn,
 });
 
-export default defineRule({ name: "text-overflow", type: RuleType.WXSS }, (ctx) => {
+export default defineRule({ name: "no-css-animation", type: RuleType.WXSS }, (ctx) => {
   ctx.lifetimes({
-    onVisit: (node, walkCtx) => {
-      if (isType(node, "Declaration") && node.property === "text-overflow") {
+    onVisit: (node) => {
+      if (isType(node, "Declaration") && node.property.startsWith("animation")) {
         const loc = node.loc!;
         ctx.addResult({
           ...result,
