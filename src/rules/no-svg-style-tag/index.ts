@@ -11,7 +11,7 @@ const result = createResultItem({
 
 export default defineRule({ name: "no-svg-style-tag", type: RuleType.WXML }, (ctx) => {
   const dfs = (node: Node, ruleCtx: typeof ctx) => {
-    if (isType(node, "Style"))
+    if ((isType(node, "Tag") && node.name === "style") || isType(node, "Style")) {
       ruleCtx.addResult({
         ...result,
         loc: {
@@ -19,6 +19,7 @@ export default defineRule({ name: "no-svg-style-tag", type: RuleType.WXML }, (ct
           endIndex: node.endIndex!,
         },
       });
+    }
     if (hasChildren(node)) {
       for (const childNode of node.childNodes) {
         dfs(childNode, ruleCtx);

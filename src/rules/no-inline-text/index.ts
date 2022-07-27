@@ -11,7 +11,7 @@ const result = createResultItem({
   level: RuleLevel.Error,
 });
 
-export default defineRule({ name: "scroll-view", type: RuleType.WXML }, (ctx) => {
+export default defineRule({ name: "no-inline-text", type: RuleType.WXML }, (ctx) => {
   ctx.lifetimes({
     before: () => {
       scrollViewCount = 0;
