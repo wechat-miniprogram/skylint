@@ -43,5 +43,8 @@ export const formatSourceCodeLocation = (rawStr: string, loc: SourceCodeLocation
       forceColor: true,
     }
   );
+
+  if (codeFrame.length > 256) return filenameWithLnCol;
+
   return [filenameWithLnCol, codeFrame].join("\n");
 };
