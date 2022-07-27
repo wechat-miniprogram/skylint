@@ -272,7 +272,7 @@ interface PromptAnswer {
       const compList: string[] = Object.values(obj?.["usingComponents"] ?? {});
       for (const comp of compList) {
         const path = comp.startsWith("/") ? join(options.path!, comp) : resolve(pathDirname, comp);
-        if (fileMap.has(path)) continue;
+        if (fileMap.has(path) || !existsSync(path)) continue;
         checkList.push(path);
         fileMap.set(path, "comp");
         const json = JSON.parse((await readFile(`${path}.json`)).toString());
@@ -305,6 +305,7 @@ interface PromptAnswer {
       let wxss = "";
       let wxml = "";
       let json = "";
+      if (!existsSync(filename)) return [];
       const raw = (await readFile(filename)).toString();
       if (filename.endsWith("wxss")) {
         wxss = raw;
