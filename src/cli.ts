@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { Command } from "commander";
 import { cwd, argv, stdout } from "process";
 import { globby } from "globby";
