@@ -13,6 +13,7 @@ const resultScrollViewImproperType = createResultItem({
   subname: "resultScrollViewImproperType",
   description: `scroll-view 的 type 不为 "list"`,
   advice: `设置 type 为 "list"`,
+  fixable: true,
   level: RuleLevel.Error,
 });
 

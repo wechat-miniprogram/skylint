@@ -6,6 +6,7 @@ const result = createResultItem({
   subname: "",
   description: "未显式指定 flex-direction",
   advice: "默认值为 column",
+  fixable: true,
   level: RuleLevel.Warn,
 });
 

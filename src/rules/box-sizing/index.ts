@@ -5,6 +5,7 @@ const result = createResultItem({
   subname: "",
   description: "存在不支持的 box-sizing: content-box",
   advice: "改为 border-box",
+  fixable: true,
   level: RuleLevel.Warn,
 });
 
