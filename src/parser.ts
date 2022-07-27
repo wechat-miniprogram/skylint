@@ -10,6 +10,7 @@ import { naivePrint } from "./utils/dom-ast";
 
 export interface BasicParseEnv {
   path: string;
+  astMap?: Map<string, any>;
 }
 
 interface IParseOptions<T extends BasicParseEnv> {
@@ -81,13 +82,22 @@ export const parse = <T extends BasicParseEnv>(options: IParseOptions<T>) => {
   let { astJSON, astWXML, astWXSS } = options;
 
   if (wxml && !astWXML) astWXML = parseXML(wxml, { xmlMode: true, withStartIndices: true, withEndIndices: true });
-  if (astWXML) runLifetimeHooks(wxmlRules, astWXML, walkHTML);
+  if (astWXML) {
+    env.astMap?.set(env.path, astWXML);
+    runLifetimeHooks(wxmlRules, astWXML, walkHTML);
+  }
 
   if (wxss && !astWXSS) astWXSS = parseCSS(wxss, { positions: true });
-  if (astWXSS) runLifetimeHooks(wxssRules, astWXSS, walkCSS);
+  if (astWXSS) {
+    env.astMap?.set(env.path, astWXSS);
+    runLifetimeHooks(wxssRules, astWXSS, walkCSS);
+  }
 
   if (json && !astJSON) astJSON = parseJSON(json);
-  if (astJSON) runLifetimeHooks(jsonRules, astJSON, walkJSON);
+  if (astJSON) {
+    env.astMap?.set(env.path, astJSON);
+    runLifetimeHooks(jsonRules, astJSON, walkJSON);
+  }
 
   return { astWXML, astWXSS, astJSON, ruleResults: extractResultFromRules(anyRules) };
 };

@@ -4,13 +4,12 @@ import { globby } from "globby";
 import { readFile, writeFile } from "fs/promises";
 import chalk from "chalk";
 import pkg from "../package.json";
-import { parse } from "./parser";
+import { BasicParseEnv, parse } from "./parser";
 
 // WXML rules
 import RuleNagivator from "./rules/navigator";
 import RuleNoInlineText from "./rules/no-inline-text";
 import RuleNoSvgStyleTag from "./rules/no-svg-style-tag";
-import RuleScrollView from "./rules/scroll-view";
 import RuleUnsupportedComponent from "./rules/unsupported-component";
 // WXSS rules
 import RuleBoxSizing from "./rules/box-sizing";
@@ -28,6 +27,7 @@ import RuleNoNativeNav from "./rules/no-native-nav";
 import RuleDisableScroll from "./rules/disable-scroll";
 import RuleRendererSkyline from "./rules/renderer-skyline";
 // Mixed rules
+import RuleScrollView from "./rules/scroll-view";
 import RuleWeuiExtendedlib from "./rules/weui-extendedlib";
 
 import { RuleLevel, RuleResultItem } from "./rules/interface";
@@ -58,7 +58,6 @@ const Rules = [
   RuleNagivator,
   RuleNoInlineText,
   RuleNoSvgStyleTag,
-  RuleScrollView,
   RuleUnsupportedComponent,
   // WXSS rules
   RuleBoxSizing,
@@ -76,6 +75,7 @@ const Rules = [
   RuleDisableScroll,
   RuleRendererSkyline,
   // Mixed rules
+  RuleScrollView,
   RuleWeuiExtendedlib,
 ].flat();
 
@@ -281,7 +281,7 @@ const main = async () => {
       filename: string;
     }
 
-    const runOnFile = async (filename: string) => {
+    const runOnFile = async (filename: string, env: Partial<BasicParseEnv> = {}) => {
       let wxss = "";
       let wxml = "";
       let json = "";
@@ -306,7 +306,7 @@ const main = async () => {
         astWXSS,
         astJSON,
         Rules,
-        env: { path: filename },
+        env: { ...env, path: filename },
       });
       const stringPatches: Patch[] = [];
       const resultItems: ExtendedRuleResultItem[] = [];
@@ -357,6 +357,7 @@ const main = async () => {
         } else {
           filePath = formatSourceCodeLocation(rawStr, loc, {
             withCodeFrame,
+            alternativeFilename: filename,
           });
         }
         if (lastName !== name || lastSubname !== subname) {
@@ -374,9 +375,15 @@ const main = async () => {
 
     for (const pageOrComp of checkList) {
       const type = fileMap.get(pageOrComp);
-      const files = await globby([`${pageOrComp}.(wxss|wxml|json)`]);
-      const jobs = files.map((filename) => runOnFile(filename));
-      const results = (await Promise.all(jobs)).flat();
+      const files = ["json", "wxml", "wxss"]
+        .map((ext) => [pageOrComp, ext].join("."))
+        .filter((file) => existsSync(file));
+      const astMap = new Map();
+      let results: ExtendedRuleResultItem[] = [];
+      for (const filename of files) {
+        const result = await runOnFile(filename, { astMap });
+        results.push(...result);
+      }
       if (results.length) {
         stdout.write(
           format(
@@ -393,7 +400,7 @@ const main = async () => {
       const jobs = [...importedWXSS].map((filename) => runOnFile(filename));
       const results = (await Promise.all(jobs)).flat();
       if (results.length) {
-        stdout.write(format(chalk.bold("\n============ %s ============\n"), "Imported WXSS"));
+        stdout.write(format(chalk.bold("\n============ %s ============\n"), "Imported"));
         printResults(sortResults(results));
       }
     }

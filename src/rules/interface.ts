@@ -3,6 +3,7 @@ import { CSSWalker, type Node as WXSSNode } from "src/walker/css";
 import { JSONWalker, type Node as JSONNode } from "src/walker/json";
 import { Patch, PatchStatus } from "../patch";
 import { BasicParseEnv } from "src/parser";
+import { Document } from "domhandler";
 
 export enum RuleLevel {
   Verbose = 0,
@@ -80,6 +81,8 @@ export interface RuleContext<T extends RuleType, K> {
   addResult(...results: RuleResultItem[]): void;
   addPatch(...patches: QuickPatch[]): void;
   addASTPatch(...patches: Function[]): void;
+  getRelatedWXMLFilename(): string | undefined;
+  getRelatedWXMLAst(): Document | null;
   env: K;
 }
 
@@ -112,11 +115,20 @@ export const defineRule =
           status: PatchStatus.Pending,
         }))
       );
+    const getRelatedWXMLFilename = () => env.path.replace(/(?!\.)(wxml|json|wxss)$/, "wxml");
+
+    const getRelatedWXMLAst = () => {
+      if (!env.astMap) return null;
+      return env.astMap.get(getRelatedWXMLFilename()) ?? null;
+    };
+    
     init({
       lifetimes,
       addASTPatch,
       addPatch,
       addResult,
+      getRelatedWXMLFilename,
+      getRelatedWXMLAst,
       env,
     });
     return {

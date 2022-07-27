@@ -1,9 +1,10 @@
 import { hasChildren } from "domhandler";
+import { selectAll } from "css-select";
 import { getLocationByNode } from "src/utils/dom-ast";
+import { formatSelectorList } from "src/utils/css-ast";
 import { DomUtils, isType } from "src/walker/html";
+import { isType as isTypeCSS } from "src/walker/css";
 import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
-
-let scrollViewCount = 0;
 
 const resultScrollViewNotFound = createResultItem({
   subname: "scroll-view-not-found",
@@ -11,7 +12,6 @@ const resultScrollViewNotFound = createResultItem({
   advice: "skyline 不支持页面全局滚动，若页面超过一屏，需要使用 scroll-view 组件实现滚动",
   level: RuleLevel.Warn,
 });
-
 const resultScrollViewImproperType = createResultItem({
   subname: "scroll-view-type",
   description: `scroll-view 未显式指定 type 类型`,
@@ -19,7 +19,6 @@ const resultScrollViewImproperType = createResultItem({
   fixable: true,
   level: RuleLevel.Error,
 });
-
 const resultScrollViewOptimize = createResultItem({
   subname: "scroll-view-optimize",
   description: `未能充分利用 scroll-view 按需渲染的机制`,
@@ -32,8 +31,15 @@ const resultScrollViewXY = createResultItem({
   advice: `skyline 后续版本会支持`,
   level: RuleLevel.Info,
 });
+const resultScrollMargin = createResultItem({
+  subname: "scroll-view-margin",
+  description: `scroll-view 组件的直接子节点 margin 无效`,
+  advice: `需要给设置了 margin 的直接子节点套多一层 view。skyline 后续版本考虑从布局算法上支持`,
+  level: RuleLevel.Info,
+});
 
-export default defineRule({ name: "scroll-view", type: RuleType.WXML }, (ctx) => {
+const RuleScroolViewWXML = defineRule({ name: "scroll-view-wxml", type: RuleType.WXML }, (ctx) => {
+  let scrollViewCount = 0;
   ctx.lifetimes({
     before: () => {
       scrollViewCount = 0;
@@ -103,3 +109,32 @@ export default defineRule({ name: "scroll-view", type: RuleType.WXML }, (ctx) =>
     },
   });
 });
+
+const RuleScroolViewWXSS = defineRule({ name: "scroll-view-wxss", type: RuleType.WXSS }, (ctx) => {
+  ctx.lifetimes({
+    onVisit: (node, walkCtx) => {
+      if (!isTypeCSS(node, "Declaration") || !node.property.startsWith("margin")) return;
+      const wxmlFilename = ctx.getRelatedWXMLFilename();
+      const ast = ctx.getRelatedWXMLAst();
+      const prelude = walkCtx.rule?.prelude;
+      if (!ast || !prelude) return;
+      const selector = isTypeCSS(prelude, "Raw") ? prelude.value : formatSelectorList(prelude);
+      const children = selectAll(selector, ast);
+      for (const child of children) {
+        if (child.parent && isType(child.parent, "Tag") && child.parent.name === "scroll-view") {
+          const { start, end, path } = getLocationByNode(child);
+          ctx.addResult({
+            ...resultScrollMargin,
+            loc: {
+              startIndex: child.startIndex!,
+              endIndex: child.endIndex!,
+              path: path ?? wxmlFilename ?? null,
+            },
+          });
+        }
+      }
+    },
+  });
+});
+
+export default [RuleScroolViewWXML, RuleScroolViewWXSS];
