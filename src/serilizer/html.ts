@@ -1,6 +1,5 @@
-import { DefaultTreeAdapterMap, serialize as rawSerilize } from "parse5";
+import rawSerilize from "dom-serializer";
+import { ParentNode } from "domhandler";
 import { Serializer } from "./interface";
-
-type ParentNode = Parameters<typeof rawSerilize<DefaultTreeAdapterMap>>[0]
 
 export const serialize: Serializer<ParentNode> = (ast) => rawSerilize(ast);
