@@ -3,44 +3,44 @@ import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface"
 
 const results = {
   "movable-view": createResultItem({
-    subname: "movable-view",
+    name: "movable-view",
     description: "不支持 movable-view 组件",
     advice: "不再支持 movable-view 组件，通过 skyline 的新特性，worklet 动画 + 手势系统实现",
     level: RuleLevel.Error,
   }),
   ad: createResultItem({
-    subname: "ad",
+    name: "ad",
     description: "暂不支持 ad 组件",
     advice: "skyline 后续版本会支持",
     level: RuleLevel.Verbose,
   }),
   "picker-view": createResultItem({
-    subname: "picker-view",
+    name: "picker-view",
     description: "暂不支持 picker-view 组件",
     advice: "skyline 后续版本会支持",
     level: RuleLevel.Error,
   }),
   form: createResultItem({
-    subname: "form",
+    name: "form",
     description: "暂不支持 form 组件",
     advice: "skyline 后续版本会支持",
     level: RuleLevel.Error,
   }),
   video: createResultItem({
-    subname: "video",
+    name: "video",
     description: "暂只支持基础播放功能",
     advice: "完整功能 skyline 后续版本会支持",
     level: RuleLevel.Verbose,
   }),
   icon: createResultItem({
-    subname: "icon",
+    name: "icon",
     description: "暂不支持 icon 组件",
     advice:
       "不再支持 icon 组件，可引入 weui 组件库实现 https://github.com/wechat-miniprogram/weui-miniprogram/tree/feat-skyline",
     level: RuleLevel.Error,
   }),
   switch: createResultItem({
-    subname: "switch",
+    name: "switch",
     description: "不支持 switch 组件",
     advice:
       "不再支持 switch 组件，可引入 weui 组件库实现 https://github.com/wechat-miniprogram/weui-miniprogram/tree/feat-skyline",

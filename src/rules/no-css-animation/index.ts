@@ -2,7 +2,7 @@ import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface"
 import { isType } from "src/walker/css";
 
 const result = createResultItem({
-  subname: "",
+  name: "no-css-animation",
   description: "不支持 css animation",
   advice: "可通过 skyline 的新特性，worklet 动画实现",
   level: RuleLevel.Warn,

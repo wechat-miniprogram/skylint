@@ -12,7 +12,7 @@ const enum State {
 const stateMap = new Map<string, State>();
 
 const result = createResultItem({
-  subname: "",
+  name: "weui-extendedlib",
   description: "暂不支持 weui 扩展库",
   advice: "目前 skyline 页面需要通过引入 weui npm 包的方式使用，后续版本会支持，webview 页面则不影响",
   level: RuleLevel.Error,

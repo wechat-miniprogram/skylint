@@ -49,11 +49,6 @@ import { Node as CssNode } from "./walker/css";
 import { Node as JsonNode, ValueNode } from "./walker/json";
 import { collectTemplate } from "./utils/collect-template";
 
-interface ICliOptions {
-  path?: string;
-  logLevel: number;
-}
-
 const Rules = [
   // WXML rules
   RuleNagivator,
@@ -87,12 +82,26 @@ const logColor = {
   [RuleLevel.Error]: chalk.red,
 };
 
+interface ICliOptions {
+  path?: string;
+  logLevel: number;
+  ignore: string[];
+  exclude: string[];
+}
+
+const splitString = (input: string | string[]) => {
+  if (Array.isArray(input)) return input;
+  return input.split(",").map((item) => item.trim());
+};
+
 const cli = new Command();
 cli.name(pkg.name);
 cli.version(pkg.version);
 
-cli.option("-p, --path [string]", "path to source directory", resolve);
-cli.option("-l, --log-level [number]", "from 0 to 2", parseInt, 0);
+cli.option("-p, --path [string]", "工程的根目录", resolve);
+cli.option("-l, --log-level [number]", "依日志等级过滤，从 0 到 3", parseInt, 0);
+cli.option("-i, --ignore [string]", "要忽略的规则名，用半角逗号分隔", splitString, [] as string[]);
+cli.option("-e, --exclude [string]", "要排除的路径名的正则表达式，用半角逗号分隔", splitString, [] as string[]);
 
 cli.parse(argv);
 
@@ -106,10 +115,18 @@ interface PromptAnswer {
   skylinePages: string[];
 }
 
+interface ExtendedRuleResultItem extends RuleResultItem {
+  filename: string;
+}
+
 const main = async () => {
   let appJsonPath: string = "";
   let appJsonObject: any = null;
   let pageJsonObjects: Record<string, any> = [];
+
+  const disabledRules = new Set(options.ignore);
+  const excludedFiles = options.exclude.map((str) => new RegExp(str));
+  const isPathExcluded = (path: string) => excludedFiles.some((regex) => regex.test(path));
 
   const getAppJsonFromPath = async (path: string) => {
     try {
@@ -195,7 +212,7 @@ const main = async () => {
     {
       type: "input",
       name: "skylinePages",
-      message: "请输入需要迁移的页面（用英文逗号分隔）",
+      message: "请输入需要迁移的页面（用半角逗号分隔）",
       filter: (input: string | string[]) => {
         if (Array.isArray(input)) return input;
         return input.split(",").map((page) => page.trim());
@@ -243,6 +260,7 @@ const main = async () => {
     // const pages: string[] = answers.skylinePages.map((page) => resolve(options.path!, page));
     for (const page of answers.skylinePages) {
       const path = resolve(options.path!, page);
+      if (isPathExcluded(path)) continue;
       checkList.push(path);
       fileMap.set(path, "page");
     }
@@ -261,7 +279,7 @@ const main = async () => {
       const compList: string[] = Object.values(obj?.["usingComponents"] ?? {});
       for (const comp of compList) {
         const path = comp.startsWith("/") ? join(options.path!, comp) : resolve(pathDirname, comp);
-        if (fileMap.has(path) || !existsSync(path)) continue;
+        if (fileMap.has(path) || isPathExcluded(path) || !existsSync(path)) continue;
         checkList.push(path);
         fileMap.set(path, "comp");
         const json = JSON.parse((await readFile(`${path}.json`)).toString());
@@ -280,7 +298,7 @@ const main = async () => {
       // wxssFiles.push(`${pageOrComp}.wxss`);
       wxssFiles.push(...(await globby([`${pageOrComp}.wxss`])));
     }
-    const importedWXSS = await collectImportedWXSS(wxssFiles, options.path!);
+    const importedWXSS = await collectImportedWXSS(wxssFiles, options.path!, isPathExcluded);
 
     // collet patches
     // const stringPatchesMap = new Map<string, { raw: string; patches: Patch[] }>();
@@ -288,11 +306,6 @@ const main = async () => {
 
     let fileCount = 0;
     let resultCount = 0;
-
-    interface ExtendedRuleResultItem extends RuleResultItem {
-      name: string;
-      filename: string;
-    }
 
     const runOnFile = async (filename: string, env: Partial<BasicParseEnv> = {}) => {
       let wxss = "";
@@ -323,46 +336,33 @@ const main = async () => {
         env: { ...env, path: filename },
       });
       const resultItems: ExtendedRuleResultItem[] = [];
-      for (const { patches, results, name } of parsed.ruleResults) {
-        stringPatches.push(...patches);
+      for (const { patches, results } of parsed.ruleResults) {
         for (const item of results) {
+          if (disabledRules.has(item.name)) continue;
           resultItems.push({
-            name,
             filename,
             ...item,
           });
         }
+        stringPatches.push(...patches.filter((patch) => !disabledRules.has(patch.name)));
       }
-      resultItems.sort((a, b) => {
-        return a.level !== b.level
-          ? b.level - a.level
-          : a.name !== b.name
-          ? a.name.localeCompare(b.name)
-          : a.subname.localeCompare(b.subname);
-      });
       return resultItems;
     };
 
     const sortResults = (resultItems: ExtendedRuleResultItem[]) =>
       resultItems.sort((a, b) => {
-        return a.level !== b.level
-          ? b.level - a.level
-          : a.name !== b.name
-          ? a.name.localeCompare(b.name)
-          : a.subname.localeCompare(b.subname);
+        return a.level !== b.level ? b.level - a.level : a.name.localeCompare(b.name);
       });
 
     const printResults = (resultItems: ExtendedRuleResultItem[]) => {
       resultCount += resultItems.length;
       let lastName: string | null = null;
-      let lastSubname: string | null = null;
       for (const result of resultItems) {
-        const { name, level, fixable, filename, withCodeFrame } = result;
-        if (options.logLevel > level) continue;
+        if (options.logLevel > result.level) continue;
+        const { loc, advice, description, name, level, fixable, filename, withCodeFrame } = result;
         const color = logColor[level];
-        const { subname, loc, advice, description } = result;
+
         let filePath = "";
-        // const rawStr = stringPatchesMap.get(result.filename)!.raw;
         const rawStr = readFileSync(loc?.path ?? result.filename).toString();
         if (!loc) {
           filePath = filename;
@@ -372,14 +372,13 @@ const main = async () => {
             alternativeFilename: filename,
           });
         }
-        if (lastName !== name || lastSubname !== subname) {
+        if (lastName !== name) {
           stdout.write("\n");
-          stdout.write(format(color("@%s %s"), subname || name, description));
+          stdout.write(format(color("@%s %s"), name, description));
           fixable && stdout.write(chalk.green(" [可自动完成]"));
           advice && stdout.write(format("\n💡 %s\n", chalk.gray(advice)));
         }
         stdout.write(format("  %s\n", filePath));
-        lastSubname = subname;
         lastName = name;
       }
     };

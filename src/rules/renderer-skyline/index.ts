@@ -2,7 +2,7 @@ import { RuleType, RuleLevel, createResultItem } from "../interface";
 import { generateBasicJsonConfigCheck } from "../templates/json";
 
 const result = createResultItem({
-  subname: "",
+  name: "renderer-skyline",
   description: "未开启 skyline 渲染",
   advice: `将配置项 renderer 置为 "skyline"`,
   fixable: true,

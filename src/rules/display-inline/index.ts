@@ -11,7 +11,7 @@ export default defineRule({ name: "display-inline", type: RuleType.WXSS }, (ctx)
         if (!val || !isType(val, "Identifier")) return;
         const loc = node.loc!;
         ctx.addResult({
-          subname: `display-${val.name}`,
+          name: `display-${val.name}`,
           description: `不支持 display: ${val.name}`,
           advice: "若是布局需要，可改为 flex 布局实现；若是实现内联文本，可使用 text 组件",
           level: RuleLevel.Info,

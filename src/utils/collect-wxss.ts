@@ -14,7 +14,11 @@ interface RuleEnv extends BasicParseEnv {
 /**
  * @param wxssPaths accept absoulte pathes of wxss file
  */
-export const collectImportedWXSS = async (wxssPaths: string[], rootPath: string) => {
+export const collectImportedWXSS = async (
+  wxssPaths: string[],
+  rootPath: string,
+  shouldExclude?: (path: string) => boolean
+) => {
   const originPaths = wxssPaths.slice();
   const wxssSet = new Set(wxssPaths);
 
@@ -44,7 +48,7 @@ export const collectImportedWXSS = async (wxssPaths: string[], rootPath: string)
           if (!path?.endsWith(".wxss")) return;
           path = resolvePath(currentPath, rootPath, path);
 
-          if (!existsSync(path) || wxssSet.has(path)) return;
+          if (!existsSync(path) || wxssSet.has(path) || shouldExclude?.(path)) return;
           wxssSet.add(path);
           wxssPaths.push(path);
         });

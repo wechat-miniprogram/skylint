@@ -2,7 +2,7 @@ import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface"
 import { isType } from "src/walker/css";
 
 const result = createResultItem({
-  subname: "",
+  name: "text-overflow-ellipse",
   description: "text-overflow: ellipse 只在 text 组件下生效",
   advice: "文本省略需要通过 text 组件 + text-overflow: ellipse + overflow: hidden 三者实现",
   level: RuleLevel.Warn,

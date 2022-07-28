@@ -19,6 +19,7 @@ export const enum PatchType {
 
 export interface Patch {
   //   type: PatchType;
+  name: string;
   loc: PatchLocation;
   patchedStr: string;
   status: PatchStatus;

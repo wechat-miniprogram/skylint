@@ -3,7 +3,7 @@ import { isType, Node } from "src/walker/html";
 import { hasChildren } from "domhandler";
 
 const result = createResultItem({
-  subname: "",
+  name: "no-svg-style-tag",
   description: "不支持 svg 组件内使用 style 标签",
   advice: "在 wxss 文件内书写样式规则",
   level: RuleLevel.Error,

@@ -31,7 +31,7 @@ export interface LocationIndexBased extends BasicLocation {
 export type SourceCodeLocation = LocationIndexBased | LocationLnColBased;
 
 export interface RuleResultItem {
-  subname: string;
+  name: string;
   description?: string;
   advice?: string;
   patchHint?: string;
@@ -79,7 +79,8 @@ export interface Rule<T extends RuleType = RuleType> extends Hooks<T>, RuleBasic
 export interface RuleContext<T extends RuleType, K> {
   lifetimes(hooks: Hooks<T>): void;
   addResult(...results: RuleResultItem[]): void;
-  addPatch(...patches: QuickPatch[]): void;
+  addResultWithPatch(result: RuleResultItem, patch: QuickPatch): void;
+  addPatch(...patches: Omit<Patch, "status">[]): void;
   addASTPatch(...patches: Function[]): void;
   getRelatedWXMLFilename(): string | undefined;
   getRelatedWXMLAst(): Document | null;
@@ -104,11 +105,20 @@ export const defineRule =
     const lifetimes = (newHooks: Hooks<T>) => {
       hooks = { ...hooks, ...newHooks };
     };
-    const addResult = (...newResults: Omit<RuleResultItem[], "level">) => {
+    const addResult = (...newResults: RuleResultItem[]) => {
       results.push(...newResults);
     };
+    const addResultWithPatch = (result: RuleResultItem, patch: Patch) => {
+      const { name } = result;
+      results.push(result);
+      patches.push({
+        ...patch,
+        name,
+        status: PatchStatus.Pending,
+      });
+    };
     const addASTPatch = (...newPatches: Function[]) => astPatches.push(...newPatches);
-    const addPatch = (...newPatches: QuickPatch[]) =>
+    const addPatch = (...newPatches: Omit<Patch, "status">[]) =>
       patches.push(
         ...newPatches.map<Patch>((patch) => ({
           ...patch,
@@ -121,12 +131,13 @@ export const defineRule =
       if (!env.astMap) return null;
       return env.astMap.get(getRelatedWXMLFilename()) ?? null;
     };
-    
+
     init({
       lifetimes,
       addASTPatch,
       addPatch,
       addResult,
+      addResultWithPatch,
       getRelatedWXMLFilename,
       getRelatedWXMLAst,
       env,

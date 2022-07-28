@@ -44,7 +44,7 @@ export const generateBasicJsonConfigCheck = (
         if ((allowUndefined && state === State.Undefined) || State.Equal) return;
         const node = propNode;
         if (node) {
-          ctx.addResult({
+          const res = {
             ...result,
             loc: {
               startLn: node.loc!.start.line,
@@ -53,29 +53,27 @@ export const generateBasicJsonConfigCheck = (
               endCol: node.loc!.end.column,
               path: ctx.env.path,
             },
-          });
-          autoPatch &&
-            ctx.addPatch({
-              patchedStr: JSON.stringify(value),
-              loc: {
-                start: node.value.loc!.start.offset,
-                end: node.value.loc!.end.offset,
-                path: ctx.env.path,
-              },
-            });
+          };
+          const patch = {
+            patchedStr: JSON.stringify(value),
+            loc: {
+              start: node.value.loc!.start.offset,
+              end: node.value.loc!.end.offset,
+              path: ctx.env.path,
+            },
+          };
+          autoPatch ? ctx.addResultWithPatch(res, patch) : ctx.addResult(res);
         } else if (firstNode) {
-          ctx.addResult({
-            ...result,
-          });
-          autoPatch &&
-            ctx.addPatch({
-              patchedStr: `"${key}": ${JSON.stringify(value)},`,
-              loc: {
-                start: firstNode.loc!.start.offset + 1,
-                end: firstNode.loc!.start.offset + 1,
-                path: ctx.env.path,
-              },
-            });
+          const res = { ...result };
+          const patch = {
+            patchedStr: `"${key}": ${JSON.stringify(value)},`,
+            loc: {
+              start: firstNode.loc!.start.offset + 1,
+              end: firstNode.loc!.start.offset + 1,
+              path: ctx.env.path,
+            },
+          };
+          autoPatch ? ctx.addResultWithPatch(res, patch) : ctx.addResult(res);
         }
       },
     });

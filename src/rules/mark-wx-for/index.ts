@@ -3,7 +3,7 @@ import { DomUtils, isType } from "src/walker/html";
 import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
 
 const result = createResultItem({
-  subname: "",
+  name: "mark-wx-for",
   description: `未打开样式共享标记`,
   advice: `每一个列表项的样式是基本相同的，因此 skyline 实现了样式共享机制，可降低样式匹配的耗时，只需要列表项加个 list-item，如 <view wx:for="" list-item />`,
   level: RuleLevel.Verbose,

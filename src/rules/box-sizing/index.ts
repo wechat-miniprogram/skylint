@@ -1,9 +1,8 @@
 import { defineRule, RuleType, createResultItem, RuleLevel } from "../interface";
 import { isType } from "src/walker/css";
-import { env } from "process";
 
 const result = createResultItem({
-  subname: "",
+  name: "box-sizing",
   description: "存在不支持的 box-sizing 值，skyline 只支持 border-box",
   advice: "改为 border-box",
   fixable: true,
@@ -19,33 +18,27 @@ export default defineRule({ name: "box-sizing", type: RuleType.WXSS }, (ctx) => 
         isType(node.value, "Value") &&
         node.value.children.some((val) => isType(val, "Identifier") && val.name === "content-box")
       ) {
-        const identifiers = node.value.children;
         const loc = node.loc!;
-        ctx.addResult({
-          ...result,
-          loc: {
-            startLn: loc.start.line,
-            endLn: loc.end.line,
-            startCol: loc.start.column,
-            endCol: loc.end.column,
-            path: ctx.env.path,
+        ctx.addResultWithPatch(
+          {
+            ...result,
+            loc: {
+              startLn: loc.start.line,
+              endLn: loc.end.line,
+              startCol: loc.start.column,
+              endCol: loc.end.column,
+              path: ctx.env.path,
+            },
           },
-        });
-        ctx.addASTPatch(() => {
-          identifiers.clear();
-          identifiers.appendData({
-            type: "Identifier",
-            name: "border-box",
-          });
-        });
-        ctx.addPatch({
-          loc: {
-            start: loc.start.offset,
-            end: loc.end.offset,
-            path: ctx.env.path,
-          },
-          patchedStr: "box-sizing: border-box",
-        });
+          {
+            loc: {
+              start: loc.start.offset,
+              end: loc.end.offset,
+              path: ctx.env.path,
+            },
+            patchedStr: "box-sizing: border-box",
+          }
+        );
       }
     },
   });
