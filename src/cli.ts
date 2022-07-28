@@ -33,9 +33,9 @@ import RuleWeuiExtendedlib from "./rules/weui-extendedlib";
 
 import { RuleLevel, RuleResultItem } from "./rules/interface";
 import { format } from "util";
-// import { serialize as serializeHTML } from "./serilizer/html";
-// import { serialize as serializeCSS } from "./serilizer/css";
-import { serialize as serializeJSON } from "./serilizer/json";
+// import { serialize as serializeHTML } from "./serializer/html";
+// import { serialize as serializeCSS } from "./serializer/css";
+import { serialize as serializeJSON } from "./serializer/json";
 
 import inquirer from "inquirer";
 import path, { resolve, dirname, relative, join } from "path";
