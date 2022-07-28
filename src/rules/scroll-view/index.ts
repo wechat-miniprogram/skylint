@@ -69,7 +69,7 @@ const RuleScroolViewWXML = defineRule({ name: "scroll-view-wxml", type: RuleType
       }
       if (
         DomUtils.getAttributeValue(node, "scroll-x") === "true" &&
-        DomUtils.getAttributeValue(node, "scroll-x") === "true"
+        DomUtils.getAttributeValue(node, "scroll-y") === "true"
       ) {
         const { start, end, path } = getLocationByNode(node);
         ctx.addResult({
