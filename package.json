@@ -1,6 +1,6 @@
 {
   "name": "skylint",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Skyline 小程序迁移工具. Migration assistant for Skyline miniapp.",
   "main": "dist/index.mjs",
   "type": "module",
