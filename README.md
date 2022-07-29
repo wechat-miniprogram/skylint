@@ -1,6 +1,6 @@
 # Skylint：Skyline 小程序迁移工具
 
-为帮助开发者迁移原有的 WebView 小程序到 Skyline，我们提供迁移工具 Skylint。Skylint 基于抽象语法树和一系列预设规则，分析小程序源代码中可能存在的可能存在的兼容性和性能问题。
+为帮助开发者迁移原有的 WebView 小程序到 Skyline，我们提供迁移工具 Skylint。Skylint 基于抽象语法树和一系列预设规则，分析小程序源代码中可能存在的兼容性和性能问题。
 
 ## 安装
 
@@ -11,6 +11,8 @@ $ npm i -g skylint@latest
 ```
 
 ## 使用
+
+**建议使用 Node 16 及以上版本。**
 
 在需要迁移的工程根目录（即包含 `app.json` 的目录）执行：
 
