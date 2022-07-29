@@ -146,8 +146,8 @@ export const replaceChildWithChildren = (child: ChildNode, children: ChildNode[]
         transform?.(newChild);
       });
       newChildren.forEach((child) => (child.parent = parent));
-      const firstChild = newChildren.at(0);
-      const lastChild = newChildren.at(-1);
+      const firstChild = newChildren[0];
+      const lastChild = newChildren[newChildren.length - 1];
       if (firstChild) {
         if (child.prev) child.prev.next = firstChild;
         firstChild.prev = child.prev;
