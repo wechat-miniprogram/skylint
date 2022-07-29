@@ -40,7 +40,7 @@ import { serialize as serializeJSON } from "./serializer/json";
 import inquirer from "inquirer";
 import path, { resolve, dirname, relative, join } from "path";
 import { Patch, applyPatchesOnString } from "./patch";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, lstatSync } from "fs";
 import { collectImportedWXSS } from "./utils/collect-wxss";
 import { formatSourceCodeLocation } from "./utils/print-code";
 import { Document } from "domhandler";
@@ -192,7 +192,7 @@ const main = async () => {
 💡 按需注入特性详见文档 https://developers.weixin.qq.com/miniprogram/dev/framework/ability/lazyload.html`,
       default: false,
       when: (hash) => {
-        const flag = appJsonObject["lazyCodeLoading"] !== "requiredCompoents";
+        const flag = appJsonObject["lazyCodeLoading"] !== "requiredComponents";
         if (!flag) stdout.write(chalk.green("✅ skyline 依赖按需注入特性，已开启\n"));
         return flag;
       },
@@ -239,7 +239,7 @@ const main = async () => {
   if (answers.globalSkyline) globalSkyline = answers.globalSkyline;
 
   if (answers.appJsonEnableDynamicInjection) {
-    appJsonObject["lazyCodeLoading"] = "requiredCompoents";
+    appJsonObject["lazyCodeLoading"] = "requiredComponents";
   }
 
   if (globalSkyline) {
@@ -278,8 +278,12 @@ const main = async () => {
 
       const compList: string[] = Object.values(obj?.["usingComponents"] ?? {});
       for (const comp of compList) {
-        const path = comp.startsWith("/") ? join(options.path!, comp) : resolve(pathDirname, comp);
-        if (fileMap.has(path) || isPathExcluded(path) || !existsSync(path)) continue;
+        let path = comp.startsWith("/") ? join(options.path!, comp) : resolve(pathDirname, comp);
+        try {
+          const stat = lstatSync(path);
+          if (stat.isDirectory()) path = resolve(path, "index");
+        } catch (e) {}
+        if (fileMap.has(path) || isPathExcluded(path) || !existsSync(`${path}.json`)) continue;
         checkList.push(path);
         fileMap.set(path, "comp");
         const json = JSON.parse((await readFile(`${path}.json`)).toString());
@@ -299,6 +303,7 @@ const main = async () => {
       wxssFiles.push(...(await globby([`${pageOrComp}.wxss`])));
     }
     const importedWXSS = await collectImportedWXSS(wxssFiles, options.path!, isPathExcluded);
+    console.log(checkList);
 
     // collet patches
     // const stringPatchesMap = new Map<string, { raw: string; patches: Patch[] }>();
