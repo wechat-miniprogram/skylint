@@ -154,7 +154,7 @@ const main = async () => {
       validate: async (input) => {
         const err = await getAppJsonFromPath(input);
         if (err) return err;
-        const subPackages = appJsonObject["subPackages"] ?? [];
+        const subPackages = appJsonObject["subpackages"] ?? appJsonObject["subPackages"]?? [];
         pages.push(...(appJsonObject["pages"] ?? []));
         for (const subPackage of subPackages) {
           const { root, pages: subPackagePages } = subPackage;
