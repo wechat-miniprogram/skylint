@@ -14,18 +14,6 @@ const results = {
     advice: "skyline 后续版本会支持",
     level: RuleLevel.Verbose,
   }),
-  "picker-view": createResultItem({
-    name: "picker-view",
-    description: "暂不支持 picker-view 组件",
-    advice: "skyline 后续版本会支持",
-    level: RuleLevel.Error,
-  }),
-  form: createResultItem({
-    name: "form",
-    description: "暂不支持 form 组件",
-    advice: "skyline 后续版本会支持",
-    level: RuleLevel.Error,
-  }),
   video: createResultItem({
     name: "video",
     description: "暂只支持基础播放功能",
@@ -37,13 +25,6 @@ const results = {
     description: "暂不支持 icon 组件",
     advice:
       "不再支持 icon 组件，可引入 weui 组件库实现 https://github.com/wechat-miniprogram/weui-miniprogram/tree/feat-skyline",
-    level: RuleLevel.Error,
-  }),
-  switch: createResultItem({
-    name: "switch",
-    description: "不支持 switch 组件",
-    advice:
-      "不再支持 switch 组件，可引入 weui 组件库实现 https://github.com/wechat-miniprogram/weui-miniprogram/tree/feat-skyline",
     level: RuleLevel.Error,
   }),
 };
