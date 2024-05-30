@@ -22,7 +22,7 @@ const resultScrollViewImproperType = createResultItem({
 const resultScrollViewOptimize = createResultItem({
   name: "scroll-view-optimize",
   description: `未能充分利用 scroll-view 按需渲染的机制`,
-  advice: `scroll-view 会根据直接子节点是否在屏来按需渲染，若只有一个直接子节点则性能会退化，如 <scroll-view type=list scroll-y> <view wx:for=""/> </scroll-view>`,
+  advice: `scroll-view 会根据直接子节点是否在屏来按需渲染，若只有一个直接子节点则性能会退化，如 <scroll-view type=list scroll-y><view><view wx:for=""/></view></scroll-view>`,
   level: RuleLevel.Verbose,
 });
 const resultScrollViewXY = createResultItem({
