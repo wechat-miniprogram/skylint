@@ -13,14 +13,9 @@ import RuleNoInlineText from "./rules/no-inline-text";
 import RuleNoSvgStyleTag from "./rules/no-svg-style-tag";
 import RuleUnsupportedComponent from "./rules/unsupported-component";
 // WXSS rules
-import RuleBoxSizing from "./rules/box-sizing";
-import RuleDarkMode from "./rules/darkmode";
 import RuleDisplayFlex from "./rules/display-flex";
 import RuleDisplayInline from "./rules/display-inline";
 import RuleMarkWxFor from "./rules/mark-wx-for";
-import RuleNoCalc from "./rules/no-calc";
-import RuleNoCSSAnimation from "./rules/no-css-animation";
-import RuleNoPseudo from "./rules/no-pseudo";
 import RulePositionFixed from "./rules/position-fixed";
 import RuleTextOverflowEllipse from "./rules/text-overflow-ellipse";
 // JSON rules
@@ -29,7 +24,6 @@ import RuleDisableScroll from "./rules/disable-scroll";
 import RuleRendererSkyline from "./rules/renderer-skyline";
 // Mixed rules
 import RuleScrollView from "./rules/scroll-view";
-import RuleWeuiExtendedlib from "./rules/weui-extendedlib";
 
 import { RuleLevel, RuleResultItem } from "./rules/interface";
 import { format } from "util";
@@ -43,7 +37,6 @@ import { Patch, applyPatchesOnString } from "./patch";
 import { existsSync, readFileSync, lstatSync } from "fs";
 import { collectImportedWXSS } from "./utils/collect-wxss";
 import { formatSourceCodeLocation } from "./utils/print-code";
-import { Document } from "domhandler";
 import { NodeTypeMap } from "./walker/html";
 import { Node as CssNode } from "./walker/css";
 import { Node as JsonNode, ValueNode } from "./walker/json";
@@ -56,14 +49,9 @@ const Rules = [
   RuleNoSvgStyleTag,
   RuleUnsupportedComponent,
   // WXSS rules
-  RuleBoxSizing,
-  RuleDarkMode,
   RuleDisplayFlex,
   RuleDisplayInline,
   RuleMarkWxFor,
-  RuleNoCalc,
-  RuleNoCSSAnimation,
-  RuleNoPseudo,
   RulePositionFixed,
   RuleTextOverflowEllipse,
   // JSON rules
@@ -72,7 +60,6 @@ const Rules = [
   RuleRendererSkyline,
   // Mixed rules
   RuleScrollView,
-  RuleWeuiExtendedlib,
 ].flat();
 
 const logColor = {
@@ -98,10 +85,30 @@ const cli = new Command();
 cli.name(pkg.name);
 cli.version(pkg.version);
 
-cli.option("-p, --path [string]", "工程的根目录", resolve);
-cli.option("-l, --log-level [number]", "依日志等级过滤，从 0 到 3", parseInt, 0);
-cli.option("-i, --ignore [string]", "要忽略的规则名，用半角逗号分隔", splitString, [] as string[]);
-cli.option("-e, --exclude [string]", "要排除的路径名的正则表达式，用半角逗号分隔", splitString, [] as string[]);
+cli.option(
+  "-p, --path [string]",
+  "工程的根目录",
+  (input) => path.resolve(input),
+  ""
+);
+cli.option(
+  "-l, --log-level [number]",
+  "依日志等级过滤，从 0 到 3",
+  parseInt,
+  0
+);
+cli.option(
+  "-i, --ignore [string]",
+  "要忽略的规则名，用半角逗号分隔",
+  splitString,
+  [] as string[]
+);
+cli.option(
+  "-e, --exclude [string]",
+  "要排除的路径名的正则表达式，用半角逗号分隔",
+  splitString,
+  [] as string[]
+);
 
 cli.parse(argv);
 
@@ -126,7 +133,8 @@ const main = async () => {
 
   const disabledRules = new Set(options.ignore);
   const excludedFiles = options.exclude.map((str) => new RegExp(str));
-  const isPathExcluded = (path: string) => excludedFiles.some((regex) => regex.test(path));
+  const isPathExcluded = (path: string) =>
+    excludedFiles.some((regex) => regex.test(path));
 
   const getAppJsonFromPath = async (path: string) => {
     try {
@@ -134,53 +142,60 @@ const main = async () => {
       const appJsonFile = await readFile(appJsonPath);
       appJsonObject = JSON.parse(appJsonFile.toString());
     } catch (e) {
-      return "无效 app.json，请检查路径和语法是否正确";
+      throw "无效 app.json，请检查路径和语法是否正确";
     }
   };
 
-  if (options.path && existsSync(options.path)) {
-    if (!(await getAppJsonFromPath(options.path))) return;
+  if (options.path) {
+    await getAppJsonFromPath(options.path);
   }
 
   const pages: string[] = [];
 
-  await inquirer
-    .prompt<Record<"path", string>>({
-      type: "input",
-      name: "path",
-      message: "请输入工程的根目录:",
-      default: cwd(),
-      when: !options.path,
-      validate: async (input) => {
-        const err = await getAppJsonFromPath(input);
-        if (err) return err;
-        const subPackages = appJsonObject["subpackages"] ?? appJsonObject["subPackages"]?? [];
-        pages.push(...(appJsonObject["pages"] ?? []));
-        for (const subPackage of subPackages) {
-          const { root, pages: subPackagePages } = subPackage;
-          pages.push(...subPackagePages.map((page: string) => join(root, page)));
-        }
+  const validatePath = async (input: string) => {
+    await getAppJsonFromPath(input);
+    const subPackages =
+      appJsonObject["subpackages"] ?? appJsonObject["subPackages"] ?? [];
+    pages.push(...(appJsonObject["pages"] ?? []));
+    for (const subPackage of subPackages) {
+      const { root, pages: subPackagePages } = subPackage;
+      pages.push(...subPackagePages.map((page: string) => join(root, page)));
+    }
 
-        for (const page of pages) {
-          const pageJsonPath = resolve(input, page + ".json");
-          try {
-            const pageJsonFile = await readFile(pageJsonPath);
-            const pageJsonObject = JSON.parse(pageJsonFile.toString());
-            pageJsonObjects[page] = pageJsonObject;
-          } catch (err) {
-            return `页面 ${page} 的配置文件不存在`;
-          }
-        }
-
-        return true;
-      },
-      filter: (input) => resolve(input),
-    })
-    .then((answer) => {
-      if (answer.path) {
-        options.path = answer.path;
+    for (const page of pages) {
+      const pageJsonPath = resolve(input, page + ".json");
+      try {
+        const pageJsonFile = await readFile(pageJsonPath);
+        const pageJsonObject = JSON.parse(pageJsonFile.toString());
+        pageJsonObjects[page] = pageJsonObject;
+      } catch (err) {
+        throw `页面 ${page} 的配置文件不存在`;
       }
-    });
+    }
+  };
+
+  if (options.path) {
+    await validatePath(options.path);
+  } else {
+    await inquirer
+      .prompt<Record<"path", string>>({
+        type: "input",
+        name: "path",
+        message: "请输入工程的根目录:",
+        default: cwd(),
+        when: !options.path,
+        validate: async (input) => {
+          await validatePath(input);
+          return true;
+        },
+        filter: (input) => resolve(input),
+      })
+      .then((answer) => {
+        if (answer.path) {
+          options.path = answer.path;
+        }
+      });
+  }
 
   let globalSkyline = appJsonObject["renderer"] === "skyline";
 
@@ -193,7 +208,8 @@ const main = async () => {
       default: false,
       when: (hash) => {
         const flag = appJsonObject["lazyCodeLoading"] !== "requiredComponents";
-        if (!flag) stdout.write(chalk.green("✅ skyline 依赖按需注入特性，已开启\n"));
+        if (!flag)
+          stdout.write(chalk.green("✅ skyline 依赖按需注入特性，已开启\n"));
         return flag;
       },
     },
@@ -249,6 +265,27 @@ const main = async () => {
 
   writeFile(appJsonPath, serializeJSON(appJsonObject));
 
+  if (appJsonObject.useExtendedLib) {
+    stdout.write(
+      format(
+        chalk.bold("\n============ %s %s ============\n"),
+        "App",
+        chalk.blue("app.json")
+      )
+    );
+    stdout.write(
+      format(
+        logColor[RuleLevel.Error]("@%s %s"),
+        "useExtendedLib",
+        "app.json 暂不支持 useExtendedLib"
+      )
+    );
+    stdout.write(
+      format("\n💡 %s\n", chalk.gray("完整功能 skyline 后续版本会支持"))
+    );
+    stdout.write(format("  %s\n", appJsonPath));
+  }
+
   const scan = async () => {
     const checkList: string[] = [];
 
@@ -278,12 +315,19 @@ const main = async () => {
 
       const compList: string[] = Object.values(obj?.["usingComponents"] ?? {});
       for (const comp of compList) {
-        let path = comp.startsWith("/") ? join(options.path!, comp) : resolve(pathDirname, comp);
+        let path = comp.startsWith("/")
+          ? join(options.path!, comp)
+          : resolve(pathDirname, comp);
         try {
           const stat = lstatSync(path);
           if (stat.isDirectory()) path = resolve(path, "index");
         } catch (e) {}
-        if (fileMap.has(path) || isPathExcluded(path) || !existsSync(`${path}.json`)) continue;
+        if (
+          fileMap.has(path) ||
+          isPathExcluded(path) ||
+          !existsSync(`${path}.json`)
+        )
+          continue;
         checkList.push(path);
         fileMap.set(path, "comp");
         const json = JSON.parse((await readFile(`${path}.json`)).toString());
@@ -302,8 +346,11 @@ const main = async () => {
       // wxssFiles.push(`${pageOrComp}.wxss`);
       wxssFiles.push(...(await globby([`${pageOrComp}.wxss`])));
     }
-    const importedWXSS = await collectImportedWXSS(wxssFiles, options.path!, isPathExcluded);
-    console.log(checkList);
+    const importedWXSS = await collectImportedWXSS(
+      wxssFiles,
+      options.path!,
+      isPathExcluded
+    );
 
     // collet patches
     // const stringPatchesMap = new Map<string, { raw: string; patches: Patch[] }>();
@@ -312,7 +359,10 @@ const main = async () => {
     let fileCount = 0;
     let resultCount = 0;
 
-    const runOnFile = async (filename: string, env: Partial<BasicParseEnv> = {}) => {
+    const runOnFile = async (
+      filename: string,
+      env: Partial<BasicParseEnv> = {}
+    ) => {
       let wxss = "";
       let wxml = "";
       let json = "";
@@ -349,14 +399,18 @@ const main = async () => {
             ...item,
           });
         }
-        stringPatches.push(...patches.filter((patch) => !disabledRules.has(patch.name)));
+        stringPatches.push(
+          ...patches.filter((patch) => !disabledRules.has(patch.name))
+        );
       }
       return resultItems;
     };
 
     const sortResults = (resultItems: ExtendedRuleResultItem[]) =>
       resultItems.sort((a, b) => {
-        return a.level !== b.level ? b.level - a.level : a.name.localeCompare(b.name);
+        return a.level !== b.level
+          ? b.level - a.level
+          : a.name.localeCompare(b.name);
       });
 
     const printResults = (resultItems: ExtendedRuleResultItem[]) => {
@@ -364,7 +418,16 @@ const main = async () => {
       let lastName: string | null = null;
       for (const result of resultItems) {
         if (options.logLevel > result.level) continue;
-        const { loc, advice, description, name, level, fixable, filename, withCodeFrame } = result;
+        const {
+          loc,
+          advice,
+          description,
+          name,
+          level,
+          fixable,
+          filename,
+          withCodeFrame,
+        } = result;
         const color = logColor[level];
 
         let filePath = "";
@@ -387,7 +450,6 @@ const main = async () => {
         lastName = name;
       }
     };
-
     for (const pageOrComp of checkList) {
       const type = fileMap.get(pageOrComp);
       const files = ["json", "wxml", "wxss"]
@@ -399,6 +461,7 @@ const main = async () => {
         const result = await runOnFile(filename, { astMap });
         results.push(...result);
       }
+
       if (results.length) {
         stdout.write(
           format(
@@ -415,7 +478,9 @@ const main = async () => {
       const jobs = [...importedWXSS].map((filename) => runOnFile(filename));
       const results = (await Promise.all(jobs)).flat();
       if (results.length) {
-        stdout.write(format(chalk.bold("\n============ %s ============\n"), "Imported"));
+        stdout.write(
+          format(chalk.bold("\n============ %s ============\n"), "Imported")
+        );
         printResults(sortResults(results));
       }
     }
@@ -441,7 +506,10 @@ const main = async () => {
     ]);
 
     if (fixAnswer.applyFix) {
-      const filePatchMap = new Map<string, { content: string; patches: Patch[] }>();
+      const filePatchMap = new Map<
+        string,
+        { content: string; patches: Patch[] }
+      >();
       for (const patch of stringPatches) {
         const { path } = patch.loc;
         if (!filePatchMap.has(path)) {

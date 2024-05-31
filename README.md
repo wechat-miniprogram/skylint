@@ -60,30 +60,17 @@ $ skylint -h
 | disable-scroll        | 不支持页面全局滚动                          | Error    |
 | flex-direction        | flex 布局下未显示指定 flex-direction        | Error    |
 | form                  | 暂不支持 form 组件                          | Error    |
-| icon                  | 不支持 icon 组件                            | Error    |
 | inline-text           | 多段文本内联只能使用 text 组件包裹          | Error    |
 | movable-view          | 不支持 movable-view 组件                    | Error    |
 | no-native-nav         | 不支持原生导航栏                            | Error    |
 | no-svg-style-tag      | svg 不支持 style 标签                       | Error    |
-| picker-view           | 暂不支持 picker-view 组件                   | Error    |
-| position-fixed        | 不支持 position: fixed                      | Error    |
 | scroll-view-type      | scroll-view 未显示指定 type 类型            | Error    |
-| switch                | 不支持 switch 组件                          | Error    |
-| weui-extendedlib      | 暂不支持 weui 扩展库                        | Error    |
-| box-sizing            | 存在不支持的 box-sizing 值                  | Warn     |
+| useExtendedLib        | 暂不支持 useExtendedLib 扩展库              | Error    |
 | navigator             | navigator 组件只能嵌套文本                  | Warn     |
-| no-calc               | 不支持 calc 表达式                          | Warn     |
-| no-css-animation      | 不支持 css animation                        | Warn     |
-| no-pseudo-class       | 不支持伪类                                  | Warn     |
-| no-pseudo-element     | 不支持伪元素                                | Warn     |
 | scroll-view-not-found | 当前页面未使用 scroll-view 组件             | Warn     |
 | text-overflow-ellipse | text-overflow: ellipse 只在 text 组件下生效 | Warn     |
-| darkmode              | 暂不支持 darkmode                           | Info     |
-| display-inline        | 不支持 display: inline                      | Info     |
-| display-inline-block  | 不支持 display: inline-block                | Info     |
 | scroll-view-margin    | scroll-view 组件的直接子节点 margin 无效    | Info     |
 | scroll-view-x-y       | scroll-view 暂不支持水平垂直方向同时滚动    | Info     |
-| ad                    | 暂不支持 ad 组件                            | Verbose  |
 | mark-wx-for           | 未打开样式共享标记                          | Verbose  |
 | scroll-view-optimize  | 未能充分利用 scroll-view 按需渲染的机制     | Verbose  |
 | video                 | 暂只支持基础播放功能                        | Verbose  |
