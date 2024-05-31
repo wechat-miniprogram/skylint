@@ -673,7 +673,7 @@ const resultScrollViewImproperType = createResultItem({
 const resultScrollViewOptimize = createResultItem({
   name: "scroll-view-optimize",
   description: `\u672A\u80FD\u5145\u5206\u5229\u7528 scroll-view \u6309\u9700\u6E32\u67D3\u7684\u673A\u5236`,
-  advice: `scroll-view \u4F1A\u6839\u636E\u76F4\u63A5\u5B50\u8282\u70B9\u662F\u5426\u5728\u5C4F\u6765\u6309\u9700\u6E32\u67D3\uFF0C\u82E5\u53EA\u6709\u4E00\u4E2A\u76F4\u63A5\u5B50\u8282\u70B9\u5219\u6027\u80FD\u4F1A\u9000\u5316\uFF0C\u5982 <scroll-view type=list scroll-y> <view wx:for=""/> </scroll-view>`,
+  advice: `scroll-view \u4F1A\u6839\u636E\u76F4\u63A5\u5B50\u8282\u70B9\u662F\u5426\u5728\u5C4F\u6765\u6309\u9700\u6E32\u67D3\uFF0C\u82E5\u53EA\u6709\u4E00\u4E2A\u76F4\u63A5\u5B50\u8282\u70B9\u5219\u6027\u80FD\u4F1A\u9000\u5316\uFF0C\u5982 <scroll-view type=list scroll-y><view><view wx:for=""/></view></scroll-view>`,
   level: RuleLevel.Verbose
 });
 const resultScrollViewXY = createResultItem({
@@ -688,61 +688,44 @@ const resultScrollMargin = createResultItem({
   advice: `\u9700\u8981\u7ED9\u8BBE\u7F6E\u4E86 margin \u7684\u76F4\u63A5\u5B50\u8282\u70B9\u5957\u591A\u4E00\u5C42 view\u3002skyline \u540E\u7EED\u7248\u672C\u8003\u8651\u4ECE\u5E03\u5C40\u7B97\u6CD5\u4E0A\u652F\u6301`,
   level: RuleLevel.Info
 });
-const RuleScroolViewWXML = defineRule({ name: "scroll-view-wxml", type: RuleType.WXML }, (ctx) => {
-  let scrollViewCount = 0;
-  ctx.lifetimes({
-    before: () => {
-      scrollViewCount = 0;
-    },
-    onVisit: (node) => {
-      if (!isType(node, "Tag") || node.name !== "scroll-view")
-        return;
-      scrollViewCount++;
-      let hasTypeList = DomUtils.getAttributeValue(node, "type") === "list";
-      if (!hasTypeList) {
-        const { start, end, path } = getLocationByNode(node);
-        ctx.addResultWithPatch(
-          {
-            ...resultScrollViewImproperType,
-            loc: {
-              startIndex: start,
-              endIndex: end,
-              path
+const RuleScroolViewWXML = defineRule(
+  { name: "scroll-view-wxml", type: RuleType.WXML },
+  (ctx) => {
+    let scrollViewCount = 0;
+    ctx.lifetimes({
+      before: () => {
+        scrollViewCount = 0;
+      },
+      onVisit: (node) => {
+        if (!isType(node, "Tag") || node.name !== "scroll-view")
+          return;
+        scrollViewCount++;
+        let hasTypeList = DomUtils.getAttributeValue(node, "type") === "list";
+        if (!hasTypeList) {
+          const { start, end, path } = getLocationByNode(node);
+          ctx.addResultWithPatch(
+            {
+              ...resultScrollViewImproperType,
+              loc: {
+                startIndex: start,
+                endIndex: end,
+                path
+              }
+            },
+            {
+              patchedStr: `<scroll-view type="list"`,
+              loc: {
+                start: node.startIndex,
+                end: node.startIndex + "<scroll-view".length,
+                path: path ?? ctx.env.path
+              }
             }
-          },
-          {
-            patchedStr: `<scroll-view type="list"`,
-            loc: {
-              start: node.startIndex,
-              end: node.startIndex + "<scroll-view".length,
-              path: path ?? ctx.env.path
-            }
-          }
-        );
-      }
-      if (DomUtils.getAttributeValue(node, "scroll-x") === "true" && DomUtils.getAttributeValue(node, "scroll-y") === "true") {
-        const { start, end, path } = getLocationByNode(node);
-        ctx.addResult({
-          ...resultScrollViewXY,
-          loc: {
-            startIndex: start,
-            endIndex: end,
-            path
-          }
-        });
-      }
-      if (hasChildren(node)) {
-        const trimedChildren = node.childNodes.filter((child) => {
-          if (isType(child, "Tag"))
-            return true;
-          if (isType(child, "Text") && child.data.trim() !== "")
-            return true;
-          return false;
-        });
-        if (trimedChildren.length === 1 && isType(trimedChildren[0], "Tag") && !Reflect.has(trimedChildren[0].attribs, "wx:for")) {
+          );
+        }
+        if (DomUtils.getAttributeValue(node, "scroll-x") === "true" && DomUtils.getAttributeValue(node, "scroll-y") === "true") {
           const { start, end, path } = getLocationByNode(node);
           ctx.addResult({
-            ...resultScrollViewOptimize,
+            ...resultScrollViewXY,
             loc: {
               startIndex: start,
               endIndex: end,
@@ -750,43 +733,66 @@ const RuleScroolViewWXML = defineRule({ name: "scroll-view-wxml", type: RuleType
             }
           });
         }
-      }
-    },
-    after: () => {
-      if (scrollViewCount === 0)
-        ctx.addResult(resultScrollViewNotFound);
-    }
-  });
-});
-const RuleScroolViewWXSS = defineRule({ name: "scroll-view-wxss", type: RuleType.WXSS }, (ctx) => {
-  ctx.lifetimes({
-    onVisit: (node, walkCtx) => {
-      if (!isType$1(node, "Declaration") || !node.property.startsWith("margin"))
-        return;
-      const wxmlFilename = ctx.getRelatedWXMLFilename();
-      const ast = ctx.getRelatedWXMLAst();
-      const prelude = walkCtx.rule?.prelude;
-      if (!ast || !prelude)
-        return;
-      const selector = isType$1(prelude, "Raw") ? prelude.value : formatSelectorList(prelude);
-      const children = selectAll(selector, ast);
-      for (const child of children) {
-        if (child.parent && isType(child.parent, "Tag") && child.parent.name === "scroll-view") {
-          const { start, end, path } = getLocationByNode(child);
-          ctx.addResult({
-            ...resultScrollMargin,
-            loc: {
-              startIndex: child.startIndex,
-              endIndex: child.endIndex,
-              path: path ?? wxmlFilename ?? null
-            }
+        if (hasChildren(node)) {
+          const trimedChildren = node.childNodes.filter((child) => {
+            if (isType(child, "Tag"))
+              return true;
+            if (isType(child, "Text") && child.data.trim() !== "")
+              return true;
+            return false;
           });
+          if (trimedChildren.length === 1 && isType(trimedChildren[0], "Tag") && !Reflect.has(trimedChildren[0].attribs, "wx:for")) {
+            const { start, end, path } = getLocationByNode(node);
+            ctx.addResult({
+              ...resultScrollViewOptimize,
+              loc: {
+                startIndex: start,
+                endIndex: end,
+                path
+              }
+            });
+          }
+        }
+      },
+      after: () => {
+        if (scrollViewCount === 0)
+          ctx.addResult(resultScrollViewNotFound);
+      }
+    });
+  }
+);
+defineRule(
+  { name: "scroll-view-wxss", type: RuleType.WXSS },
+  (ctx) => {
+    ctx.lifetimes({
+      onVisit: (node, walkCtx) => {
+        if (!isType$1(node, "Declaration") || !node.property.startsWith("margin"))
+          return;
+        const wxmlFilename = ctx.getRelatedWXMLFilename();
+        const ast = ctx.getRelatedWXMLAst();
+        const prelude = walkCtx.rule?.prelude;
+        if (!ast || !prelude)
+          return;
+        const selector = isType$1(prelude, "Raw") ? prelude.value : formatSelectorList(prelude);
+        const children = selectAll(selector, ast);
+        for (const child of children) {
+          if (child.parent && isType(child.parent, "Tag") && child.parent.name === "scroll-view") {
+            const { start, end, path } = getLocationByNode(child);
+            ctx.addResult({
+              ...resultScrollMargin,
+              loc: {
+                startIndex: child.startIndex,
+                endIndex: child.endIndex,
+                path: path ?? wxmlFilename ?? null
+              }
+            });
+          }
         }
       }
-    }
-  });
-});
-const RuleScrollView = [RuleScroolViewWXML, RuleScroolViewWXSS];
+    });
+  }
+);
+const RuleScrollView = [RuleScroolViewWXML];
 
 const serialize = (node) => JSON.stringify(node, null, 2);
 

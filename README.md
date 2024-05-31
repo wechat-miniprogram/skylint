@@ -69,7 +69,6 @@ $ skylint -h
 | navigator             | navigator 组件只能嵌套文本                  | Warn     |
 | scroll-view-not-found | 当前页面未使用 scroll-view 组件             | Warn     |
 | text-overflow-ellipse | text-overflow: ellipse 只在 text 组件下生效 | Warn     |
-| scroll-view-margin    | scroll-view 组件的直接子节点 margin 无效    | Info     |
 | scroll-view-x-y       | scroll-view 暂不支持水平垂直方向同时滚动    | Info     |
 | mark-wx-for           | 未打开样式共享标记                          | Verbose  |
 | scroll-view-optimize  | 未能充分利用 scroll-view 按需渲染的机制     | Verbose  |
