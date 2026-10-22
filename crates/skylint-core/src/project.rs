@@ -235,6 +235,52 @@ impl Project {
         }
     }
 
+    /// 这个作用域下元素默认是否按 Block 布局渲染。
+    ///
+    /// `rendererOptions.skyline.defaultDisplayBlock: true` 时 Skyline 的默认值与 WebView
+    /// 对齐（`display: block`、`flex-direction: row`、`align-items: normal`），所以「依赖
+    /// Skyline 默认 flex/column」这类规则在这个作用域下不成立。页面级配置优先于 app 级。
+    pub fn renders_as_block(&self, scope: &Scope) -> bool {
+        let app = self.app_display_block();
+        match scope {
+            // 全局样式表对所有页面生效：只有每一页都开着才成立。
+            Scope::Global => {
+                app && self
+                    .pages
+                    .iter()
+                    .all(|page| self.page_display_block(&page.route).is_none())
+            }
+            Scope::Page(route) => self.page_display_block(route).unwrap_or(app),
+            // 组件没有自己的页面配置，按「用到它的页面」判断；没人用时按 app 级。
+            Scope::Component(path) => {
+                let pages = self.component_pages(path);
+                pages.is_empty()
+                    || pages
+                        .iter()
+                        .all(|route| self.page_display_block(route).unwrap_or(app))
+            }
+        }
+    }
+
+    fn app_display_block(&self) -> bool {
+        self.app_json
+            .get("rendererOptions")
+            .and_then(Value::as_object)
+            .map(|options| renderer_flag(options, "defaultDisplayBlock"))
+            .unwrap_or(false)
+    }
+
+    /// 页面级覆盖；`None` 表示这一页没写，回落到 app 级。运行时只认
+    /// `rendererOptions.skyline.*` 这一层（`skyline.js:428-431`）。
+    fn page_display_block(&self, route: &str) -> Option<bool> {
+        self.page_json
+            .get(route)
+            .and_then(|json| json.get("rendererOptions"))
+            .and_then(|options| options.get("skyline"))
+            .and_then(|skyline| skyline.get("defaultDisplayBlock"))
+            .and_then(Value::as_bool)
+    }
+
     /// `Scope::Global` 覆盖的全部 WXML（页面 + 组件，页面按 opt-out 过滤）。
     pub fn global_wxml(&self) -> impl Iterator<Item = &str> {
         let mut seen = HashSet::new();
@@ -583,4 +629,17 @@ fn describe(err: &anyhow::Error) -> String {
         .find_map(|e| e.downcast_ref::<compiler_diag::Diagnostic>())
         .map(|d| from_compiler_diag(d).message)
         .unwrap_or_else(|| err.to_string())
+}
+
+/// `rendererOptions` 里的布尔开关。
+///
+/// 运行时两种写法都认（`wxapplib/src/skyline/src/runtime/index.ts:139-141`）：
+/// `rendererOptions.skyline.<key>` 与 app 级的 `rendererOptions.<key>`。
+fn renderer_flag(options: &Map<String, Value>, key: &str) -> bool {
+    options
+        .get("skyline")
+        .and_then(|skyline| skyline.get(key))
+        .and_then(Value::as_bool)
+        .or_else(|| options.get(key).and_then(Value::as_bool))
+        .unwrap_or(false)
 }

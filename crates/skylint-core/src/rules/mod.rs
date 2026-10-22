@@ -43,6 +43,7 @@ impl Registry {
             Box::new(wxml::NoInlineText),
             Box::new(wxml::UnsupportedComponent),
             Box::new(wxml::ScrollViewType),
+            Box::new(wxml::ComponentAttribute),
             Box::new(wxml::ScrollViewFamily),
             Box::new(wxml::HorizontalScrollEnableFlex),
             Box::new(wxss::NoPseudo),
@@ -56,6 +57,7 @@ impl Registry {
             Box::new(wxss::MultiValueLimit),
             Box::new(wxss::FilterLimit),
             Box::new(wxss::TextDecorationLine),
+            Box::new(wxss::TextDecorationTarget),
             Box::new(wxss::CalcAngle),
             Box::new(wxss::MaskImageGradient),
         ])

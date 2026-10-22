@@ -1,0 +1,41 @@
+# 来源：/Volumes/2tb-ssd/nebula/Work/skyline-skills/skills/skyline-components/references/{media,form,layout,special,scroll}/*.md
+#       /Volumes/2tb-ssd/nebula/Work/skyline-skills/skills/skyline-overview/references/introduction/component-support.md
+#       /Volumes/2tb-ssd/nebula/Work/skyline/package/skyline/lib/widgets/{curve,hero}.dart（缓动名全集）
+# 同步方式：只收录文档明确写「Skyline 不支持 / 仅 WebView 支持 / 取值范围」的属性取值；
+#   枚举值以文档表格为准，行尾注释写 references 相对路径与行号。组件不能拆成多条规则。
+# 格式：分区下每行 `组件 | 属性 | 约束 | 说明`
+#   - 组件、属性一律小写；属性可用逗号分隔写多个（共用同一约束）。
+#   - `#` 起为注释（支持行尾注释）；说明为 `-` 时使用按约束生成的默认文案。
+#   - [webview-only] 约束 = 逗号分隔的、只在 WebView 下生效的值；命中即报，优先级高于 [enum]。
+#   - [enum]        约束 = 逗号分隔的合法值；值以 `*` 结尾表示前缀匹配（如 cubic-bezier*）。
+#   - [unsupported] 约束固定为 `-`，属性出现即报。
+#   - [number]      约束 = `positive`（正整数）或 `min..max`（闭区间）。
+# 判定：只判静态属性（`{{}}` 插值跳过）；无值属性视为布尔 true 跳过；值 trim 后大小写不敏感比较。
+
+[webview-only]
+image | mode | top,bottom,center,left,right,top left,top right,bottom left,bottom right | Skyline 不支持 WebView 的裁剪模式，改用 aspectFill 配合 CSS 定位  # media/image.md:42-54
+
+[enum]
+text | overflow | visible,clip,fade,ellipsis | -  # media/text.md:50-55
+image | mode | scaleToFill,aspectFit,aspectFill,widthFix,heightFix | 合法值：scaleToFill、aspectFit、aspectFill、widthFix、heightFix  # media/image.md:32-38
+input | type | text,number,idcard,digit,nickname | 合法值：text、number、idcard、digit、nickname  # form/input.md:44-50
+input | confirm-type | send,search,next,go,done | 合法值：send、search、next、go、done  # form/input.md:54-60
+swiper | layout-type | normal,stackLeft,stackRight,tinder,transformer | -  # layout/swiper.md:44-50
+swiper | transformer-type | scaleAndFade,accordion,threeD,zoomIn,zoomOut,deepthPage | -  # layout/swiper.md:56-63
+swiper | indicator-type | normal,worm,wormThin,wormUnderground,wormThinUnderground,expand,jump,jumpWithOffset,scroll,scrollFixedCenter,slide,slideUnderground,scale,swap,swapYRotation,color | -  # layout/swiper.md:67-84
+swiper | direction | all,positive,negative | -  # layout/swiper.md:109-114
+snapshot | mode | view,picture | 合法值：view、picture  # special/snapshot.md:11
+share-element | rect-tween-type | materialRectArc,materialRectCenterArc,linear,cubic-bezier*,fastLinearToSlowEaseIn,ease,easeIn,easeInToLinear,easeInSine,easeInQuad,easeInCubic,easeInQuart,easeInQuint,easeInExpo,easeInCirc,easeInBack,easeOut,linearToEaseOut,easeOutSine,easeOutQuad,easeOutCubic,easeOutQuart,easeOutQuint,easeOutExpo,easeOutCirc,easeOutBack,easeInOut,easeInOutSine,easeInOutQuad,easeInOutCubic,easeInOutQuart,easeInOutQuint,easeInOutExpo,easeInOutCirc,easeInOutBack,slowMiddle,elasticIn,elasticOut,elasticInOut,easeInElastic,easeOutElastic,easeInOutElastic,bounceIn,bounceOut,bounceInOut,easeInBounce,easeOutBounce,easeInOutBounce,fastOutSlowIn | 用 materialRectArc / materialRectCenterArc / linear 或 cubic-bezier(...)  # special/share-element.md:85-98；缓动名全集见 curve.dart:23-70
+share-element | shuttle-on-push,shuttle-on-pop | to,from | 合法值：to（目标页面节点）、from（源页面节点）  # special/share-element.md:78-83
+scroll-view | refresher-default-style | black,white,none | -  # scroll/scroll-view.md:195
+scroll-view | scroll-into-view-alignment | start,center,end,nearest | -  # scroll/scroll-view.md:113
+scroll-view | associative-container | draggable-sheet,nested-scroll-view,pop-gesture | -  # scroll/scroll-view.md:182-185
+
+[unsupported]
+text | space | - | Skyline 不支持 space 属性，空格改用 CSS white-space 控制  # media/text.md:327
+text | decode | - | Skyline 不解码 HTML 实体，直接写目标字符  # media/text.md:328
+picker-view | indicator-class,mask-style | - | Skyline 下该属性不生效，去掉后按 Skyline 样式重写  # introduction/component-support.md:50
+
+[number]
+text | max-lines | positive | 合法值：正整数  # media/text.md:46
+draggable-sheet | initial-child-size,min-child-size,max-child-size | 0..1 | 尺寸是相对父容器的比例，取值 0~1  # scroll/draggable-sheet.md:26-28,343

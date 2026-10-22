@@ -1,11 +1,15 @@
 //! `display: flex` 在 Skyline 下默认 `flex-direction: column`，WebView 为 `row`。
 //!
-//! 同一条规则内没有 `flex-direction` 时，迁移后布局方向会翻转，报 warning。
+//! 同一个选择器下没有 `flex-direction` 时，迁移后布局方向会翻转，报 warning。
+//!
+//! 声明可以分散在多条同名规则里（`.a { display: flex }` 与 `.a { flex-direction: row }`
+//! 分开写、或其中一条在 `@media` 里），所以按「整份样式表里同选择器出现过 flex-direction」
+//! 判断，而不是只看单条规则。
 
 use crate::project::Project;
 use crate::{Diagnostic, Severity};
 
-use super::visit;
+use crate::input::wxss::{WxssDoc, WxssRule, WxssSelector};
 use crate::rules::{Rule, RuleMeta};
 
 pub struct FlexDirection;
@@ -24,14 +28,23 @@ impl Rule for FlexDirection {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
+        let mut out = Vec::new();
+        for sheet in &project.styles {
+            // `defaultDisplayBlock: true` 时 Skyline 的 flex-direction 默认值就是 row，
+            // 与 WebView 一致，这条警告不成立。
+            if sheet.scopes.iter().all(|scope| project.renders_as_block(scope)) {
+                continue;
+            }
+            let doc = &sheet.doc;
             for rule in &doc.rules {
                 // 无选择器的块是预处理器的 mixin 函数体：它只是片段，`display: flex`
                 // 和 `flex-direction` 可能分散在定义处与调用处，判不了也不该判。
                 if rule.selectors.is_empty() {
                     continue;
                 }
-                if rule.declaration("flex-direction").is_some() {
+                if rule.declaration("flex-direction").is_some()
+                    || declares_flex_direction_elsewhere(doc, rule)
+                {
                     continue;
                 }
                 let Some(display) = rule.declarations.iter().find(|decl| {
@@ -54,8 +67,31 @@ impl Rule for FlexDirection {
                     .help("为这条规则补上 `flex-direction: row`，或按 column 重新设计布局"),
                 );
             }
-        })
+        }
+        out
     }
+}
+
+/// 同一份样式表里是否有**同名选择器**的另一条规则声明了 `flex-direction`。
+///
+/// 只看选择器原文，不解析 at-rule 上下文：`@media` 里声明的 `flex-direction` 未必
+/// 在所有条件下生效，但漏报好过误报。
+fn declares_flex_direction_elsewhere(doc: &WxssDoc, rule: &WxssRule) -> bool {
+    doc.rules.iter().any(|other| {
+        !std::ptr::eq(other, rule)
+            && other.declaration("flex-direction").is_some()
+            && other
+                .selectors
+                .iter()
+                .any(|selector| shares_selector(selector, &rule.selectors))
+    })
+}
+
+fn shares_selector(selector: &WxssSelector, selectors: &[WxssSelector]) -> bool {
+    let key = selector.text.trim();
+    selectors
+        .iter()
+        .any(|other| other.text.trim() == key)
 }
 
 fn is_flex_value(value: &str) -> bool {
@@ -70,7 +106,7 @@ fn is_flex_value(value: &str) -> bool {
 mod tests {
     use crate::rules::Rule;
 
-    use super::super::testutil::{messages, single};
+    use super::super::testutil::{messages, single, Fixture};
     use super::FlexDirection;
 
     #[test]
@@ -89,6 +125,54 @@ mod tests {
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
         // 嵌套在 @media 里的规则同样要报。
         assert!(diags.iter().any(|d| d.message.contains("flex-direction")));
+    }
+
+    #[test]
+    fn flex_direction_is_found_in_a_separate_rule_with_the_same_selector() {
+        // 声明可以拆开写：`.a` 在两条规则里各写一半，不能只看单条。
+        let (_f, project) = single(
+            "flex-split",
+            r#"
+            .a { display: flex; }
+            .a { flex-direction: row; }
+            .b, .c { display: flex; }
+            .c { flex-direction: column; }
+            "#,
+        );
+        assert!(messages(&FlexDirection, &project).is_empty());
+    }
+
+    #[test]
+    fn default_display_block_silences_the_warning() {
+        // `defaultDisplayBlock: true` 时 Skyline 的 flex-direction 默认值就是 row。
+        let f = Fixture::new("flex-block");
+        f.write(
+            "app.json",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true}}}"#,
+        )
+        .write("pages/index/index.json", "{}")
+        .write("pages/index/index.wxml", "<view/>")
+        .write("pages/index/index.wxss", ".a { display: flex; }");
+        let project = f.project();
+        assert!(messages(&FlexDirection, &project).is_empty());
+    }
+
+    #[test]
+    fn page_level_override_can_restore_the_column_default() {
+        // app 级开着 block 布局，但这一页覆盖回 false：默认仍是 column，要报。
+        let f = Fixture::new("flex-block-page");
+        f.write(
+            "app.json",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true}}}"#,
+        )
+        .write(
+            "pages/index/index.json",
+            r#"{"rendererOptions":{"skyline":{"defaultDisplayBlock":false}}}"#,
+        )
+        .write("pages/index/index.wxml", "<view/>")
+        .write("pages/index/index.wxss", ".a { display: flex; }");
+        let project = f.project();
+        assert_eq!(messages(&FlexDirection, &project).len(), 1);
     }
 
     #[test]

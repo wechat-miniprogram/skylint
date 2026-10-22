@@ -4,12 +4,14 @@
 //! 与父子结构约束（scroll-view 家族、enable-flex）各占一个文件。它们共用同一套
 //! 「页面 + 组件 WXML 遍历」与解析辅助。
 
+pub mod component_attribute;
 pub mod horizontal_scroll_enable_flex;
 pub mod no_inline_text;
 pub mod scroll_view_family;
 pub mod scroll_view_type;
 pub mod unsupported_component;
 
+pub use component_attribute::ComponentAttribute;
 pub use horizontal_scroll_enable_flex::HorizontalScrollEnableFlex;
 pub use no_inline_text::NoInlineText;
 pub use scroll_view_family::ScrollViewFamily;

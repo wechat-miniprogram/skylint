@@ -146,17 +146,34 @@ text-decoration-line 单值、calc 角度、mask-image 渐变。
 
 ### P2 WXML 结构
 
-`[x]` 部分完成：`scroll-view` 家族的 5 条挂载约束（数据驱动，
-`rules/wxml/data/scroll_family.txt`）+ 横向滚动 `enable-flex` 检查。
-组件白名单已在 P0 落地。
+`[x]` 完成：`scroll-view` 家族的 17 条结构约束（数据驱动，
+`rules/wxml/data/scroll_family.txt`）+ 横向滚动 `enable-flex` 检查 + 组件属性取值表
+（`skyline/component-attribute`）。组件白名单已在 P0 落地。
 
-刻意**没做**的（文档含糊或自相矛盾，做了就是误报）：
+约束表用「关系」表达结构，Rust 侧只做分派：`direct` / `ancestor`（挂载位置）、
+`first-child`（`sticky-header` 必须是 `sticky-section` 第一个元素子节点）、
+`unique`（一个 `sticky-section` 只能有一个 `sticky-header`，一个 nested `scroll-view`
+只能有一个 `nested-scroll-body`）、`before:nested-scroll-body`（header 必须在 body 之前）、
+`renders-first`（header/body 只渲染第一个直接子节点，warning）、`requires-attr`
+（`list-builder` 的 `child-height`、`grid-view` 的 `cross-axis-count`）、
+`allowed-values`（`list-builder.type` / `grid-view.type`）、
+`within:<容器>`（内层 `scroll-view` 的 `associative-container`）。
+
+仍然**没做**的（文档含糊或自相矛盾，做了就是误报）：
 - `sticky-header` 必须在 `sticky-section` 内——`sticky.md` NEVER 2 要求，但
   `scroll-view.md:54` 把 `sticky-header` 列为 custom 模式的受支持子组件，生产工程
-  `miniprogram-skit_1` 也在 `<nested-scroll-header>` 内直接用。两者冲突，整体撤销。
-- 「必须有且只有一个」这类计数约束：`wx:if`/`wx:else` 摊平后会变成两个兄弟节点，
-  静态计数必然误报。
+  `miniprogram-skit_1` 也在 `<nested-scroll-header>` 内直接用。两者冲突，整体撤销；
+  只保留「**在** `sticky-section` 内时必须是第一个子节点」这条条件约束。
+- `within:nested-scroll-body` 的作用域取 body 而不是整个 nested scroll-view：
+  `nested-scroll.md:210-224` 的示例里内层 scroll-view 在 body 内，而 header 里的
+  scroll-view 不参与嵌套滚动（`skit_1` 的 `rank.wxml:26-41` 就是这种横向 tab 列表）。
 - 需要知道组件内部渲染树（`slot` 落点）的约束。
+
+**已知误报（待修）**：`unique` / `before` 依赖摊平后的兄弟列表，看不到 `wx:if`/`wx:else`
+的分支互斥——`<block wx:if><nested-scroll-body/></block><block wx:else><nested-scroll-body/></block>`
+会被算成两个 body。四个真实工程都没有这种写法。修法是在 `input/wxml.rs` 的摊平阶段给
+每个节点带上「条件组 + 分支」标识，让计数/顺序约束跳过互斥分支；这属于解析层的改动，
+单独一批做，不混在规则里打补丁。
 
 ### P3 跨文件语义（差异化最大）
 
@@ -250,6 +267,55 @@ businessview +10（`text-overflow-ellipsis` 2 条、`tag-selector-isolation` 8 �
 - **类名可达性**（wxss 里定义的 class 没有任何 wxml 使用）。这不是 Skyline 语义差异——死样式
   在 WebView 里同样是死的，属于通用死代码检查，越过了「只报 WebView 能跑、Skyline 不能或
   不一样」的规则边界；而且按 `weui.wxss` 这类被 `@import` 进来的公共样式算，噪声会非常大。
+
+### P3.5 知识库全量对照（171 条）
+
+`[x]` 已对照并补齐本轮能做的部分。
+
+按「给定输入文件即可判定真假」的口径把知识库全量枚举了一遍（运行期渲染、手势实测、
+性能建议一律不收），得 171 条约束，逐条带证据位置。当时的覆盖情况：完全覆盖约 55 条、
+部分覆盖约 15 条、**未覆盖约 100 条**——未覆盖集中在组件属性/结构（约 45）、配置（约 23）、
+JS/worklet（约 21）、WXSS 值语义（约 12）。所以 P4（JS）不是下一步的最优选择：组件与配置
+这两块单文件即可判定、误报低、条数多。
+
+**审计表本身有错，实现前必须回文档/源码复核。** 实测发现的错误：swiper 的 `layout-type`
+是 `normal` 而不是 `default`；`transformer-type` 是 `scaleAndFade/accordion/threeD/zoomIn/
+zoomOut/deepthPage`（不是 `scaleTinder/...`）；`indicator-type` 是 16 个动画值、没有
+`dots`/`never`；`draggable-sheet` 根本没有 `size/min-size/max-size`（是
+`initial-child-size/min-child-size/max-child-size`）；`display: inline` 其实**支持**
+（`display.cc:74-78` 映射进 `fp::DisplayType`），旧项目那条 display-inline 规则本来就是错的。
+
+本轮落地：
+- `skyline/component-attribute`：一张数据表覆盖 24 个「组件.属性」的枚举白名单 /
+  WebView-only 取值 / 不支持的属性 / 数值范围（`rules/data/component_attributes.txt`）。
+- `skyline/scroll-view-family`：从 5 条挂载约束扩到 17 条结构约束。
+- `skyline/text-decoration-target`：`text-decoration*` 只对 `<text>`/`<span>`/`<input>` 生效。
+  依据不是文档而是引擎：`style_builder.cc:1298-1316`（TextSpan）、`:1486-1494`（Input），
+  且 `text_decoration_line_` 在 `ComputedStyle` 的 `non_inherited_data_`（`computed_style.h:831`、
+  `:1734`）——**不继承**，所以容器里有 `<text>` 也不能豁免（与 `text-overflow` 相反）。
+
+**代价最大的一处修正：`flex-direction` 一直在误报。** 这条规则的前提是「Skyline 默认
+`flex-direction: column`，WebView 是 `row`」，但
+`rendererOptions.skyline.defaultDisplayBlock: true` 时 Skyline 的默认值对齐 WebView
+（`flex.md:16`、`app-config.md:67`；运行时见 `wxapplib/src/skyline/src/runtime/index.ts:139-141`
+与页面级 `:424-431`）。四个真实工程**全部**开了这个开关，实测一条规则贡献了 424 条误报：
+
+| 工程 | 修前 | 修后 |
+|---|---|---|
+| miniprogram-novel | 95 | 16 |
+| businessview | 878 | 622 |
+| miniprogram-skit_1 | 102 | 18 |
+| weapp-novel-plugin_1 | 7 | 3 |
+
+`Project::renders_as_block(scope)` 负责解析 app 级 + 页面级配置（页面级优先；组件按「用到
+它的页面」判定；`app.wxss` 要求每页都开），规则按样式表的 scope 决定是否整份跳过。
+**结论：任何以「Skyline 默认值」为前提的规则都必须先读 `rendererOptions`。**
+`box-sizing` 只看「值是否受支持」，不受 `defaultContentBox` 影响；
+`tag-selector-isolation` 早已读了 `tagNameStyleIsolation`。
+
+**已知盲区**：`weapp-novel-plugin_1` 有 `pluginRoot`，而 `Project::load` 只读
+`miniprogramRoot`（`project.rs:103-114`），插件源码整块没进扫描——它的 3 条诊断只覆盖
+miniprogram 侧。补插件根要处理 scope 归属（插件页面/组件不属于主包页面集合），单独评估。
 
 ### P4 JS（约 30 条）
 
