@@ -1,0 +1,666 @@
+//! 属性可用，但该值在 Skyline 下被降级 / 映射 / 无效果，表现与 WebView 不同。
+//!
+//! 与 [`super::unsupported_value`] 的分界：这里是「值有效但行为不同」（warning），
+//! 那里是「值根本无效，声明被静默忽略」（error）。数据在 `data/value_degraded.txt`。
+
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use crate::input::wxss::{ValueToken, WxssDeclaration, WxssDoc};
+use crate::project::Project;
+use crate::rules::{Rule, RuleMeta};
+use crate::{Diagnostic, Severity};
+
+use super::dict_table::normalize_value;
+use super::value_util::{all_calls, at_value, is_dynamic, top_level_calls};
+use super::visit;
+
+const SOURCE: &str = include_str!("../data/value_degraded.txt");
+
+const EXACT_HELP: &str = "按实际渲染效果调整取值，或改用 Skyline 下表现一致的值";
+const ONLY_HELP: &str = "去掉不在支持范围内的值，只保留 auto 或 contents";
+const FUNCTION_HELP: &str =
+    "改用 Skyline 支持的等价写法（例如用 background-image 代替 content: url()）";
+const ENV_HELP: &str =
+    "仅支持 safe-area-inset-top / -right / -bottom / -left 四个变量，其他尺寸改用固定值或自行计算";
+const FONT_WEIGHT_HELP: &str = "Skyline 在 font_weight.cc 里先 round 到百位、再在 SetFontWeight(int) 的 switch 里回落 normal，所以 950 会变成普通字重；直接写 400/500/…/900";
+
+pub struct ValueDegraded;
+
+impl ValueDegraded {
+    pub const ID: &'static str = "skyline/value-degraded";
+}
+
+impl Rule for ValueDegraded {
+    fn meta(&self) -> RuleMeta {
+        RuleMeta {
+            id: Self::ID,
+            severity: Severity::Warning,
+            description: "属性在 Skyline 下可用，但该值的表现与 WebView 不同（被降级 / 映射 / 无效果）",
+        }
+    }
+
+    fn check(&self, project: &Project) -> Vec<Diagnostic> {
+        let data = data();
+        visit(project, |doc, out| {
+            for rule in &doc.rules {
+                for decl in &rule.declarations {
+                    if decl.value.trim().is_empty() {
+                        continue;
+                    }
+                    check_exact(data, doc, decl, out);
+                    check_only(data, doc, decl, out);
+                    check_function(data, doc, decl, out);
+                    check_font_weight(doc, decl, out);
+                    check_env(data, doc, decl, out);
+                }
+            }
+        })
+    }
+}
+
+/// `[exact]`：整值与表里的值相等（与 `[unsupported-value]` 同一匹配口径）。
+fn check_exact(data: &Data, doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
+    let name = decl.name.to_ascii_lowercase();
+    let Some(entries) = data.exact.get(name.as_str()) else {
+        return;
+    };
+    let Some(value) = normalize_value(&decl.value) else {
+        return;
+    };
+    let Some(note) = entries.get(value.as_str()) else {
+        return;
+    };
+    out.push(at_value(
+        ValueDegraded::ID,
+        doc,
+        decl,
+        format!(
+            "`{name}: {}` 在 Skyline 下的表现与 WebView 不同：{note}",
+            decl.value.trim()
+        ),
+        EXACT_HELP,
+    ));
+}
+
+/// `[only]`：值里的每个 ident 都必须在允许列表内。
+fn check_only(data: &Data, doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
+    let name = decl.name.to_ascii_lowercase();
+    let Some(entry) = data.only.get(name.as_str()) else {
+        return;
+    };
+    if is_dynamic(&decl.tokens) {
+        return;
+    }
+    let mut offenders: Vec<&str> = Vec::new();
+    for token in &decl.tokens {
+        let ValueToken::Ident(ident) = token else {
+            continue;
+        };
+        if entry
+            .allowed
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(ident))
+        {
+            continue;
+        }
+        if !offenders
+            .iter()
+            .any(|seen| seen.eq_ignore_ascii_case(ident))
+        {
+            offenders.push(ident);
+        }
+    }
+    if offenders.is_empty() {
+        return;
+    }
+    let list = offenders
+        .iter()
+        .map(|ident| format!("`{ident}`"))
+        .collect::<Vec<_>>()
+        .join("、");
+    out.push(at_value(
+        ValueDegraded::ID,
+        doc,
+        decl,
+        format!(
+            "`{name}: {}` 在 Skyline 下的表现与 WebView 不同：{}，{list} 不生效",
+            decl.value.trim(),
+            entry.note
+        ),
+        ONLY_HELP,
+    ));
+}
+
+/// `[function]`：值里出现指定函数调用。
+fn check_function(data: &Data, doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
+    let name = decl.name.to_ascii_lowercase();
+    let Some(entries) = data.functions.get(name.as_str()) else {
+        return;
+    };
+    let Some(call) = top_level_calls(&decl.tokens)
+        .into_iter()
+        .find(|call| entries.contains_key(call.name.as_str()))
+    else {
+        return;
+    };
+    let note = entries[call.name.as_str()];
+    out.push(at_value(
+        ValueDegraded::ID,
+        doc,
+        decl,
+        format!(
+            "`{name}: {}` 在 Skyline 下不受支持：{note}",
+            decl.value.trim()
+        ),
+        FUNCTION_HELP,
+    ));
+}
+
+/// font-weight 的数值：Skyline 先四舍五入到百位，再按 switch 选字重，落不到 100–900 时回落 normal。
+///
+/// 源码：`skyline/css/css_properties/font_weight.cc` 的 `FontWeight::ApplyValue`
+/// 里 `round_num = std::round(num / 100)` 后 `SetFontWeight(round_num * 100)`；
+/// `skyline/style/computed_style.h` 的 `SetFontWeight(int)` 只映射 100/200/…/900，
+/// `default` 分支取 `FontWeight::kNormal`（= kW400，见 `common/dart_definitions.h`）。
+/// 「四舍五入 + 越界回落」是两段语义，数据表表达不了，所以按属性特化判定。
+fn check_font_weight(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
+    if !decl.name.eq_ignore_ascii_case("font-weight") {
+        return;
+    }
+    // 只判单个数字；normal / bold / bolder / lighter / 动态值走其他规则或直接跳过。
+    let [ValueToken::Number(text)] = decl.tokens.as_slice() else {
+        return;
+    };
+    let Ok(number) = text.parse::<f64>() else {
+        return;
+    };
+    if number % 100.0 == 0.0 && (100.0..=900.0).contains(&number) {
+        return;
+    }
+    let rounded = (number / 100.0).round() * 100.0;
+    let actual = if (100.0..=900.0).contains(&rounded) {
+        rounded
+    } else {
+        400.0
+    };
+    let message = if actual == rounded {
+        format!(
+            "`font-weight: {text}` 会被四舍五入到 {}（Skyline 按 100 的倍数取字重）",
+            actual as i64
+        )
+    } else {
+        format!(
+            "`font-weight: {text}` 会回落到 {}（四舍五入后超出 100–900）",
+            actual as i64
+        )
+    };
+    out.push(at_value(
+        ValueDegraded::ID,
+        doc,
+        decl,
+        message,
+        FONT_WEIGHT_HELP,
+    ));
+}
+
+/// `[env]`：不按属性，扫全部声明值里的 `env(<ident>)`（可能嵌在 `calc()` 里）。
+fn check_env(data: &Data, doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
+    // 自定义属性只是存值，真正生效在使用处；报在定义处是噪音。
+    if decl.name.starts_with("--") {
+        return;
+    }
+    let mut unknown: Vec<String> = Vec::new();
+    let mut has_fallback = false;
+    for call in all_calls(&decl.tokens) {
+        if call.name != "env" {
+            continue;
+        }
+        let Some(ValueToken::Ident(var)) = call.args.first() else {
+            continue;
+        };
+        if data
+            .env
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(var))
+        {
+            continue;
+        }
+        if !unknown.iter().any(|seen| seen.eq_ignore_ascii_case(var)) {
+            unknown.push(var.clone());
+        }
+        has_fallback |= call.args.iter().any(|arg| matches!(arg, ValueToken::Comma));
+    }
+    if unknown.is_empty() {
+        return;
+    }
+    let calls = unknown
+        .iter()
+        .map(|var| format!("env({var})"))
+        .collect::<Vec<_>>()
+        .join("、");
+    let tail = if has_fallback {
+        "；fallback 会让声明仍然有效，但拿不到期望的变量值"
+    } else {
+        ""
+    };
+    out.push(at_value(
+        ValueDegraded::ID,
+        doc,
+        decl,
+        format!("{calls} 不在 Skyline 支持的 env() 变量列表内{tail}"),
+        ENV_HELP,
+    ));
+}
+
+struct Only {
+    allowed: Vec<&'static str>,
+    note: &'static str,
+}
+
+#[derive(Default)]
+struct Data {
+    /// 属性 → (整值 → 实际行为)。
+    exact: HashMap<&'static str, HashMap<&'static str, &'static str>>,
+    /// 属性 → (允许的 ident, 实际行为)。
+    only: HashMap<&'static str, Only>,
+    /// 属性 → (函数名 → 实际行为)。
+    functions: HashMap<&'static str, HashMap<&'static str, &'static str>>,
+    /// 允许的 `env()` 变量名。
+    env: Vec<&'static str>,
+}
+
+fn data() -> &'static Data {
+    static TABLE: OnceLock<Data> = OnceLock::new();
+    TABLE.get_or_init(|| parse(SOURCE).expect("WXSS 降级值表格式错误"))
+}
+
+#[derive(Clone, Copy)]
+enum Section {
+    Exact,
+    Only,
+    Function,
+    Env,
+}
+
+/// 解析数据文件。格式错误一律返回带行号的说明，便于同步时定位。
+fn parse(source: &'static str) -> Result<Data, String> {
+    let mut data = Data::default();
+    let mut section = None;
+
+    for (index, raw) in source.lines().enumerate() {
+        let line_no = index + 1;
+        let line = raw.split('#').next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(name) = line
+            .strip_prefix('[')
+            .and_then(|rest| rest.strip_suffix(']'))
+        {
+            section = Some(match name.trim() {
+                "exact" => Section::Exact,
+                "only" => Section::Only,
+                "function" => Section::Function,
+                "env" => Section::Env,
+                other => return Err(format!("第 {line_no} 行：未知分区 [{other}]")),
+            });
+            continue;
+        }
+        let section = section.ok_or_else(|| format!("第 {line_no} 行：数据出现在分区之前"))?;
+        if matches!(section, Section::Env) {
+            let names: Vec<&'static str> = line.split(',').map(str::trim).collect();
+            for name in names {
+                if name.is_empty() || !is_lowercase(name) {
+                    return Err(format!("第 {line_no} 行：env 变量名非法：{name}"));
+                }
+                if data.env.contains(&name) {
+                    return Err(format!("第 {line_no} 行：重复的 env 变量 {name}"));
+                }
+                data.env.push(name);
+            }
+            continue;
+        }
+
+        let fields: Vec<&'static str> = line.split('|').map(str::trim).collect();
+        if fields.len() != 3 {
+            return Err(format!(
+                "第 {line_no} 行：需要 `键 | 值 | 说明` 三列，实际 {} 列",
+                fields.len()
+            ));
+        }
+        let (key, value, note) = (fields[0], fields[1], fields[2]);
+        if key.is_empty() || value.is_empty() || note.is_empty() {
+            return Err(format!("第 {line_no} 行：键、值与说明都不能为空"));
+        }
+        if !is_lowercase(key) || !is_lowercase(value) {
+            return Err(format!("第 {line_no} 行：键与值必须小写：{key} | {value}"));
+        }
+        match section {
+            Section::Exact => {
+                for name in key.split(',') {
+                    let name = name.trim();
+                    if name.is_empty() {
+                        return Err(format!("第 {line_no} 行：属性名非法：{key}"));
+                    }
+                    if data
+                        .exact
+                        .entry(name)
+                        .or_default()
+                        .insert(value, note)
+                        .is_some()
+                    {
+                        return Err(format!("第 {line_no} 行：重复的条目 {name}: {value}"));
+                    }
+                }
+            }
+            Section::Only => {
+                let allowed = value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .collect();
+                if data.only.insert(key, Only { allowed, note }).is_some() {
+                    return Err(format!("第 {line_no} 行：重复的属性 {key}"));
+                }
+            }
+            Section::Function => {
+                if data
+                    .functions
+                    .entry(key)
+                    .or_default()
+                    .insert(value, note)
+                    .is_some()
+                {
+                    return Err(format!("第 {line_no} 行：重复的条目 {key}: {value}"));
+                }
+            }
+            Section::Env => unreachable!("[env] 分区已在上面处理"),
+        }
+    }
+
+    Ok(data)
+}
+
+fn is_lowercase(text: &str) -> bool {
+    !text.bytes().any(|b| b.is_ascii_uppercase())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::rules::Rule;
+
+    use super::super::testutil::{Fixture, messages, single};
+    use super::ValueDegraded;
+
+    #[test]
+    fn exact_values_report_the_actual_behaviour() {
+        let (_f, project) = single(
+            "degraded-exact",
+            r#"
+            .a { animation-fill-mode: none; }
+            .b { animation-fill-mode: backwards; }
+            .c { word-break: keep-all; }
+            .d { word-break: break-word; }
+            .e { background-repeat: space; }
+            .f { mask-repeat: round; }
+            .g { BACKGROUND-REPEAT: SPACE; }
+            "#,
+        );
+        let diags = ValueDegraded.check(&project);
+        assert_eq!(diags.len(), 7);
+        assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
+        assert!(diags[0].message.contains("animation-fill-mode: none"));
+        assert!(diags[0].message.contains("forwards"));
+        assert!(diags.iter().any(|d| d.message.contains("break-word")));
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("mask-repeat: round"))
+        );
+        assert_eq!(diags[0].help.as_deref(), Some(super::EXACT_HELP));
+    }
+
+    #[test]
+    fn exact_accepts_supported_values_and_dynamic_values() {
+        let (_f, project) = single(
+            "degraded-exact-negative",
+            r#"
+            .a { animation-fill-mode: forwards; }
+            .b { animation-fill-mode: both; }
+            .c { word-break: break-all; }
+            .d { word-break: normal; }
+            .e { background-repeat: no-repeat; }
+            .f { background-repeat: var(--repeat); }
+            .g { mask-repeat: repeat; }
+            .h { mask-repeat: repeat-x; }
+            .i { mask-repeat: space; }
+            "#,
+        );
+        // `.i` 是唯一命中项：前面几行只用来确认合法值与动态值不报。
+        let diags = ValueDegraded.check(&project);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("mask-repeat"));
+    }
+
+    #[test]
+    fn other_properties_are_not_affected() {
+        let (_f, project) = single(
+            "degraded-other-properties",
+            r#"
+            .a { transition: transform; }
+            .b { animation-name: content; }
+            .c { background-image: url(x.png); }
+            .d { background: url(x.png) space; }
+            "#,
+        );
+        assert_eq!(messages(&ValueDegraded, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn only_reports_identifiers_outside_the_allow_list() {
+        let (_f, project) = single(
+            "degraded-only",
+            r#"
+            .a { will-change: transform; }
+            .b { will-change: transform, opacity; }
+            .c { will-change: scroll-position; }
+            "#,
+        );
+        let diags = ValueDegraded.check(&project);
+        assert_eq!(diags.len(), 3);
+        assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
+        assert!(diags[0].message.contains("`transform` 不生效"));
+        assert!(diags[1].message.contains("`transform`"));
+        assert!(diags[1].message.contains("`opacity`"));
+        assert!(diags[2].message.contains("`scroll-position` 不生效"));
+    }
+
+    #[test]
+    fn scroll_position_is_reported_by_one_rule_only() {
+        let (_f, project) = single(
+            "degraded-scroll-position",
+            ".a { will-change: scroll-position; }",
+        );
+        let diags =
+            crate::rules::Registry::builtin().run(&project, &std::collections::HashSet::new());
+        let hits: Vec<_> = diags
+            .iter()
+            .filter(|d| d.message.contains("will-change"))
+            .collect();
+        assert_eq!(hits.len(), 1, "同一声明只应由一条规则报出：{hits:#?}");
+        assert_eq!(hits[0].rule, ValueDegraded::ID);
+        assert_eq!(hits[0].severity, crate::Severity::Warning);
+    }
+
+    #[test]
+    fn only_accepts_auto_contents_and_dynamic_values() {
+        let (_f, project) = single(
+            "degraded-only-negative",
+            r#"
+            .a { will-change: auto; }
+            .b { will-change: contents; }
+            .c { will-change: var(--layer); }
+            "#,
+        );
+        assert_eq!(messages(&ValueDegraded, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn font_weight_numbers_report_the_effective_weight() {
+        let (_f, project) = single(
+            "degraded-font-weight",
+            r#"
+            .a { font-weight: 450; }
+            .b { font-weight: 950; }
+            .c { font-weight: 50; }
+            .d { font-weight: 0; }
+            .e { font-weight: 100.5; }
+            "#,
+        );
+        let diags = ValueDegraded.check(&project);
+        assert_eq!(diags.len(), 5);
+        assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
+        assert!(diags[0].message.contains("font-weight: 450"));
+        assert!(diags[0].message.contains("四舍五入到 500"));
+        assert!(diags[1].message.contains("回落到 400"));
+        assert!(diags[1].message.contains("超出 100–900"));
+        assert!(diags[2].message.contains("四舍五入到 100"));
+        assert!(diags[3].message.contains("回落到 400"));
+        assert!(diags[4].message.contains("四舍五入到 100"));
+    }
+
+    #[test]
+    fn font_weight_accepts_hundreds_keywords_and_dynamic_values() {
+        let (_f, project) = single(
+            "degraded-font-weight-negative",
+            r#"
+            .a { font-weight: 100; }
+            .b { font-weight: 400; }
+            .c { font-weight: 700; }
+            .d { font-weight: 900; }
+            .e { font-weight: normal; }
+            .f { font-weight: bold; }
+            .g { font-weight: bolder; }
+            .h { font-weight: var(--w); }
+            "#,
+        );
+        assert_eq!(messages(&ValueDegraded, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn function_calls_report_content_url() {
+        let (_f, project) = single(
+            "degraded-function",
+            r#"
+            .a { content: url(icon.png); }
+            .b { content: url("a.png") url("b.png"); }
+            "#,
+        );
+        let diags = ValueDegraded.check(&project);
+        assert_eq!(diags.len(), 2);
+        assert!(diags.iter().all(|d| d.message.contains("content: url(")));
+        assert!(diags[0].message.contains("background-image"));
+    }
+
+    #[test]
+    fn function_accepts_string_and_keyword_content() {
+        let (_f, project) = single(
+            "degraded-function-negative",
+            r#"
+            .a { content: "x"; }
+            .b { content: normal; }
+            .c { content: none; }
+            .d { content: var(--label); }
+            .e { background-image: url(a.png); }
+            "#,
+        );
+        assert_eq!(messages(&ValueDegraded, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn env_reports_variables_outside_the_whitelist() {
+        let (_f, project) = single(
+            "degraded-env",
+            r#"
+            .a { padding: env(foo); }
+            .b { height: calc(100% - env(bar)); }
+            .c { padding: env(foo) env(foo); }
+            "#,
+        );
+        let diags = ValueDegraded.check(&project);
+        assert_eq!(diags.len(), 3);
+        assert!(diags[0].message.contains("env(foo)"));
+        assert!(diags[1].message.contains("env(bar)"));
+        // 同一个值里的重复变量只列一次。
+        assert_eq!(diags[2].message.matches("env(foo)").count(), 1);
+    }
+
+    #[test]
+    fn env_accepts_the_four_safe_area_variables() {
+        let (_f, project) = single(
+            "degraded-env-negative",
+            r#"
+            .a { padding-top: env(safe-area-inset-top); }
+            .b { padding-right: env(safe-area-inset-right); }
+            .c { padding-bottom: env(safe-area-inset-bottom); }
+            .d { padding-left: env(safe-area-inset-left); }
+            .e { padding-bottom: env(safe-area-inset-bottom, 20px); }
+            .f { --gap: env(foo); }
+            "#,
+        );
+        assert_eq!(messages(&ValueDegraded, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn env_with_fallback_still_reports_and_explains() {
+        let (_f, project) = single(
+            "degraded-env-fallback",
+            r#"
+            .a { padding: env(keyboard-height, 10px); }
+            "#,
+        );
+        let diags = ValueDegraded.check(&project);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("env(keyboard-height)"));
+        assert!(diags[0].message.contains("fallback"));
+    }
+
+    #[test]
+    fn data_file_parses_and_keeps_the_env_whitelist() {
+        let data = super::parse(super::SOURCE).unwrap();
+        assert_eq!(data.env.len(), 4);
+        assert!(data.env.contains(&"safe-area-inset-bottom"));
+        assert!(data.exact["word-break"].contains_key("keep-all"));
+        assert!(data.only["will-change"].allowed.contains(&"contents"));
+        assert!(data.functions["content"].contains_key("url"));
+    }
+
+    #[test]
+    fn preprocessor_sources_are_checked_too() {
+        let f = Fixture::new("degraded-less");
+        f.write(
+            "project.config.json",
+            r#"{"miniprogramRoot":"","setting":{"useCompilerPlugins":["less"]}}"#,
+        )
+        .write(
+            "app.json",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+        )
+        .write("pages/index/index.json", "{}")
+        .write("pages/index/index.wxml", "<view/>")
+        .write(
+            "pages/index/index.less",
+            ".a { will-change: transform; .b { word-break: keep-all; } }",
+        );
+
+        let project = f.project();
+        let diags = ValueDegraded.check(&project);
+        assert_eq!(diags.len(), 2);
+        assert!(
+            diags.iter().all(|d| d.path == "pages/index/index.less"),
+            "{:?}",
+            diags.iter().map(|d| &d.path).collect::<Vec<_>>()
+        );
+    }
+}

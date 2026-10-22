@@ -20,6 +20,7 @@ pub mod text_decoration_target;
 pub mod text_overflow_ellipsis;
 pub mod unsupported_property;
 pub mod unsupported_value;
+pub mod value_degraded;
 pub mod value_util;
 
 pub use box_sizing::BoxSizing;
@@ -36,6 +37,7 @@ pub use text_decoration_target::TextDecorationTarget;
 pub use text_overflow_ellipsis::TextOverflowEllipsis;
 pub use unsupported_property::UnsupportedProperty;
 pub use unsupported_value::UnsupportedValue;
+pub use value_degraded::ValueDegraded;
 
 use crate::Diagnostic;
 use crate::input::wxss::WxssDoc;

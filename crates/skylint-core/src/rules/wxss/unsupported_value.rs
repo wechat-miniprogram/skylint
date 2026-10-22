@@ -76,13 +76,11 @@ mod tests {
             .e { white-space: pre-wrap; }
             .f { font-weight: bolder; }
             .g { border-top-style: double; }
-            .h { background-repeat: space; }
-            .i { will-change: scroll-position; }
-            .j { DISPLAY: GRID !important; }
+            .h { DISPLAY: GRID !important; }
             "#,
         );
         let diags = UnsupportedValue.check(&project);
-        assert_eq!(diags.len(), 10);
+        assert_eq!(diags.len(), 8);
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Error));
         assert!(diags.iter().any(|d| d.message.contains("display: grid")));
         assert!(diags.iter().any(|d| d.message.contains("position: sticky")));

@@ -9,6 +9,7 @@
 #   [unsupported-property]：键 = 小写属性名，值列固定为 `-`。
 #   [unsupported-value]：键 = 小写属性名（逗号分隔可写多个），值 = 小写整值。
 #   匹配：属性名小写比较；值 trim + 小写后整值相等才命中；含 var( / env( / {{ 的值跳过。
+#   值有效但被降级 / 映射 / 无效果的条目归 skyline/value-degraded（warning），不在这里。
 
 [unsupported-property]
 float | - | 使用 flex 布局  # SKILL.md NEVER 表
@@ -52,7 +53,7 @@ white-space | pre-line | 改用 normal 或 nowrap  # text.md「white-space」、
 font-weight | bolder | 改用 normal、bold 或 100-900 的数值  # text.md「font-weight」
 font-weight | lighter | 改用 normal、bold 或 100-900 的数值  # text.md「font-weight」
 font-style | oblique | 改用 normal 或 italic  # text.md「font-style」
-word-break | break-word | 改用 normal 或 break-all（break-word 会被映射为 normal）  # text.md「word-break」
+# word-break: break-word 不是无效值（被映射为 normal），由 skyline/value-degraded 按 warning 报。
 vertical-align | text-top | 改用 baseline/top/middle/bottom  # text.md「vertical-align」
 vertical-align | text-bottom | 改用 baseline/top/middle/bottom  # text.md「vertical-align」
 text-align | justify-all | 改用 left/center/right/justify/start/end  # text.md「text-align」
@@ -64,6 +65,5 @@ border-style,border-top-style,border-right-style,border-bottom-style,border-left
 border-style,border-top-style,border-right-style,border-bottom-style,border-left-style | ridge | border-*-style 仅支持 none/solid/dashed/dotted  # SKILL.md Quick Reference、visual.md「border-style」
 border-style,border-top-style,border-right-style,border-bottom-style,border-left-style | inset | border-*-style 仅支持 none/solid/dashed/dotted  # SKILL.md Quick Reference、visual.md「border-style」
 border-style,border-top-style,border-right-style,border-bottom-style,border-left-style | outset | border-*-style 仅支持 none/solid/dashed/dotted  # SKILL.md Quick Reference、visual.md「border-style」
-background-repeat,mask-repeat | space | 仅支持 repeat/repeat-x/repeat-y/no-repeat（space 会被降级为 repeat）  # SKILL.md Quick Reference、visual.md；image_property_utils.h:512 兜底
-background-repeat,mask-repeat | round | 仅支持 repeat/repeat-x/repeat-y/no-repeat（round 会被降级为 repeat）  # SKILL.md Quick Reference、visual.md；image_property_utils.h:512 兜底
-will-change | scroll-position | will-change 仅支持 auto 或 contents  # animation.md「will-change」
+# background-repeat/mask-repeat 的 space / round 被降级为 repeat；will-change 的
+# scroll-position 与自定义 ident 不生效。三者都由 skyline/value-degraded 按 warning 报，不在本表。

@@ -1,0 +1,28 @@
+# 来源：/Volumes/2tb-ssd/nebula/Work/skyline-skills/skills/skyline-wxss/references/*.md
+# 语义：属性本身受支持，但该值在 Skyline 下被降级 / 映射 / 无效果，表现与 WebView 不同。
+#       「值根本无效」属于 wxss_support.txt 的 [unsupported-value]（error），不在这里。
+# 格式：分区下每行 `键 | 值 | 说明`，`#` 起为注释（支持行尾注释）。
+#   [exact]    键 = 小写属性名（逗号分隔可写多个），值 = 小写整值；值 trim + 小写后整值相等才命中。
+#   [only]     键 = 小写属性名，值 = 允许的 ident（逗号分隔）；值里每个 ident 都必须在列表内。
+#   [function] 键 = 小写属性名，值 = 小写函数名；值里出现该函数调用即命中。
+#   [env]      每行一个逗号分隔的变量白名单，无其他列；不按属性，扫全部声明值里的 env()。
+# 匹配：含 var( / env( / {{ / 预处理器变量的值无法静态判定，一律跳过（[env] 分区除外）。
+
+[exact]
+animation-fill-mode | none | 可写，但实际按 forwards 处理  # animation.md:78
+animation-fill-mode | backwards | 可写，但实际按 forwards 处理  # animation.md:78
+word-break | keep-all | 可解析，但渲染层未实现，实际等同 normal  # text.md:58
+word-break | break-word | 实际被映射为 normal  # text.md:59
+background-repeat | space | 实际被降级为 repeat  # image_property_utils.h:512 兜底
+background-repeat | round | 实际被降级为 repeat  # image_property_utils.h:512 兜底
+mask-repeat | space | 实际被降级为 repeat  # image_property_utils.h:512 兜底
+mask-repeat | round | 实际被降级为 repeat  # image_property_utils.h:512 兜底
+
+[only]
+will-change | auto,contents | 仅支持 auto / contents  # animation.md:106
+
+[function]
+content | url | 图片不会渲染，改用 background-image  # layout.md:56
+
+[env]
+safe-area-inset-top,safe-area-inset-right,safe-area-inset-bottom,safe-area-inset-left

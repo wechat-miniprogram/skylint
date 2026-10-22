@@ -54,6 +54,7 @@ impl Registry {
             Box::new(wxss::TagSelectorIsolation),
             Box::new(wxss::UnsupportedProperty),
             Box::new(wxss::UnsupportedValue),
+            Box::new(wxss::ValueDegraded),
             Box::new(wxss::GradientLimit),
             Box::new(wxss::MultiValueLimit),
             Box::new(wxss::FilterLimit),
