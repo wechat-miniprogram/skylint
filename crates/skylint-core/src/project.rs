@@ -114,6 +114,13 @@ pub struct Project {
     /// 同一文件被多个页面引用时只留一份。解析失败静默跳过：JS 语法错误由 `minidev
     /// build` 拦截，linter 不另造诊断。
     pub scripts: Vec<JsFile>,
+    /// 单元闭包之外的脚本：仅在文件里出现 `addRouteBuilder(` 时才解析。
+    ///
+    /// 路由注册常被放进 `utils/router.js` 这类被 `require` 的工具模块，它们不属于任何
+    /// 页面 / 组件，因此不在 [`Self::scripts`] 里。工程级规则（如 `skyline/route-type`
+    /// 判断「routeType 有没有注册过」）必须看得见这些注册，否则会把整个工程判成没注册。
+    /// 只解析「文本里出现 `addRouteBuilder(`」的文件，避免为了一个集合去解析上千个源文件。
+    pub loose_scripts: Vec<JsDoc>,
     /// 建图过程中发现的非阻断问题（如页面声明了但 wxml 缺失）。
     pub warnings: Vec<Diagnostic>,
 }
@@ -194,6 +201,7 @@ impl Project {
 
         let styles = collect_styles(&root, &miniprogram_root, &pages, &components, &mut warnings);
         let scripts = collect_scripts(&root, &miniprogram_root, &resolver, &pages, &components);
+        let loose_scripts = collect_loose_scripts(&root, &miniprogram_root, &scripts);
         let app_json_source = fs
             .read_file(&miniprogram_root, "app.json")
             .unwrap_or_default();
@@ -215,6 +223,7 @@ impl Project {
             page_json_source,
             styles,
             scripts,
+            loose_scripts,
             warnings,
         })
     }
@@ -597,6 +606,53 @@ fn collect_scripts(
             Some(JsFile { path, scope, doc })
         })
         .collect()
+}
+
+/// 单元闭包之外的脚本，只收「文本里出现 `addRouteBuilder(`」的文件。
+fn collect_loose_scripts(root: &Path, miniprogram_root: &str, scripts: &[JsFile]) -> Vec<JsDoc> {
+    const NEEDLE: &str = "addRouteBuilder(";
+    let base = root.join(miniprogram_root);
+    let known: std::collections::BTreeSet<&str> = scripts.iter().map(|f| f.path.as_str()).collect();
+    let mut out = Vec::new();
+
+    fn walk(dir: &Path, base: &Path, known: &std::collections::BTreeSet<&str>, out: &mut Vec<JsDoc>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, base, known, out);
+                continue;
+            }
+            if !matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("js" | "ts")
+            ) {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(base)
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
+                .unwrap_or_default();
+            if rel.is_empty() || known.contains(rel.as_str()) {
+                continue;
+            }
+            let Ok(source) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if !source.contains(NEEDLE) {
+                continue;
+            }
+            if let Ok(doc) = JsDoc::parse(&rel, &source) {
+                out.push(doc);
+            }
+        }
+    }
+
+    walk(&base, &base, &known, &mut out);
+    out.sort_by(|a, b| a.path().cmp(b.path()));
+    out
 }
 
 /// `@import` 目标 → 项目相对路径（必须是真实存在的文件）。

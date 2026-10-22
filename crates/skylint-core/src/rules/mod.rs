@@ -74,6 +74,7 @@ impl Registry {
             Box::new(js::WorkletEs5),
             Box::new(js::ScrollContextRef),
             Box::new(js::DraggableSheetScrollTo),
+            Box::new(js::RouteType),
             Box::new(config::ConfigIgnored),
             Box::new(config::DefaultLayoutDrift),
             Box::new(config::LibVersion),

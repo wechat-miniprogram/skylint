@@ -5,6 +5,7 @@
 //! 都写在文件头，数据驱动的部分（不可用 API 表）放在 `rules/data/` 下。
 
 pub mod draggable_sheet_scroll_to;
+pub mod route_type;
 pub mod scroll_context_ref;
 pub mod unsupported_api;
 pub mod worklet_api_scope;
@@ -13,6 +14,7 @@ pub mod worklet_directive;
 pub mod worklet_es5;
 
 pub use draggable_sheet_scroll_to::DraggableSheetScrollTo;
+pub use route_type::RouteType;
 pub use scroll_context_ref::ScrollContextRef;
 pub use unsupported_api::UnsupportedApi;
 pub use worklet_api_scope::WorkletApiScope;

@@ -199,6 +199,9 @@ pub struct ArgInfo {
     pub object_keys: Vec<String>,
     /// `object_keys` 里每个键的字节区间，与它同序。
     pub object_key_spans: Vec<(u32, u32)>,
+    /// `object_keys` 里每个键的值，与它同序：值是字符串字面量时给出内容，其它
+    /// 形态（变量、模板字符串、调用结果等）为 `None`。
+    pub object_string_values: Vec<Option<String>>,
     /// 实参是内联函数（箭头函数 / 函数表达式）时，该函数是否声明了 `'worklet'`；
     /// 其它写法为 `None`。
     pub fn_worklet: Option<bool>,
@@ -469,9 +472,9 @@ fn callee_prefix(expr: &Expression) -> Option<String> {
 
 fn arg_info(arg: &Argument) -> ArgInfo {
     let span = arg.span();
-    let (object_keys, object_key_spans) = match arg {
-        Argument::ObjectExpression(object) => object_keys(object),
-        _ => (Vec::new(), Vec::new()),
+    let (object_keys, object_key_spans, object_string_values) = match arg {
+        Argument::ObjectExpression(object) => object_members(object),
+        _ => (Vec::new(), Vec::new(), Vec::new()),
     };
     let (fn_worklet, ident) = match arg {
         Argument::ArrowFunctionExpression(arrow) => (Some(arrow_has_worklet(arrow)), None),
@@ -484,6 +487,7 @@ fn arg_info(arg: &Argument) -> ArgInfo {
         end: span.end,
         object_keys,
         object_key_spans,
+        object_string_values,
         fn_worklet,
         ident,
     }
@@ -507,10 +511,14 @@ fn has_worklet_directive(body: &FunctionBody) -> bool {
         .any(|directive| directive.directive.as_str() == WORKLET)
 }
 
-/// 对象字面量的静态键与位置。计算键（`[x]`）跳过——它可能不是静态属性名。
-fn object_keys(object: &ObjectExpression) -> (Vec<String>, Vec<(u32, u32)>) {
+/// 对象字面量的静态键、键位置与字符串值。计算键（`[x]`）跳过——它可能不是静态
+/// 属性名；值只认字符串字面量，其余形态记 `None`。
+type ObjectMembers = (Vec<String>, Vec<(u32, u32)>, Vec<Option<String>>);
+
+fn object_members(object: &ObjectExpression) -> ObjectMembers {
     let mut keys = Vec::new();
     let mut spans = Vec::new();
+    let mut values = Vec::new();
     for property in &object.properties {
         let ObjectPropertyKind::ObjectProperty(property) = property else {
             continue;
@@ -527,8 +535,12 @@ fn object_keys(object: &ObjectExpression) -> (Vec<String>, Vec<(u32, u32)>) {
         let span = property.key.span();
         keys.push(name.to_string());
         spans.push((span.start, span.end));
+        values.push(match &property.value {
+            Expression::StringLiteral(literal) => literal.value.as_str().map(str::to_string),
+            _ => None,
+        });
     }
-    (keys, spans)
+    (keys, spans, values)
 }
 
 #[cfg(test)]
@@ -662,6 +674,35 @@ mod tests {
         assert_eq!(&src[start as usize..start as usize + 6], "pixels");
         // 非对象实参没有键。
         assert!(calls[0].args[0].object_keys.is_empty());
+    }
+
+    #[test]
+    fn object_argument_string_values_align_with_keys() {
+        let src = r#"wx.navigateTo({ url: 'a', routeType: "slide", dynamic: value, tpl: `x`, nested: { routeType: 'x' } });"#;
+        let doc = parse_js(src);
+        let arg = &doc.calls()[0].args[0];
+        assert_eq!(
+            arg.object_keys,
+            ["url", "routeType", "dynamic", "tpl", "nested"]
+        );
+        // 与 object_keys 同序；只有字符串字面量取得到内容。
+        assert_eq!(
+            arg.object_string_values,
+            [
+                Some("a".to_string()),
+                Some("slide".to_string()),
+                None,
+                None,
+                None
+            ]
+        );
+        // 非对象实参没有值列表。
+        assert!(
+            parse_js("f('x', 1);").calls()[0]
+                .args
+                .iter()
+                .all(|arg| arg.object_string_values.is_empty())
+        );
     }
 
     #[test]
