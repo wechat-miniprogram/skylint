@@ -171,7 +171,8 @@ text-decoration-line 单值、calc 角度、mask-image 渐变。
 - `skyline/text-overflow-ellipsis`：`text-overflow: ellipsis` 在 Skyline 下只对 `<text>`
   生效。判定 = 选择器命中的节点及其后代里有没有 `<text>`（可继承）；选择器只认能静态
   判定的形状（tag / `.class` / `#id`），组合符、伪类、属性选择器、动态属性一律放过。
-  逗号分隔的选择器各判各的。
+  逗号分隔的选择器各判各的。`.wxss` / `.less` / `.scss` 一视同仁——这三条规则早期按
+  文件后缀过滤，等于在样式源全是预处理器的工程上从不生效（见下）。
 
 样式图的覆盖面变化（真实工程实测）：`@import` 进来的样式文件以前完全没被检查过。
 `businessview` 从 16 error / 91 warning 变成 50 error / 538 warning——新增的全部落在
@@ -227,9 +228,17 @@ LESS，外加缩进语法）都是同一个 `Syntax` 枚举，差异只剩摊平
   判定要用「页面用了哪些组件」，为此 `Project` 记下了 `deps`（单元 → 直接引用的组件），
   提供 `page_components()` / `component_pages()` 两个传递闭包。
 
-真实工程结果：四个工程都是 0 命中，原因经核对是**真的没有**这种写法，不是规则坏了——
-非全局 wxss 里的纯标签选择器只有 `page {}`（`page` 是页面自身节点，同作用域），
-没有页面级 `view {}` 依赖。规则属于防御性的：它只在「确实命中了别的单元的节点」时开口，
+**两条规则原先按 `.wxss` 后缀过滤，预处理器工程上一条都跑不到。** 去掉后实测：
+businessview +10（`text-overflow-ellipsis` 2 条、`tag-selector-isolation` 8 条），其余三个
+工程 0 变化。逐条核对为真：`b2c-bind/pages/bind-employee/bind-employee.scss:10` 的
+`.ellipsis { text-overflow: ellipsis }` 作用在 `<view class="nickname ellipsis">` 上（Skyline
+下不生效）；`phone-numbers/style/default-box-sizing.scss:2` 是 `page, view, text, image, …`
+的标签选择器全局重置，命中组件内部节点（Skyline 下标签选择器不跨组件，组件内全部丢
+`box-sizing`）。这正是老 WebView 工程迁移时最典型的坑，也说明「按后缀过滤」把规则的实际
+覆盖率降到了 0。
+
+去掉后缀过滤之前，非全局 wxss 里的纯标签选择器只有 `page {}`（页面自身节点，同作用域），
+所以曾经四个工程都是 0 命中。规则仍然只在「确实命中了别的单元的节点」时开口，
 所以不产生推测性告警。
 
 剩余：`scroll-view` 直接子节点 margin、类名可达性。

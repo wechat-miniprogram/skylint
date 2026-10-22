@@ -69,9 +69,6 @@ impl crate::rules::Rule for TagSelectorIsolation {
 
         for sheet in &project.styles {
             let doc = &sheet.doc;
-            if !doc.path().to_ascii_lowercase().ends_with(".wxss") {
-                continue;
-            }
             for scope in &sheet.scopes {
                 let (foreign, legacy) = match scope {
                     // app.wxss 走全局规则表，不分作用域，不受影响
@@ -220,6 +217,37 @@ mod tests {
     }
 
     // ---- positive ----
+
+    #[test]
+    fn preprocessor_style_source_is_checked_too() {
+        // 老工程的标签选择器全局重置常写在 .scss / .less 里（default-box-sizing.scss），
+        // 按后缀跳过等于这条规则在迁移目标工程上从不生效。
+        let fixture = Fixture::new("scss-tag");
+        fixture
+            .write(
+                "project.config.json",
+                r#"{"miniprogramRoot":"","setting":{"useCompilerPlugins":["sass"]}}"#,
+            )
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"c":"/components/c/c"}}"#,
+            )
+            .write(
+                "pages/index/index.wxml",
+                r#"<view class="page"><c/></view>"#,
+            )
+            .write("pages/index/index.scss", "view { color: red; }")
+            .write("components/c/c.json", "{}")
+            .write("components/c/c.wxml", r#"<view class="inner"/>"#)
+            .write("components/c/c.scss", "");
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].path, "pages/index/index.scss");
+    }
 
     #[test]
     fn page_tag_selector_matching_component_node_is_reported() {

@@ -41,9 +41,6 @@ impl crate::rules::Rule for TextOverflowEllipsis {
 
         for sheet in &project.styles {
             let doc = &sheet.doc;
-            if !doc.path().to_ascii_lowercase().ends_with(".wxss") {
-                continue;
-            }
             for rule in &doc.rules {
                 let Some(decl) = rule.declaration("text-overflow") else {
                     continue;
@@ -148,6 +145,33 @@ mod tests {
     }
 
     // ---- positive ----
+
+    #[test]
+    fn preprocessor_style_source_is_checked_too() {
+        // 真实工程的样式源常常只有 .scss / .less；按后缀跳过等于这条规则从未生效。
+        let fixture = Fixture::new("scss-source");
+        fixture
+            .write(
+                "project.config.json",
+                r#"{"miniprogramRoot":"","setting":{"useCompilerPlugins":["sass"]}}"#,
+            )
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<view class="title">标题</view>"#,
+            )
+            .write(
+                "pages/index/index.scss",
+                ".title { text-overflow: ellipsis; }",
+            );
+        let diagnostics = TextOverflowEllipsis.check(&fixture.project());
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].path, "pages/index/index.scss");
+    }
 
     #[test]
     fn view_with_plain_text_is_reported() {
