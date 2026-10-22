@@ -1,8 +1,10 @@
 use std::collections::HashSet;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
+use skylint_core::report::Style;
 use skylint_core::{Project, Registry, Report, suppress};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -53,7 +55,20 @@ fn main() -> ExitCode {
     let report = Report::new(&project, diagnostics);
 
     match cli.format {
-        Format::Text => print!("{}", report.to_text()),
+        Format::Text => print!(
+            "{}",
+            report.to_text(
+                |path| std::fs::read_to_string(project.abs(path)).ok(),
+                Style {
+                    colored: std::io::stdout().is_terminal(),
+                    // 片段折行阈值；没有 COLUMNS 时给一个宽于常见终端的值
+                    width: std::env::var("COLUMNS")
+                        .ok()
+                        .and_then(|c| c.parse().ok())
+                        .unwrap_or(100),
+                }
+            )
+        ),
         Format::Json => println!("{}", report.to_json()),
     }
 

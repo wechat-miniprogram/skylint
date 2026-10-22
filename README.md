@@ -14,7 +14,33 @@ Skyline 小程序迁移检查工具。
 进度与设计见 [docs/PLAN.md](docs/PLAN.md)。
 
 当前可用：工程视图（路由 → 实际源文件、组件闭包、Skyline 页面判定）、16 条规则、
-text/json 报告、退出码。
+终端报告（源码片段 + 行列定位）、json 报告、退出码。
+
+## 输出
+
+默认输出按条渲染成源码片段，定位到**行列**（`path:line:col` 在片段头里）：
+
+```
+skyline/unsupported-component
+
+  × Skyline 不支持组件 `<navigation-bar>`
+   ╭─[pages/index/index.wxml:2:4]
+ 1 │ <view class="cnt">
+ 2 │   <navigation-bar class="navigation-bar" bind:back="onBack"></navigation-bar>
+   ·    ──────────────
+ 3 │   <view class="header">
+   ╰────
+  help: Skyline 只能用自定义导航
+
+0 error, 1 warning, 0 info (14 pages, 13 skyline, 12 components)
+```
+
+渲染用 [miette](https://docs.rs/miette) 的图形报告，和 minidev 的错误出口同一套主题：
+非 TTY（管道、CI 日志）自动关色。超长行不折行（WXML 常整段写一行，折了反而读不出来）。
+
+- 规则 id 在上方独立一行，可直接喂给 `--ignore`；
+- 下划线覆盖出问题的那个 token（标签名、属性名、声明值、文本节点）；
+- 末行是计数与工程规模，退出码只由 error 决定。
 
 ## 规则
 
