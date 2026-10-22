@@ -1,8 +1,9 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
-use skylint_core::{Project, Report};
+use skylint_core::{Project, Registry, Report};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Format {
@@ -20,6 +21,10 @@ struct Cli {
     /// 输出格式
     #[arg(long, value_enum, default_value_t = Format::Text)]
     format: Format,
+
+    /// 跳过的规则 id（可重复）
+    #[arg(long = "ignore", value_name = "RULE")]
+    ignore: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -33,8 +38,9 @@ fn main() -> ExitCode {
         }
     };
 
-    // 规则尚未接入：先只验证工程视图与报告管道。
-    let report = Report::new(&project, Vec::new());
+    let ignored: HashSet<String> = cli.ignore.into_iter().collect();
+    let diagnostics = Registry::builtin().run(&project, &ignored);
+    let report = Report::new(&project, diagnostics);
 
     match cli.format {
         Format::Text => print!("{}", report.to_text()),

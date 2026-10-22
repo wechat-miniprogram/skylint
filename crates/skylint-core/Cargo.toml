@@ -13,5 +13,7 @@ compiler-diag = { workspace = true }
 compiler-graph = { workspace = true }
 
 anyhow = { workspace = true }
+cssparser = "0.34"
+glass-easel-template-compiler = "1.2.0"
 serde = { workspace = true }
 serde_json = { workspace = true }

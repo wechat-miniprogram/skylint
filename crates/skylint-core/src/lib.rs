@@ -8,9 +8,12 @@
 //! 类型——依赖换源或将来完全脱离 minidev 时只改那一处。
 
 pub mod diag;
+pub mod input;
 pub mod project;
 pub mod report;
+pub mod rules;
 
 pub use diag::{Diagnostic, Severity};
 pub use project::{ComponentUnit, PageUnit, Project};
 pub use report::Report;
+pub use rules::{Registry, Rule, RuleMeta};
