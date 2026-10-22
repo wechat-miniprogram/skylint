@@ -19,3 +19,11 @@ glass-easel-template-compiler = "1.2.0"
 oxc-css-parser = "=0.0.17"
 serde = { workspace = true }
 serde_json = { workspace = true }
+# JS / TS 前端。与 oxc-css-parser 复用同一条 0.155 版本线（同一套 Allocator），
+# 同样是 0.x，全部精确锁版本，避免 allocator 跨版本混用。
+oxc_parser = "=0.155.0"
+oxc_ast = "=0.155.0"
+oxc_ast_visit = "=0.155.0"
+oxc_allocator = "=0.155.0"
+oxc_span = "=0.155.0"
+oxc_syntax = "=0.155.0"
