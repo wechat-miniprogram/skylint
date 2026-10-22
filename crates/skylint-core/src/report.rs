@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 
 use miette::{
@@ -43,12 +43,6 @@ pub struct Summary {
     pub errors: usize,
     pub warnings: usize,
     pub infos: usize,
-    /// 被跳过的样式源，按扩展名计数（`{"less": 67}`）。
-    ///
-    /// 样式规则只解析 `.wxss`：`cssparser` 不展开 `.less`/`.scss` 的嵌套、
-    /// 变量与 mixin，硬解析会静默漏判。这里如实报出来，避免「0 问题」的假象。
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub skipped_styles: BTreeMap<String, usize>,
 }
 
 impl Report {
@@ -59,20 +53,12 @@ impl Report {
         diagnostics.sort_by(|a, b| {
             (&a.path, a.line, a.column, &a.rule).cmp(&(&b.path, b.line, b.column, &b.rule))
         });
+        // 预处理器嵌套会让同一选择器出现多次（`.a { &:hover {} @media { &:hover {} } }`
+        // 摊平后 `.a:hover` 有两条规则），选择器类规则于是重复报同一条。全字段相同的
+        // 诊断不携带额外信息，直接去掉。
+        diagnostics.dedup();
 
         let count = |s: Severity| diagnostics.iter().filter(|d| d.severity == s).count();
-        let mut skipped_styles = BTreeMap::new();
-        for sheet in &project.styles {
-            let ext = sheet
-                .doc
-                .path()
-                .rsplit_once('.')
-                .map(|(_, ext)| ext.to_ascii_lowercase())
-                .unwrap_or_default();
-            if ext != "wxss" {
-                *skipped_styles.entry(ext).or_insert(0) += 1;
-            }
-        }
         Self {
             summary: Summary {
                 pages: project.pages.len(),
@@ -81,7 +67,6 @@ impl Report {
                 errors: count(Severity::Error),
                 warnings: count(Severity::Warning),
                 infos: count(Severity::Info),
-                skipped_styles,
             },
             diagnostics,
         }
@@ -146,18 +131,6 @@ impl Report {
             "{} error, {} warning, {} info ({} pages, {} skyline, {} components)",
             s.errors, s.warnings, s.infos, s.pages, s.skyline_pages, s.components
         );
-        if !s.skipped_styles.is_empty() {
-            let list = s
-                .skipped_styles
-                .iter()
-                .map(|(ext, count)| format!("{count} 个 .{ext}"))
-                .collect::<Vec<_>>()
-                .join("、");
-            let _ = writeln!(
-                out,
-                "未检查：{list} 样式源（暂不支持预处理器，这些文件的样式规则没有执行）"
-            );
-        }
         out
     }
 
@@ -243,47 +216,9 @@ mod tests {
                 errors: 0,
                 warnings: 1,
                 infos: 0,
-                skipped_styles: BTreeMap::new(),
             },
             diagnostics: vec![d],
         }
-    }
-
-    /// 预处理器样式源必须显式报出来：否则 .less/.scss 工程看到「0 问题」会以为
-    /// 样式没问题。
-    #[test]
-    fn reports_skipped_preprocessor_sources() {
-        let fixture = crate::rules::wxss::testutil::Fixture::new("skipped-styles");
-        // 预处理器要 project.config.json 里声明，否则 Resolver 不会把 .wxss 映射到 .scss
-        fixture
-            .write(
-                "project.config.json",
-                r#"{"miniprogramRoot":"","setting":{"useCompilerPlugins":["sass"]}}"#,
-            )
-            .write(
-                "app.json",
-                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
-            )
-            .write("pages/index/index.json", "{}")
-            .write("pages/index/index.wxml", "<view/>")
-            .write("pages/index/index.wxss", ".a { color: red; }")
-            .write("pages/about/about.json", "{}")
-            .write("pages/about/about.wxml", "<view/>")
-            .write("pages/about/about.less", ".a { color: red; }");
-        // about 页在 app.json 里没有声明，换成组件入口
-        fixture
-            .write("app.json", r#"{"pages":["pages/index/index"]}"#)
-            .write("components/c/c.json", "{}")
-            .write("components/c/c.wxml", "<view/>")
-            .write("components/c/c.scss", ".b { color: red; }")
-            .write(
-                "pages/index/index.json",
-                r#"{"usingComponents":{"c":"/components/c/c"}}"#,
-            );
-        let report = Report::new(&fixture.project(), Vec::new());
-        assert_eq!(report.summary.skipped_styles.get("scss"), Some(&1));
-        let text = report.to_text(|_| None, Style::default());
-        assert!(text.contains("1 个 .scss"), "{text}");
     }
 
     #[test]

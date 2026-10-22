@@ -6,7 +6,13 @@ use crate::{Diagnostic, Severity};
 /// 值里含变量 / 插值时运行时才能确定，一律跳过。
 pub(crate) fn is_dynamic(value: &str) -> bool {
     let lower = value.to_ascii_lowercase();
-    lower.contains("var(") || lower.contains("env(") || value.contains("{{")
+    lower.contains("var(")
+        || lower.contains("env(")
+        || value.contains("{{")
+        // 预处理器变量 / 插值：静态求值不了
+        || value.contains('$')
+        || value.contains("#{")
+        || value.trim_start().starts_with('@')
 }
 
 /// 按顶层逗号切分，括号 / 方括号 / 引号内的逗号不切。

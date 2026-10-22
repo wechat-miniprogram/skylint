@@ -26,6 +26,11 @@ impl Rule for FlexDirection {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
             for rule in &doc.rules {
+                // 无选择器的块是预处理器的 mixin 函数体：它只是片段，`display: flex`
+                // 和 `flex-direction` 可能分散在定义处与调用处，判不了也不该判。
+                if rule.selectors.is_empty() {
+                    continue;
+                }
                 if rule.declaration("flex-direction").is_some() {
                     continue;
                 }

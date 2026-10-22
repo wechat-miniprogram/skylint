@@ -41,6 +41,9 @@ use crate::project::Project;
 
 /// 遍历全部样式文件（页面 / 组件 / `app.wxss` / 被 `@import` 进来的）。
 ///
+/// `.wxss` / `.less` / `.scss` 一视同仁：预处理器在 `input::wxss` 里已按同一套
+/// 语法摊平成规则（嵌套、`&`、at-rule 容器）。
+///
 /// 数据来自 `Project.styles`：建图时已经解析过一遍，规则侧不重复读盘。不按
 /// `is_skyline` 过滤：这是**迁移**检查工具，目标用户是还在 WebView 上的项目。
 /// 若只查已迁移的页面，纯 WebView 工程会一条都不报，「迁移前拿到问题清单」的用途
@@ -51,10 +54,7 @@ pub(crate) fn visit(
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for sheet in &project.styles {
-        // 单文件读失败 / 解析失败 / 非 `.wxss` 源（`.less`、`.scss`）一律跳过，不终止扫描。
-        if !sheet.doc.path().to_ascii_lowercase().ends_with(".wxss") {
-            continue;
-        }
+        // 单文件读失败 / 解析失败一律跳过，不终止扫描。
         f(&sheet.doc, &mut out);
     }
     out

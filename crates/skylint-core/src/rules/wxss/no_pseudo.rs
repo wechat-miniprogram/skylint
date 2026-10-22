@@ -211,7 +211,7 @@ mod tests {
         .write("pages/b/b.json", "{}")
         .write("pages/b/b.wxml", "<view/>")
         .write_bytes("pages/b/b.wxss", &[0xff, 0xfe, 0x00])
-        // less 源：P0 只检查 .wxss，跳过。
+        // less 源：预处理器语法同样解析（嵌套摊平），要查。
         .write("pages/c/c.json", "{}")
         .write("pages/c/c.wxml", "<view/>")
         .write("pages/c/c.less", ".c:hover { color: red; }")
@@ -226,12 +226,13 @@ mod tests {
 
         let project = f.project();
         let diags = NoPseudo.check(&project);
-        assert_eq!(diags.len(), 3);
+        assert_eq!(diags.len(), 4);
         let paths: HashSet<_> = diags.iter().map(|d| d.path.as_str()).collect();
         assert_eq!(
             paths,
             HashSet::from([
                 "pages/a/a.wxss",
+                "pages/c/c.less",
                 "pages/legacy/legacy.wxss",
                 "components/nav/nav.wxss",
             ])

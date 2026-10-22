@@ -75,18 +75,23 @@ skyline/unsupported-component
 app 级 `"renderer": "webview"`、页面没表态的不跳——那只是「还没迁」，正是要检查的对象。
 组件的 wxml 没有 renderer，一律检查；wxss 无法按页归属（`@import` / `app.wxss` 共享），同样不跳。
 
-## 已知盲区：预处理器
+## 预处理器（`.less` / `.scss`）
 
-样式规则只解析 `.wxss` 源文件。`.less` / `.scss` 的嵌套、变量、mixin 用 `cssparser` 静态展不开
-（实测 `.a { display: flex; .b { … } }` 只出来 `.a` 一条规则），硬解析会静默漏判——所以宁可跳过，
-但在报告末尾如实报出数量：
+三种后缀走同一个解析器，`.wxss` 之外的文件不再被跳过。预处理器差异只体现在把嵌套摊平：
 
-```
-0 error, 3 warning, 0 info (11 pages, 11 skyline, 28 components)
-未检查：40 个 .less 样式源（暂不支持预处理器，这些文件的样式规则没有执行）
-```
+| 写法 | 处理 |
+|---|---|
+| `.a { .b { … } }` | 摊平成 `.a .b`（SASS / LESS 的后代语义） |
+| `.a { &:hover { … } }`、`.block { &-title { … } }` | `&` 原地替换 → `.a:hover`、`.block-title` |
+| `.a { @media … { … } }` | 选择器上下文保留，声明归属 `.a` |
+| `@mixin` / `@if` / `@include` / `@each` | 透明块，声明记到当前选择器；顶层 mixin 函数体没有选择器 |
+| `//` 行注释 | 仅 `.less` / `.scss` 视为注释（`.wxss` 里不是） |
+| `.mixin(@x) { … }` | 识别为混入定义，不当选择器 |
+| `$var` / `@var` / `#{…}` | 原样保留，值类规则看到变量就跳过 |
 
-JSON 报告里对应 `summary.skippedStyles`（按扩展名计数，为空时该字段不出现）。
+**不做的**：变量求值、mixin 展开、`@extend`、条件求值、`@function` 返回值。这些不解的后果是
+保守的：值里含 `$`/`@`/`#{` 就不判（宁可漏报）；无选择器的函数体只做属性级检查
+（属性本身不支持，与调用处无关），pairwise 规则（如 `display: flex` 配 `flex-direction`）跳过。
 
 ## 构建
 

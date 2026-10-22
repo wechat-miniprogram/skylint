@@ -418,7 +418,9 @@ fn collect_styles(
         // WXSS 的 @import 只认相对路径与根路径（`/a.wxss`）；.less/.scss 的变量式导入
         // 在这里解析不到，跳过即可——它们本来也不在 wxss 图里。
         for import in &doc.imports {
-            if let Some(target) = resolve_style_import(&path, &import.target) {
+            if let Some(target) =
+                resolve_style_import(root, miniprogram_root, &path, &import.target)
+            {
                 queue.push((target, scope.clone()));
             }
         }
@@ -436,8 +438,16 @@ fn collect_styles(
         .collect()
 }
 
-/// `@import "a.wxss"` → 项目相对路径（相对引用方目录，`/` 开头按主包根）。
-fn resolve_style_import(from: &str, target: &str) -> Option<String> {
+/// `@import` 目标 → 项目相对路径（必须是真实存在的文件）。
+///
+/// 预处理器里 `@import "base"` 可以省后缀、也可以指向 `_base.scss` 这类 partial，
+/// 所以按「同名 + 同后缀 → 下划线 partial」的顺序试，取第一个存在的。
+fn resolve_style_import(
+    root: &Path,
+    miniprogram_root: &str,
+    from: &str,
+    target: &str,
+) -> Option<String> {
     let target = target.trim().trim_matches(['"', '\'']);
     if target.is_empty() || target.starts_with("http") {
         return None;
@@ -447,7 +457,25 @@ fn resolve_style_import(from: &str, target: &str) -> Option<String> {
     } else {
         posix_join(&posix_dirname(from), target)
     };
-    Some(posix_join("", &joined))
+    let dir = posix_dirname(&joined);
+    let name = joined
+        .rsplit_once('/')
+        .map_or(joined.as_str(), |(_, name)| name);
+    let ext = from.rsplit_once('.').map(|(_, ext)| ext).unwrap_or("wxss");
+
+    let candidates = if name.contains('.') {
+        vec![joined]
+    } else {
+        vec![
+            posix_join(&dir, &format!("{name}.{ext}")),
+            posix_join(&dir, &format!("_{name}.{ext}")),
+        ]
+    };
+    candidates.into_iter().find(|candidate| {
+        root.join(miniprogram_root)
+            .join(candidate.as_str())
+            .is_file()
+    })
 }
 
 fn resolve_unit_files(resolver: &Resolver, unit: &str) -> UnitFiles {

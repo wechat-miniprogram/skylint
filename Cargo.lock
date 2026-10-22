@@ -1478,7 +1478,6 @@ dependencies = [
  "compiler-common",
  "compiler-diag",
  "compiler-graph",
- "cssparser",
  "glass-easel-template-compiler",
  "miette",
  "serde",

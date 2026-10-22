@@ -178,14 +178,30 @@ text-decoration-line 单值、calc 角度、mask-image 渐变。
 `@import` 进来的 `weui.wxss` 等文件上，是覆盖率提升而不是新误报（最集中的一条是
 `no-pseudo` 在 `weui.wxss` 上的 237 条，两份分包拷贝各一份）。
 
-**已知盲区：预处理器。** 三个真实工程的样式源几乎都是 `.less` / `.scss`
+**预处理器：自己写了摊平层，不再吞文件。** 三个真实工程的样式源几乎都是 `.less` / `.scss`
 （miniprogram-novel 27 less / 1 wxss，miniprogram-skit_1 67 less / 0 wxss，
-businessview 82 scss / 13 wxss）。`cssparser` 对嵌套语法并不实现展开（实测
-`.a { display:flex; .b { … } }` 只出 `.a` 一条规则），变量、mixin、`&` 也无法静态求值，
-所以当前所有样式规则只作用于 `.wxss` 源文件——对 `.less`/`.scss` 工程等于没检查。
-这是路线问题，不是补丁能解决的。当前处理：报告末尾输出「未检查：N 个 .less/.scss 样式源」
-（JSON 里是 `summary.skippedStyles`），不让「0 问题」变成假象。解析预处理器 / 改 lint 编译产物
-两条路线都留待单独决策。
+businessview 82 scss / 13 wxss）。原先用 `cssparser`，它对嵌套不展开（实测
+`.a { display:flex; .b { … } }` 只出 `.a` 一条规则），等于样式规则在这些工程上一条都跑不到。
+
+结论是 `cssparser` 这条路走不通，不是因为「要不要解预处理器」，而是因为它的容忍模型跟
+预处理器语法冲突：SASS 声明可以不带分号、LESS 用 `//` 注释，`cssparser` 遇到就整块丢弃，
+再叠加不展开嵌套——两件事都必须解决才能用。
+
+改成自写扫描器（`input/wxss.rs`，替换 `cssparser`，依赖减一）：同一套代码吃 `.wxss` /
+`.less` / `.scss`，差异只在「怎么摊平嵌套」——`&` 原地替换、后代组合器拼接、
+`@media` 保留父选择器上下文、`@mixin`/`@if` 透明、`.mixin(@x)` 识别为函数体、
+`#{…}`/`@{…}` 插值整体跳过。**不做**变量求值/mixin 展开/`@extend`/条件求值，代价是保守：
+值里含 `$`/`@`/`#{` 就不判；无选择器的函数体只做属性级检查（属性本身不支持与调用处无关），
+pairwise 规则（`display:flex` 配 `flex-direction`）跳过。
+
+覆盖面变化（真实工程）：miniprogram-novel 0e/11w → 0e/95w，miniprogram-skit_1 0e/3w →
+1e/101w，businessview 50e/538w → 59e/766w。抽查确认新命中都是真的（`float`、
+`mask-position`、`filter: drop-shadow`、嵌套块里的 `display:flex` 缺方向），
+选择器摊平也正确（`.cnt .subscribe-list .subscribe-item:last-child`）。
+
+顺带修掉一个预处理器独有的重复：`&:hover` 在裸块和 `@media` 块里各写一次时，摊平后是
+两条同选择器规则，选择器类规则会重复报同一条。`Report::new` 在排序后 `dedup`——全字段
+相同的诊断不携带信息（businessview 的 `no-pseudo` 499 → 488）。
 
 - `skyline/tag-selector-isolation`：标签 / id 选择器在 Skyline 下不跨组件匹配。
   引擎证据在 `skyline/style/selector_matcher.cc`：页面/组件样式表走 `MatchScopedRules`，
