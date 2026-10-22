@@ -317,9 +317,39 @@ zoomOut/deepthPage`（不是 `scaleTinder/...`）；`indicator-type` 是 16 个�
 `miniprogramRoot`（`project.rs:103-114`），插件源码整块没进扫描——它的 3 条诊断只覆盖
 miniprogram 侧。补插件根要处理 scope 归属（插件页面/组件不属于主包页面集合），单独评估。
 
-### P4 JS（约 30 条）
+### P4 JS（worklet / API 禁令 / 路由）
 
-worklet（`'worklet'` 声明、`runOnJS`、禁 `wx` API）、路由、`setData`。swc 版本与 minidev 对齐。
+`[x]` 已落地，前端是 `oxc_parser` 0.155，不是 swc。
+
+选 oxc 的理由：`oxc_allocator` 0.155 已经在依赖树里（`oxc-css-parser` 用的就是它），同一版本线
+复用一套 allocator，CSS 与 JS 共用一个前端家族。代价是 +24 个包（`cargo tree` 408 → 520 行）。
+原计划「与 minidev 的 swc 版本对齐」不成立——skylint 是独立仓库，不需要和 minidev 共用 AST 类型。
+
+`input/js.rs` 是 owned 模型（源码 String + 四个聚合查询），刻意不自引用 `Allocator`：
+`functions()`（名字/指令序言/函数体 span）、`calls()`（callee 点号链、`worklet_scope` 取最近外层
+函数、实参对象静态键与键位置、内联函数指令状态、裸标识符名）、`object_fns()`（对象字面量里
+值是函数或裸标识符的属性 + 键位置）、`this_data_destructures()`（解构点 + 是否在 worklet 内）。
+**出了 `parse` 就没有 AST**，所以「在不在 worklet 内」「这个实参是不是内联函数」必须遍历时定死，
+不能由规则侧事后补算——这是这四个查询存在而不做通用 AST 暴露的原因。
+
+规则（5 条）：`unsupported-api`（数据表 `call:` / `page-option:` / `plugin-call:` 三种前缀，
+`this.animate`、`Page.onPageScroll`、插件内 `wx.router.*`）、`worklet-api-scope`
+（`scrollViewContext.scrollTo` 只能在 worklet 内、worklet 内不能调 `wx.*`、插件内不支持）、
+`scroll-context-ref`（用 `scrollViewContext.scrollTo` 前必须有 `.ref()`）、
+`draggable-sheet-scroll-to`（`size` 与 `pixels` 同时传）、`worklet-directive`（`worklet:` 绑定 /
+`applyAnimatedStyle` 的 updater / 路由 builder 返回的 `handle*Animation`）、
+`worklet-data-freeze`（worklet 内解构 `this.data`）、`worklet-es5`（用 worklet 但没开 `setting.es6`）。
+
+**路由那一处我判错过，记在这里。** 最初让 #153 判 `addRouteBuilder(type, builder)` 的 builder
+本身要有 `'worklet'`——依据是从文档 grep 到 `'worklet'` 命中。实际 `router-api.md:65` 的硬约束是
+builder **返回对象**里的 `handlePrimaryAnimation` / `handleSecondaryAnimation` /
+`handlePreviousPageAnimation`，官方示例里 builder 本身没有指令。按原口径会把所有照官方示例写的
+工程判成 error。**grep 到某个词只能说明「这里有」，不能说明「必须在这里」。**
+
+已知盲区：`const h = method((e) => { 'worklet' ... })` 这种包装写法，箭头是 `method(...)` 的实参，
+输入层刻意不给被包装的箭头命名（否则 `const f = wrap(() => {})` 里的箭头会误叫 `f`），所以
+`worklet-directive` 按名字查不到 → 不报。方向是漏报，但要覆盖需要「变量名 → 初始化表达式内唯一
+函数」的绑定分析。
 
 ### 不做
 
@@ -334,6 +364,10 @@ autofix；14 条只能运行时判定的条目；`app.json` 自动改写。
 | WxssStructure | `oxc-css-parser` 0.0.17（只保留摊平，见 P3） | 语义类、跨文件类 |
 | WxssSemantics | float_pigment hook（feature-gated，默认不用） | 值支持类兜底 |
 | JsonView | 原始 JSON + offset 索引 | 配置类 |
+| JsView | `oxc_parser` 0.155（与 CSS 前端共用 `oxc_allocator` 版本线） | worklet / API 禁令 |
+
+`JsView` 是 owned 模型：`Project.scripts` 持有 app.js + 每个页面 + 每个可达组件的源码与
+`JsDoc`，按 path 去重。聚合统计（如「工程里有没有 worklet」）用一次过滤算出来，不做增量缓存。
 
 值支持类只读 `WxssSemantics`，语义/结构类只读 `WxssStructure`——两族不共享判定，
 所以不会出现「同一行一条说解析失败、一条说不支持」，也不需要关联两遍解析结果。

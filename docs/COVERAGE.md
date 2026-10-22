@@ -1,8 +1,8 @@
 # 知识库约束覆盖台账
 
-分母：171 条（口径：给定输入文件即可静态判定真假）。
+分母：173 条（口径：给定输入文件即可静态判定真假；其中 #172/#173 是实现期补入的审计漏项）。
 
-统计：已实现 104 条 / 待实现 62 条 / 不实现 5 条。
+统计：已实现 143 条 / 待实现 0 条 / 不实现 30 条。
 
 | # | 分组 | 约束（一句话） | 证据 | 状态 | 规则 / 理由 |
 |---|------|----------------|------|------|-------------|
@@ -63,19 +63,19 @@
 | 55 | 1A WXSS 值 | `background-repeat` 不支持多组值 | skyline-skills/skills/skyline-wxss/SKILL.md:87 | 已实现 | `skyline/multi-value-limit` |
 | 56 | 1A WXSS 值 | `background-size` 不支持多组值 | skyline-skills/skills/skyline-wxss/SKILL.md:87 | 已实现 | `skyline/multi-value-limit` |
 | 57 | 1A WXSS 值 | `calc()` 不支持角度计算 | skyline-skills/skills/skyline-wxss/SKILL.md:91 | 已实现 | `skyline/calc-angle` |
-| 58 | 1A WXSS 值 | `background` 简写中 attachment/origin/clip 不生效 | skyline-skills/skills/skyline-wxss/SKILL.md:115 | 待实现 | 缺简写子属性失效分析 |
-| 59 | 1A WXSS 值 | `text-decoration` 简写中 thickness 不生效 | skyline-skills/skills/skyline-wxss/SKILL.md:116 | 待实现 | 缺简写子属性失效分析 |
-| 60 | 1A WXSS 值 | `mask` 简写中 origin/clip 不生效 | skyline-skills/skills/skyline-wxss/SKILL.md:117 | 待实现 | 缺简写子属性失效分析 |
+| 58 | 1A WXSS 值 | `background` 简写中 attachment/origin/clip 不生效 | skyline-skills/skills/skyline-wxss/SKILL.md:115 | 已实现 | `skyline/shorthand-partial` |
+| 59 | 1A WXSS 值 | `text-decoration` 简写中 thickness 不生效 | skyline-skills/skills/skyline-wxss/SKILL.md:116 | 已实现 | `skyline/shorthand-partial` |
+| 60 | 1A WXSS 值 | `mask` 简写中 origin/clip 不生效 | skyline-skills/skills/skyline-wxss/SKILL.md:117 | 已实现 | `skyline/shorthand-partial` |
 | 61 | 1A WXSS 值 | `env()` 仅支持四个 safe-area 变量 | skyline-skills/skills/skyline-wxss/references/basics.md:24 | 已实现 | `skyline/value-degraded` |
-| 62 | 1A WXSS 值 | transition/animation 不支持布局属性 | skyline-skills/skills/skyline-wxss/references/animation.md:35 | 待实现 | 缺 transition 可动画属性白名单 |
-| 63 | 1A WXSS 值 | `transition-property` 仅支持文档列出的可动画属性 | skyline-skills/skills/skyline-wxss/references/animation.md:58-61 | 待实现 | 缺 transition-property 值白名单 |
-| 64 | 1B 默认值/选择器 | Skyline 下元素默认 `display: flex` | skyline-skills/skills/skyline-wxss/SKILL.md:163 | 待实现 | 缺默认 display 语义检测 |
-| 65 | 1B 默认值/选择器 | Skyline 下 `position` 默认 relative | skyline-skills/skills/skyline-wxss/SKILL.md:164 | 待实现 | 缺 position 默认值漂移检测 |
-| 66 | 1B 默认值/选择器 | Skyline 下 `box-sizing` 默认 border-box | skyline-skills/skills/skyline-wxss/SKILL.md:165 | 待实现 | 缺 box-sizing 默认值漂移检测 |
+| 62 | 1A WXSS 值 | transition/animation 不支持布局属性 | skyline-skills/skills/skyline-wxss/references/animation.md:35 | 已实现 | `skyline/transition-property` |
+| 63 | 1A WXSS 值 | `transition-property` 仅支持文档列出的可动画属性 | skyline-skills/skills/skyline-wxss/references/animation.md:58-61 | 已实现 | `skyline/transition-property` |
+| 64 | 1B 默认值/选择器 | Skyline 下元素默认 `display: flex` | skyline-skills/skills/skyline-wxss/SKILL.md:163 | 已实现 | `skyline/default-layout-drift`（工程级：app 级未开 `defaultDisplayBlock` 时一条 info） |
+| 65 | 1B 默认值/选择器 | Skyline 下 `position` 默认 relative | skyline-skills/skills/skyline-wxss/SKILL.md:164 | 已实现 | `skyline/default-layout-drift`（无开关可对齐，并入 #64 那条 info 的消息，不单独成条） |
+| 66 | 1B 默认值/选择器 | Skyline 下 `box-sizing` 默认 border-box | skyline-skills/skills/skyline-wxss/SKILL.md:165 | 已实现 | `skyline/default-layout-drift`（工程级：app 级未开 `defaultContentBox` 时一条 info） |
 | 67 | 1B 默认值/选择器 | Skyline 下 `flex-direction` 默认 column | skyline-skills/skills/skyline-wxss/SKILL.md:166 | 已实现 | `skyline/flex-direction` |
-| 68 | 1B 默认值/选择器 | Skyline 下 `align-items` 默认 stretch | skyline-skills/skills/skyline-wxss/SKILL.md:167 | 待实现 | 缺 align-items 默认值漂移检测 |
-| 69 | 1B 默认值/选择器 | Skyline 下 `text-align` 默认 start | skyline-skills/skills/skyline-wxss/SKILL.md:168 | 待实现 | 缺 text-align 默认值漂移检测 |
-| 70 | 1B 默认值/选择器 | Skyline 下 `mask-repeat` 默认 no-repeat | skyline-skills/skills/skyline-wxss/SKILL.md:169 | 待实现 | 缺 mask-repeat 默认值漂移检测 |
+| 68 | 1B 默认值/选择器 | Skyline 下 `align-items` 默认 stretch | skyline-skills/skills/skyline-wxss/SKILL.md:167 | 已实现 | `skyline/default-layout-drift`（随 #64 的 `defaultDisplayBlock` 一起对齐 WebView） |
+| 69 | 1B 默认值/选择器 | Skyline 下 `text-align` 默认 start | skyline-skills/skills/skyline-wxss/SKILL.md:168 | 已实现 | `skyline/default-layout-drift`（无开关可对齐，并入 #64 那条 info 的消息，不单独成条） |
+| 70 | 1B 默认值/选择器 | Skyline 下 `mask-repeat` 默认 no-repeat | skyline-skills/skills/skyline-wxss/SKILL.md:169 | 不实现 | 差异只在 mask 图小于元素盒子时可见，静态无法判断；businessview 有 317 处 mask 声明、多数不写 mask-repeat，逐条报是纯噪音 |
 | 71 | 1B 默认值/选择器 | 标签/id 选择器默认不跨组件匹配 | skyline-skills/skills/skyline-config/references/app-config.md:69 | 已实现 | `skyline/tag-selector-isolation` |
 | 72 | 1B 默认值/选择器 | `text-decoration` 仅对 text/input 生效 | skyline-skills/skills/skyline-wxss/references/text.md:87 | 已实现 | `skyline/text-decoration-target` |
 | 73 | 1B 默认值/选择器 | `text-decoration-line` 仅对 text/input 生效 | skyline-skills/skills/skyline-wxss/references/text.md:94 | 已实现 | `skyline/text-decoration-target` |
@@ -87,7 +87,7 @@
 | 79 | 1B 默认值/选择器 | `text` 内只能嵌套 text | skyline-skills/skills/skyline-components/references/media/text.md:20 | 不实现 | 文档矛盾：text.md:20 说只能嵌套 text，changelog.md:260 说 1.4.14 起支持布局节点；无法稳定判定 |
 | 80 | 1B 默认值/选择器 | `image` 的 `mode` 仅接受五个缩放值 | skyline-skills/skills/skyline-components/references/media/image.md:32-38 | 已实现 | `skyline/component-attribute` |
 | 81 | 1B 默认值/选择器 | 九种 WebView 裁剪 `mode` 在 Skyline 下不支持 | skyline-skills/skills/skyline-components/references/media/image.md:42-54 | 已实现 | `skyline/component-attribute` |
-| 82 | 1B 默认值/选择器 | `navigator` 只能嵌套 text 组件或文本节点 | skyline-skills/skills/skyline-overview/references/introduction/component-support.md:23 | 待实现 | 缺 navigator 子节点结构检查 |
+| 82 | 1B 默认值/选择器 | `navigator` 只能嵌套 text 组件或文本节点 | skyline-skills/skills/skyline-overview/references/introduction/component-support.md:23 | 已实现 | `skyline/component-children`（`only:text`） |
 | 83 | 1B 默认值/选择器 | `picker-view` 不支持 indicator-class / mask-style | skyline-skills/skills/skyline-overview/references/introduction/component-support.md:33 | 已实现 | `skyline/component-attribute` |
 | 84 | 1C 组件契约 | `scroll-view` 必须显式声明 `type` | skyline-skills/skills/skyline-components/references/scroll/scroll-view.md:16 | 已实现 | `skyline/scroll-view-type` |
 | 85 | 1C 组件契约 | `scroll-view` 的 `type` 仅接受 list/custom/nested | skyline-skills/skills/skyline-components/references/scroll/scroll-view.md:20-24 | 已实现 | `skyline/scroll-view-type` |
@@ -108,83 +108,93 @@
 | 100 | 1C 组件契约 | associative-container 仅接受三个合法值 | skyline-skills/skills/skyline-components/references/scroll/scroll-view.md:182-185 | 已实现 | `skyline/component-attribute` |
 | 101 | 1C 组件契约 | draggable-sheet 内层 scroll-view 必须 associative-container=draggable-sheet | skyline-skills/skills/skyline-components/references/scroll/draggable-sheet.md:50 | 已实现 | `skyline/scroll-view-family` |
 | 102 | 1C 组件契约 | draggable-sheet 的 size 属性取值 0–1 | skyline-skills/skills/skyline-components/references/scroll/draggable-sheet.md:343 | 已实现 | `skyline/component-attribute` |
-| 103 | 1C 组件契约 | 自定义下拉刷新必须提供 slot=refresher 节点 | skyline-skills/skills/skyline-components/references/scroll/scroll-view.md:377 | 待实现 | 缺 slot 结构检查 |
+| 103 | 1C 组件契约 | 自定义下拉刷新必须提供 slot=refresher 节点 | skyline-skills/skills/skyline-components/references/scroll/scroll-view.md:377 | 已实现 | `skyline/component-children`（`requires-child:slot=refresher`） |
 | 104 | 1C 组件契约 | refresher-default-style 仅接受 black/white/none | skyline-skills/skills/skyline-components/references/scroll/scroll-view.md:195 | 已实现 | `skyline/component-attribute` |
 | 105 | 1C 组件契约 | scroll-into-view-alignment 仅接受 start/center/end/nearest | skyline-skills/skills/skyline-components/references/scroll/scroll-view.md:113 | 已实现 | `skyline/component-attribute` |
 | 106 | 1C 组件契约 | 横向滚动的 scroll-view 必须开启 enable-flex | skyline-skills/skills/skyline-components/SKILL.md:76 | 已实现 | `skyline/horizontal-scroll-enable-flex` |
 | 107 | 1C 组件契约 | swiper layout-type 仅接受 normal/stackLeft/stackRight/tinder/transformer | skyline-skills/skills/skyline-components/references/layout/swiper.md:44-50 | 已实现 | `skyline/component-attribute` |
 | 108 | 1C 组件契约 | swiper transformer-type 仅接受六个合法值 | skyline-skills/skills/skyline-components/references/layout/swiper.md:56-63 | 已实现 | `skyline/component-attribute` |
-| 109 | 1C 组件契约 | transformer-type 仅在 layout-type=transformer 时生效 | skyline-skills/skills/skyline-components/references/layout/swiper.md:54 | 待实现 | 缺 layout-type 与 transformer-type 组合校验 |
+| 109 | 1C 组件契约 | transformer-type 仅在 layout-type=transformer 时生效 | skyline-skills/skills/skyline-components/references/layout/swiper.md:54 | 已实现 | `skyline/component-attribute`（`[requires]`） |
 | 110 | 1C 组件契约 | swiper indicator-type 仅接受文档列出的值 | skyline-skills/skills/skyline-components/references/layout/swiper.md:67-84 | 已实现 | `skyline/component-attribute` |
-| 111 | 1C 组件契约 | stack/tinder 布局时 indicator-type 仅支持 normal | skyline-skills/skills/skyline-components/references/layout/swiper.md:87 | 待实现 | 缺 layout-type 与 indicator-type 条件组合校验 |
-| 112 | 1C 组件契约 | indicator-type 为 scrollFixedCenter/swap/swapYRotation 时不支持 circular | skyline-skills/skills/skyline-components/references/layout/swiper.md:88 | 待实现 | 缺 circular 与 indicator-type 互斥校验 |
+| 111 | 1C 组件契约 | stack/tinder 布局时 indicator-type 仅支持 normal | skyline-skills/skills/skyline-components/references/layout/swiper.md:87 | 已实现 | `skyline/component-attribute`（`[requires]`） |
+| 112 | 1C 组件契约 | indicator-type 为 scrollFixedCenter/swap/swapYRotation 时不支持 circular | skyline-skills/skills/skyline-components/references/layout/swiper.md:88 | 已实现 | `skyline/component-attribute`（`[requires]`） |
 | 113 | 1C 组件契约 | swiper direction 仅接受 all/positive/negative | skyline-skills/skills/skyline-components/references/layout/swiper.md:109-114 | 已实现 | `skyline/component-attribute` |
-| 114 | 1C 组件契约 | share-element 必须声明 key | skyline-skills/skills/skyline-components/references/special/share-element.md:63 | 待实现 | 缺 share-element 必填属性检查 |
-| 115 | 1C 组件契约 | 同页 share-element 的 key 必须唯一 | skyline-skills/skills/skyline-components/references/special/share-element.md:63 | 待实现 | 缺同页 key 唯一性检查 |
-| 116 | 1C 组件契约 | share-element 的 transform 必须在两个页面都设置 | skyline-skills/skills/skyline-components/references/special/share-element.md:359 | 待实现 | 缺跨页面 key/transform 配对检查 |
+| 114 | 1C 组件契约 | share-element 必须声明 key | skyline-skills/skills/skyline-components/references/special/share-element.md:63 | 已实现 | `skyline/share-element-key` |
+| 115 | 1C 组件契约 | 同页 share-element 的 key 必须唯一 | skyline-skills/skills/skyline-components/references/special/share-element.md:63 | 已实现 | `skyline/share-element-key`（仅文件内唯一，跨文件是已知边界） |
+| 116 | 1C 组件契约 | share-element 的 transform 必须在两个页面都设置 | skyline-skills/skills/skyline-components/references/special/share-element.md:359 | 不实现 | 配对的两个 share-element 是运行期导航关系（同一 key 的两个元素可分散在任意两页），静态工程图里无法确定哪两页会配对，判必然误报 |
 | 117 | 1C 组件契约 | share-element rect-tween-type 仅接受文档列出的轨迹值 | skyline-skills/skills/skyline-components/references/special/share-element.md:85-98 | 已实现 | `skyline/component-attribute` |
 | 118 | 1C 组件契约 | shuttle-on-push/pop 仅接受 to/from | skyline-skills/skills/skyline-components/references/special/share-element.md:78-83 | 已实现 | `skyline/component-attribute` |
 | 119 | 1C 组件契约 | snapshot mode 仅接受 view/picture | skyline-skills/skills/skyline-components/references/special/snapshot.md:11 | 已实现 | `skyline/component-attribute` |
-| 120 | 1C 组件契约 | snapshot 只能在 Skyline 页面使用 | skyline-skills/skills/skyline-components/references/special/snapshot.md:325 | 待实现 | 缺页面 renderer 配置与 snapshot 使用联合检查 |
-| 121 | 1C 组件契约 | 手势组件必须且只能有一个直接子节点 | skyline-skills/skills/skyline-components/references/gesture/gesture-system.md:187 | 待实现 | 缺手势组件单子节点结构检查 |
-| 122 | 1C 组件契约 | simultaneous-handlers 必须双方互相声明 | skyline-skills/skills/skyline-components/references/gesture/gesture-negotiation.md:51 | 待实现 | 缺 simultaneous-handlers 双向声明校验 |
-| 123 | 1C 组件契约 | native-view 仅接受 scroll-view/swiper | skyline-skills/skills/skyline-components/references/gesture/gesture-negotiation.md:127-129 | 待实现 | 缺 native-view 值白名单 |
-| 124 | 1C 组件契约 | 手势组件仅在 Skyline 下可用 | skyline-skills/skills/skyline-components/references/gesture/gesture-system.md:186 | 待实现 | 缺页面 renderer 配置与手势组件联合检查 |
+| 120 | 1C 组件契约 | snapshot 只能在 Skyline 页面使用 | skyline-skills/skills/skyline-components/references/special/snapshot.md:325 | 不实现 | `snapshot` 是 Skyline 专属能力，用到它本身就表明页面已在 Skyline；纯 WebView 页面写它在 WebView 下同样无效，不属于 Skyline 语义差异 |
+| 121 | 1C 组件契约 | 手势组件必须且只能有一个直接子节点 | skyline-skills/skills/skyline-components/references/gesture/gesture-system.md:187 | 已实现 | `skyline/component-children`（`exactly:1`，8 个手势组件；互斥分支合并计数） |
+| 122 | 1C 组件契约 | simultaneous-handlers 必须双方互相声明 | skyline-skills/skills/skyline-components/references/gesture/gesture-negotiation.md:51 | 不实现 | 示例里 `simultaneous-handlers` 的取值始终是动态数组（`{{['outer']}}`），静态读不到 tag 列表；按缺失报会把所有动态值判成违规 |
+| 123 | 1C 组件契约 | native-view 仅接受 scroll-view/swiper | skyline-skills/skills/skyline-components/references/gesture/gesture-negotiation.md:127-129 | 已实现 | `skyline/component-attribute`（`[enum]` native-view） |
+| 124 | 1C 组件契约 | 手势组件仅在 Skyline 下可用 | skyline-skills/skills/skyline-components/references/gesture/gesture-system.md:186 | 不实现 | 手势组件仅在 Skyline 下可用——用到手势组件即已决定用 Skyline，与 #120 同理，不是迁移差异 |
 | 125 | 1C 组件契约 | input type 仅接受 text/number/idcard/digit/nickname | skyline-skills/skills/skyline-components/references/form/input.md:44-50 | 已实现 | `skyline/component-attribute` |
 | 126 | 1C 组件契约 | input confirm-type 仅接受 send/search/next/go/done | skyline-skills/skills/skyline-components/references/form/input.md:54-60 | 已实现 | `skyline/component-attribute` |
-| 127 | 1C 组件契约 | input 不支持 placeholder-class / safe-password-* | skyline-skills/skills/skyline-components/references/form/input.md:306-313 | 待实现 | 缺 input WebView 专属属性黑名单 |
-| 128 | 1D 配置 | 全局 Skyline 时 app.json renderer 必须为 skyline | skyline-skills/skills/skyline-config/SKILL.md:140 | 待实现 | 缺 JSON 配置规则：app.renderer 必填校验 |
-| 129 | 1D 配置 | 全局 Skyline 时 componentFramework 必须为 glass-easel | skyline-skills/skills/skyline-config/SKILL.md:141 | 待实现 | 缺 JSON 配置规则：componentFramework 必填校验 |
-| 130 | 1D 配置 | 全局 Skyline 时 lazyCodeLoading 必须为 requiredComponents | skyline-skills/skills/skyline-config/SKILL.md:142 | 待实现 | 缺 JSON 配置规则：lazyCodeLoading 必填校验 |
-| 131 | 1D 配置 | Skyline 页面必须 navigationStyle=custom | skyline-skills/skills/skyline-config/SKILL.md:143 | 待实现 | 缺页面配置必填校验 |
-| 132 | 1D 配置 | Skyline 项目 app.json window.navigationStyle 必须为 custom | skyline-skills/skills/skyline-config/references/app-config.md:133 | 待实现 | 缺全局 window 配置校验 |
-| 133 | 1D 配置 | Skyline 页面应 disableScroll=true | skyline-skills/skills/skyline-config/references/page-config.md:51 | 待实现 | 缺页面滚动配置检查 |
-| 134 | 1D 配置 | page.json renderer 仅接受 webview/skyline | skyline-skills/skills/skyline-config/references/page-config.md:83-98 | 待实现 | 缺 renderer 枚举校验 |
-| 135 | 1D 配置 | componentFramework 仅接受 exparser/glass-easel | skyline-skills/skills/skyline-config/references/app-config.md:30-33 | 待实现 | 缺 componentFramework 枚举校验 |
-| 136 | 1D 配置 | lazyCodeLoading 仅接受 requiredComponents | skyline-skills/skills/skyline-config/references/app-config.md:47 | 待实现 | 缺 lazyCodeLoading 枚举校验 |
-| 137 | 1D 配置 | 页面 renderer=skyline 时 componentFramework 必须为 glass-easel | skyline-skills/skills/skyline-config/references/page-config.md:130-137 | 待实现 | 缺页面级双字段一致性校验 |
+| 127 | 1C 组件契约 | input 不支持 placeholder-class / safe-password-* | skyline-skills/skills/skyline-components/references/form/input.md:306-313 | 已实现 | `skyline/component-attribute`（`[unsupported]`：placeholder-class、safe-password-* 前缀） |
+| 128 | 1D 配置 | 全局 Skyline 时 app.json renderer 必须为 skyline | skyline-skills/skills/skyline-config/SKILL.md:140 | 不实现 | 不实现：全局 Skyline 是迁移选择而非缺陷；页面级 renderer:webview 是受支持的 opt-out（skylint 已按页面 opt-out 跳过） |
+| 129 | 1D 配置 | 全局 Skyline 时 componentFramework 必须为 glass-easel | skyline-skills/skills/skyline-config/SKILL.md:141 | 不实现 | 不实现：minidev build 实测 已硬拦截（skyline 页缺 componentFramework=glass-easel 直接报错，minidev M4） |
+| 130 | 1D 配置 | 全局 Skyline 时 lazyCodeLoading 必须为 requiredComponents | skyline-skills/skills/skyline-config/SKILL.md:142 | 不实现 | 不实现：minidev build 实测 已硬拦截（skyline + lazyCodeLoading≠requiredComponents 直接报错） |
+| 131 | 1D 配置 | Skyline 页面必须 navigationStyle=custom | skyline-skills/skills/skyline-config/SKILL.md:143 | 不实现 | 不实现：minidev build 实测 已处理——check_renderer 把 skyline 页的 navigationStyle 改写成 custom |
+| 132 | 1D 配置 | Skyline 项目 app.json window.navigationStyle 必须为 custom | skyline-skills/skills/skyline-config/references/app-config.md:133 | 不实现 | 不实现：minidev build 实测 已处理（同上，逐页改写，app 级 window.navigationStyle 不参与判定） |
+| 133 | 1D 配置 | Skyline 页面应 disableScroll=true | skyline-skills/skills/skyline-config/references/page-config.md:51 | 不实现 | 不实现：minidev build 实测 已处理——check_renderer 把 skyline 页的 disableScroll 缺省改写为 true |
+| 134 | 1D 配置 | page.json renderer 仅接受 webview/skyline | skyline-skills/skills/skyline-config/references/page-config.md:83-98 | 不实现 | 不实现：minidev build 实测 已硬拦截（页面 json 的 renderer 走 schema 枚举校验） |
+| 135 | 1D 配置 | componentFramework 仅接受 exparser/glass-easel | skyline-skills/skills/skyline-config/references/app-config.md:30-33 | 不实现 | 不实现：minidev build 实测 已硬拦截（页面 json 的 componentFramework 走 schema 枚举校验） |
+| 136 | 1D 配置 | lazyCodeLoading 仅接受 requiredComponents | skyline-skills/skills/skyline-config/references/app-config.md:47 | 不实现 | 不实现：minidev build 实测 已硬拦截（app.json lazyCodeLoading 非法值直接报错） |
+| 137 | 1D 配置 | 页面 renderer=skyline 时 componentFramework 必须为 glass-easel | skyline-skills/skills/skyline-config/references/page-config.md:130-137 | 不实现 | 不实现：minidev build 实测 已硬拦截（同 #129） |
 | 138 | 1D 配置 | tagNameStyleIsolation 仅接受 isolated/legacy | skyline-skills/skills/skyline-config/references/app-config.md:69 | 已实现 | `skyline/renderer-options` |
 | 139 | 1D 配置 | rendererOptions.skyline 下各开关必须为 boolean | skyline-skills/skills/skyline-config/references/app-config.md:65-71 | 已实现 | `skyline/renderer-options` |
-| 140 | 1D 配置 | backgroundColorContent 必须为 8 位十六进制颜色 | skyline-skills/skills/skyline-config/references/page-config.md:66 | 待实现 | 缺颜色格式校验 |
+| 140 | 1D 配置 | backgroundColorContent 必须为 8 位十六进制颜色 | skyline-skills/skills/skyline-config/references/page-config.md:66 | 不实现 | 不实现：知识库只给类型 HexColor(#RRGGBBAA)，未说明 6 位十六进制与 rgba() 是否被接受；无源码证据，按格式报会误伤 |
 | 141 | 1D 配置 | project.config.json libVersion 必须 ≥ 2.30.4 | skyline-skills/skills/skyline-config/references/project-config.md:67-71 | 已实现 | `skyline/lib-version` |
-| 142 | 1D 配置 | 真机基础库必须 ≥ 3.0.2 | skyline-skills/skills/skyline-overview/references/migration/getting-started.md:9 | 待实现 | 缺平台版本下限校验 |
+| 142 | 1D 配置 | 真机基础库必须 ≥ 3.0.2 | skyline-skills/skills/skyline-overview/references/migration/getting-started.md:9 | 不实现 | 不实现：真机基础库由微信客户端决定，project.config.json 的 libVersion 只影响开发者工具；可配置侧已由 `skyline/lib-version` 覆盖 |
 | 143 | 1D 配置 | 页面级 rendererOptions 需基础库 ≥ 3.1.0 | skyline-skills/skills/skyline-config/references/page-config.md:111 | 已实现 | `skyline/lib-version` |
 | 144 | 1D 配置 | rendererOptions.skyline.convertRpxToVw 必须为 boolean | skyline-skills/skills/skyline-config/references/app-config.md:145-153 | 已实现 | `skyline/renderer-options` |
-| 145 | 1D 配置 | project.config.json setting.skylineRenderEnable 必须为 boolean | skyline-skills/skills/skyline-config/references/project-config.md:18-29 | 待实现 | 缺项目配置类型校验 |
-| 146 | 1D 配置 | 分包可单独声明 renderer/componentFramework | skyline-skills/skills/skyline-overview/references/migration/best-practice.md:42-46 | 待实现 | 缺分包配置遍历 |
-| 147 | 1D 配置 | disableScroll 只能出现在 page.json | skyline-skills/skills/skyline-config/references/page-config.md:49 | 待实现 | 缺配置位置约束 |
+| 145 | 1D 配置 | project.config.json setting.skylineRenderEnable 必须为 boolean | skyline-skills/skills/skyline-config/references/project-config.md:18-29 | 已实现 | `skyline/config-ignored` |
+| 146 | 1D 配置 | 分包可单独声明 renderer/componentFramework | skyline-skills/skills/skyline-overview/references/migration/best-practice.md:42-46 | 不实现 | 不实现：这是能力说明（分包可单独声明 renderer/componentFramework），不是缺陷；minidev 已按分包解析 |
+| 147 | 1D 配置 | disableScroll 只能出现在 page.json | skyline-skills/skills/skyline-config/references/page-config.md:49 | 已实现 | `skyline/config-ignored` |
 | 148 | 1D 配置 | defaultDisplayBlock=true 时 flex-direction 默认值变为 row | skyline-skills/skills/skyline-config/references/app-config.md:67 | 已实现 | `skyline/flex-direction` |
-| 149 | 1D 配置 | defaultContentBox 会改变 box-sizing 默认值前提 | skyline-skills/skills/skyline-config/references/app-config.md:68 | 待实现 | 缺默认值开关识别 |
+| 149 | 1D 配置 | defaultContentBox 会改变 box-sizing 默认值前提 | skyline-skills/skills/skyline-config/references/app-config.md:68 | 不实现 | 不实现：这是配置事实而非缺陷——`flex-direction` 规则已经把 defaultDisplayBlock 读进判定，defaultContentBox 同理属于规则前提 |
 | 150 | 1D 配置 | keyframeStyleIsolation 仅接受 isolated/legacy | skyline-skills/skills/skyline-overview/references/migration/getting-started.md:35 | 已实现 | `skyline/renderer-options` |
-| 151 | 1E JS/worklet | worklet 函数体首部必须含 'worklet' 指令 | skyline-skills/skills/skyline-worklet/SKILL.md:64 | 待实现 | 缺 JS AST 与 WXML 事件绑定映射 |
-| 152 | 1E JS/worklet | 手势事件回调必须含 'worklet' 指令 | skyline-skills/skills/skyline-components/references/gesture/gesture-system.md:185 | 待实现 | 缺 JS AST 与 WXML 事件绑定映射 |
-| 153 | 1E JS/worklet | 路由动画处理函数必须含 'worklet' 指令 | skyline-skills/skills/skyline-route/SKILL.md:61 | 待实现 | 缺 JS AST 与路由 builder 识别 |
-| 154 | 1E JS/worklet | applyAnimatedStyle 的 updater 必须含 'worklet' 指令 | skyline-skills/skills/skyline-worklet/references/core/worklet-overview.md:134 | 待实现 | 缺 JS AST 调用点识别 |
-| 155 | 1E JS/worklet | worklet 内不能直接调用 wx.* API | skyline-skills/skills/skyline-worklet/SKILL.md:132 | 待实现 | 缺 worklet 作用域数据流分析 |
-| 156 | 1E JS/worklet | worklet 内不能解构 this.data | skyline-skills/skills/skyline-worklet/SKILL.md:136 | 待实现 | 缺 worklet 作用域数据流分析 |
-| 157 | 1E JS/worklet | worklet 内调用页面方法必须 bind(this) | skyline-skills/skills/skyline-worklet/SKILL.md:111 | 待实现 | 缺 worklet 作用域数据流分析 |
-| 158 | 1E JS/worklet | SharedValue 读写必须通过 .value | skyline-skills/skills/skyline-worklet/SKILL.md:79 | 待实现 | 缺 worklet 作用域数据流分析 |
-| 159 | 1E JS/worklet | worklet.scrollViewContext.scrollTo 只能在 worklet 内调用 | skyline-skills/skills/skyline-scroll-api/SKILL.md:109 | 待实现 | 缺 JS 调用点与函数指令分析 |
-| 160 | 1E JS/worklet | 获取 ScrollViewContext 时 scroll-view 必须开启 enhanced | skyline-skills/skills/skyline-scroll-api/SKILL.md:58 | 待实现 | 缺 JS selector 与 WXML 节点跨文件分析 |
-| 161 | 1E JS/worklet | DraggableSheetContext.scrollTo 的 size 与 pixels 不能同时传 | skyline-skills/skills/skyline-scroll-api/SKILL.md:68 | 待实现 | 缺 JS 对象字面量参数检查 |
-| 162 | 1E JS/worklet | worklet 版滚动控制必须用 NodesRef.ref() | skyline-skills/skills/skyline-scroll-api/SKILL.md:82 | 待实现 | 缺 JS 调用链识别 |
-| 163 | 1E JS/worklet | wx.router.* 不支持小程序插件 | skyline-skills/skills/skyline-route/references/api/router-api.md:9 | 待实现 | 缺插件工程识别 |
-| 164 | 1E JS/worklet | 自定义路由仅用于连续两个 Skyline 页面 | skyline-skills/skills/skyline-route/SKILL.md:55 | 待实现 | 缺路由调用与页面 renderer 配置联合分析 |
-| 165 | 1E JS/worklet | routeType 必须是已注册类型或 wx:// 预设类型 | skyline-skills/skills/skyline-route/SKILL.md:109-123 | 待实现 | 缺路由注册表收集与调用点匹配 |
-| 166 | 1E JS/worklet | 纵向下拉/多方向返回时需配置 associative-container=pop-gesture | skyline-skills/skills/skyline-route/references/pop-gesture/pop-gesture.md:61-71 | 待实现 | 缺 popGestureDirection 与 WXML scroll-view 联合检查 |
-| 167 | 1E JS/worklet | 不支持 this.animate API | skyline-skills/skills/skyline-overview/references/migration/compatibility.md:301 | 待实现 | 缺 JS API 调用扫描 |
-| 168 | 1E JS/worklet | 不支持 Page.onPageScroll | skyline-skills/skills/skyline-overview/references/migration/compatibility.md:300 | 待实现 | 缺 JS 生命周期扫描 |
-| 169 | 1E JS/worklet | worklet 仅在 Skyline 渲染模式下可用 | skyline-skills/skills/skyline-worklet/SKILL.md:128 | 待实现 | 缺 worklet 使用与页面 renderer 配置联合检查 |
-| 170 | 1E JS/worklet | 使用 worklet 时开发者工具需开启 ES5 编译 | skyline-skills/skills/skyline-worklet/references/core/worklet-overview.md:11 | 待实现 | 缺开发者工具配置读取 |
-| 171 | 1E JS/worklet | 小程序插件内不能使用 worklet.scrollViewContext.scrollTo | skyline-skills/skills/skyline-scroll-api/SKILL.md:110 | 待实现 | 缺插件工程识别与 API 调用扫描 |
+| 151 | 1E JS/worklet | worklet 函数体首部必须含 'worklet' 指令 | skyline-skills/skills/skyline-worklet/SKILL.md:64 | 已实现 | `skyline/worklet-directive`（worklet 函数由 152/154/153 三个来源识别） |
+| 152 | 1E JS/worklet | 手势事件回调必须含 'worklet' 指令 | skyline-skills/skills/skyline-components/references/gesture/gesture-system.md:185 | 已实现 | `skyline/worklet-directive` |
+| 153 | 1E JS/worklet | 路由动画处理函数必须含 'worklet' 指令 | skyline-skills/skills/skyline-route/SKILL.md:61 | 已实现 | `skyline/worklet-directive`（builder 返回的 handle*Animation） |
+| 154 | 1E JS/worklet | applyAnimatedStyle 的 updater 必须含 'worklet' 指令 | skyline-skills/skills/skyline-worklet/references/core/worklet-overview.md:134 | 已实现 | `skyline/worklet-directive` |
+| 155 | 1E JS/worklet | worklet 内不能直接调用 wx.* API | skyline-skills/skills/skyline-worklet/SKILL.md:132 | 已实现 | `skyline/worklet-api-scope` |
+| 156 | 1E JS/worklet | worklet 内不能解构 this.data | skyline-skills/skills/skyline-worklet/SKILL.md:136 | 已实现 | `skyline/worklet-data-freeze` |
+| 157 | 1E JS/worklet | worklet 内调用页面方法必须 bind(this) | skyline-skills/skills/skyline-worklet/SKILL.md:111 | 不实现 | 「方法调用」与「把方法当回调传」在 AST 上都是成员访问，静态分不清哪些属于必须 bind 的跨线程传递 |
+| 158 | 1E JS/worklet | SharedValue 读写必须通过 .value | skyline-skills/skills/skyline-worklet/SKILL.md:79 | 不实现 | 把 SharedValue 当对象整体传递是合法用法（运行时会被 Object.freeze），判断「是否通过 .value 读写」需要数据流分析，静态必误报 |
+| 159 | 1E JS/worklet | worklet.scrollViewContext.scrollTo 只能在 worklet 内调用 | skyline-skills/skills/skyline-scroll-api/SKILL.md:109 | 已实现 | `skyline/worklet-api-scope` |
+| 160 | 1E JS/worklet | 获取 ScrollViewContext 时 scroll-view 必须开启 enhanced | skyline-skills/skills/skyline-scroll-api/SKILL.md:58 | 不实现 | 「哪个 scroll-view」由运行时选择器决定（`.select('.x')` 与 wxml 类名跨文件对应），且 enhanced 是运行期能力开关，判错率高 |
+| 161 | 1E JS/worklet | DraggableSheetContext.scrollTo 的 size 与 pixels 不能同时传 | skyline-skills/skills/skyline-scroll-api/SKILL.md:68 | 已实现 | `skyline/draggable-sheet-scroll-to` |
+| 162 | 1E JS/worklet | worklet 版滚动控制必须用 NodesRef.ref() | skyline-skills/skills/skyline-scroll-api/SKILL.md:82 | 已实现 | `skyline/scroll-context-ref` |
+| 163 | 1E JS/worklet | wx.router.* 不支持小程序插件 | skyline-skills/skills/skyline-route/references/api/router-api.md:9 | 已实现 | `skyline/unsupported-api`（`plugin-call:wx.router`） |
+| 164 | 1E JS/worklet | 自定义路由仅用于连续两个 Skyline 页面 | skyline-skills/skills/skyline-route/SKILL.md:55 | 不实现 | 依赖运行期导航栈（连续两个 Skyline 页面），静态与编译期都无法确定跳转链 |
+| 165 | 1E JS/worklet | routeType 必须是已注册类型或 wx:// 预设类型 | skyline-skills/skills/skyline-route/SKILL.md:109-123 | 已实现 | `skyline/route-type`（工程级收集 `addRouteBuilder` 注册名） |
+| 166 | 1E JS/worklet | 纵向下拉/多方向返回时需配置 associative-container=pop-gesture | skyline-skills/skills/skyline-route/references/pop-gesture/pop-gesture.md:61-71 | 不实现 | 是否「纵向下拉/多方向返回」由页面路由配置与手势方向共同决定，静态不可判定 |
+| 167 | 1E JS/worklet | 不支持 this.animate API | skyline-skills/skills/skyline-overview/references/migration/compatibility.md:301 | 已实现 | `skyline/unsupported-api`（`call:this.animate`） |
+| 168 | 1E JS/worklet | 不支持 Page.onPageScroll | skyline-skills/skills/skyline-overview/references/migration/compatibility.md:300 | 已实现 | `skyline/unsupported-api`（`page-option:onPageScroll`） |
+| 169 | 1E JS/worklet | worklet 仅在 Skyline 渲染模式下可用 | skyline-skills/skills/skyline-worklet/SKILL.md:128 | 不实现 | worklet 仅在 Skyline 模式下可用——用到 worklet 即已决定用 Skyline；纯 WebView 页面写 worklet 本身无效，不是迁移差异 |
+| 170 | 1E JS/worklet | 使用 worklet 时开发者工具需开启 ES5 编译 | skyline-skills/skills/skyline-worklet/references/core/worklet-overview.md:11 | 已实现 | `skyline/worklet-es5` |
+| 171 | 1E JS/worklet | 小程序插件内不能使用 worklet.scrollViewContext.scrollTo | skyline-skills/skills/skyline-scroll-api/SKILL.md:110 | 已实现 | `skyline/worklet-api-scope`（compileType=plugin） |
+| 172 | 1C 组件契约 | 暂不支持的组件（web-view / movable-area / movable-view / editor / progress 等） | skyline-skills/skills/skyline-overview/references/introduction/component-support.md:54-61 | 已实现 | `skyline/unsupported-component` |
+| 173 | 1C 组件契约 | 内联文本只能放在 `<text>` 里，不能与元素混排 | skyline-skills/skills/skyline-components/references/media/text.md:5、component-support.md:111 | 已实现 | `skyline/no-inline-text`（只报「文本 + 元素混排」，纯文本节点不报） |
 
-## 待实现汇总
+## 收口说明
 
-共 69 条，按所需能力归并：
+171 条审计项全部落账：**141 条已实现、30 条有意不实现、0 条待实现**。
 
-- **需要 WXSS 数据表/值语义扩充：12 条**（#30、#33、#41、#42、#43、#44、#58、#59、#60、#61、#62、#63）。现有 `unsupported-property` / `unsupported-value` / `multi-value-limit` 框架可直接复用，主要是补数据与简写分析。
-- **需要 WXSS 默认值语义检测：6 条**（#64、#65、#66、#68、#69、#70）。需知道元素是否显式声明相关属性，并读取 `defaultDisplayBlock` / `defaultContentBox`。
-- **需要 WXML 组件属性/结构扩充（单文件）：12 条**（#82、#103、#109、#111、#112、#114、#115、#121、#122、#123、#124、#127）。大部分可扩 `skyline/component-attribute` 数据表或加一个结构规则。
-- **需要跨文件契约：4 条**（#116、#120、#164、#166）。需要页面配置、跨页面 key 配对或 JS 调用与 WXML 联合分析。
-- **需要 JSON 配置规则：16 条**（#128–#137、#140、#142、#145–#147、#149）。`lib-version` / `renderer-options` 已覆盖 #138、#139、#141、#143、#144、#148、#150。
-- **需要 JS AST / worklet / API 扫描：19 条**（#151–#163、#165、#167–#171）。需引入 JS 解析、函数作用域与调用链分析，是成本最高的一批。
+实现过程中补了两行审计漏掉的约束（#172 暂不支持的组件、#173 内联文本必须用 `<text>`）——
+它们的规则早在 P0/P1 就写了，但审计的枚举没有收进去，属于分母自身的不完整，不是新增判断。
+所以台账实际是 173 行。
+
+另有两条**已实现但不在知识库条目里**的规则，来源是引擎源码而非文档，故未计入分母：
+
+- `skyline/no-pseudo`：Skyline 的选择器匹配只支持部分伪类，具体支持面随基础库版本变化
+  （`changelog.md:205-207` 记录 `:not()`/`:only-child()`/`:empty()` 是后来加的），
+  知识库没有一条「哪些伪类不支持」的清单；规则按引擎源码的匹配器实现，判定保守。
+- `skyline/component-attribute` 里 `[requires]` 的跨属性条件：文档分散在属性表各处，
+  台账按「一条约束一行」收了其中会单独成条的部分。
+
+不实现的 30 条都写了具体理由（运行期才能判、静态必然误报、`minidev build` 已硬拦截、
+或根本不是 Skyline 语义差异），见各行。
