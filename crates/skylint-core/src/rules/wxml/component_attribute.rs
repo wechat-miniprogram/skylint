@@ -1,13 +1,15 @@
-//! Skyline 组件属性值白名单：写了但会被静默忽略的取值。
+//! Skyline 组件属性值白名单：写了但会被静默忽略的取值，以及跨属性的生效条件。
 //!
 //! 数据文件 `data/component_attributes.txt` 是唯一依据，Rust 侧只做查表。
-//! 只判静态属性：`{{}}` 插值（`WxmlAttribute::is_static == false`）与无值属性
-//! 一律跳过——静态阶段无法确定它们的实际取值。
+//! 只判静态属性：`{{}}` 插值（`WxmlAttribute::is_static == false`）一律跳过，
+//! 静态阶段无法确定它们的实际取值。`[requires]` 除外：无值属性视为布尔 true，
+//! 这足以确认 `circular=*` 这类触发条件。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use crate::diag::{Diagnostic, Severity};
+use crate::input::wxml::{WxmlAttribute, WxmlElement};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
@@ -61,14 +63,59 @@ struct Entry {
     help: Option<&'static str>,
 }
 
+/// 跨属性生效条件：触发属性命中时，要求属性必须满足约束。
+#[derive(Debug)]
+struct Requires {
+    trigger: Trigger,
+    requirement: Requirement,
+    help: Option<&'static str>,
+}
+
+#[derive(Debug)]
+enum Trigger {
+    /// `attr=*`：属性存在且取值非空；无值属性（布尔 true）同样触发。
+    Present(&'static str),
+    Equals(&'static str, &'static str),
+    NotAny(&'static str, Vec<&'static str>),
+}
+
+#[derive(Debug)]
+enum Requirement {
+    /// `attr=value`：属性必须存在且等于该值。
+    Equals(&'static str, &'static str),
+    /// `attr=!(a|b)`：属性不得等于其中任一值。
+    NotAny(&'static str, Vec<&'static str>),
+}
+
+impl Trigger {
+    fn attr(&self) -> &'static str {
+        match self {
+            Self::Present(attr) | Self::Equals(attr, _) | Self::NotAny(attr, _) => attr,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Table {
     entries: HashMap<&'static str, HashMap<&'static str, Vec<Entry>>>,
+    requires: HashMap<&'static str, Vec<Requires>>,
 }
 
 impl Table {
     fn lookup(&self, tag: &str, attr: &str) -> Option<&[Entry]> {
-        self.entries.get(tag)?.get(attr).map(Vec::as_slice)
+        let attrs = self.entries.get(tag)?;
+        if let Some(entries) = attrs.get(attr) {
+            return Some(entries);
+        }
+        // 属性名以 `*` 结尾表示前缀匹配（如 safe-password-*）；精确名优先。
+        attrs
+            .iter()
+            .filter_map(|(name, entries)| {
+                let prefix = name.strip_suffix('*')?;
+                attr.starts_with(prefix).then_some((prefix.len(), entries))
+            })
+            .max_by_key(|(len, _)| *len)
+            .map(|(_, entries)| entries.as_slice())
     }
 }
 
@@ -83,6 +130,7 @@ enum Section {
     Enum,
     Unsupported,
     Number,
+    Requires,
 }
 
 impl Section {
@@ -92,6 +140,7 @@ impl Section {
             Self::Enum => "enum",
             Self::Unsupported => "unsupported",
             Self::Number => "number",
+            Self::Requires => "requires",
         }
     }
 }
@@ -117,21 +166,39 @@ fn parse(source: &'static str) -> Result<Table, String> {
                 "enum" => Section::Enum,
                 "unsupported" => Section::Unsupported,
                 "number" => Section::Number,
+                "requires" => Section::Requires,
                 other => return Err(format!("第 {line_no} 行：未知分区 [{other}]")),
             });
             continue;
         }
         let section = section.ok_or_else(|| format!("第 {line_no} 行：数据出现在分区之前"))?;
-        let fields: Vec<&'static str> = line.split('|').map(str::trim).collect();
+        let fields = split_fields(line);
         if fields.len() != 4 {
             return Err(format!(
                 "第 {line_no} 行：需要 `组件 | 属性 | 约束 | 说明` 四列，实际 {} 列",
                 fields.len()
             ));
         }
-        let (tag, attrs, constraint, help) = (fields[0], fields[1], fields[2], fields[3]);
-        if tag.is_empty() || !is_lowercase(tag) {
-            return Err(format!("第 {line_no} 行：组件名必须非空且小写：{tag}"));
+        let (tags, attrs, constraint, help) = (fields[0], fields[1], fields[2], fields[3]);
+        if tags.is_empty() || !is_lowercase(tags) {
+            return Err(format!("第 {line_no} 行：组件名必须非空且小写：{tags}"));
+        }
+        let help = (help != "-").then_some(help);
+        if matches!(section, Section::Requires) {
+            if tags.contains(',') {
+                return Err(format!("第 {line_no} 行：[requires] 每行只能写一个组件"));
+            }
+            if !seen.insert((tags, attrs, section.name())) {
+                return Err(format!(
+                    "第 {line_no} 行：[requires] 重复的条目 {tags} {attrs}"
+                ));
+            }
+            table
+                .requires
+                .entry(tags)
+                .or_default()
+                .push(parse_requires(attrs, constraint, help, line_no)?);
+            continue;
         }
         let constraint = match section {
             Section::WebviewOnly => Constraint::WebviewOnly(parse_values(constraint, line_no)?),
@@ -143,32 +210,57 @@ fn parse(source: &'static str) -> Result<Table, String> {
                 Constraint::Unsupported
             }
             Section::Number => parse_number(constraint, line_no)?,
+            Section::Requires => unreachable!("[requires] 已在前面处理"),
         };
-        let help = (help != "-").then_some(help);
-        for attr in attrs.split(',').map(str::trim) {
-            if attr.is_empty() || !is_lowercase(attr) {
-                return Err(format!("第 {line_no} 行：属性名必须非空且小写：{attr}"));
+        for tag in tags.split(',').map(str::trim) {
+            if tag.is_empty() {
+                return Err(format!("第 {line_no} 行：组件名不能为空"));
             }
-            if !seen.insert((tag, attr, section.name())) {
-                return Err(format!(
-                    "第 {line_no} 行：[{}] 重复的条目 {tag} {attr}",
-                    section.name()
-                ));
+            for attr in attrs.split(',').map(str::trim) {
+                if attr.is_empty() || !is_lowercase(attr) {
+                    return Err(format!("第 {line_no} 行：属性名必须非空且小写：{attr}"));
+                }
+                if !seen.insert((tag, attr, section.name())) {
+                    return Err(format!(
+                        "第 {line_no} 行：[{}] 重复的条目 {tag} {attr}",
+                        section.name()
+                    ));
+                }
+                table
+                    .entries
+                    .entry(tag)
+                    .or_default()
+                    .entry(attr)
+                    .or_default()
+                    .push(Entry {
+                        constraint: constraint.clone(),
+                        help,
+                    });
             }
-            table
-                .entries
-                .entry(tag)
-                .or_default()
-                .entry(attr)
-                .or_default()
-                .push(Entry {
-                    constraint: constraint.clone(),
-                    help,
-                });
         }
     }
 
     Ok(table)
+}
+
+/// 按 `|` 分列，但括弧内的 `|` 属于 `!(a|b)`，不能当分隔符。
+fn split_fields(line: &'static str) -> Vec<&'static str> {
+    let mut fields = Vec::new();
+    let mut depth = 0_u32;
+    let mut start = 0;
+    for (index, byte) in line.bytes().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => depth = depth.saturating_sub(1),
+            b'|' if depth == 0 => {
+                fields.push(line[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    fields.push(line[start..].trim());
+    fields
 }
 
 fn parse_values(text: &'static str, line_no: usize) -> Result<Vec<&'static str>, String> {
@@ -214,6 +306,73 @@ fn is_lowercase(text: &str) -> bool {
     !text.bytes().any(|byte| byte.is_ascii_uppercase())
 }
 
+/// `[requires]` 的一行：`触发 | 要求`。
+fn parse_requires(
+    trigger_text: &'static str,
+    requirement_text: &'static str,
+    help: Option<&'static str>,
+    line_no: usize,
+) -> Result<Requires, String> {
+    let (trigger_attr, trigger_expr) = parse_condition(trigger_text, line_no)?;
+    let trigger = match trigger_expr {
+        Expr::Any => Trigger::Present(trigger_attr),
+        Expr::Equals(value) => Trigger::Equals(trigger_attr, value),
+        Expr::NotAny(values) => Trigger::NotAny(trigger_attr, values),
+    };
+    let (requirement_attr, requirement_expr) = parse_condition(requirement_text, line_no)?;
+    let requirement = match requirement_expr {
+        Expr::Any => {
+            return Err(format!("第 {line_no} 行：[requires] 的要求列不支持 `*`"));
+        }
+        Expr::Equals(value) => Requirement::Equals(requirement_attr, value),
+        Expr::NotAny(values) => Requirement::NotAny(requirement_attr, values),
+    };
+    Ok(Requires {
+        trigger,
+        requirement,
+        help,
+    })
+}
+
+#[derive(Debug)]
+enum Expr {
+    /// `*`：存在且非空。
+    Any,
+    Equals(&'static str),
+    NotAny(Vec<&'static str>),
+}
+
+fn parse_condition(text: &'static str, line_no: usize) -> Result<(&'static str, Expr), String> {
+    let Some((attr, expr)) = text.split_once('=') else {
+        return Err(format!("第 {line_no} 行：需要 `属性=取值`，实际 `{text}`"));
+    };
+    let (attr, expr) = (attr.trim(), expr.trim());
+    if attr.is_empty() || !is_lowercase(attr) {
+        return Err(format!("第 {line_no} 行：属性名必须非空且小写：{attr}"));
+    }
+    Ok((attr, parse_expr(expr, line_no)?))
+}
+
+fn parse_expr(text: &'static str, line_no: usize) -> Result<Expr, String> {
+    if text == "*" {
+        return Ok(Expr::Any);
+    }
+    if let Some(inner) = text.strip_prefix("!(") {
+        let inner = inner
+            .strip_suffix(')')
+            .ok_or_else(|| format!("第 {line_no} 行：`!(` 缺少右括号：{text}"))?;
+        let values: Vec<&'static str> = inner.split('|').map(str::trim).collect();
+        if values.iter().any(|value| value.is_empty()) {
+            return Err(format!("第 {line_no} 行：`!(...)` 里有空值：{text}"));
+        }
+        return Ok(Expr::NotAny(values));
+    }
+    if text.is_empty() {
+        return Err(format!("第 {line_no} 行：取值不能为空"));
+    }
+    Ok(Expr::Equals(text))
+}
+
 pub struct ComponentAttribute;
 
 impl ComponentAttribute {
@@ -225,7 +384,7 @@ impl Rule for ComponentAttribute {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Warning,
-            description: "Skyline 会静默忽略的组件属性取值（枚举白名单 / 不支持的属性 / 数值范围）",
+            description: "Skyline 会静默忽略的组件属性取值与组合（枚举白名单 / 不支持的属性 / 数值范围 / 跨属性条件）",
         }
     }
 
@@ -271,9 +430,130 @@ impl Rule for ComponentAttribute {
                         .help(help(entry)),
                     );
                 }
+                let Some(rules) = table.requires.get(element.tag.as_str()) else {
+                    continue;
+                };
+                for rule in rules {
+                    let Some(attr) = find_attribute(element, rule.trigger.attr()) else {
+                        continue;
+                    };
+                    if !attr.is_static {
+                        continue;
+                    }
+                    let Some(value) = trigger_value(attr, &rule.trigger) else {
+                        continue;
+                    };
+                    let Verdict::Violated(current) = judge(element, &rule.requirement) else {
+                        continue;
+                    };
+                    let (line, column) = doc.position(attr.start);
+                    let (end_line, end_column) = doc.position(attr.end);
+                    diagnostics.push(
+                        Diagnostic::new(
+                            Self::ID,
+                            Severity::Warning,
+                            requires_message(&element.tag, rule, &value, current.as_deref()),
+                            path,
+                            line,
+                            column,
+                        )
+                        .end(end_line, end_column)
+                        .help(
+                            rule.help
+                                .unwrap_or("调整这两个属性的取值，避免组合被忽略")
+                                .to_string(),
+                        ),
+                    );
+                }
             }
         }
         diagnostics
+    }
+}
+
+fn find_attribute<'a>(element: &'a WxmlElement, name: &str) -> Option<&'a WxmlAttribute> {
+    element
+        .attributes
+        .iter()
+        .find(|attr| attr.name.eq_ignore_ascii_case(name))
+}
+
+/// 触发条件命中时返回用于展示的取值，无值属性返回空串。
+fn trigger_value(attr: &WxmlAttribute, trigger: &Trigger) -> Option<String> {
+    let value = attr.value.as_deref().map(str::trim).unwrap_or_default();
+    let hit = match trigger {
+        // 无值属性（`<swiper circular>`）等于布尔 true，必须能触发。
+        Trigger::Present(_) => attr.value.is_none() || !value.is_empty(),
+        Trigger::Equals(_, expected) => !value.is_empty() && value.eq_ignore_ascii_case(expected),
+        Trigger::NotAny(_, banned) => !value.is_empty() && !contains(banned, value),
+    };
+    hit.then(|| value.to_string())
+}
+
+enum Verdict {
+    /// 要求成立，或要求属性是动态值、静态阶段无法判断。
+    Ok,
+    /// 要求不成立；`None` 表示要求属性缺失。
+    Violated(Option<String>),
+}
+
+fn judge(element: &WxmlElement, requirement: &Requirement) -> Verdict {
+    match requirement {
+        Requirement::Equals(name, expected) => {
+            let Some(attr) = find_attribute(element, name) else {
+                // 缺失即走默认值，按「不存在」处理：要求 `=v` 不成立。
+                return Verdict::Violated(None);
+            };
+            if !attr.is_static {
+                return Verdict::Ok;
+            }
+            let value = attr.value.as_deref().map(str::trim).unwrap_or_default();
+            if value.eq_ignore_ascii_case(expected) {
+                Verdict::Ok
+            } else {
+                Verdict::Violated(Some(value.to_string()))
+            }
+        }
+        Requirement::NotAny(name, banned) => {
+            let Some(attr) = find_attribute(element, name) else {
+                // 缺失同样按「不存在」处理：不等于任一被禁值（如 layout-type 缺省 normal），
+                // 所以不报。
+                return Verdict::Ok;
+            };
+            if !attr.is_static {
+                return Verdict::Ok;
+            }
+            let value = attr.value.as_deref().map(str::trim).unwrap_or_default();
+            if contains(banned, value) {
+                Verdict::Violated(Some(value.to_string()))
+            } else {
+                Verdict::Ok
+            }
+        }
+    }
+}
+
+fn requires_message(tag: &str, rule: &Requires, value: &str, current: Option<&str>) -> String {
+    let trigger = match value {
+        "" => rule.trigger.attr().to_string(),
+        value => format!("{}=\"{value}\"", rule.trigger.attr()),
+    };
+    match &rule.requirement {
+        Requirement::Equals(name, expected) => {
+            let current = match current {
+                Some(value) => format!("{name}=\"{value}\""),
+                None => format!("未设置 {name}"),
+            };
+            format!(
+                "`<{tag} {trigger}>` 的 `{}` 需要 `{name}=\"{expected}\"`，当前 {current}",
+                rule.trigger.attr()
+            )
+        }
+        Requirement::NotAny(name, _) => format!(
+            "`<{tag} {trigger}>` 的 `{}` 在 `{name}=\"{}\"` 时不生效，会被忽略",
+            rule.trigger.attr(),
+            current.unwrap_or_default()
+        ),
     }
 }
 
@@ -315,7 +595,7 @@ fn help(entry: &Entry) -> String {
 #[cfg(test)]
 mod tests {
     use super::super::testutil::{Fixture, check_rule, project};
-    use super::{ComponentAttribute, Constraint, DATA, parse};
+    use super::{ComponentAttribute, Constraint, DATA, Requirement, Trigger, parse};
 
     #[test]
     fn enum_violations_are_warnings_on_the_attribute() {
@@ -513,6 +793,178 @@ mod tests {
         ));
         assert!(table.lookup("share-element", "shuttle-on-pop").is_some());
         assert!(table.lookup("view", "space").is_none());
+
+        let Constraint::OneOf(values) = &table
+            .lookup("horizontal-drag-gesture-handler", "native-view")
+            .unwrap()[0]
+            .constraint
+        else {
+            panic!("native-view 缺少枚举分区");
+        };
+        assert_eq!(values, &["scroll-view", "swiper"]);
+
+        // `[unsupported]` 的属性名以 `*` 结尾时按前缀匹配。
+        assert!(matches!(
+            table.lookup("input", "placeholder-class").unwrap()[0].constraint,
+            Constraint::Unsupported
+        ));
+        assert!(matches!(
+            table.lookup("input", "safe-password-nonce").unwrap()[0].constraint,
+            Constraint::Unsupported
+        ));
+        assert!(table.lookup("input", "safe-password").is_none());
+        assert!(table.lookup("view", "placeholder-class").is_none());
+
+        let swiper = table.requires.get("swiper").unwrap();
+        assert_eq!(swiper.len(), 3);
+        assert!(matches!(
+            &swiper[0].trigger,
+            Trigger::Present("transformer-type")
+        ));
+        assert!(matches!(
+            &swiper[1].requirement,
+            Requirement::NotAny("layout-type", _)
+        ));
+    }
+
+    #[test]
+    fn requires_transformer_type_needs_transformer_layout() {
+        let diagnostics = check_rule(
+            &project(
+                "attr-requires-transformer",
+                r#"<swiper layout-type="normal" transformer-type="threeD"/>
+<swiper transformer-type="scaleAndFade"/>
+<swiper layout-type="transformer" transformer-type="threeD"/>
+<swiper layout-type="transformer"/>"#,
+            ),
+            &ComponentAttribute,
+        );
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("transformer-type"));
+        assert!(
+            diagnostics[0]
+                .message
+                .contains(r#"layout-type="transformer""#)
+        );
+        assert!(
+            diagnostics[0]
+                .message
+                .contains(r#"当前 layout-type="normal""#)
+        );
+        // 无 layout-type 即默认 normal，同样不满足要求。
+        assert!(diagnostics[1].message.contains("未设置 layout-type"));
+        assert_eq!((diagnostics[1].line, diagnostics[1].column), (2, 9));
+        assert!(
+            diagnostics[0]
+                .help
+                .as_deref()
+                .unwrap()
+                .contains("layout-type")
+        );
+    }
+
+    #[test]
+    fn requires_indicator_type_needs_normal_under_stack_layouts() {
+        let diagnostics = check_rule(
+            &project(
+                "attr-requires-indicator",
+                r#"<swiper layout-type="stackLeft" indicator-type="worm"/>
+<swiper layout-type="stackRight" indicator-type="slide"/>
+<swiper layout-type="tinder" indicator-type="scale"/>
+<swiper layout-type="stackLeft" indicator-type="normal"/>
+<swiper layout-type="normal" indicator-type="worm"/>
+<swiper layout-type="transformer" indicator-type="slide"/>"#,
+            ),
+            &ComponentAttribute,
+        );
+        let hits: Vec<_> = diagnostics
+            .iter()
+            .filter(|d| d.message.contains("`indicator-type`"))
+            .collect();
+        assert_eq!(hits.len(), 3, "{diagnostics:#?}");
+        assert!(hits[0].message.contains(r#"layout-type="stackLeft""#));
+        assert!(hits[1].message.contains(r#"layout-type="stackRight""#));
+        assert!(hits[2].message.contains(r#"layout-type="tinder""#));
+        assert_eq!((hits[2].line, hits[2].column), (3, 30));
+    }
+
+    #[test]
+    fn requires_circular_conflicts_with_indicator_animations() {
+        let diagnostics = check_rule(
+            &project(
+                "attr-requires-circular",
+                r#"<swiper indicator-type="swap" circular/>
+<swiper indicator-type="swap" circular="true"/>
+<swiper indicator-type="scrollFixedCenter" circular="{{true}}"/>
+<swiper indicator-type="swapYRotation" circular="{{circular}}"/>
+<swiper indicator-type="normal" circular/>
+<swiper indicator-type="swap"/>
+<swiper circular/>"#,
+            ),
+            &ComponentAttribute,
+        );
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+        // 无值属性等于布尔 true，同样要触发。
+        assert!(diagnostics[0].message.contains("<swiper circular>"));
+        assert!(diagnostics[0].message.contains(r#"indicator-type="swap""#));
+        assert!(diagnostics[1].message.contains(r#"circular="true""#));
+        assert!(diagnostics[0].help.as_deref().unwrap().contains("circular"));
+    }
+
+    #[test]
+    fn requires_is_skipped_for_dynamic_values() {
+        let diagnostics = check_rule(
+            &project(
+                "attr-requires-dynamic",
+                r#"<swiper indicator-type="{{type}}" circular/>
+<swiper layout-type="{{layout}}" transformer-type="threeD"/>
+<swiper layout-type="{{layout}}" indicator-type="worm"/>"#,
+            ),
+            &ComponentAttribute,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn native_view_only_accepts_scroll_view_and_swiper() {
+        let diagnostics = check_rule(
+            &project(
+                "attr-native-view",
+                r#"<vertical-drag-gesture-handler native-view="view"/>
+<vertical-drag-gesture-handler native-view="scroll-view"/>
+<vertical-drag-gesture-handler native-view="SWIPER"/>
+<horizontal-drag-gesture-handler native-view="swiper"/>
+<pan-gesture-handler native-view="view"/>
+<view native-view="view"/>"#,
+            ),
+            &ComponentAttribute,
+        );
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("native-view"));
+        assert!(diagnostics[1].message.contains("pan-gesture-handler"));
+        assert!(
+            diagnostics[0]
+                .help
+                .as_deref()
+                .unwrap()
+                .contains("scroll-view")
+        );
+    }
+
+    #[test]
+    fn input_webview_only_attributes_are_unsupported() {
+        let diagnostics = check_rule(
+            &project(
+                "attr-input-webview",
+                r#"<input type="text"/><input placeholder-class="ph"/><input safe-password-nonce="n"/><input safe-password-length="6"/>"#,
+            ),
+            &ComponentAttribute,
+        );
+        assert_eq!(diagnostics.len(), 3, "{diagnostics:#?}");
+        assert!(diagnostics.iter().all(|d| d.message.contains("不支持")));
+        assert!(diagnostics[0].message.contains("placeholder-class"));
+        assert!(diagnostics[1].message.contains("safe-password-nonce"));
+        assert!(diagnostics[2].message.contains("safe-password-length"));
     }
 
     #[test]
@@ -548,5 +1000,14 @@ mod tests {
             parse("[enum]\ntext | overflow | visible | -  # x\ntext | overflow | fade | -  # x\n")
                 .unwrap_err();
         assert!(err.contains("重复的条目"), "{err}");
+
+        let err =
+            parse("[requires]\nswiper | transformer-type | layout-type=transformer | -  # x\n")
+                .unwrap_err();
+        assert!(err.contains("属性=取值"), "{err}");
+
+        let err =
+            parse("[requires]\nswiper | circular=* | indicator-type=* | -  # x\n").unwrap_err();
+        assert!(err.contains("要求列不支持"), "{err}");
     }
 }
