@@ -10,7 +10,10 @@
 
 use std::ops::Range;
 
-use glass_easel_template_compiler::parse::tag::{Element, ElementKind, Node, Value};
+use glass_easel_template_compiler::parse::tag::{
+    Attribute, ClassAttribute, Element, ElementKind, EventBinding, Ident, Node, NormalAttribute,
+    NormalAttributePrefix, StaticAttribute, StyleAttribute, Value,
+};
 use glass_easel_template_compiler::parse::{self, ParseErrorLevel, Position, TemplateStructure};
 
 /// 解析一个 WXML 文件。
@@ -37,9 +40,30 @@ pub enum WxmlNode {
 pub struct WxmlElement {
     /// 标签名，小写（与 WXML 解析器一致）。
     pub tag: String,
+    /// 整个元素（含子节点）的范围。
     pub start: Position,
     pub end: Position,
+    /// 开始标签里标签名的范围，用于把诊断落在标签名上。
+    pub tag_start: Position,
+    pub tag_end: Position,
+    pub attributes: Vec<WxmlAttribute>,
     pub children: Vec<WxmlNode>,
+}
+
+/// 元素上的一个属性。
+///
+/// `value` 是解析后的静态字符串（含实体解码）；动态绑定（`{{}}`，或
+/// `a{{b}}c` 这类混排）不提供字符串值，`is_static` 为 `false`，规则据此跳过。
+/// 没有值的属性（如 `disabled`）`value` 为 `None`，但 `is_static` 仍为 `true`。
+#[derive(Debug, Clone)]
+pub struct WxmlAttribute {
+    /// 属性原名，保留连字符与冒号前缀：`aria-role`、`bind:tap`、`catch:tap`。
+    pub name: String,
+    pub value: Option<String>,
+    pub is_static: bool,
+    /// 属性名（含前缀）到值结尾的范围。
+    pub start: Position,
+    pub end: Position,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +226,9 @@ fn element_nodes(element: &Element, source: &str) -> Vec<WxmlNode> {
             tag: tag_name.name.to_string(),
             start: element.location().start,
             end: element.location().end,
+            tag_start: tag_name.location.start,
+            tag_end: tag_name.location.end,
+            attributes: attributes(element, source),
             children: flatten(children, source),
         })],
         ElementKind::Pure { children, .. } | ElementKind::For { children, .. } => {
@@ -224,9 +251,215 @@ fn element_nodes(element: &Element, source: &str) -> Vec<WxmlNode> {
             tag: "slot".to_string(),
             start: element.location().start,
             end: element.location().end,
+            tag_start: element.tag_location.start.0.start,
+            tag_end: element.tag_location.start.1.end,
+            attributes: attributes(element, source),
             children: Vec::new(),
         })],
         _ => Vec::new(),
+    }
+}
+
+/// 元素属性。只收集「用户写在开始标签里」的属性：`wx:for`/`wx:if` 被解析成
+/// 包装节点，不在其内；`<block>` 摊平后属性也不会保留。
+fn attributes(element: &Element, source: &str) -> Vec<WxmlAttribute> {
+    let mut out = Vec::new();
+    match &element.kind {
+        ElementKind::Normal {
+            attributes: normal,
+            class,
+            style,
+            change_attributes,
+            worklet_attributes,
+            generics,
+            extra_attr,
+            let_vars,
+            common,
+            ..
+        } => {
+            out.extend(normal.iter().map(|attr| normal_attribute(attr, source)));
+            out.extend(class_attributes(class, source));
+            out.extend(style_attributes(style, source));
+            out.extend(
+                change_attributes
+                    .iter()
+                    .map(|attr| prefixed_attribute(attr, source)),
+            );
+            out.extend(
+                worklet_attributes
+                    .iter()
+                    .map(|attr| static_attribute(attr, source)),
+            );
+            out.extend(generics.iter().map(|attr| static_attribute(attr, source)));
+            out.extend(extra_attr.iter().map(|attr| static_attribute(attr, source)));
+            out.extend(let_vars.iter().map(|attr| prefixed_attribute(attr, source)));
+            if let Some((range, value)) = &common.id {
+                out.push(value_attribute("id".to_string(), range, Some(value)));
+            }
+            if let Some((range, value)) = &common.slot {
+                out.push(value_attribute("slot".to_string(), range, Some(value)));
+            }
+            out.extend(
+                common
+                    .slot_value_refs
+                    .iter()
+                    .map(|attr| static_attribute(attr, source)),
+            );
+            out.extend(
+                common
+                    .data
+                    .iter()
+                    .map(|attr| prefixed_attribute(attr, source)),
+            );
+            out.extend(
+                common
+                    .marks
+                    .iter()
+                    .map(|attr| prefixed_attribute(attr, source)),
+            );
+            out.extend(
+                common
+                    .event_bindings
+                    .iter()
+                    .map(|binding| event_attribute(binding, source)),
+            );
+        }
+        ElementKind::Slot { values, common, .. } => {
+            out.extend(values.iter().map(|attr| prefixed_attribute(attr, source)));
+            if let Some((range, value)) = &common.id {
+                out.push(value_attribute("id".to_string(), range, Some(value)));
+            }
+            out.extend(
+                common
+                    .event_bindings
+                    .iter()
+                    .map(|binding| event_attribute(binding, source)),
+            );
+        }
+        _ => {}
+    }
+    // 按源码顺序排列，便于规则和调试时阅读。
+    out.sort_by_key(|attr| (attr.start.line, attr.start.utf16_col));
+    out
+}
+
+fn value_attribute(name: String, range: &Range<Position>, value: Option<&Value>) -> WxmlAttribute {
+    match value {
+        Some(Value::Static {
+            value, location, ..
+        }) => WxmlAttribute {
+            name,
+            value: Some(value.to_string()),
+            is_static: true,
+            start: range.start,
+            end: location.end,
+        },
+        Some(dynamic @ Value::Dynamic { .. }) => WxmlAttribute {
+            name,
+            value: None,
+            is_static: false,
+            start: range.start,
+            end: dynamic.location().end,
+        },
+        // 解析器新增的值形态按「动态」处理，规则不会把它当成静态字符串。
+        Some(_) => WxmlAttribute {
+            name,
+            value: None,
+            is_static: false,
+            start: range.start,
+            end: range.end,
+        },
+        None => WxmlAttribute {
+            name,
+            value: None,
+            is_static: true,
+            start: range.start,
+            end: range.end,
+        },
+    }
+}
+
+fn normal_attribute(attr: &NormalAttribute, source: &str) -> WxmlAttribute {
+    let prefix = match &attr.prefix {
+        NormalAttributePrefix::None => None,
+        NormalAttributePrefix::Model(range) => Some(range),
+    };
+    let name = full_name(prefix, &attr.name, source);
+    let start = prefix.map_or(attr.name.location.start, |range| range.start);
+    value_attribute(name, &(start..attr.name.location.end), attr.value.as_ref())
+}
+
+fn prefixed_attribute(attr: &Attribute, source: &str) -> WxmlAttribute {
+    let prefix = attr.prefix_location.as_ref();
+    let name = full_name(prefix, &attr.name, source);
+    let start = prefix.map_or(attr.name.location.start, |range| range.start);
+    value_attribute(name, &(start..attr.name.location.end), attr.value.as_ref())
+}
+
+fn static_attribute(attr: &StaticAttribute, source: &str) -> WxmlAttribute {
+    let prefix = attr.prefix_location.as_ref();
+    let name = full_name(prefix, &attr.name, source);
+    let start = prefix.map_or(attr.name.location.start, |range| range.start);
+    WxmlAttribute {
+        name,
+        value: Some(attr.value.name.to_string()),
+        is_static: true,
+        start,
+        end: attr.value.location.end,
+    }
+}
+
+fn event_attribute(binding: &EventBinding, source: &str) -> WxmlAttribute {
+    let name = full_name(Some(&binding.prefix_location), &binding.name, source);
+    value_attribute(
+        name,
+        &(binding.prefix_location.start..binding.name.location.end),
+        binding.value.as_ref(),
+    )
+}
+
+fn class_attributes(class: &ClassAttribute, source: &str) -> Vec<WxmlAttribute> {
+    match class {
+        ClassAttribute::None => Vec::new(),
+        ClassAttribute::String(range, value) => {
+            vec![value_attribute("class".to_string(), range, Some(value))]
+        }
+        ClassAttribute::Multiple(items) => items
+            .iter()
+            .map(|(range, name, value)| {
+                let full = full_name(Some(range), name, source);
+                let range = range.start..name.location.end;
+                value_attribute(full, &range, value.as_ref())
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn style_attributes(style: &StyleAttribute, source: &str) -> Vec<WxmlAttribute> {
+    match style {
+        StyleAttribute::None => Vec::new(),
+        StyleAttribute::String(range, value) => {
+            vec![value_attribute("style".to_string(), range, Some(value))]
+        }
+        StyleAttribute::Multiple(items) => items
+            .iter()
+            .map(|(range, name, value)| {
+                let full = full_name(Some(range), name, source);
+                let range = range.start..name.location.end;
+                value_attribute(full, &range, Some(value))
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// 带前缀的属性名（`bind:tap`、`model:value`、`mark:foo`）从原文切出，
+/// 前缀与名字之间的冒号因此得以保留。
+fn full_name(prefix: Option<&Range<Position>>, name: &Ident, source: &str) -> String {
+    match prefix {
+        Some(prefix) => slice(source, prefix.start..name.location.end),
+        None => name.name.to_string(),
     }
 }
 
@@ -306,6 +539,45 @@ mod tests {
     fn non_fatal_warnings_do_not_fail() {
         // 缺少结束标签只是 Warn。
         assert!(WxmlDoc::parse("t.wxml", "<view>").is_ok());
+    }
+
+    fn attributes(doc: &WxmlDoc) -> Vec<&WxmlAttribute> {
+        doc.elements().next().unwrap().attributes.iter().collect()
+    }
+
+    #[test]
+    fn attribute_names_keep_hyphens_and_colons() {
+        let doc = WxmlDoc::parse(
+            "t.wxml",
+            r#"<view aria-role="button" bind:tap="onTap" catch:tap="onCatch" type="list"/>"#,
+        )
+        .unwrap();
+        let names: Vec<&str> = attributes(&doc).iter().map(|a| a.name.as_str()).collect();
+        assert!(names.contains(&"aria-role"), "{names:?}");
+        assert!(names.contains(&"bind:tap"), "{names:?}");
+        assert!(names.contains(&"catch:tap"), "{names:?}");
+
+        let aria = attributes(&doc)
+            .into_iter()
+            .find(|a| a.name == "aria-role")
+            .unwrap();
+        assert_eq!(aria.value.as_deref(), Some("button"));
+        assert!(aria.is_static);
+    }
+
+    #[test]
+    fn dynamic_attribute_value_is_not_a_static_string() {
+        let doc = WxmlDoc::parse("t.wxml", r#"<view type="{{t}}"/>"#).unwrap();
+        let attr = &attributes(&doc)[0];
+        assert_eq!(attr.name, "type");
+        assert!(!attr.is_static);
+        assert_eq!(attr.value, None);
+    }
+
+    #[test]
+    fn mixed_interpolation_attribute_value_is_not_static() {
+        let doc = WxmlDoc::parse("t.wxml", r#"<view type="a{{t}}"/>"#).unwrap();
+        assert!(!attributes(&doc)[0].is_static);
     }
 
     #[test]

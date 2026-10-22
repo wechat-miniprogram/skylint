@@ -89,15 +89,26 @@ crates/skylint-core/src/
 
 ### P0 地基
 
+两条实测校准（改了计划原本的假设）：
+
+1. **规则不按 `is_skyline` 过滤页面。** 原计划「只查 Skyline 页面」是错的：迁移工具的受众
+   是还没上 Skyline 的工程，纯 WebView 项目会一条都不报，用途落空。`is_skyline` 降级为
+   工程视图的元数据。
+2. **`no-inline-text` 只看「文本 + 元素混排」。** 原实现把「元素里有非空白文本子节点」全部
+   报出，在两个生产 Skyline 工程上各报 122 / 196 条；抽查发现 `<view>{{text}}</view>` 在
+   Skyline 上渲染正常（组件被 skyline 页使用），知识库的唯一反例也是混排
+   `<view>Hello <view>World</view></view>`。收窄后降到 2 / 0。
+
+
 | # | 工作 | 状态 |
 |---|---|---|
 | 0.1 | V1 验证（npm 组件闭包） | `[x]` 结论见 2.3 |
 | 0.2 | minidev 低风险批 M1/M2/M3/M6/M8 | `[x]` |
 | 0.3 | minidev M4/M7/M9 | `[ ]` |
 | 0.4 | `ProjectView` + `Project::load` + 报告管道 + 单文件失败不终止 | `[x]` 真实工程验证：31 页混合项目（3 skyline）与独立脚本逐页对照一致 |
-| 0.5 | CLI：`--format text/json`、退出码（0 无 error / 1 有 error / 2 加载失败）、`--ignore`、inline disable | 部分（`--ignore` 与 disable 未做） |
-| 0.6 | 6 条规则验证管道：`unsupported-component`、`scroll-view-type`、`no-pseudo`、`box-sizing`、`no-inline-text`、`flex-direction` | `[ ]` |
-| 0.7 | 规则文档从 TOML 生成 | `[ ]` |
+| 0.5 | CLI：`--format text/json`、退出码（0 无 error / 1 有 error / 2 加载失败）、`--ignore`、inline disable | 部分（inline disable 未做） |
+| 0.6 | 6 条规则验证管道：`unsupported-component`、`scroll-view-type`、`no-pseudo`、`box-sizing`、`no-inline-text`、`flex-direction` | `[x]` |
+| 0.7 | 规则文档从代码生成（`skylint --rules`） | `[x]` |
 
 ### P1 WXSS 字典（约 45 条，ROI 最高）
 

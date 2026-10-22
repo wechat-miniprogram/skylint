@@ -13,8 +13,24 @@ Skyline 小程序迁移检查工具。
 
 进度与设计见 [docs/PLAN.md](docs/PLAN.md)。
 
-当前可用：工程视图（路由 → 实际源文件、组件闭包、Skyline 页面判定）、text/json 报告、
-退出码。规则尚未接入。
+当前可用：工程视图（路由 → 实际源文件、组件闭包、Skyline 页面判定）、6 条规则、
+text/json 报告、退出码。
+
+## 规则
+
+`skylint --rules` 直接打印下表（文档由代码生成，不手写）。
+
+| 规则 | 级别 | 说明 |
+|---|---|---|
+| `skyline/no-inline-text` | warning | Skyline 下文本与元素混排会变成独立 flex item，需用 `<text>` 包裹 |
+| `skyline/unsupported-component` | error | Skyline 下不可用的组件（如 web-view / movable-view / editor） |
+| `skyline/scroll-view-type` | warning | `<scroll-view>` 必须显式指定合法 type，否则性能退化 |
+| `skyline/no-pseudo` | warning | Skyline 不支持该伪类/伪元素，选择器不会命中 |
+| `skyline/box-sizing` | error | box-sizing 的值在 Skyline 下不受支持，声明会被忽略 |
+| `skyline/flex-direction` | warning | display: flex 未声明 flex-direction，迁移后默认方向会从 row 变为 column |
+
+规则都面向**迁移**：不按 `is_skyline` 过滤页面，还在 WebView 上的工程同样会被检查——
+那才是目标用户。
 
 ## 构建
 
@@ -46,6 +62,12 @@ skylint ../my-miniapp
 
 # 机器可读输出（CI 用）
 skylint --format json
+
+# 跳过某些规则（可重复）
+skylint --ignore skyline/no-pseudo --ignore skyline/flex-direction
+
+# 列出全部规则
+skylint --rules
 ```
 
 退出码：`0` 没有问题，`1` 有 error 级问题，`2` 项目加载失败。

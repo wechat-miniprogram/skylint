@@ -41,6 +41,8 @@ impl Registry {
     pub fn builtin() -> Self {
         Self::from_rules(vec![
             Box::new(wxml::NoInlineText),
+            Box::new(wxml::UnsupportedComponent),
+            Box::new(wxml::ScrollViewType),
             Box::new(wxss::NoPseudo),
             Box::new(wxss::BoxSizing),
             Box::new(wxss::FlexDirection),
@@ -53,6 +55,20 @@ impl Registry {
 
     pub fn metas(&self) -> Vec<RuleMeta> {
         self.rules.iter().map(|r| r.meta()).collect()
+    }
+
+    /// 规则文档的唯一来源：README 的规则表直接由它生成，不再手写。
+    pub fn to_markdown(&self) -> String {
+        let mut out = String::from("| 规则 | 级别 | 说明 |\n|---|---|---|\n");
+        for meta in self.metas() {
+            out.push_str(&format!(
+                "| `{}` | {} | {} |\n",
+                meta.id,
+                meta.severity.as_str(),
+                meta.description
+            ));
+        }
+        out
     }
 
     /// `ignored` 里的 id 整条规则跳过。

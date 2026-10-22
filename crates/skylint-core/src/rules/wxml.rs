@@ -1,6 +1,6 @@
 //! WXML 结构类规则。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 
 use crate::diag::{Diagnostic, Severity};
@@ -106,6 +106,213 @@ fn check_element(doc: &WxmlDoc, element: &WxmlElement, path: &str, out: &mut Vec
     }
 }
 
+/// 组件支持表。数据文件是唯一依据，Rust 侧只做查表。
+const COMPONENTS_DATA: &str = include_str!("data/components.txt");
+
+struct ComponentTable {
+    supported: HashSet<&'static str>,
+    unsupported: HashMap<&'static str, &'static str>,
+}
+
+impl ComponentTable {
+    fn load() -> Self {
+        let mut supported = HashSet::new();
+        let mut unsupported = HashMap::new();
+        let mut section = "";
+        for line in COMPONENTS_DATA.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            match line {
+                "[supported]" => {
+                    section = "supported";
+                    continue;
+                }
+                "[unsupported]" => {
+                    section = "unsupported";
+                    continue;
+                }
+                _ => {}
+            }
+            match section {
+                "supported" => {
+                    supported.insert(line);
+                }
+                "unsupported" => {
+                    if let Some((name, replacement)) = line.split_once('|') {
+                        unsupported.insert(name.trim(), replacement.trim());
+                    }
+                }
+                _ => {}
+            }
+        }
+        Self {
+            supported,
+            unsupported,
+        }
+    }
+
+    /// 黑名单命中才返回替代方案；白名单与未知自定义组件都不报。
+    fn replacement(&self, tag: &str) -> Option<&'static str> {
+        if self.supported.contains(tag) {
+            return None;
+        }
+        self.unsupported.get(tag).copied()
+    }
+}
+
+pub struct UnsupportedComponent;
+
+impl UnsupportedComponent {
+    pub const ID: &'static str = "skyline/unsupported-component";
+}
+
+impl Rule for UnsupportedComponent {
+    fn meta(&self) -> RuleMeta {
+        RuleMeta {
+            id: Self::ID,
+            severity: Severity::Error,
+            description: "Skyline 下不可用的组件（如 web-view / movable-view / editor）",
+        }
+    }
+
+    fn check(&self, project: &Project) -> Vec<Diagnostic> {
+        let table = ComponentTable::load();
+        let mut diagnostics = Vec::new();
+        for path in wxml_files(project) {
+            let Some(doc) = load_doc(project, path) else {
+                continue;
+            };
+            for element in doc.elements() {
+                let tag = element.tag.to_ascii_lowercase();
+                let Some(replacement) = table.replacement(&tag) else {
+                    continue;
+                };
+                let (line, column) = doc.position(element.tag_start);
+                let (end_line, end_column) = doc.position(element.tag_end);
+                diagnostics.push(
+                    Diagnostic::new(
+                        Self::ID,
+                        Severity::Error,
+                        format!("Skyline 不支持组件 `<{}>`", element.tag),
+                        path,
+                        line,
+                        column,
+                    )
+                    .end(end_line, end_column)
+                    .help(replacement),
+                );
+            }
+        }
+        diagnostics
+    }
+}
+
+pub struct ScrollViewType;
+
+impl ScrollViewType {
+    pub const ID: &'static str = "skyline/scroll-view-type";
+}
+
+/// `scroll-view` 在 Skyline 下的合法 `type`。
+/// 依据 `scroll-view.md` 的 type 属性表：list / custom / nested。
+const SCROLL_VIEW_TYPES: [&str; 3] = ["list", "custom", "nested"];
+
+impl Rule for ScrollViewType {
+    fn meta(&self) -> RuleMeta {
+        RuleMeta {
+            id: Self::ID,
+            severity: Severity::Warning,
+            description: "`<scroll-view>` 必须显式指定合法 type，否则性能退化",
+        }
+    }
+
+    fn check(&self, project: &Project) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+        for path in wxml_files(project) {
+            let Some(doc) = load_doc(project, path) else {
+                continue;
+            };
+            for element in doc.elements() {
+                if element.tag != "scroll-view" {
+                    continue;
+                }
+                match element
+                    .attributes
+                    .iter()
+                    .find(|attr| attr.name.eq_ignore_ascii_case("type"))
+                {
+                    None => {
+                        let (line, column) = doc.position(element.tag_start);
+                        let (end_line, end_column) = doc.position(element.tag_end);
+                        diagnostics.push(
+                            Diagnostic::new(
+                                Self::ID,
+                                Severity::Warning,
+                                "`<scroll-view>` 缺少 type 属性，Skyline 下会退化为非按需渲染，性能下降",
+                                path,
+                                line,
+                                column,
+                            )
+                            .end(end_line, end_column)
+                            .help(
+                                "显式指定 type：list（普通长列表）、custom（list-view/grid-view/sticky 布局）、nested（嵌套滚动）",
+                            ),
+                        );
+                    }
+                    // 动态值无法在静态阶段确定，跳过。
+                    Some(attr) if !attr.is_static => {}
+                    Some(attr) => {
+                        let value = attr.value.as_deref().unwrap_or("").trim();
+                        if SCROLL_VIEW_TYPES.contains(&value) {
+                            continue;
+                        }
+                        let (line, column) = doc.position(attr.start);
+                        let (end_line, end_column) = doc.position(attr.end);
+                        diagnostics.push(
+                            Diagnostic::new(
+                                Self::ID,
+                                Severity::Error,
+                                format!("`<scroll-view type=\"{value}\">` 不是 Skyline 支持的滚动模式"),
+                                path,
+                                line,
+                                column,
+                            )
+                            .end(end_line, end_column)
+                            .help(
+                                "合法值：list（普通长列表）、custom（list-view/grid-view/sticky 布局）、nested（嵌套滚动）",
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+        diagnostics
+    }
+}
+
+/// 页面与组件的 WXML，按路径去重（同一文件可能被多次引用）。
+fn wxml_files(project: &Project) -> impl Iterator<Item = &str> {
+    let mut seen = HashSet::new();
+    project
+        .pages
+        .iter()
+        .filter_map(|page| page.files.wxml.as_deref())
+        .chain(
+            project
+                .components
+                .iter()
+                .filter_map(|component| component.files.wxml.as_deref()),
+        )
+        .filter(move |path| seen.insert(*path))
+}
+
+fn load_doc(project: &Project, path: &str) -> Option<WxmlDoc> {
+    let source = fs::read_to_string(project.abs(path)).ok()?;
+    wxml::parse(path, &source).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -114,7 +321,7 @@ mod tests {
     use crate::project::Project;
     use crate::rules::Rule;
 
-    use super::NoInlineText;
+    use super::{NoInlineText, ScrollViewType, UnsupportedComponent};
 
     struct Fixture {
         root: PathBuf,
@@ -364,5 +571,123 @@ mod tests {
         let diagnostics = check(&fixture);
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].path, "pages/good/good.wxml");
+    }
+
+    // ---- unsupported-component ----
+
+    fn check_rule(fixture: &Fixture, rule: &dyn Rule) -> Vec<crate::Diagnostic> {
+        let project = Project::load(fixture.path()).unwrap();
+        rule.check(&project)
+    }
+
+    #[test]
+    fn unsupported_components_are_reported() {
+        let diagnostics = check_rule(
+            &project(
+                "unsupported",
+                r#"<view>
+  <web-view src="https://example.com"/>
+  <movable-view/>
+  <editor/>
+  <progress/>
+  <xr-frame/>
+</view>"#,
+            ),
+            &UnsupportedComponent,
+        );
+        assert_eq!(diagnostics.len(), 5);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.severity == crate::Severity::Error)
+        );
+
+        let web_view = diagnostics
+            .iter()
+            .find(|d| d.message.contains("web-view"))
+            .unwrap();
+        assert!(
+            web_view
+                .help
+                .as_deref()
+                .unwrap()
+                .contains(r#""renderer": "webview""#)
+        );
+
+        let movable_view = diagnostics
+            .iter()
+            .find(|d| d.message.contains("movable-view"))
+            .unwrap();
+        assert!(movable_view.help.as_deref().unwrap().contains("worklet"));
+    }
+
+    #[test]
+    fn every_unsupported_occurrence_is_reported() {
+        let diagnostics = check_rule(
+            &project("unsupported-twice", "<view><web-view/><web-view/></view>"),
+            &UnsupportedComponent,
+        );
+        assert_eq!(diagnostics.len(), 2);
+    }
+
+    #[test]
+    fn supported_components_are_allowed() {
+        let diagnostics = check_rule(
+            &project(
+                "supported",
+                "<view><form/><scroll-view/><navigator/><rich-text/><page-meta/><span/><sticky-header/><list-view/></view>",
+            ),
+            &UnsupportedComponent,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn unknown_custom_component_is_ignored() {
+        let diagnostics = check_rule(
+            &project("custom-component", "<my-widget/>"),
+            &UnsupportedComponent,
+        );
+        assert!(diagnostics.is_empty());
+    }
+
+    // ---- scroll-view-type ----
+
+    #[test]
+    fn scroll_view_without_type_warns_on_tag() {
+        let diagnostics = check_rule(
+            &project("scroll-missing", "<scroll-view scroll-y></scroll-view>"),
+            &ScrollViewType,
+        );
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].severity, crate::Severity::Warning);
+        assert_eq!((diagnostics[0].line, diagnostics[0].column), (1, 2));
+    }
+
+    #[test]
+    fn scroll_view_with_invalid_static_type_errors_on_attribute() {
+        let diagnostics = check_rule(
+            &project(
+                "scroll-invalid",
+                r#"<scroll-view type="page"></scroll-view>"#,
+            ),
+            &ScrollViewType,
+        );
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].severity, crate::Severity::Error);
+        assert_eq!((diagnostics[0].line, diagnostics[0].column), (1, 14));
+        assert!(diagnostics[0].help.as_deref().unwrap().contains("nested"));
+    }
+
+    #[test]
+    fn valid_and_dynamic_scroll_view_types_are_allowed() {
+        let diagnostics = check_rule(
+            &project(
+                "scroll-ok",
+                "<view><scroll-view type=\"list\"/><scroll-view type=\"custom\"/><scroll-view type=\"nested\"/><scroll-view type=\"{{t}}\"/></view>",
+            ),
+            &ScrollViewType,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 }
