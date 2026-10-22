@@ -74,6 +74,19 @@ skyline/unsupported-component
 app 级 `"renderer": "webview"`、页面没表态的不跳——那只是「还没迁」，正是要检查的对象。
 组件的 wxml 没有 renderer，一律检查；wxss 无法按页归属（`@import` / `app.wxss` 共享），同样不跳。
 
+## 已知盲区：预处理器
+
+样式规则只解析 `.wxss` 源文件。`.less` / `.scss` 的嵌套、变量、mixin 用 `cssparser` 静态展不开
+（实测 `.a { display: flex; .b { … } }` 只出来 `.a` 一条规则），硬解析会静默漏判——所以宁可跳过，
+但在报告末尾如实报出数量：
+
+```
+0 error, 3 warning, 0 info (11 pages, 11 skyline, 28 components)
+未检查：40 个 .less 样式源（暂不支持预处理器，这些文件的样式规则没有执行）
+```
+
+JSON 报告里对应 `summary.skippedStyles`（按扩展名计数，为空时该字段不出现）。
+
 ## 构建
 
 依赖 [minidev](https://github.com/wechat-miniprogram/minidev) 的 `compiler-graph` /

@@ -183,7 +183,9 @@ text-decoration-line 单值、calc 角度、mask-image 渐变。
 businessview 82 scss / 13 wxss）。`cssparser` 对嵌套语法并不实现展开（实测
 `.a { display:flex; .b { … } }` 只出 `.a` 一条规则），变量、mixin、`&` 也无法静态求值，
 所以当前所有样式规则只作用于 `.wxss` 源文件——对 `.less`/`.scss` 工程等于没检查。
-这是路线问题，不是补丁能解决的，需要单独决策（详见 §7 遗留）。
+这是路线问题，不是补丁能解决的。当前处理：报告末尾输出「未检查：N 个 .less/.scss 样式源」
+（JSON 里是 `summary.skippedStyles`），不让「0 问题」变成假象。解析预处理器 / 改 lint 编译产物
+两条路线都留待单独决策。
 
 剩余：`scroll-view` 直接子节点 margin、标签选择器隔离（`tagNameStyleIsolation`）、
 类名可达性。
