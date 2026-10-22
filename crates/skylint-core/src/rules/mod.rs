@@ -46,6 +46,8 @@ impl Registry {
             Box::new(wxml::ScrollViewType),
             Box::new(wxml::ComponentAttribute),
             Box::new(wxml::ScrollViewFamily),
+            Box::new(wxml::ComponentChildren),
+            Box::new(wxml::ShareElementKey),
             Box::new(wxml::HorizontalScrollEnableFlex),
             Box::new(wxss::NoPseudo),
             Box::new(wxss::BoxSizing),
