@@ -1,0 +1,62 @@
+# 来源：/Volumes/2tb-ssd/nebula/Work/skyline-skills/skills/skyline-wxss/SKILL.md
+#       /Volumes/2tb-ssd/nebula/Work/skyline-skills/skills/skyline-wxss/references/*.md
+# 同步方式：
+#   [unsupported-property] 按 SKILL.md「NEVER: 使用不支持的 CSS 属性」表逐行更新，
+#     一格多属性拆成多行；表外补充的属性以行尾注释标注 references 出处。
+#   [unsupported-value] 按 references 中各属性的「支持值」表与 ⚠️ 标注更新，
+#     只收录文档明确写「不支持 / 不可用 / 映射为其他值」的整值，不从语法推断。
+# 格式：分区下每行 `键 | 值 | 建议`，`#` 起为注释（支持行尾注释）。
+#   [unsupported-property]：键 = 小写属性名，值列固定为 `-`。
+#   [unsupported-value]：键 = 小写属性名（逗号分隔可写多个），值 = 小写整值。
+#   匹配：属性名小写比较；值 trim + 小写后整值相等才命中；含 var( / env( / {{ 的值跳过。
+
+[unsupported-property]
+float | - | 使用 flex 布局  # SKILL.md NEVER 表
+contain | - | 使用 `-wx-contain`  # SKILL.md NEVER 表
+resize | - | 无替代  # SKILL.md NEVER 表
+writing-mode | - | 无替代  # SKILL.md NEVER 表
+text-indent | - | 使用 padding-left 模拟  # SKILL.md NEVER 表
+overflow-wrap | - | 使用 word-break  # SKILL.md NEVER 表
+text-decoration-thickness | - | 无替代  # SKILL.md NEVER 表
+background-attachment | - | 无替代  # SKILL.md NEVER 表
+background-clip | - | 无替代  # SKILL.md NEVER 表
+background-origin | - | 无替代  # SKILL.md NEVER 表
+mask-origin | - | 无替代  # SKILL.md NEVER 表（一格多属性拆分）
+mask-clip | - | 无替代  # SKILL.md NEVER 表（一格多属性拆分）
+mask-mode | - | 无替代  # SKILL.md NEVER 表（一格多属性拆分）
+justify-items | - | 无替代  # SKILL.md NEVER 表
+list-style-type | - | 无替代  # SKILL.md NEVER 表（一格多属性拆分）
+list-style-image | - | 无替代  # SKILL.md NEVER 表（一格多属性拆分）
+list-style-position | - | 无替代  # SKILL.md NEVER 表（一格多属性拆分）
+direction | - | 无替代  # text.md「direction ⛔」、SKILL.md Quick Reference
+overflow-x | - | 仅支持 overflow 单值（visible / hidden）；滚动使用 scroll-view 组件  # layout.md「overflow」
+overflow-y | - | 仅支持 overflow 单值（visible / hidden）；滚动使用 scroll-view 组件  # layout.md「overflow」
+
+[unsupported-value]
+display | grid | 改用 flex 布局替代 grid  # layout.md「display」、SKILL.md MUST 示例
+display | flow-root | 改用 flex 或 block  # layout.md「display」
+position | sticky | 改用 relative/absolute/fixed；吸顶使用 sticky-header/sticky-section 组件  # layout.md「position」、SKILL.md MUST 示例
+overflow | auto | 改用 overflow: hidden；滚动使用 scroll-view 组件  # layout.md「overflow」、SKILL.md MUST 示例
+overflow | scroll | 改用 overflow: hidden；滚动使用 scroll-view 组件  # layout.md「overflow」
+visibility | collapse | 改用 visible 或 hidden  # layout.md「visibility」
+white-space | pre | 改用 normal 或 nowrap  # text.md「white-space」、SKILL.md Quick Reference
+white-space | pre-wrap | 改用 normal 或 nowrap  # text.md「white-space」、SKILL.md Quick Reference
+white-space | pre-line | 改用 normal 或 nowrap  # text.md「white-space」、SKILL.md Quick Reference
+font-weight | bolder | 改用 normal、bold 或 100-900 的数值  # text.md「font-weight」
+font-weight | lighter | 改用 normal、bold 或 100-900 的数值  # text.md「font-weight」
+font-style | oblique | 改用 normal 或 italic  # text.md「font-style」
+word-break | break-word | 改用 normal 或 break-all（break-word 会被映射为 normal）  # text.md「word-break」
+vertical-align | text-top | 改用 baseline/top/middle/bottom  # text.md「vertical-align」
+vertical-align | text-bottom | 改用 baseline/top/middle/bottom  # text.md「vertical-align」
+text-align | justify-all | 改用 left/center/right/justify/start/end  # text.md「text-align」
+text-align | match-parent | 改用 left/center/right/justify/start/end  # text.md「text-align」
+text-decoration-line | blink | 仅支持 none/underline/overline/line-through，且只能单值  # SKILL.md Quick Reference
+border-style,border-top-style,border-right-style,border-bottom-style,border-left-style | hidden | border-*-style 仅支持 none/solid/dashed/dotted  # SKILL.md Quick Reference、visual.md「border-style」
+border-style,border-top-style,border-right-style,border-bottom-style,border-left-style | double | border-*-style 仅支持 none/solid/dashed/dotted  # SKILL.md Quick Reference、visual.md「border-style」
+border-style,border-top-style,border-right-style,border-bottom-style,border-left-style | groove | border-*-style 仅支持 none/solid/dashed/dotted  # SKILL.md Quick Reference、visual.md「border-style」
+border-style,border-top-style,border-right-style,border-bottom-style,border-left-style | ridge | border-*-style 仅支持 none/solid/dashed/dotted  # SKILL.md Quick Reference、visual.md「border-style」
+border-style,border-top-style,border-right-style,border-bottom-style,border-left-style | inset | border-*-style 仅支持 none/solid/dashed/dotted  # SKILL.md Quick Reference、visual.md「border-style」
+border-style,border-top-style,border-right-style,border-bottom-style,border-left-style | outset | border-*-style 仅支持 none/solid/dashed/dotted  # SKILL.md Quick Reference、visual.md「border-style」
+background-repeat | space | 仅支持 repeat/repeat-x/repeat-y/no-repeat  # SKILL.md Quick Reference、visual.md「background-repeat」
+background-repeat | round | 仅支持 repeat/repeat-x/repeat-y/no-repeat  # SKILL.md Quick Reference、visual.md「background-repeat」
+will-change | scroll-position | will-change 仅支持 auto 或 contents  # animation.md「will-change」

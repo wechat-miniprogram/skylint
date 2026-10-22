@@ -13,7 +13,7 @@ Skyline 小程序迁移检查工具。
 
 进度与设计见 [docs/PLAN.md](docs/PLAN.md)。
 
-当前可用：工程视图（路由 → 实际源文件、组件闭包、Skyline 页面判定）、6 条规则、
+当前可用：工程视图（路由 → 实际源文件、组件闭包、Skyline 页面判定）、14 条规则、
 text/json 报告、退出码。
 
 ## 规则
@@ -28,6 +28,14 @@ text/json 报告、退出码。
 | `skyline/no-pseudo` | warning | Skyline 不支持该伪类/伪元素，选择器不会命中 |
 | `skyline/box-sizing` | error | box-sizing 的值在 Skyline 下不受支持，声明会被忽略 |
 | `skyline/flex-direction` | warning | display: flex 未声明 flex-direction，迁移后默认方向会从 row 变为 column |
+| `skyline/unsupported-property` | error | 声明了 Skyline 完全不支持的属性，该属性不会生效 |
+| `skyline/unsupported-value` | error | 属性在 Skyline 下可用，但该值不支持，声明会被静默忽略 |
+| `skyline/gradient-limit` | warning | 渐变的形状 / 尺寸 / 颜色停止位置超出 Skyline 支持范围 |
+| `skyline/multi-value-limit` | warning | background / mask 的多值数量超出 Skyline 支持范围 |
+| `skyline/filter-limit` | warning | filter / backdrop-filter 使用了不支持的函数或组合 |
+| `skyline/text-decoration-line` | warning | text-decoration-line 只支持单值，多值组合不生效 |
+| `skyline/calc-angle` | warning | calc() 不支持角度计算，表达式中的角度单位不生效 |
+| `skyline/mask-image-gradient` | warning | mask-image 不支持 linear-gradient / radial-gradient，仅 url() 可用 |
 
 规则都面向**迁移**：不按 `is_skyline` 过滤页面，还在 WebView 上的工程同样会被检查——
 那才是目标用户。

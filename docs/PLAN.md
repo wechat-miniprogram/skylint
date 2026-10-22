@@ -110,9 +110,22 @@ crates/skylint-core/src/
 | 0.6 | 6 条规则验证管道：`unsupported-component`、`scroll-view-type`、`no-pseudo`、`box-sizing`、`no-inline-text`、`flex-direction` | `[x]` |
 | 0.7 | 规则文档从代码生成（`skylint --rules`） | `[x]` |
 
-### P1 WXSS 字典（约 45 条，ROI 最高）
+### P1 WXSS 字典（ROI 最高）
 
-属性支持表、值支持表、选择器白名单，全部 TOML。出口判据：一致性语料全过。
+`[x]` 部分完成：属性/值支持表 47 条数据（20 个不支持的属性 + 27 个不支持的值），
+由两条数据驱动规则消费（`unsupported-property` / `unsupported-value`）。
+另外 6 条「值结构」规则落在 `shape.rs`：渐变限制、多值数量、filter 函数、
+text-decoration-line 单值、calc 角度、mask-image 渐变。
+
+规则数（14）远小于数据条数（47）——这正是「字典层用数据、不用规则」的目的：
+加一条支持表条目不需要写代码。
+
+未做：选择器白名单（tag/id 跨组件隔离，属 P3）；简写展开（`background: url() no-repeat`
+里的子属性不判定，整值匹配）；级联。
+
+出口判据仍是一致性语料：从 `skyline/css/css_properties/*.cc` 的 130 个 `Parse` switch
+整理 `(属性, 值, 支持?)`，用来核对这份数据表与引擎是否一致。**尚未开始**——当前数据
+全部来自 skyline-skills 文档，没有和 C++ 源码交叉验证。
 
 ### P2 WXML 结构（约 25 条）
 

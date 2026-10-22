@@ -46,6 +46,14 @@ impl Registry {
             Box::new(wxss::NoPseudo),
             Box::new(wxss::BoxSizing),
             Box::new(wxss::FlexDirection),
+            Box::new(wxss::dict::UnsupportedProperty),
+            Box::new(wxss::dict::UnsupportedValue),
+            Box::new(wxss::shape::GradientLimit),
+            Box::new(wxss::shape::MultiValueLimit),
+            Box::new(wxss::shape::FilterLimit),
+            Box::new(wxss::shape::TextDecorationLine),
+            Box::new(wxss::shape::CalcAngle),
+            Box::new(wxss::shape::MaskImageGradient),
         ])
     }
 
