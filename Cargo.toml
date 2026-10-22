@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = ["crates/skylint-core", "crates/skylint-cli"]
+
+[workspace.package]
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/wechat-miniprogram/skylint"
+
+[workspace.dependencies]
+skylint-core = { path = "crates/skylint-core" }
+
+# 工程图与诊断复用 minidev（版本对齐 minidev workspace）。
+# 开发期由 .cargo/config.toml 的 [patch.crates-io] 指向本地/内网源码；
+# minidev 发布到 crates.io 后此处无需改动。
+compiler-common = "0.10"
+compiler-diag = "0.10"
+compiler-graph = "0.10"
+
+anyhow = "1"
+clap = { version = "4", features = ["derive", "wrap_help"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

@@ -1,2 +1,6 @@
+/target
+/.cargo/config.toml
+/.cortexkit
 node_modules
-pnpm-lock.yaml
+.DS_Store
+*.log

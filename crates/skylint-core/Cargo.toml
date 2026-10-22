@@ -1,0 +1,17 @@
+[package]
+name = "skylint-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Skyline 迁移检查核心：工程图、输入解析、规则、诊断"
+
+[dependencies]
+compiler-common = { workspace = true }
+compiler-diag = { workspace = true }
+compiler-graph = { workspace = true }
+
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

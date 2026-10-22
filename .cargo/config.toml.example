@@ -1,0 +1,14 @@
+# 复制为 .cargo/config.toml（已 gitignore）。
+#
+# skylint 依赖 minidev 的三个 crate（compiler-graph / compiler-diag / compiler-common），
+# 公开 Cargo.toml 只写普通版本依赖，不带任何内部地址。开发期用 [patch.crates-io]
+# 把它们指向本机 minidev checkout；CI 指向内网 clone。
+#
+# 为什么不用 git 依赖 + [patch]：实测 cargo 对 git 源仍会先 fetch 原地址，
+# 而 [source] 替换 git→git 不被支持。版本依赖 + [patch.crates-io] 是唯一不需要
+# 外部地址可达的做法。
+
+[patch.crates-io]
+compiler-common = { path = "../minidev/crates/common" }
+compiler-diag = { path = "../minidev/crates/diag" }
+compiler-graph = { path = "../minidev/crates/graph" }
