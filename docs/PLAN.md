@@ -123,14 +123,34 @@ text-decoration-line 单值、calc 角度、mask-image 渐变。
 未做：选择器白名单（tag/id 跨组件隔离，属 P3）；简写展开（`background: url() no-repeat`
 里的子属性不判定，整值匹配）；级联。
 
-出口判据仍是一致性语料：从 `skyline/css/css_properties/*.cc` 的 130 个 `Parse` switch
-整理 `(属性, 值, 支持?)`，用来核对这份数据表与引擎是否一致。**尚未开始**——当前数据
-全部来自 skyline-skills 文档，没有和 C++ 源码交叉验证。
+出口判据「一致性语料」已用**定向核对**代替全量转写：47 条数据逐条对着
+`skyline/css/css_properties/*.cc` 的 `Parse` 与 `css_parser_impl.h` 的属性映射表核了一遍。
 
-### P2 WXML 结构（约 25 条）
+结论（详见各自 commit）：
+- **删了 3 条错的**：`direction`、`overflow-x`、`overflow-y` 引擎都接受并生效
+  （`direction` 真的应用到 Text；`overflow-x/y` 的 visible/hidden 会折叠进 `overflow`）。
+  文档「不支持」的原文只对 `auto`/`scroll` 成立——已改成按值收录。
+- **补了 4 条漏的**：`mask-position`、`display: inline-grid`、`overflow-x/y: auto|scroll`、
+  `mask-repeat: space|round`。
+- **修了 1 条建议**：`contain` 的替代方案 `-wx-contain` 本身也是 `kInvalid`，
+  文档推荐的替代品同样不可用。
 
-`scroll-view` 家族（list/custom/nested、list-view、sticky-section、nested-scroll、
-draggable-sheet）20+ 条父子约束；组件白名单扩展。
+局限：引擎接受 ≠ 能渲染（`skyline/css` 之上还有一层取舍在私有 fork 里），
+所以这套核对只能证伪「不支持」，不能证明「支持」。
+
+### P2 WXML 结构
+
+`[x]` 部分完成：`scroll-view` 家族的 5 条挂载约束（数据驱动，
+`rules/wxml/data/scroll_family.txt`）+ 横向滚动 `enable-flex` 检查。
+组件白名单已在 P0 落地。
+
+刻意**没做**的（文档含糊或自相矛盾，做了就是误报）：
+- `sticky-header` 必须在 `sticky-section` 内——`sticky.md` NEVER 2 要求，但
+  `scroll-view.md:54` 把 `sticky-header` 列为 custom 模式的受支持子组件，生产工程
+  `miniprogram-skit_1` 也在 `<nested-scroll-header>` 内直接用。两者冲突，整体撤销。
+- 「必须有且只有一个」这类计数约束：`wx:if`/`wx:else` 摊平后会变成两个兄弟节点，
+  静态计数必然误报。
+- 需要知道组件内部渲染树（`slot` 落点）的约束。
 
 ### P3 跨文件语义（差异化最大）
 

@@ -1,4 +1,4 @@
-//! WXML 结构类规则。
+//! 需要手写判定的 WXML 规则：内联文本、组件白名单、scroll-view type。
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -7,6 +7,8 @@ use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{self, WxmlDoc, WxmlElement, WxmlNode};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
+
+use super::{load_doc, wxml_files};
 
 pub const ID: &str = "skyline/no-inline-text";
 
@@ -107,7 +109,7 @@ fn check_element(doc: &WxmlDoc, element: &WxmlElement, path: &str, out: &mut Vec
 }
 
 /// 组件支持表。数据文件是唯一依据，Rust 侧只做查表。
-const COMPONENTS_DATA: &str = include_str!("data/components.txt");
+const COMPONENTS_DATA: &str = include_str!("../data/components.txt");
 
 struct ComponentTable {
     supported: HashSet<&'static str>,
@@ -290,27 +292,6 @@ impl Rule for ScrollViewType {
         }
         diagnostics
     }
-}
-
-/// 页面与组件的 WXML，按路径去重（同一文件可能被多次引用）。
-fn wxml_files(project: &Project) -> impl Iterator<Item = &str> {
-    let mut seen = HashSet::new();
-    project
-        .pages
-        .iter()
-        .filter_map(|page| page.files.wxml.as_deref())
-        .chain(
-            project
-                .components
-                .iter()
-                .filter_map(|component| component.files.wxml.as_deref()),
-        )
-        .filter(move |path| seen.insert(*path))
-}
-
-fn load_doc(project: &Project, path: &str) -> Option<WxmlDoc> {
-    let source = fs::read_to_string(project.abs(path)).ok()?;
-    wxml::parse(path, &source).ok()
 }
 
 #[cfg(test)]

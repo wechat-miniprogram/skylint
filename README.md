@@ -13,7 +13,7 @@ Skyline 小程序迁移检查工具。
 
 进度与设计见 [docs/PLAN.md](docs/PLAN.md)。
 
-当前可用：工程视图（路由 → 实际源文件、组件闭包、Skyline 页面判定）、14 条规则、
+当前可用：工程视图（路由 → 实际源文件、组件闭包、Skyline 页面判定）、16 条规则、
 text/json 报告、退出码。
 
 ## 规则
@@ -25,6 +25,8 @@ text/json 报告、退出码。
 | `skyline/no-inline-text` | warning | Skyline 下文本与元素混排会变成独立 flex item，需用 `<text>` 包裹 |
 | `skyline/unsupported-component` | error | Skyline 下不可用的组件（如 web-view / movable-view / editor） |
 | `skyline/scroll-view-type` | warning | `<scroll-view>` 必须显式指定合法 type，否则性能退化 |
+| `skyline/scroll-view-family` | error | scroll-view 家族组件（sticky / list-view / grid-view / nested / draggable-sheet）的挂载位置 |
+| `skyline/horizontal-scroll-enable-flex` | warning | 横向滚动的 `<scroll-view>` 需开启 `enable-flex` 以兼容 WebView |
 | `skyline/no-pseudo` | warning | Skyline 不支持该伪类/伪元素，选择器不会命中 |
 | `skyline/box-sizing` | error | box-sizing 的值在 Skyline 下不受支持，声明会被忽略 |
 | `skyline/flex-direction` | warning | display: flex 未声明 flex-direction，迁移后默认方向会从 row 变为 column |

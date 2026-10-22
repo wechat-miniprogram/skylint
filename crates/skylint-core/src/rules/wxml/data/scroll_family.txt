@@ -1,0 +1,32 @@
+# scroll-view 家族组件的父子挂载约束。
+#
+# 列（TAB 分隔）：子标签 | 关系 | 目标 | help
+#   关系 direct   ：直接父节点必须是目标之一（渲染树，block/wx:if/wx:for 已摊平）
+#   关系 ancestor ：最近的同名祖先必须是目标，并满足目标上的属性要求
+#   目标写法     ：tag 或 tag[attr=value]，多个目标用 | 分隔
+#
+# 依据（每条都能指到原句）：
+# - sticky-section：scroll/sticky.md「它们必须在 <scroll-view type="custom"> 模式下使用」，
+#   MUST 1「必须在 type="custom" 的 scroll-view 中使用」，NEVER 1「不要在 type="list" 的 scroll-view 中使用」。
+# - list-view / grid-view：scroll/list-grid-view.md「它们必须作为 <scroll-view type="custom"> 或
+#   <sticky-section> 的直接子节点使用」，NEVER 1「不要在 type="list" 的 scroll-view 中使用 list-view/grid-view」。
+# - nested-scroll-header / nested-scroll-body：scroll/nested-scroll.md MUST 1
+#   「外层 scroll-view 必须设置 type="nested"」。
+#
+# 文档冲突记录：skyline-overview/references/introduction/component-support.md 写
+# 「list-view | 列表布局容器，作为 scroll-view type="list" 的直接子节点」，与
+# scroll/list-grid-view.md（必须 custom）以及 SKILL.md MUST 4 冲突。这里按更具体、
+# 且被 scroll-view.md type 表（custom 支持 list-view/grid-view/sticky-section）
+# 印证的 list-grid-view.md 实现。
+#
+# 文档冲突记录（sticky-header，整条撤销）：scroll/sticky.md NEVER 2 写「不要将
+# sticky-header 放在 sticky-section 之外」，但 scroll/scroll-view.md:54 在 custom 模式的
+# 「支持的子组件」里明确列出 `sticky-section` / `sticky-header`，即 sticky-header 也可以
+# 作为 scroll-view 的直接子节点。生产工程 miniprogram-skit_1 的 rank.wxml 正是
+# <nested-scroll-header><sticky-header> 的写法且在跑。两份文档互相冲突，按「文档没写清
+# 或互相矛盾就不报」的原则，不对 sticky-header 的挂载位置做任何约束。
+sticky-section	ancestor	scroll-view[type=custom]	把 `<sticky-section>` 放进 `<scroll-view type="custom">`，type 不能是 list/nested
+list-view	direct	scroll-view[type=custom]|sticky-section	把 `<list-view>` 移为 `<scroll-view type="custom">` 或 `<sticky-section>` 的直接子节点
+grid-view	direct	scroll-view[type=custom]|sticky-section	把 `<grid-view>` 移为 `<scroll-view type="custom">` 或 `<sticky-section>` 的直接子节点
+nested-scroll-header	ancestor	scroll-view[type=nested]	把 `<nested-scroll-header>` 放在外层 `<scroll-view type="nested">` 内
+nested-scroll-body	ancestor	scroll-view[type=nested]	把 `<nested-scroll-body>` 放在外层 `<scroll-view type="nested">` 内

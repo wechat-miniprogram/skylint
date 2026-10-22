@@ -43,6 +43,8 @@ impl Registry {
             Box::new(wxml::NoInlineText),
             Box::new(wxml::UnsupportedComponent),
             Box::new(wxml::ScrollViewType),
+            Box::new(wxml::ScrollViewFamily),
+            Box::new(wxml::HorizontalScrollEnableFlex),
             Box::new(wxss::NoPseudo),
             Box::new(wxss::BoxSizing),
             Box::new(wxss::FlexDirection),
