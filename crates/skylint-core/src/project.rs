@@ -32,8 +32,14 @@ pub struct UnitFiles {
 pub struct PageUnit {
     /// 页面路由（app.json 里的原始写法，分包页已带 root 前缀）。
     pub route: String,
-    /// 该页是否走 Skyline 渲染。
+    /// 该页是否走 Skyline 渲染（页面级 `renderer` 优先，缺省回落 app.json）。
     pub is_skyline: bool,
+    /// 页面 json 显式声明了 `"renderer": "webview"`。
+    ///
+    /// 和 `!is_skyline` 不是一回事：这里是「这页永远不迁 Skyline」的明确决定
+    /// （典型是含 `<web-view>` 的页面），规则整页跳过；而 app 级 webview、页面自己
+    /// 没表态，只是「还没迁」——那正是要检查的对象。
+    pub opted_out: bool,
     pub files: UnitFiles,
 }
 
@@ -91,10 +97,15 @@ impl Project {
 
         let pages = page_json
             .iter()
-            .map(|(route, json)| PageUnit {
-                route: route.clone(),
-                is_skyline: is_skyline_page(&app_value, json.as_ref().unwrap_or(&Map::new())),
-                files: resolve_unit_files(&resolver, route),
+            .map(|(route, json)| {
+                let empty = Map::new();
+                let page = json.as_ref().unwrap_or(&empty);
+                PageUnit {
+                    route: route.clone(),
+                    is_skyline: is_skyline_page(&app_value, page),
+                    opted_out: page.get("renderer").and_then(Value::as_str) == Some("webview"),
+                    files: resolve_unit_files(&resolver, route),
+                }
             })
             .collect();
 

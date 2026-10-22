@@ -561,6 +561,62 @@ mod tests {
         rule.check(&project)
     }
 
+    /// 页面 json 显式 `"renderer": "webview"`：这页不迁 Skyline，整页跳过。
+    #[test]
+    fn explicit_webview_page_is_skipped() {
+        let fixture = Fixture::new("opt-out");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index","pages/webview/webview"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", "<view>skyline</view>")
+            .write("pages/webview/webview.json", r#"{"renderer":"webview"}"#)
+            .write(
+                "pages/webview/webview.wxml",
+                r#"<web-view src="https://x"/>"#,
+            );
+        let diagnostics = check_rule(&fixture, &UnsupportedComponent);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    /// app 级 webview、页面自己没表态：只是还没迁，仍然检查。
+    #[test]
+    fn inherited_webview_page_is_still_checked() {
+        let fixture = Fixture::new("not-migrated");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"webview"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", r#"<web-view src="https://x"/>"#);
+        let diagnostics = check_rule(&fixture, &UnsupportedComponent);
+        assert_eq!(diagnostics.len(), 1);
+    }
+
+    /// 跳过是按页的：同一工程里没表态的页面照样检查。
+    #[test]
+    fn opt_out_does_not_leak_to_sibling_pages() {
+        let fixture = Fixture::new("opt-out-sibling");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/a/a","pages/b/b"],"renderer":"skyline"}"#,
+            )
+            .write("pages/a/a.json", r#"{"renderer":"webview"}"#)
+            .write("pages/a/a.wxml", r#"<web-view src="https://a"/>"#)
+            .write("pages/b/b.json", "{}")
+            .write("pages/b/b.wxml", r#"<web-view src="https://b"/>"#);
+        let diagnostics = check_rule(&fixture, &UnsupportedComponent);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].path, "pages/b/b.wxml");
+    }
+
     #[test]
     fn unsupported_components_are_reported() {
         let diagnostics = check_rule(

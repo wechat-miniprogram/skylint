@@ -68,6 +68,11 @@ skyline/unsupported-component
 规则都面向**迁移**：不按 `is_skyline` 过滤页面，还在 WebView 上的工程同样会被检查——
 那才是目标用户。
 
+例外是**显式 opt-out**：页面 json 自己写了 `"renderer": "webview"` 的，整页跳过 WXML 规则
+（典型是含 `<web-view>` 的页面，那是「这页永远不迁」的明确决定，对它报 Skyline 限制是误报）。
+app 级 `"renderer": "webview"`、页面没表态的不跳——那只是「还没迁」，正是要检查的对象。
+组件的 wxml 没有 renderer，一律检查；wxss 无法按页归属（`@import` / `app.wxss` 共享），同样不跳。
+
 ## 构建
 
 依赖 [minidev](https://github.com/wechat-miniprogram/minidev) 的 `compiler-graph` /

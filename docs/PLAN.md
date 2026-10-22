@@ -91,9 +91,15 @@ crates/skylint-core/src/
 
 两条实测校准（改了计划原本的假设）：
 
-1. **规则不按 `is_skyline` 过滤页面。** 原计划「只查 Skyline 页面」是错的：迁移工具的受众
-   是还没上 Skyline 的工程，纯 WebView 项目会一条都不报，用途落空。`is_skyline` 降级为
-   工程视图的元数据。
+1. **规则不按 `is_skyline` 过滤页面，但按「显式 opt-out」过滤。** 原计划「只查 Skyline
+   页面」是错的：迁移工具的受众是还没上 Skyline 的工程，纯 WebView 项目会一条都不报，
+   用途落空。`is_skyline` 降级为工程视图的元数据。
+   但页面 json 自己写了 `"renderer": "webview"` 是另一件事——那是「这页永远不迁」的明确
+   决定（典型是含 `<web-view>` 的页面），对它讲 Skyline 的限制就是误报。所以
+   `PageUnit.opted_out` 单独记一位：显式 webview 的页面整页跳过 WXML 规则；app 级 webview、
+   页面没表态的不跳（那只是还没迁）。
+   边界：组件 wxml 没有 renderer，一律检查（若某组件只被 opt-out 页面使用，仍会报——要精确
+   得先有页→组件归属，见 P3）；wxss 无法按页归属（`@import` + `app.wxss` 共享），同样不跳。
 2. **`no-inline-text` 只看「文本 + 元素混排」。** 原实现把「元素里有非空白文本子节点」全部
    报出，在两个生产 Skyline 工程上各报 122 / 196 条；抽查发现 `<view>{{text}}</view>` 在
    Skyline 上渲染正常（组件被 skyline 页使用），知识库的唯一反例也是混排
