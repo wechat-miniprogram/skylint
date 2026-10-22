@@ -52,20 +52,20 @@ skylint/
 
 验证：`cargo test -p compiler-graph` 70 passed；`cargo tree -p compiler-graph | grep -c reqwest` = 0。
 
-### 2.2 待做
+### 2.2 已结（含撤销项）
 
-| ID | 内容 | 位置 | 风险 |
-|---|---|---|---|
-| M4 `[ ]` | 补 `checkComponentFramework`：skyline 页面/包必须 `componentFramework == "glass-easel"`（现在只有一句注释，函数不存在）。补上后 lint 不需要这条规则 | `json/mutate.rs` | 中 |
-| M7 `[ ]` | `AppConf` 加 `page_comps` / `comp_children`（per-page 组件归属）。lint 的跨文件规则依赖它 | `conf.rs` | 低 |
-| M9 `[ ]` | `compiler-diag`：`Severity` 加 `Info`，`Diagnostic` 加 `end_line`/`end_column` | `crates/diag/src/lib.rs` | 低 |
-| M5 `[ ]` | `on_file_change` 不失效 `conf`，`app.json` 变更后页面集合陈旧（只影响常驻进程） | `basegraph.rs` | 中 |
+| ID | 结论 | 说明 |
+|---|---|---|
+| M4 `[x]` | 补上 `checkComponentFramework` | 只校验 `all_pages` 里的页面：skyline 页面必须 `componentFramework == "glass-easel"`（页面级优先、缺省回落 app.json）。组件沿用 app 级声明。与 `check_renderer` 共用 `is_skyline_page`。lint 因此不需要这条规则 |
+| M7 `[—]` | **撤销** | 原计划给 `AppConf` 加 `page_comps`/`comp_children`。但 `collect_page_deps` 用 `resolve_path` 做词法拼接，npm 裸包名解析不出来；在 minidev 里补一份 npm 不完整的映射，比 skylint 自建闭包更糟。skylint 的 `collect_components` 已经按 `resolve_component_path` 的语义自己走 BFS，页→组件边也在那一处一并记录 |
+| M9 `[—]` | **撤销** | 约定的是「lint 用 `compiler-diag` 的 DTO」，实际 skylint 有自己的 `Diagnostic`，只从 `compiler_diag::Diagnostic` 里取 `message` 贴到加载失败信息上；`Severity::Info`、`end_line`/`end_column` 没有任何消费者 |
+| M5 `[—]` | **不是缺陷** | `on_file_change` 的注释写明 TS 侧 `onFileChange` 为空实现、conf 靠 `getConf` 时全量重建，minidev 同步如此。常驻进程读的是重建后的 conf，不会陈旧 |
 
 ### 2.3 待验证
 
 | ID | 问题 | 已知证据 |
 |---|---|---|
-| **V1** `[x]` | **已确认**：`collect_comps` 把 `usingComponents` 的值纯词法拼到引用方目录（`conf.rs:185-282`），`my-lib/button` 这类 npm 裸名 stat 失败后被静默丢弃——`miniprogram_npm` 回溯只存在于 `check_component_path`。**已解在 lint 侧**：自建闭包，种子取 `AppConf.comps`（兜住 appBar / custom-tab-bar / agent.skills 等非声明式入口）+ 页面与 app 的 `usingComponents`，npm 分支交给编译器的 `resolve_component_path`。`collect_comps` 不动 | 剩余未决：minidev 自身的产物是否因此缺 npm 组件的 json/wxml。没有 devtools 作为 oracle 无法判定，且修它可能破坏 parity，故推迟——lint 的正确性已不依赖它 |
+| **V1** `[x]` | **已确认**：`collect_comps` 把 `usingComponents` 的值纯词法拼到引用方目录（`conf.rs:185-282`），`my-lib/button` 这类 npm 裸名 stat 失败后被静默丢弃——`miniprogram_npm` 回溯只存在于 `check_component_path`。**已解在 lint 侧**：自建闭包，种子取 `AppConf.comps`（兜住 appBar / custom-tab-bar / agent.skills 等非声明式入口）+ 页面与 app 的 `usingComponents`，npm 分支交给编译器的 `resolve_component_path`。`collect_comps` 不动 | 2026-10-22 补充取证：①`json/generate.rs:229` 的组件 json 产物**只**由 `conf.comps` 驱动，所以 `comps` 漏掉的组件在产物里就没有 json——而页面 json 里的引用已被 `check_component_path` 改写成 `../../miniprogram_npm/...`，即产物会留下悬空引用；②但 3 个真实工程（miniprogram-novel / businessview / miniprogram-skit_1，共 110 个 json）**没有一个**用 npm 裸名，全部写相对路径进 `miniprogram_npm/`；③TS 侧 `loadComp` 是否做同样回溯无从查证（仓库里没有 TS 源），无法排除「TS 也漏、devtools 靠别处兜底」。因此仍不改 `collect_comps`：改了会动产物字节，语料 golden 可能失败，而收益在真实工程上尚未被观测到。若将来真要修，验法是造一个 `miniprogram_npm/comp/index.{json,wxml}` + `usingComponents:{"comp":"comp"}` 的 fixture，断言产物里出现该 json |
 
 ### 2.4 明确不改
 
@@ -104,7 +104,7 @@ crates/skylint-core/src/
 |---|---|---|
 | 0.1 | V1 验证（npm 组件闭包） | `[x]` 结论见 2.3 |
 | 0.2 | minidev 低风险批 M1/M2/M3/M6/M8 | `[x]` |
-| 0.3 | minidev M4/M7/M9 | `[ ]` |
+| 0.3 | minidev M4（M7/M9 已撤销，见 2.2） | `[x]` |
 | 0.4 | `ProjectView` + `Project::load` + 报告管道 + 单文件失败不终止 | `[x]` 真实工程验证：31 页混合项目（3 skyline）与独立脚本逐页对照一致 |
 | 0.5 | CLI：`--format text/json`、退出码（0 无 error / 1 有 error / 2 加载失败）、`--ignore`、inline disable | `[x]` |
 | 0.6 | 6 条规则验证管道：`unsupported-component`、`scroll-view-type`、`no-pseudo`、`box-sizing`、`no-inline-text`、`flex-direction` | `[x]` |
@@ -155,7 +155,7 @@ text-decoration-line 单值、calc 角度、mask-image 渐变。
 ### P3 跨文件语义（差异化最大）
 
 `text-overflow:ellipsis` × `<text>`、`scroll-view` 直接子节点 margin、标签选择器隔离、
-类名可达性。依赖 M7。
+类名可达性。页→组件归属由 skylint 自建闭包提供（原 M7 已撤销）。
 
 ### P4 JS（约 30 条）
 
@@ -169,7 +169,7 @@ autofix；14 条只能运行时判定的条目；`app.json` 自动改写。
 
 | 视图 | 来源 | 服务哪族规则 |
 |---|---|---|
-| ProjectView | `AppConf` + `Resolver` + M6/M7/M8 | 公共上下文 |
+| ProjectView | `AppConf` + `Resolver` + M6/M8 | 公共上下文 |
 | WxmlView | `glass-easel-template-compiler::parse`（不经过 `compiler-wxml`，它在 API 边界丢弃 AST） | 结构类、跨文件类 |
 | WxssStructure | `cssparser`（已在依赖树里） | 语义类、跨文件类 |
 | WxssSemantics | float_pigment hook（feature-gated，默认不用） | 值支持类兜底 |
