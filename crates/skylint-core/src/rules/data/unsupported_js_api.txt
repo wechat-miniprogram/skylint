@@ -1,0 +1,10 @@
+# Skyline 不支持的 JS API / 页面配置项。
+#
+# 每行 `模式 | 说明`，`说明` 会原样成为诊断消息。两种模式前缀：
+#   call:<callee>        callee 精确等于 <callee> 的调用
+#   page-option:<key>    `Page({...})` 第一个实参对象里的静态键
+#
+# 证据：skyline-overview/references/migration/compatibility.md:198-205（不支持 animate
+# 接口）、:300（Page.onPageScroll ❌）；skyline-overview/SKILL.md:100。
+call:this.animate | Skyline 不支持 `this.animate`，动画不会执行；改用 worklet（wx.worklet.shared + applyAnimatedStyle）
+page-option:onPageScroll | Skyline 不支持 `Page.onPageScroll`（页面不滚动），改用 scroll-view 的 bindscroll

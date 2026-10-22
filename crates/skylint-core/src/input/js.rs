@@ -1,9 +1,11 @@
 //! JS / TS 视图。
 //!
-//! 只做「解析 + 定位」：把源文件解析成 AST，抽出所有函数，以及函数体的指令序言里
-//! 有没有 `"worklet"`。不做作用域分析、不建调用图——那些属于规则层。
+//! 只做「解析 + 定位」：把源文件解析成 AST，抽出所有函数（含函数体的指令序言里
+//! 有没有 `"worklet"`）与所有调用表达式（callee 的点号链文本、实参对象字面量的
+//! 静态键、调用点是否位于 worklet 函数内）。不做作用域分析、不建调用图——那些
+//! 属于规则层。
 //!
-//! 语法交给 `oxc_parser`，这里只遍历一遍 AST 收集函数。`.js` / `.ts` 的差异由
+//! 语法交给 `oxc_parser`，这里只遍历一遍 AST。`.js` / `.ts` 的差异由
 //! `SourceType::from_path` 按后缀决定（脚本还是模块、要不要解析类型）；`.wxs` 是
 //! 独立方言，不在此列，由调用方挡掉。
 //!
@@ -15,12 +17,13 @@ use std::fmt;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    ArrowFunctionBody, ArrowFunctionExpression, BindingPattern, Expression, Function, FunctionBody,
-    MethodDefinition, ObjectProperty, PropertyDefinition, PropertyKey, VariableDeclarator,
+    Argument, ArrowFunctionBody, ArrowFunctionExpression, CallExpression, ChainElement,
+    Expression, Function, FunctionBody, MethodDefinition, ObjectExpression, ObjectProperty,
+    ObjectPropertyKind, PropertyDefinition, PropertyKey, VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
-use oxc_span::{SourceType, Span};
+use oxc_span::{GetSpan, SourceType, Span};
 use oxc_syntax::scope::ScopeFlags;
 
 /// worklet 函数的标记：函数体指令序言里的 `"worklet"`。
@@ -47,23 +50,25 @@ impl fmt::Display for ParseError {
 
 /// 一份解析后的 JS/TS 文档。
 ///
-/// AST 借用 `Allocator`，出了 `parse` 就没法活；所以解析时就把要对外暴露的函数信息
-/// 拷成 owned 形态（`source` 是调用方的切片），`functions()` 再从 owned 数据借出。
-/// 这样结构体没有自引用，也不需要 unsafe。
+/// AST 借用 `Allocator`，出了 `parse` 就没法活；所以解析时就把要对外暴露的信息
+/// 拷成 owned 形态，`functions()` / `calls()` 再从 owned 数据借出。这样结构体没有
+/// 自引用，也不需要 unsafe，`Project` 可以长期持有它。
 #[derive(Debug, Clone)]
-pub struct JsDoc<'a> {
+pub struct JsDoc {
     path: String,
-    source: &'a str,
+    source: String,
     functions: Vec<OwnedFunction>,
+    calls: Vec<CallInfo>,
 }
 
-impl<'a> JsDoc<'a> {
-    pub fn parse(path: &str, source: &'a str) -> Result<Self, ParseError> {
+impl JsDoc {
+    pub fn parse(path: &str, source: &str) -> Result<Self, ParseError> {
         let source_type = SourceType::from_path(path)
             .map_err(|_| ParseError::Syntax(format!("不支持的文件后缀：{path}")))?;
 
+        let owned = source.to_string();
         let allocator = Allocator::default();
-        let ret = Parser::new(&allocator, source, source_type).parse();
+        let ret = Parser::new(&allocator, &owned, source_type).parse();
         // 只有 error 级诊断才否定整份文件；warning 不影响结构。
         if let Some(error) = ret.diagnostics.errors().next() {
             return Err(ParseError::Syntax(error.to_string()));
@@ -77,8 +82,9 @@ impl<'a> JsDoc<'a> {
 
         Ok(Self {
             path: path.to_string(),
-            source,
+            source: owned,
             functions: collector.functions,
+            calls: collector.calls,
         })
     }
 
@@ -86,8 +92,8 @@ impl<'a> JsDoc<'a> {
         &self.path
     }
 
-    pub fn source(&self) -> &'a str {
-        self.source
+    pub fn source(&self) -> &str {
+        &self.source
     }
 
     /// 所有函数（函数声明、函数表达式、箭头函数、对象方法、类方法），按遍历顺序。
@@ -99,9 +105,16 @@ impl<'a> JsDoc<'a> {
                 has_worklet: f.has_worklet,
                 start: f.start,
                 end: f.end,
+                body_start: f.body_start,
+                body_end: f.body_end,
                 body_directives: f.body_directives.iter().map(String::as_str).collect(),
             })
             .collect()
+    }
+
+    /// 所有调用表达式，按遍历顺序（外层调用先于它实参里的调用）。
+    pub fn calls(&self) -> &[CallInfo] {
+        &self.calls
     }
 
     /// 字节偏移 → `(line, column)`，均 1-based，`column` 按 Unicode 字符计。
@@ -131,8 +144,49 @@ pub struct FunctionInfo<'a> {
     /// 函数整体（含 `function` 关键字 / 参数表）的字节区间。
     pub start: u32,
     pub end: u32,
+    /// 函数体的字节区间（表达式体箭头函数取表达式本身）。
+    pub body_start: u32,
+    pub body_end: u32,
     /// 函数体指令序言的全部指令原文，按出现顺序。
     pub body_directives: Vec<&'a str>,
+}
+
+/// 一次调用表达式。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallInfo {
+    /// 点号链文本，如 `wx.createSelectorQuery`、`this.animate`、
+    /// `scrollViewContext.scrollTo`、`foo`。
+    ///
+    /// 链的前缀是调用结果时（`createSelectorQuery().select('.x').ref(cb)`）没有静态
+    /// 名字，用空串占位，于是 callee 是 `.ref`——链尾仍然可判定。计算属性、括号、
+    /// 逻辑表达式等真正取不到结构的写法给空串，规则靠空串跳过。
+    pub callee: String,
+    /// 整个调用表达式的字节区间。
+    pub start: u32,
+    pub end: u32,
+    pub args: Vec<ArgInfo>,
+    /// 最近的外层函数是否 `has_worklet`；不在任何函数内为 `false`。
+    pub worklet_scope: bool,
+}
+
+/// 一次调用的实参。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArgInfo {
+    pub start: u32,
+    pub end: u32,
+    /// 实参是对象字面量时，静态属性名（字符串键与标识符键都算，计算键不算）；
+    /// 不是对象字面量为空。
+    pub object_keys: Vec<String>,
+    /// `object_keys` 里每个键的字节区间，与它同序。
+    pub object_key_spans: Vec<(u32, u32)>,
+}
+
+impl ArgInfo {
+    /// 某个静态键的位置；键不存在时返回 `None`。
+    pub fn key_span(&self, key: &str) -> Option<(u32, u32)> {
+        let index = self.object_keys.iter().position(|name| name == key)?;
+        self.object_key_spans.get(index).copied()
+    }
 }
 
 /// 对外数据用 owned 形态存，避开「Allocator + 借用它的 AST」的自引用。
@@ -142,18 +196,29 @@ struct OwnedFunction {
     has_worklet: bool,
     start: u32,
     end: u32,
+    body_start: u32,
+    body_end: u32,
     body_directives: Vec<String>,
 }
 
 #[derive(Default)]
 struct Collector {
     functions: Vec<OwnedFunction>,
+    calls: Vec<CallInfo>,
     /// 下一个函数表达式 / 箭头函数该沿用的名字（变量名或方法名）。
     pending: Option<String>,
+    /// 外层函数栈，值为该函数是否 `has_worklet`。取最近的一层。
+    worklet_stack: Vec<bool>,
 }
 
 impl Collector {
-    fn push(&mut self, name: Option<String>, span: Span, body: Option<&FunctionBody>) {
+    fn push_function(
+        &mut self,
+        name: Option<String>,
+        span: Span,
+        body: Option<&FunctionBody>,
+        body_span: Span,
+    ) {
         let body_directives: Vec<String> = body
             .map(|b| {
                 b.directives
@@ -162,13 +227,21 @@ impl Collector {
                     .collect()
             })
             .unwrap_or_default();
+        let has_worklet = body_directives.iter().any(|d| d == WORKLET);
         self.functions.push(OwnedFunction {
-            has_worklet: body_directives.iter().any(|d| d == WORKLET),
+            has_worklet,
             name,
             start: span.start,
             end: span.end,
+            body_start: body_span.start,
+            body_end: body_span.end,
             body_directives,
         });
+        self.worklet_stack.push(has_worklet);
+    }
+
+    fn worklet_scope(&self) -> bool {
+        self.worklet_stack.last().copied().unwrap_or(false)
     }
 }
 
@@ -181,18 +254,26 @@ impl<'a> Visit<'a> for Collector {
             .or_else(|| self.pending.take());
         // 无论名字来自哪里，pending 都属于这个函数，不能漏给它的内部函数。
         self.pending = None;
-        self.push(name, it.span, it.body.as_deref());
+        let body = it.body.as_deref();
+        // 无函数体（TS `declare function` / overload）不是有效作用域，占位到函数末尾。
+        let body_span = body.map_or(it.span, |b| b.span);
+        self.push_function(name, it.span, body, body_span);
         walk::walk_function(self, it, flags);
+        self.worklet_stack.pop();
     }
 
     fn visit_arrow_function_expression(&mut self, it: &ArrowFunctionExpression<'a>) {
         let name = self.pending.take();
-        let body = match &it.body {
-            ArrowFunctionBody::FunctionBody(body) => Some(body.as_ref()),
-            _ => None,
+        let (body, body_span) = match &it.body {
+            ArrowFunctionBody::FunctionBody(body) => (Some(body.as_ref()), body.span),
+            other => (
+                None,
+                other.as_expression().map_or(it.span, |expr| expr.span()),
+            ),
         };
-        self.push(name, it.span, body);
+        self.push_function(name, it.span, body, body_span);
         walk::walk_arrow_function_expression(self, it);
+        self.worklet_stack.pop();
     }
 
     fn visit_variable_declarator(&mut self, it: &VariableDeclarator<'a>) {
@@ -222,6 +303,17 @@ impl<'a> Visit<'a> for Collector {
         }
         walk::walk_property_definition(self, it);
     }
+
+    fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        self.calls.push(CallInfo {
+            callee: callee_name(&it.callee).unwrap_or_default(),
+            start: it.span.start,
+            end: it.span.end,
+            args: it.arguments.iter().map(arg_info).collect(),
+            worklet_scope: self.worklet_scope(),
+        });
+        walk::walk_call_expression(self, it);
+    }
 }
 
 fn is_function(expr: &Expression) -> bool {
@@ -231,9 +323,11 @@ fn is_function(expr: &Expression) -> bool {
     )
 }
 
-fn binding_name(pattern: &BindingPattern) -> Option<String> {
+fn binding_name(pattern: &oxc_ast::ast::BindingPattern) -> Option<String> {
     match pattern {
-        BindingPattern::BindingIdentifier(id) => Some(id.name.as_str().to_string()),
+        oxc_ast::ast::BindingPattern::BindingIdentifier(id) => {
+            Some(id.name.as_str().to_string())
+        }
         _ => None,
     }
 }
@@ -244,12 +338,93 @@ fn key_name(key: &PropertyKey) -> Option<String> {
         .and_then(|name| name.as_js_str().as_str().map(str::to_string))
 }
 
+/// 调用的 callee 文本。只解析点号链；见 [`CallInfo::callee`] 的取舍说明。
+fn callee_name(expr: &Expression) -> Option<String> {
+    match expr {
+        Expression::Identifier(id) => Some(id.name.as_str().to_string()),
+        Expression::ThisExpression(_) => Some("this".to_string()),
+        Expression::StaticMemberExpression(member) => member_name(&member.object, &member.property.name),
+        // `a?.b()` 整条链包在 `ChainExpression` 里；`a?.b` 作为 callee 时同理。
+        Expression::ChainExpression(chain) => match &chain.expression {
+            ChainElement::StaticMemberExpression(member) => {
+                member_name(&member.object, &member.property.name)
+            }
+            ChainElement::CallExpression(call) => callee_name(&call.callee),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// 前缀取不到（计算属性 / 括号 / 逻辑表达式）时整条链放弃，`None` 一路上抛。
+fn member_name(object: &Expression, property: &str) -> Option<String> {
+    Some(format!("{}.{property}", callee_prefix(object)?))
+}
+
+/// 成员链前缀。调用结果没有静态名字，用空串占位，让链尾（`.ref`、`.scrollTo`）
+/// 仍可判定；计算属性、括号、逻辑表达式等结构不产出一部分文本，整条链放弃。
+fn callee_prefix(expr: &Expression) -> Option<String> {
+    match expr {
+        Expression::CallExpression(_) => Some(String::new()),
+        Expression::ChainExpression(chain) => match &chain.expression {
+            ChainElement::CallExpression(_) => Some(String::new()),
+            ChainElement::StaticMemberExpression(member) => {
+                member_name(&member.object, &member.property.name)
+            }
+            _ => None,
+        },
+        _ => callee_name(expr),
+    }
+}
+
+fn arg_info(arg: &Argument) -> ArgInfo {
+    let span = arg.span();
+    let (object_keys, object_key_spans) = match arg {
+        Argument::ObjectExpression(object) => object_keys(object),
+        _ => (Vec::new(), Vec::new()),
+    };
+    ArgInfo {
+        start: span.start,
+        end: span.end,
+        object_keys,
+        object_key_spans,
+    }
+}
+
+/// 对象字面量的静态键与位置。计算键（`[x]`）跳过——它可能不是静态属性名。
+fn object_keys(object: &ObjectExpression) -> (Vec<String>, Vec<(u32, u32)>) {
+    let mut keys = Vec::new();
+    let mut spans = Vec::new();
+    for property in &object.properties {
+        let ObjectPropertyKind::ObjectProperty(property) = property else {
+            continue;
+        };
+        if property.computed {
+            continue;
+        }
+        let Some(name) = property.key.static_name() else {
+            continue;
+        };
+        let Some(name) = name.as_str() else {
+            continue;
+        };
+        let span = property.key.span();
+        keys.push(name.to_string());
+        spans.push((span.start, span.end));
+    }
+    (keys, spans)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse_js(src: &str) -> JsDoc<'_> {
+    fn parse_js(src: &str) -> JsDoc {
         JsDoc::parse("a.js", src).expect("应当解析成功")
+    }
+
+    fn callees(doc: &JsDoc) -> Vec<&str> {
+        doc.calls().iter().map(|c| c.callee.as_str()).collect()
     }
 
     #[test]
@@ -262,6 +437,9 @@ mod tests {
         assert!(fns[0].has_worklet);
         assert_eq!(fns[0].body_directives, ["worklet"]);
         assert_eq!((fns[0].start, fns[0].end), (0, src.len() as u32));
+        // 函数体是 `{ ... }`，不含参数表。
+        assert_eq!(doc.position(fns[0].body_start as usize), (1, 14));
+        assert_eq!(fns[0].body_end, src.len() as u32);
         assert_eq!(doc.position(fns[0].start as usize), (1, 1));
     }
 
@@ -273,6 +451,18 @@ mod tests {
         assert_eq!(fns[0].name, Some("f"));
         assert!(fns[0].has_worklet);
         assert_eq!(fns[0].body_directives, ["worklet"]);
+        assert_eq!(doc.position(fns[0].body_start as usize), (1, 17));
+    }
+
+    #[test]
+    fn expression_body_arrow_has_the_expression_as_body() {
+        let src = "const f = () => g();";
+        let doc = parse_js(src);
+        let fns = doc.functions();
+        assert_eq!(fns.len(), 1);
+        assert!(!fns[0].has_worklet);
+        assert_eq!(doc.position(fns[0].body_start as usize), (1, 17));
+        assert_eq!(fns[0].body_end, (src.len() - 1) as u32);
     }
 
     #[test]
@@ -318,6 +508,137 @@ mod tests {
         assert!(!fns[0].has_worklet);
         assert_eq!(fns[1].name, Some("inner"));
         assert!(fns[1].has_worklet);
+    }
+
+    #[test]
+    fn this_animate_call_and_its_arguments() {
+        let src = "this.animate('.box', [], 1000);";
+        let doc = parse_js(src);
+        let calls = doc.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].callee, "this.animate");
+        assert_eq!((calls[0].start, calls[0].end), (0, src.len() as u32 - 1));
+        assert_eq!(calls[0].args.len(), 3);
+        assert_eq!(
+            calls[0]
+                .args
+                .iter()
+                .map(|arg| &src[arg.start as usize..arg.end as usize])
+                .collect::<Vec<_>>(),
+            ["'.box'", "[]", "1000"]
+        );
+        assert!(!calls[0].worklet_scope);
+    }
+
+    #[test]
+    fn object_argument_keys_and_positions() {
+        let src = "scrollViewContext.scrollTo(ref, { top: 1, 'size': 0.5, [k]: 2, pixels: 100 });";
+        let doc = parse_js(src);
+        let calls = doc.calls();
+        // 外层 scrollTo 先记录，实参里的调用（这里没有）随后。
+        assert_eq!(calls[0].callee, "scrollViewContext.scrollTo");
+        let second = &calls[0].args[1];
+        assert_eq!(second.object_keys, ["top", "size", "pixels"]);
+        // 字符串键与标识符键都算，计算键不算。
+        let (start, end) = second.key_span("size").unwrap();
+        assert_eq!(&src[start as usize..end as usize], "'size'");
+        let (start, _) = second.key_span("pixels").unwrap();
+        assert_eq!(&src[start as usize..start as usize + 6], "pixels");
+        // 非对象实参没有键。
+        assert!(calls[0].args[0].object_keys.is_empty());
+    }
+
+    #[test]
+    fn worklet_scope_follows_the_nearest_enclosing_function() {
+        let src = r#"
+            wx.worklet.shared(0);
+            function outer() {
+              this.animate('.a', [], 1);
+              const animated = () => {
+                'worklet';
+                this.animate('.b', [], 1);
+                const inner = () => { this.animate('.c', [], 1); };
+              };
+              this.animate('.d', [], 1);
+            }
+        "#;
+        let doc = parse_js(src);
+        let by_callee = |name: &str| {
+            doc.calls()
+                .iter()
+                .filter(|call| call.callee == name)
+                .collect::<Vec<_>>()
+        };
+        let animate = by_callee("this.animate");
+        // 外层普通函数 / worklet 箭头里 / worklet 箭头内嵌的普通箭头 / 回到外层。
+        assert_eq!(
+            animate
+                .iter()
+                .map(|call| call.worklet_scope)
+                .collect::<Vec<_>>(),
+            [false, true, false, false]
+        );
+        // 内层普通箭头自己的调用不算 worklet（取最近一层）。
+        assert!(!animate[2].worklet_scope);
+        assert!(!doc.calls()[0].worklet_scope);
+        assert_eq!(doc.calls()[0].callee, "wx.worklet.shared");
+    }
+
+    #[test]
+    fn worklet_arrow_function_body_is_marked() {
+        let src = "const f = () => { 'worklet'; scrollViewContext.scrollTo(ref, { top: 1 }); };";
+        let doc = parse_js(src);
+        assert_eq!(doc.calls().len(), 1);
+        assert_eq!(doc.calls()[0].callee, "scrollViewContext.scrollTo");
+        assert!(doc.calls()[0].worklet_scope);
+    }
+
+    #[test]
+    fn computed_and_call_chain_callees() {
+        let doc = parse_js(
+            "a[b].c(); f()(); (a || b).x(); obj?.y(); this.a.b(); \
+             wx.createSelectorQuery().select('.x').ref(cb);",
+        );
+        assert_eq!(
+            callees(&doc),
+            [
+                // 计算属性：整条链放弃。
+                "",
+                // `f()()`：外层 callee 是调用表达式，不是点号链；内层是裸标识符。
+                "",
+                "f",
+                // 括号内是逻辑表达式。
+                "",
+                // 可选链的静态部分保留。
+                "obj.y",
+                "this.a.b",
+                // 调用链从外到内遍历：链尾先记，前缀没有名字用空串占位，所以
+                // callee 是 `.ref` / `.select`，根调用是最后一个。
+                ".ref",
+                ".select",
+                "wx.createSelectorQuery",
+            ]
+        );
+    }
+
+    #[test]
+    fn page_option_object_key() {
+        let src = "Page({ onPageScroll() {}, data: {} });";
+        let doc = parse_js(src);
+        let call = &doc.calls()[0];
+        assert_eq!(call.callee, "Page");
+        assert_eq!(call.args[0].object_keys, ["onPageScroll", "data"]);
+        let (start, end) = call.args[0].key_span("onPageScroll").unwrap();
+        assert_eq!(&src[start as usize..end as usize], "onPageScroll");
+        // `wx.Page` 不是裸 `Page`。
+        let doc = parse_js("wx.Page({ onPageScroll() {} });");
+        assert_eq!(doc.calls()[0].callee, "wx.Page");
+    }
+
+    #[test]
+    fn nested_calls_are_recorded_outer_first() {
+        let doc = parse_js("foo(bar(), baz(qux()));");
+        assert_eq!(callees(&doc), ["foo", "bar", "baz", "qux"]);
     }
 
     #[test]

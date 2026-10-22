@@ -18,6 +18,7 @@ use compiler_graph::{AppConf, ResolveExtConf, Resolver, is_skyline_page, resolve
 use serde_json::{Map, Value};
 
 use crate::diag::from_compiler_diag;
+use crate::input::js::JsDoc;
 use crate::input::wxss::{self, ParseError, WxssDoc};
 use crate::{Diagnostic, Severity};
 
@@ -45,6 +46,14 @@ pub struct StyleSheet {
     pub doc: WxssDoc,
     /// 去重后的引入方；同一文件被页面和组件同时引入时会同时出现。
     pub scopes: Vec<Scope>,
+}
+
+/// 一份脚本文件，以及它所属的单元。
+#[derive(Debug)]
+pub struct JsFile {
+    pub path: String,
+    pub scope: Scope,
+    pub doc: JsDoc,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +108,12 @@ pub struct Project {
     /// 能不能跨组件）需要「这份 wxss 的样式会作用到哪些 wxml」，这个表就是答案。
     /// `@import` 的传递闭包在这里展开，所以被 `@import` 进来的样式文件也会被检查。
     pub styles: Vec<StyleSheet>,
+    /// 脚本文件 → 所属单元（`app.js` 记为 [`Scope::Global`]），按路径排序。
+    ///
+    /// 页面 / 组件的 js 来自 `UnitFiles.js`（已按 typescript 插件解析到 `.ts` 源），
+    /// 同一文件被多个页面引用时只留一份。解析失败静默跳过：JS 语法错误由 `minidev
+    /// build` 拦截，linter 不另造诊断。
+    pub scripts: Vec<JsFile>,
     /// 建图过程中发现的非阻断问题（如页面声明了但 wxml 缺失）。
     pub warnings: Vec<Diagnostic>,
 }
@@ -178,6 +193,7 @@ impl Project {
             .collect();
 
         let styles = collect_styles(&root, &miniprogram_root, &pages, &components, &mut warnings);
+        let scripts = collect_scripts(&root, &miniprogram_root, &resolver, &pages, &components);
         let app_json_source = fs
             .read_file(&miniprogram_root, "app.json")
             .unwrap_or_default();
@@ -198,6 +214,7 @@ impl Project {
                 .collect(),
             page_json_source,
             styles,
+            scripts,
             warnings,
         })
     }
@@ -537,6 +554,47 @@ fn collect_styles(
             let mut scopes = scopes;
             scopes.sort();
             Some(StyleSheet { doc, scopes })
+        })
+        .collect()
+}
+
+/// 脚本图：`app.js` + 每个页面 / 组件的 js。
+///
+/// 路径来自 resolver 的解析结果（因此 typescript 插件的 `.ts` 源会命中），不在这里
+/// 重新拼后缀。同一文件被多个页面的组件闭包重复引用时按 path 去重；解析失败（语法
+/// 错误 / 空文件）静默跳过——JS 语法由构建阶段拦，linter 不另造诊断。
+fn collect_scripts(
+    root: &Path,
+    miniprogram_root: &str,
+    resolver: &Resolver,
+    pages: &[PageUnit],
+    components: &[ComponentUnit],
+) -> Vec<JsFile> {
+    let mut entries: BTreeMap<String, Scope> = BTreeMap::new();
+    if let Some(path) = resolve_unit_files(resolver, "app").js {
+        entries.insert(path, Scope::Global);
+    }
+    for page in pages {
+        if let Some(path) = &page.files.js {
+            entries
+                .entry(path.clone())
+                .or_insert_with(|| Scope::Page(page.route.clone()));
+        }
+    }
+    for component in components {
+        if let Some(path) = &component.files.js {
+            entries
+                .entry(path.clone())
+                .or_insert_with(|| Scope::Component(component.path.clone()));
+        }
+    }
+
+    entries
+        .into_iter()
+        .filter_map(|(path, scope)| {
+            let source = std::fs::read_to_string(root.join(miniprogram_root).join(&path)).ok()?;
+            let doc = JsDoc::parse(&path, &source).ok()?;
+            Some(JsFile { path, scope, doc })
         })
         .collect()
 }
