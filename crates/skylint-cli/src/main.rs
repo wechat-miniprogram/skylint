@@ -58,7 +58,12 @@ fn main() -> ExitCode {
         Format::Text => print!(
             "{}",
             report.to_text(
-                |path| std::fs::read_to_string(project.abs(path)).ok(),
+                |path| {
+                    // 多数路径相对 miniprogramRoot；project.config.json 在项目根，补一次回落。
+                    std::fs::read_to_string(project.abs(path))
+                        .or_else(|_| std::fs::read_to_string(project.root.join(path)))
+                        .ok()
+                },
                 Style {
                     colored: std::io::stdout().is_terminal(),
                     // 片段折行阈值；没有 COLUMNS 时给一个宽于常见终端的值

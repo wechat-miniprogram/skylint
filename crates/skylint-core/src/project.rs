@@ -76,6 +76,12 @@ pub struct Project {
     pub miniprogram_root: String,
     /// app.json 原始对象。
     pub app_json: Map<String, Value>,
+    /// app.json 原文，配置类规则定位用；读不到时为空串。
+    pub app_json_source: String,
+    /// project.config.json 原始对象（缺失 / 解析失败为空）。
+    pub project_config: Map<String, Value>,
+    /// project.config.json 原文，定位 `libVersion` 这类值时用；读不到时为空串。
+    pub project_config_source: String,
     pub pages: Vec<PageUnit>,
     pub components: Vec<ComponentUnit>,
     /// 单元 → 它**直接**引用的组件。页面用 route 作 key，组件用自身路径。
@@ -83,8 +89,10 @@ pub struct Project {
     /// 组件闭包本身是全局扁平表，看不出「这个页面到底用了哪些组件」；跨文件规则
     /// （标签选择器跨组件、类名可达性）必须知道归属，所以边也一并记下来。
     pub deps: BTreeMap<String, Vec<String>>,
-    /// 页面 json 原文（按 route），只读不改。配置类规则要判断「用户写了什么」。
+    /// 页面 json 原始对象（按 route），只读不改。配置类规则要判断「用户写了什么」。
     pub page_json: BTreeMap<String, Map<String, Value>>,
+    /// 页面 json 原文（与 `page_json` 同 key），用于把诊断落到具体行列。
+    pub page_json_source: BTreeMap<String, String>,
     /// 样式文件 → 引入方（`app.wxss` 记为 [`Scope::Global`]），按路径排序。
     ///
     /// 跨文件规则（`text-overflow` 要落到具体 `<text>` 上、标签选择器隔离要判断
@@ -99,7 +107,7 @@ impl Project {
     /// `root` 是项目根（含 `project.config.json` 的目录）。
     pub fn load(root: impl Into<PathBuf>) -> anyhow::Result<Self> {
         let root = root.into();
-        let config = read_project_config(&root);
+        let (config, config_source) = read_project_config(&root);
         let miniprogram_root = config
             .get("miniprogramRoot")
             .and_then(Value::as_str)
@@ -124,6 +132,18 @@ impl Project {
             .map(|route| {
                 let json = read_unit_json(&fs, &miniprogram_root, route, &mut warnings);
                 (route.clone(), json)
+            })
+            .collect();
+        // 原文单独留一份：`Value` 丢了 span，配置类规则要指到用户写的那一行。
+        let page_json_source: BTreeMap<String, String> = page_json
+            .iter()
+            .filter(|(_, json)| json.is_some())
+            .map(|(route, _)| {
+                let rel = format!("{route}.json");
+                (
+                    route.clone(),
+                    fs.read_file(&miniprogram_root, &rel).unwrap_or_default(),
+                )
             })
             .collect();
 
@@ -158,11 +178,17 @@ impl Project {
             .collect();
 
         let styles = collect_styles(&root, &miniprogram_root, &pages, &components, &mut warnings);
+        let app_json_source = fs
+            .read_file(&miniprogram_root, "app.json")
+            .unwrap_or_default();
 
         Ok(Self {
             root,
             miniprogram_root,
             app_json: app.app_value.clone(),
+            app_json_source,
+            project_config: config.as_object().cloned().unwrap_or_default(),
+            project_config_source: config_source,
             pages,
             components,
             deps,
@@ -170,6 +196,7 @@ impl Project {
                 .into_iter()
                 .filter_map(|(route, json)| Some((route, json?)))
                 .collect(),
+            page_json_source,
             styles,
             warnings,
         })
@@ -616,11 +643,12 @@ fn ext_conf(config: &Value) -> ResolveExtConf {
     conf
 }
 
-fn read_project_config(root: &Path) -> Value {
-    std::fs::read_to_string(root.join("project.config.json"))
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or(Value::Null)
+/// project.config.json 的原文与解析结果。文件缺失 / 不是合法 JSON 时给空串与
+/// `Null`——与页面 json 的宽容策略一致，缺文件不该升级成 linter 自己的错误。
+fn read_project_config(root: &Path) -> (Value, String) {
+    let source = std::fs::read_to_string(root.join("project.config.json")).unwrap_or_default();
+    let value = serde_json::from_str(&source).unwrap_or(Value::Null);
+    (value, source)
 }
 
 /// minidev 的错误链里可能挂着结构化诊断，优先取它（带行列），否则用 Display。

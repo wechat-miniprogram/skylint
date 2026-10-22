@@ -8,6 +8,7 @@
 //! - 动态加载（插件机制在规则稳定性得到验证之前只是负担）；
 //! - 自动修复（旧实现的 patch 层同起点 insert 顺序未定义，没有原文校验）。
 
+pub mod config;
 pub mod wxml;
 pub mod wxss;
 
@@ -60,6 +61,8 @@ impl Registry {
             Box::new(wxss::TextDecorationTarget),
             Box::new(wxss::CalcAngle),
             Box::new(wxss::MaskImageGradient),
+            Box::new(config::LibVersion),
+            Box::new(config::RendererOptions),
         ])
     }
 
