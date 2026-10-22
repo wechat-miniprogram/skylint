@@ -32,10 +32,10 @@ impl Rule for FilterLimit {
                         continue;
                     }
                     let value = decl.value.trim();
-                    if value.is_empty() || is_dynamic(value) {
+                    if value.is_empty() || is_dynamic(&decl.tokens) {
                         continue;
                     }
-                    let calls = top_level_calls(value);
+                    let calls = top_level_calls(&decl.tokens);
                     let mut reasons = Vec::new();
                     if calls.iter().any(|c| c.name == "url") {
                         reasons.push("不支持 url()");

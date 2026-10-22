@@ -5,6 +5,7 @@
 //! 动态属性（`class="a {{x}}"`）返回 [`Match::Unknown`]，同样是为了不漏报变误报。
 
 use crate::input::wxml::WxmlElement;
+use crate::input::wxss::{SelectorPart, WxssSelector};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SimpleSelector {
@@ -25,48 +26,26 @@ pub enum Match {
 
 impl SimpleSelector {
     /// 解析失败返回 `None`（含组合符 / 伪类 / 属性选择器 / 空串）。
-    pub fn parse(text: &str) -> Option<Self> {
-        let mut rest = text.trim();
-        if rest.is_empty() {
+    pub fn parse(selector: &WxssSelector) -> Option<Self> {
+        if selector.parts.is_empty() {
             return None;
         }
-        let mut selector = Self {
+        let mut parsed = Self {
             tag: None,
             universal: false,
             id: None,
             classes: Vec::new(),
         };
-
-        if let Some(len) = ident_len(rest) {
-            selector.tag = Some(rest[..len].to_ascii_lowercase());
-            rest = &rest[len..];
-        } else if let Some(tail) = rest.strip_prefix('*') {
-            selector.universal = true;
-            rest = tail;
-        } else if !rest.starts_with(['.', '#']) {
-            return None;
-        }
-
-        while !rest.is_empty() {
-            let (kind, tail) = rest.split_at(1);
-            let len = ident_len(tail)?;
-            if len == 0 {
-                return None;
+        for part in &selector.parts {
+            match part {
+                SelectorPart::Tag(name) => parsed.tag = Some(name.clone()),
+                SelectorPart::Universal => parsed.universal = true,
+                SelectorPart::Class(name) => parsed.classes.push(name.clone()),
+                SelectorPart::Id(name) => parsed.id = Some(name.clone()),
+                SelectorPart::Other => return None,
             }
-            let name = &tail[..len];
-            match kind {
-                "." => selector.classes.push(name.to_string()),
-                "#" => selector.id = Some(name.to_string()),
-                _ => return None,
-            }
-            rest = &tail[len..];
         }
-
-        let empty = !selector.universal
-            && selector.tag.is_none()
-            && selector.id.is_none()
-            && selector.classes.is_empty();
-        (!empty).then_some(selector)
+        Some(parsed)
     }
 
     /// 纯标签选择器（`view`、`*` 之外的）。WebView 下它会命中组件内部节点，
@@ -134,32 +113,31 @@ fn attr<'a>(element: &'a WxmlElement, name: &str) -> Attr<'a> {
     }
 }
 
-fn ident_len(text: &str) -> Option<usize> {
-    let len = text
-        .char_indices()
-        .take_while(|(_, ch)| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
-        .map(|(i, ch)| i + ch.len_utf8())
-        .last()?;
-    (len > 0).then_some(len)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::input::wxml;
+    use crate::input::wxss;
 
     fn element(source: &str) -> WxmlElement {
         let doc = wxml::parse("x.wxml", source).unwrap();
         doc.elements().next().unwrap().clone()
     }
 
+    /// 走真实的 wxss 解析，取第一条选择器的部件。
+    fn selector(text: &str) -> Option<SimpleSelector> {
+        let source = format!("{text} {{ color: red; }}");
+        let doc = wxss::parse("x.wxss", &source).ok()?;
+        SimpleSelector::parse(doc.rules.first()?.selectors.first()?)
+    }
+
     #[test]
     fn parses_tag_class_and_id() {
-        let selector = SimpleSelector::parse("view.list#main").unwrap();
-        assert_eq!(selector.tag.as_deref(), Some("view"));
-        assert_eq!(selector.classes, vec!["list"]);
-        assert_eq!(selector.id.as_deref(), Some("main"));
-        assert!(SimpleSelector::parse("*").is_some());
+        let parsed = selector("view.list#main").unwrap();
+        assert_eq!(parsed.tag.as_deref(), Some("view"));
+        assert_eq!(parsed.classes, vec!["list"]);
+        assert_eq!(parsed.id.as_deref(), Some("main"));
+        assert!(selector("*").is_some());
     }
 
     #[test]
@@ -174,47 +152,26 @@ mod tests {
             ".",
             " ",
         ] {
-            assert!(SimpleSelector::parse(text).is_none(), "{text}");
+            assert!(selector(text).is_none(), "{text}");
         }
     }
 
     #[test]
     fn matches_static_attributes() {
         let el = element(r#"<view class="a b" id="main"/>"#);
-        assert_eq!(
-            SimpleSelector::parse("view.a").unwrap().matches(&el),
-            Match::Yes
-        );
-        assert_eq!(
-            SimpleSelector::parse("#main").unwrap().matches(&el),
-            Match::Yes
-        );
-        assert_eq!(
-            SimpleSelector::parse("text").unwrap().matches(&el),
-            Match::No
-        );
-        assert_eq!(SimpleSelector::parse(".c").unwrap().matches(&el), Match::No);
-        assert_eq!(
-            SimpleSelector::parse("#other").unwrap().matches(&el),
-            Match::No
-        );
+        assert_eq!(selector("view.a").unwrap().matches(&el), Match::Yes);
+        assert_eq!(selector("#main").unwrap().matches(&el), Match::Yes);
+        assert_eq!(selector("text").unwrap().matches(&el), Match::No);
+        assert_eq!(selector(".c").unwrap().matches(&el), Match::No);
+        assert_eq!(selector("#other").unwrap().matches(&el), Match::No);
     }
 
     #[test]
     fn dynamic_attributes_are_unknown() {
         let el = element(r#"<view class="a {{x}}"/>"#);
-        assert_eq!(
-            SimpleSelector::parse(".a").unwrap().matches(&el),
-            Match::Unknown
-        );
-        assert_eq!(
-            SimpleSelector::parse("view").unwrap().matches(&el),
-            Match::Yes
-        );
+        assert_eq!(selector(".a").unwrap().matches(&el), Match::Unknown);
+        assert_eq!(selector("view").unwrap().matches(&el), Match::Yes);
         let dynamic_id = element(r#"<view id="{{x}}" class="a"/>"#);
-        assert_eq!(
-            SimpleSelector::parse("#x").unwrap().matches(&dynamic_id),
-            Match::Unknown
-        );
+        assert_eq!(selector("#x").unwrap().matches(&dynamic_id), Match::Unknown);
     }
 }

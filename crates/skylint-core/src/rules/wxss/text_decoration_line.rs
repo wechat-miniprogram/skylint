@@ -30,10 +30,10 @@ impl Rule for TextDecorationLine {
                         continue;
                     }
                     let value = decl.value.trim();
-                    if value.is_empty() || is_dynamic(value) {
+                    if value.is_empty() || is_dynamic(&decl.tokens) {
                         continue;
                     }
-                    if split_tokens(value).len() <= 1 {
+                    if split_tokens(&decl.tokens).len() <= 1 {
                         continue;
                     }
                     out.push(at_value(

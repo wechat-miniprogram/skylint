@@ -27,10 +27,10 @@ impl Rule for CalcAngle {
             for rule in &doc.rules {
                 for decl in &rule.declarations {
                     let value = decl.value.trim();
-                    if value.is_empty() || is_dynamic(value) {
+                    if value.is_empty() || is_dynamic(&decl.tokens) {
                         continue;
                     }
-                    if !all_calls(value)
+                    if !all_calls(&decl.tokens)
                         .iter()
                         .any(|c| c.name == "calc" && has_angle_unit(c.args))
                     {

@@ -30,10 +30,10 @@ impl Rule for MultiValueLimit {
                         continue;
                     };
                     let value = decl.value.trim();
-                    if value.is_empty() || is_dynamic(value) {
+                    if value.is_empty() || is_dynamic(&decl.tokens) {
                         continue;
                     }
-                    let count = split_top_level(value).len();
+                    let count = split_top_level(&decl.tokens).len();
                     if count <= max {
                         continue;
                     }

@@ -17,7 +17,11 @@
 
 use oxc_css_parser::{
     Allocator, ParserBuilder, Span, Syntax,
-    ast::{AtRule, Declaration, SelectorList, Statement, Stylesheet},
+    ast::{
+        AtRule, Calc, ComplexSelector, ComplexSelectorChild, ComponentValue, Declaration,
+        DelimiterKind, FunctionName, InterpolableIdent, InterpolableStr, SelectorList,
+        SimpleSelector, Statement, Stylesheet, TypeSelector,
+    },
     token::Comment,
 };
 
@@ -84,12 +88,56 @@ impl WxssRule {
     }
 }
 
+/// 选择器里能静态判定的部件。`Other` 表示组合符 / 伪类 / 属性选择器 / 插值等
+/// 静态判定不了的形状。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectorPart {
+    Tag(String),
+    Universal,
+    Class(String),
+    Id(String),
+    Other,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WxssSelector {
     /// 去掉首尾空白后的选择器原文。
     pub text: String,
     /// 选择器在源文件中的字节偏移。
     pub offset: usize,
+    /// AST 拆出的部件；只有一个 compound 且全为标签 / `*` / class / id 时才有意义。
+    pub parts: Vec<SelectorPart>,
+}
+
+/// 声明值的一个词元。只建模规则会用到的形状，其余保留原文切片。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueToken {
+    /// `name(args…)`，args 已递归解析。
+    Function {
+        name: String,
+        args: Vec<ValueToken>,
+    },
+    /// `12px` / `1.5rem` / `0`
+    Dimension {
+        value: String,
+        unit: String,
+    },
+    Number(String),
+    Percentage(String),
+    /// `#fff`
+    Color(String),
+    /// `url(...)`，原样含内容。
+    Url(String),
+    /// 标识符（`to`、`left`、`no-repeat`、`ellipsis`…）。
+    Ident(String),
+    /// 引号字符串，保留引号。
+    Str(String),
+    /// 顶层逗号。
+    Comma,
+    /// 预处理器变量 / 插值 / 无法静态判定（`$x`、`@x`、`#{…}`、`@{}`、backtick）。
+    Dynamic,
+    /// 其余（运算符、括号块、map、list 等），保留原文切片。
+    Other(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +151,8 @@ pub struct WxssDeclaration {
     pub offset: usize,
     /// 值起点（跳过前导空白）的字节偏移。
     pub value_offset: usize,
+    /// 由 `decl.value` 类型化 AST 递归构造的词元；`value_is_raw` 时只有一段 `Other`。
+    pub tokens: Vec<ValueToken>,
 }
 
 impl WxssDeclaration {
@@ -447,36 +497,168 @@ fn prelude<'s>(rule: &AtRule<'_>, source: &'s str) -> Option<(&'s str, usize)> {
 fn selectors(list: &SelectorList<'_>, source: &str, parents: &[WxssSelector]) -> Vec<WxssSelector> {
     // 每个 `ComplexSelector.span` 就是一个逗号分隔后的选择器；直接切原文，
     // 保留 `.a>.b`、`#{…}` 这些既有写法。
-    let children: Vec<WxssSelector> = list
+    let children: Vec<(&ComplexSelector<'_>, String, usize)> = list
         .selectors
         .iter()
         .filter_map(|complex| {
             let raw = source.get(complex.span.start..complex.span.end)?;
             let text = raw.trim();
-            (!text.is_empty()).then(|| WxssSelector {
-                text: text.to_string(),
-                offset: complex.span.start + (raw.len() - raw.trim_start().len()),
+            (!text.is_empty()).then(|| {
+                (
+                    complex,
+                    text.to_string(),
+                    complex.span.start + (raw.len() - raw.trim_start().len()),
+                )
             })
         })
         .collect();
     if parents.is_empty() {
-        return children;
+        return children
+            .into_iter()
+            .map(|(complex, text, offset)| WxssSelector {
+                text,
+                offset,
+                parts: complex_parts(complex),
+            })
+            .collect();
     }
     let mut out = Vec::new();
-    for child in &children {
+    for (complex, child_text, offset) in &children {
         for parent in parents {
-            let text = if child.text.contains('&') {
-                child.text.replace('&', &parent.text)
+            let (text, parts) = if child_text.contains('&') {
+                (
+                    child_text.replace('&', &parent.text),
+                    nested_parts(complex, source, &parent.parts),
+                )
             } else {
-                format!("{} {}", parent.text, child.text)
+                (
+                    format!("{} {}", parent.text, child_text),
+                    vec![SelectorPart::Other],
+                )
             };
             out.push(WxssSelector {
                 text,
-                offset: child.offset,
+                offset: *offset,
+                parts,
             });
         }
     }
     out
+}
+
+/// 单个 compound 且全为标签 / `*` / class / id 时才产出可静态判定的部件。
+fn complex_parts(complex: &ComplexSelector<'_>) -> Vec<SelectorPart> {
+    if complex.children.len() != 1 {
+        return vec![SelectorPart::Other];
+    }
+    let ComplexSelectorChild::CompoundSelector(compound) = &complex.children[0] else {
+        return vec![SelectorPart::Other];
+    };
+    let mut parts = Vec::new();
+    for simple in compound.children.iter() {
+        match simple {
+            SimpleSelector::Type(TypeSelector::TagName(tag)) => {
+                if tag.name.prefix.is_some() {
+                    return vec![SelectorPart::Other];
+                }
+                let Some(name) = literal_ident(&tag.name.name) else {
+                    return vec![SelectorPart::Other];
+                };
+                parts.push(SelectorPart::Tag(name.to_ascii_lowercase()));
+            }
+            SimpleSelector::Type(TypeSelector::Universal(universal)) => {
+                if universal.prefix.is_some() {
+                    return vec![SelectorPart::Other];
+                }
+                parts.push(SelectorPart::Universal);
+            }
+            SimpleSelector::Class(class) => {
+                let Some(name) = literal_ident(&class.name) else {
+                    return vec![SelectorPart::Other];
+                };
+                parts.push(SelectorPart::Class(name.to_string()));
+            }
+            SimpleSelector::Id(id) => {
+                let Some(name) = literal_ident(&id.name) else {
+                    return vec![SelectorPart::Other];
+                };
+                parts.push(SelectorPart::Id(name.to_string()));
+            }
+            _ => return vec![SelectorPart::Other],
+        }
+    }
+    if parts.is_empty() {
+        vec![SelectorPart::Other]
+    } else {
+        parts
+    }
+}
+
+/// 嵌套选择器 `&…` 的部件：父选择器部件 + `&` 后缀。
+/// 只有「单个 compound、以 `&` 开头、后缀全是 class/id」才能静态判定。
+fn nested_parts(
+    complex: &ComplexSelector<'_>,
+    source: &str,
+    parent: &[SelectorPart],
+) -> Vec<SelectorPart> {
+    if parent.contains(&SelectorPart::Other) || complex.children.len() != 1 {
+        return vec![SelectorPart::Other];
+    }
+    let ComplexSelectorChild::CompoundSelector(compound) = &complex.children[0] else {
+        return vec![SelectorPart::Other];
+    };
+    let mut simple = compound.children.iter();
+    let Some(SimpleSelector::Nesting(nesting)) = simple.next() else {
+        return vec![SelectorPart::Other];
+    };
+    let mut parts = parent.to_vec();
+    if let Some(suffix) = &nesting.suffix {
+        let Some(raw) = source.get(suffix.span().start..suffix.span().end) else {
+            return vec![SelectorPart::Other];
+        };
+        if !is_plain_ident(raw) {
+            return vec![SelectorPart::Other];
+        }
+        match parts.last_mut() {
+            Some(SelectorPart::Tag(name)) => name.push_str(&raw.to_ascii_lowercase()),
+            Some(SelectorPart::Class(name)) | Some(SelectorPart::Id(name)) => name.push_str(raw),
+            _ => return vec![SelectorPart::Other],
+        }
+    }
+    for simple in simple {
+        match simple {
+            SimpleSelector::Class(class) => {
+                let Some(name) = literal_ident(&class.name) else {
+                    return vec![SelectorPart::Other];
+                };
+                parts.push(SelectorPart::Class(name.to_string()));
+            }
+            SimpleSelector::Id(id) => {
+                let Some(name) = literal_ident(&id.name) else {
+                    return vec![SelectorPart::Other];
+                };
+                parts.push(SelectorPart::Id(name.to_string()));
+            }
+            _ => return vec![SelectorPart::Other],
+        }
+    }
+    parts
+}
+
+/// 选择器里能当标签 / class / id 名的字面 ident（无插值）。
+fn literal_ident<'a>(ident: &InterpolableIdent<'a>) -> Option<&'a str> {
+    match ident {
+        InterpolableIdent::Literal(ident) if is_plain_ident(ident.raw) => Some(ident.raw),
+        _ => None,
+    }
+}
+
+/// 与旧扫描器一致：名字只接受 ASCII 字母数字、`-`、`_`。
+fn is_plain_ident(text: &str) -> bool {
+    !text.is_empty()
+        && text
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
 }
 
 /// 一条声明。名字与值都从源码切片取，避开 `ComponentValue` 的几十个变体。
@@ -496,13 +678,127 @@ fn declaration(decl: &Declaration<'_>, source: &str) -> Option<WxssDeclaration> 
     let value_end = important.map_or(decl.span.end, |annotation| annotation.span.start);
     let raw_value = source.get(decl.colon_span.end..value_end)?;
     let lead = raw_value.len() - raw_value.trim_start().len();
+    let value = raw_value.trim();
     Some(WxssDeclaration {
         name: name.to_string(),
-        value: raw_value.trim().to_string(),
+        value: value.to_string(),
         important: important.is_some(),
         offset: decl.span.start + (name_raw.len() - name_raw.trim_start().len()),
         value_offset: decl.colon_span.end + lead,
+        tokens: if decl.value_is_raw || is_raw_value(value) {
+            vec![ValueToken::Other(value.to_string())]
+        } else {
+            value_tokens(&decl.value, source)
+        },
     })
+}
+
+fn value_tokens(values: &[ComponentValue<'_>], source: &str) -> Vec<ValueToken> {
+    values
+        .iter()
+        .filter(|value| !matches!(value, ComponentValue::ImportantAnnotation(_)))
+        .map(|value| value_token(value, source))
+        .collect()
+}
+
+/// oxc 把 IE 的 `progid:` 值解析成 `progid(...)` 函数，但它的参数是原始记号，
+/// 静态上没有意义；按「整值原文」处理（与自定义属性同一口径）。
+fn is_raw_value(value: &str) -> bool {
+    value.to_ascii_lowercase().starts_with("progid:")
+}
+
+fn value_token(value: &ComponentValue<'_>, source: &str) -> ValueToken {
+    match value {
+        ComponentValue::Function(function) => {
+            let Some(name) = function_name(&function.name) else {
+                return other_token(value, source);
+            };
+            // `calc()` 在 AST 里是 `Function(calc, [Calc])`；摊平内层，避免出现
+            // 两个同名的 calc 调用。
+            if name.eq_ignore_ascii_case("calc")
+                && function.args.len() == 1
+                && let ComponentValue::Calc(calc) = &function.args[0]
+            {
+                return ValueToken::Function {
+                    name,
+                    args: calc_tokens(calc, source),
+                };
+            }
+            ValueToken::Function {
+                name,
+                args: value_tokens(&function.args, source),
+            }
+        }
+        // 裸 `Calc`（例如值本身就是表达式）也按同名函数处理。
+        ComponentValue::Calc(calc) => ValueToken::Function {
+            name: "calc".to_string(),
+            args: calc_tokens(calc, source),
+        },
+        ComponentValue::Dimension(dimension) => ValueToken::Dimension {
+            value: dimension.value.raw.to_string(),
+            unit: dimension.unit.raw.to_string(),
+        },
+        ComponentValue::Number(number) => ValueToken::Number(number.raw.to_string()),
+        ComponentValue::Percentage(percentage) => {
+            ValueToken::Percentage(slice(source, percentage.span()))
+        }
+        ComponentValue::HexColor(color) => ValueToken::Color(slice(source, &color.span)),
+        ComponentValue::Url(url) => ValueToken::Url(slice(source, url.span())),
+        ComponentValue::InterpolableIdent(ident) => match ident {
+            InterpolableIdent::Literal(ident) => ValueToken::Ident(ident.raw.to_string()),
+            _ => ValueToken::Dynamic,
+        },
+        ComponentValue::InterpolableStr(string) => match string {
+            InterpolableStr::Literal(string) => ValueToken::Str(string.raw.to_string()),
+            _ => ValueToken::Dynamic,
+        },
+        ComponentValue::Delimiter(delimiter) if matches!(delimiter.kind, DelimiterKind::Comma) => {
+            ValueToken::Comma
+        }
+        // 预处理器变量 / 插值 / backtick：静态求值不了。
+        ComponentValue::LessVariable(_)
+        | ComponentValue::LessVariableCall(_)
+        | ComponentValue::LessVariableVariable(_)
+        | ComponentValue::LessPropertyVariable(_)
+        | ComponentValue::LessNamespaceValue(_)
+        | ComponentValue::LessJavaScriptSnippet(_)
+        | ComponentValue::SassVariable(_)
+        | ComponentValue::PostcssSimpleVar(_) => ValueToken::Dynamic,
+        _ => other_token(value, source),
+    }
+}
+
+fn calc_tokens(calc: &Calc<'_>, source: &str) -> Vec<ValueToken> {
+    let mut args = value_tokens(std::slice::from_ref(calc.left.as_ref()), source);
+    let op = source
+        .get(calc.op.span.start..calc.op.span.end)
+        .unwrap_or_default();
+    if !op.is_empty() {
+        args.push(ValueToken::Other(op.to_string()));
+    }
+    args.extend(value_tokens(
+        std::slice::from_ref(calc.right.as_ref()),
+        source,
+    ));
+    args
+}
+
+fn function_name(name: &FunctionName<'_>) -> Option<String> {
+    match name {
+        FunctionName::Ident(InterpolableIdent::Literal(ident)) => Some(ident.raw.to_string()),
+        _ => None,
+    }
+}
+
+fn other_token(value: &ComponentValue<'_>, source: &str) -> ValueToken {
+    ValueToken::Other(slice(source, value.span()))
+}
+
+fn slice(source: &str, span: &Span) -> String {
+    source
+        .get(span.start..span.end)
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// 源码里的 `!important` 是否紧贴（`! important` 不算）。
@@ -808,5 +1104,171 @@ mod tests {
         let deep = |n: usize| format!("{}{}{}", ".a{".repeat(n), "color:red;", "}".repeat(n));
         assert!(parse("a.scss", &deep(64)).is_ok());
         assert!(parse("a.scss", &deep(65)).is_err());
+    }
+
+    // ---- 值词元 ----
+
+    fn tokens(path: &str, value: &str) -> Vec<ValueToken> {
+        let source = format!(".a {{ x: {value}; }}");
+        let doc = parse(path, &source).unwrap();
+        doc.rules[0].declarations[0].tokens.clone()
+    }
+
+    #[test]
+    fn function_args_keep_dimensions_and_commas() {
+        assert_eq!(
+            tokens("a.wxss", "translate(10px, 20px)"),
+            vec![ValueToken::Function {
+                name: "translate".to_string(),
+                args: vec![
+                    ValueToken::Dimension {
+                        value: "10".to_string(),
+                        unit: "px".to_string(),
+                    },
+                    ValueToken::Comma,
+                    ValueToken::Dimension {
+                        value: "20".to_string(),
+                        unit: "px".to_string(),
+                    },
+                ],
+            }]
+        );
+    }
+
+    #[test]
+    fn url_keeps_its_raw_text_including_spaces() {
+        assert_eq!(
+            tokens("a.wxss", r#"url("a b.png")"#),
+            vec![ValueToken::Url(r#"url("a b.png")"#.to_string())]
+        );
+    }
+
+    #[test]
+    fn leading_dot_numbers_and_hex_colors_are_typed() {
+        assert_eq!(
+            tokens("a.wxss", "rgba(0, 0, 0, .2)"),
+            vec![ValueToken::Function {
+                name: "rgba".to_string(),
+                args: vec![
+                    ValueToken::Number("0".to_string()),
+                    ValueToken::Comma,
+                    ValueToken::Number("0".to_string()),
+                    ValueToken::Comma,
+                    ValueToken::Number("0".to_string()),
+                    ValueToken::Comma,
+                    ValueToken::Number(".2".to_string()),
+                ],
+            }]
+        );
+    }
+
+    #[test]
+    fn gradient_prelude_and_stops_are_idents_percentages_and_colors() {
+        assert_eq!(
+            tokens("a.wxss", "linear-gradient(to right, #fff 0%, red 100%)"),
+            vec![ValueToken::Function {
+                name: "linear-gradient".to_string(),
+                args: vec![
+                    ValueToken::Ident("to".to_string()),
+                    ValueToken::Ident("right".to_string()),
+                    ValueToken::Comma,
+                    ValueToken::Color("#fff".to_string()),
+                    ValueToken::Percentage("0%".to_string()),
+                    ValueToken::Comma,
+                    ValueToken::Ident("red".to_string()),
+                    ValueToken::Percentage("100%".to_string()),
+                ],
+            }]
+        );
+    }
+
+    #[test]
+    fn calc_nests_var_as_a_function() {
+        assert_eq!(
+            tokens("a.wxss", "calc(100% - var(--x))"),
+            vec![ValueToken::Function {
+                name: "calc".to_string(),
+                args: vec![
+                    ValueToken::Percentage("100%".to_string()),
+                    ValueToken::Other("-".to_string()),
+                    ValueToken::Function {
+                        name: "var".to_string(),
+                        args: vec![ValueToken::Ident("--x".to_string())],
+                    },
+                ],
+            }]
+        );
+    }
+
+    #[test]
+    fn preprocessor_variables_and_interpolation_are_dynamic() {
+        assert_eq!(
+            tokens("a.less", "@w"),
+            vec![ValueToken::Dynamic],
+            "@w 是 less 变量"
+        );
+        assert_eq!(
+            tokens("a.scss", "#{$x}"),
+            vec![ValueToken::Dynamic],
+            "#{{$x}} 是 scss 插值"
+        );
+        // 二元运算整体落进 Other（里面仍含 `@`，由规则层判 dynamic）。
+        assert_eq!(
+            tokens("a.less", "@w + @h"),
+            vec![ValueToken::Other("@w + @h".to_string())]
+        );
+    }
+
+    #[test]
+    fn raw_values_are_a_single_other_token() {
+        let value =
+            "progid:DXImageTransform.Microsoft.gradient(startColorstr='#000', endColorstr='#fff')";
+        assert_eq!(
+            tokens("a.wxss", value),
+            vec![ValueToken::Other(value.to_string())]
+        );
+    }
+
+    // ---- 选择器部件 ----
+
+    fn parts(source: &str) -> Vec<SelectorPart> {
+        let doc = parse("a.scss", source).unwrap();
+        doc.rules[0].selectors[0].parts.clone()
+    }
+
+    #[test]
+    fn selector_parts_cover_static_shapes() {
+        assert_eq!(
+            parts("view.foo { color: red; }"),
+            vec![
+                SelectorPart::Tag("view".to_string()),
+                SelectorPart::Class("foo".to_string())
+            ]
+        );
+        assert_eq!(
+            parts(".a.b { color: red; }"),
+            vec![
+                SelectorPart::Class("a".to_string()),
+                SelectorPart::Class("b".to_string())
+            ]
+        );
+        assert_eq!(
+            parts("#id { color: red; }"),
+            vec![SelectorPart::Id("id".to_string())]
+        );
+        assert_eq!(parts("* { color: red; }"), vec![SelectorPart::Universal]);
+    }
+
+    #[test]
+    fn selector_parts_reject_combinators_pseudos_attributes_and_nesting() {
+        for source in [
+            "view .foo { color: red; }",
+            "view > .foo { color: red; }",
+            "a:hover { color: red; }",
+            "[data-x] { color: red; }",
+            "&:hover { color: red; }",
+        ] {
+            assert_eq!(parts(source), vec![SelectorPart::Other], "{source}");
+        }
     }
 }

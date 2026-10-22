@@ -52,7 +52,7 @@ impl crate::rules::Rule for TextOverflowEllipsis {
                 // ellipsis，这条声明对那批节点就是失效的。
                 let mut offenders: Vec<&str> = Vec::new();
                 for selector in &rule.selectors {
-                    let Some(simple) = SimpleSelector::parse(&selector.text) else {
+                    let Some(simple) = SimpleSelector::parse(selector) else {
                         continue;
                     };
                     let (mut matched, mut hostable) = (false, false);

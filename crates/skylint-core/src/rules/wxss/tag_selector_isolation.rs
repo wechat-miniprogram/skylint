@@ -87,7 +87,7 @@ impl crate::rules::Rule for TagSelectorIsolation {
                 }
                 for rule in &doc.rules {
                     for selector in &rule.selectors {
-                        let Some(simple) = SimpleSelector::parse(&selector.text) else {
+                        let Some(simple) = SimpleSelector::parse(selector) else {
                             continue;
                         };
                         let is_tag = simple.is_tag_only();

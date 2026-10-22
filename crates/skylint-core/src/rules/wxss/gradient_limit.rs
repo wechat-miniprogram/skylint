@@ -1,11 +1,13 @@
 //! 渐变参数的额外限制（形状 / 尺寸 / 颜色停止位置）。
 
+use crate::input::wxss::ValueToken;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{
-    at_value, is_dynamic, length_unit, split_tokens, split_top_level, top_level_calls,
+    at_value, is_dynamic, is_ident, length_unit, split_tokens, split_top_level, token_text,
+    top_level_calls,
 };
 use super::visit;
 
@@ -33,10 +35,10 @@ impl Rule for GradientLimit {
                         continue;
                     }
                     let value = decl.value.trim();
-                    if value.is_empty() || is_dynamic(value) {
+                    if value.is_empty() || is_dynamic(&decl.tokens) {
                         continue;
                     }
-                    let problems: Vec<String> = top_level_calls(value)
+                    let problems: Vec<String> = top_level_calls(&decl.tokens)
                         .iter()
                         .flat_map(|call| match call.name.as_str() {
                             "radial-gradient" => check_radial(call.args),
@@ -64,7 +66,7 @@ impl Rule for GradientLimit {
     }
 }
 
-fn check_radial(args: &str) -> Vec<String> {
+fn check_radial(args: &[ValueToken]) -> Vec<String> {
     let parts = split_top_level(args);
     let Some(first) = parts.first() else {
         return Vec::new();
@@ -72,16 +74,20 @@ fn check_radial(args: &str) -> Vec<String> {
     let mut problems = Vec::new();
     let prelude = radial_prelude(first);
     if let Some(pre) = prelude {
-        if split_tokens(pre)
-            .iter()
-            .any(|t| t.eq_ignore_ascii_case("ellipse"))
-        {
+        if split_tokens(pre).iter().any(|group| {
+            group
+                .first()
+                .is_some_and(|token| is_ident(token, "ellipse"))
+        }) {
             problems.push("radial-gradient 仅支持 circle 形状，不支持 ellipse".to_string());
         }
         if let Some(size) = radial_size(pre) {
             if let Some(unit) = length_unit(size) {
                 if unit != "px" {
-                    problems.push(format!("radial-gradient 尺寸仅支持 px，`{size}` 不受支持"));
+                    problems.push(format!(
+                        "radial-gradient 尺寸仅支持 px，`{}` 不受支持",
+                        token_text(size)
+                    ));
                 }
             }
         }
@@ -94,7 +100,8 @@ fn check_radial(args: &str) -> Vec<String> {
     for stop in stops {
         if let Some(token) = non_percentage_position(stop) {
             problems.push(format!(
-                "radial-gradient 颜色停止位置仅支持 %，`{token}` 不受支持"
+                "radial-gradient 颜色停止位置仅支持 %，`{}` 不受支持",
+                token_text(token)
             ));
         }
     }
@@ -102,56 +109,65 @@ fn check_radial(args: &str) -> Vec<String> {
 }
 
 /// 第一段是否是形状 / 尺寸 / 位置前言，而不是第一个颜色停止。
-fn radial_prelude(first: &str) -> Option<&str> {
-    let tokens = split_tokens(first);
-    let is_prelude = tokens.iter().any(|t| {
-        let lower = t.to_ascii_lowercase();
-        matches!(
-            lower.as_str(),
-            "circle"
-                | "ellipse"
-                | "at"
-                | "closest-side"
-                | "farthest-side"
-                | "closest-corner"
-                | "farthest-corner"
-        )
+fn radial_prelude(first: &[ValueToken]) -> Option<&[ValueToken]> {
+    const KEYWORDS: [&str; 7] = [
+        "circle",
+        "ellipse",
+        "at",
+        "closest-side",
+        "farthest-side",
+        "closest-corner",
+        "farthest-corner",
+    ];
+    let is_prelude = split_tokens(first).iter().any(|group| {
+        group
+            .first()
+            .is_some_and(|token| KEYWORDS.iter().any(|keyword| is_ident(token, keyword)))
     });
     is_prelude.then_some(first)
 }
 
 /// 前言里的尺寸：形状关键字之后、`at` 之前的第一个 token。
-fn radial_size(pre: &str) -> Option<&str> {
-    let mut tokens = split_tokens(pre);
-    if matches!(
-        tokens.first().map(|t| t.to_ascii_lowercase()).as_deref(),
-        Some("circle") | Some("ellipse")
-    ) {
-        tokens.remove(0);
+fn radial_size(pre: &[ValueToken]) -> Option<&ValueToken> {
+    let mut groups = split_tokens(pre);
+    if groups
+        .first()
+        .and_then(|group| group.first())
+        .is_some_and(|token| is_ident(token, "circle") || is_ident(token, "ellipse"))
+    {
+        groups.remove(0);
     }
-    if let Some(at) = tokens.iter().position(|t| t.eq_ignore_ascii_case("at")) {
-        tokens.truncate(at);
+    if let Some(at) = groups
+        .iter()
+        .position(|group| group.first().is_some_and(|token| is_ident(token, "at")))
+    {
+        groups.truncate(at);
     }
-    tokens.first().copied()
+    groups.first().and_then(|group| group.first())
 }
 
 /// 颜色停止里第一个非 `%` 的位置值。
-fn non_percentage_position(stop: &str) -> Option<&str> {
-    split_tokens(stop)
-        .into_iter()
-        .find(|token| length_unit(token).is_some_and(|unit| unit != "%"))
+fn non_percentage_position(stop: &[ValueToken]) -> Option<&ValueToken> {
+    split_tokens(stop).into_iter().find_map(|group| {
+        let token = group.first()?;
+        (length_unit(token).is_some_and(|unit| unit != "%")).then_some(token)
+    })
 }
 
-fn check_linear(args: &str) -> Vec<String> {
+fn check_linear(args: &[ValueToken]) -> Vec<String> {
     let parts = split_top_level(args);
     let start = usize::from(parts.first().is_some_and(|first| is_direction(first)));
     let mut problems = Vec::new();
     for stop in &parts[start..] {
-        for token in split_tokens(stop) {
+        for group in split_tokens(stop) {
+            let Some(token) = group.first() else {
+                continue;
+            };
             if let Some(unit) = length_unit(token) {
                 if unit != "%" && !is_fixed_length(&unit) {
                     problems.push(format!(
-                        "linear-gradient 颜色停止位置仅支持 % 与固定长度单位，`{token}` 不受支持"
+                        "linear-gradient 颜色停止位置仅支持 % 与固定长度单位，`{}` 不受支持",
+                        token_text(token)
                     ));
                 }
             }
@@ -160,13 +176,19 @@ fn check_linear(args: &str) -> Vec<String> {
     problems
 }
 
-fn is_direction(first: &str) -> bool {
-    let lower = first.trim().to_ascii_lowercase();
-    lower.starts_with("to ")
-        || matches!(
-            length_unit(&lower).as_deref(),
-            Some("deg") | Some("rad") | Some("grad") | Some("turn")
-        )
+fn is_direction(first: &[ValueToken]) -> bool {
+    let tokens: Vec<&ValueToken> = split_tokens(first)
+        .into_iter()
+        .filter_map(|group| group.first())
+        .collect();
+    match tokens.first() {
+        Some(token) if is_ident(token, "to") => tokens.len() > 1,
+        Some(ValueToken::Dimension { unit, .. }) => matches!(
+            unit.to_ascii_lowercase().as_str(),
+            "deg" | "rad" | "grad" | "turn"
+        ),
+        _ => false,
+    }
 }
 
 /// 固定长度单位（含绝对物理单位）。相对单位（em/rem/vw/vh…）不算。

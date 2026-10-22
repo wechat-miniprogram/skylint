@@ -30,10 +30,10 @@ impl Rule for MaskImageGradient {
                         continue;
                     }
                     let value = decl.value.trim();
-                    if value.is_empty() || is_dynamic(value) {
+                    if value.is_empty() || is_dynamic(&decl.tokens) {
                         continue;
                     }
-                    let calls = all_calls(value);
+                    let calls = all_calls(&decl.tokens);
                     let Some(gradient) = calls
                         .iter()
                         .find(|c| c.name == "linear-gradient" || c.name == "radial-gradient")

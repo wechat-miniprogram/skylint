@@ -257,12 +257,29 @@ autofix；14 条只能运行时判定的条目；`app.json` 自动改写。
 |---|---|---|
 | ProjectView | `AppConf` + `Resolver` + M6/M8 | 公共上下文 |
 | WxmlView | `glass-easel-template-compiler::parse`（不经过 `compiler-wxml`，它在 API 边界丢弃 AST） | 结构类、跨文件类 |
-| WxssStructure | `cssparser`（已在依赖树里） | 语义类、跨文件类 |
+| WxssStructure | `oxc-css-parser` 0.0.17（只保留摊平，见 P3） | 语义类、跨文件类 |
 | WxssSemantics | float_pigment hook（feature-gated，默认不用） | 值支持类兜底 |
 | JsonView | 原始 JSON + offset 索引 | 配置类 |
 
 值支持类只读 `WxssSemantics`，语义/结构类只读 `WxssStructure`——两族不共享判定，
 所以不会出现「同一行一条说解析失败、一条说不支持」，也不需要关联两遍解析结果。
+
+`WxssStructure` 对规则层暴露的是**解析器原语，不是字符串**：`WxssDeclaration.tokens`
+（`ValueToken`：Function/Dimension/Number/Percentage/Color/Url/Ident/Str/Comma/Dynamic/Other，
+由 oxc 的 `ComponentValue` 递归转成 owned 值）与 `WxssSelector.parts`
+（`SelectorPart`：Tag/Universal/Class/Id/Other，来自 `ComplexSelector`/`CompoundSelector`）。
+规则层因此不再自己切值、扫选择器：`value_util` 只剩十几个基于词元的包装（`split_top_level`
+按顶层 `Comma` 切、`split_tokens` 直接取词元、`top_level_calls` 取 `Function`），
+`selector::SimpleSelector::parse` 只是对 `parts` 做一次折叠——组合符 / 伪类 / 属性选择器在
+部件构造阶段就落成 `Other`，策略仍是「宁可漏报」。
+
+这一层换来的是把 428 行手写状态机（`value_util` 283 + `selector` 145）删掉。代价是生产代码
+净增约 225 行：AST → owned 词元的映射要自己写，而且**语义必须逐字保持**——验收口径是四个
+真实工程的诊断逐字段完全一致（95 / 880 / 102 / 7，零差异）。两处刻意保留的旧口径：
+`progid:` 开头的值（oxc 会解析成 `progid(...)` 函数）按整值原文当 `Other`；`is_dynamic` 的
+`var(` / `env(` / `{{` / `$` / `#{` 仍在任意位置判定、`@` 仍只认值开头。唯一放宽的一处：
+预处理器变量出现在函数参数里（`translate(@w, 0)`）现在也算动态——旧实现只看开头，
+新实现看词元；方向是**少报**，不会多报。
 
 ### 为什么默认不用 float_pigment
 
