@@ -1,13 +1,15 @@
 //! Skyline 不支持的 JS API / 页面配置项。
 //!
-//! 数据表 `rules/data/unsupported_js_api.txt` 是唯一依据，Rust 侧只做两种匹配：
-//! `call:<callee>` 命中 callee 精确相等的调用；`page-option:<key>` 命中裸 `Page({...})`
-//! 第一个对象实参里的静态键。加条目只改数据文件。
+//! 数据表 `rules/data/unsupported_js_api.txt` 是唯一依据，Rust 侧只做三种匹配：
+//! `call:<callee>` 命中 callee 精确相等的调用；`plugin-call:<prefix>` 同上（callee 等于
+//! `<prefix>` 或以 `<prefix>.` 开头），但只在插件工程里判；`page-option:<key>` 命中裸
+//! `Page({...})` 第一个对象实参里的静态键。加条目只改数据文件。
 //!
 //! 证据：
 //! - `skyline-overview/references/migration/compatibility.md:198-205`（Q: 不支持 animate
 //!   动画接口，给了 worklet 替代写法）、`:300`（Page.onPageScroll ❌）；
-//! - `skyline-overview/SKILL.md:100`（不支持 animate 接口）。
+//! - `skyline-overview/SKILL.md:100`（不支持 animate 接口）；
+//! - `skyline-route/references/api/router-api.md:9`（所有 `wx.router` 方法均不支持小程序插件）。
 //!
 //! 只认裸 `Page`：`wx.Page`、`some.Page` 不是页面注册入口。注释与字符串里的
 //! `this.animate` 不在 AST 的调用节点上，天然不会命中。
@@ -18,7 +20,7 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::Severity;
 
-use super::at_span;
+use super::{at_span, is_plugin};
 
 const SOURCE: &str = include_str!("../data/unsupported_js_api.txt");
 
@@ -29,6 +31,8 @@ const PAGE: &str = "Page";
 enum Kind {
     /// 调用点：callee 精确等于目标文本。
     Call,
+    /// 调用点：callee 等于目标名或以 `目标名.` 开头，且只在插件工程里判。
+    PluginCall,
     /// `Page({...})` 第一个对象实参里的静态键。
     PageOption,
 }
@@ -57,12 +61,15 @@ impl Rule for UnsupportedApi {
 
     fn check(&self, project: &Project) -> Vec<crate::Diagnostic> {
         let entries = data();
+        let plugin = is_plugin(project);
         let mut out = Vec::new();
         for file in &project.scripts {
             for call in file.doc.calls() {
                 for entry in entries {
                     let span = match entry.kind {
                         Kind::Call => (call.callee == entry.target)
+                            .then_some((call.start, call.end)),
+                        Kind::PluginCall => (plugin && matches_namespace(&call.callee, entry.target))
                             .then_some((call.start, call.end)),
                         Kind::PageOption => {
                             if call.callee != PAGE {
@@ -94,6 +101,14 @@ fn data() -> &'static [Entry] {
     TABLE.get_or_init(|| parse(SOURCE).expect("JS 不支持 API 表格式错误"))
 }
 
+/// `wx.router` 命中 `wx.router` 本身与它下面的一切方法。
+fn matches_namespace(callee: &str, prefix: &str) -> bool {
+    callee == prefix
+        || callee
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('.'))
+}
+
 /// 解析数据文件。格式错误一律返回带行号的说明，便于同步时定位。
 fn parse(source: &'static str) -> Result<Vec<Entry>, String> {
     let mut entries = Vec::new();
@@ -109,11 +124,13 @@ fn parse(source: &'static str) -> Result<Vec<Entry>, String> {
         let pattern = pattern.trim();
         let (kind, target) = if let Some(target) = pattern.strip_prefix("call:") {
             (Kind::Call, target.trim())
+        } else if let Some(target) = pattern.strip_prefix("plugin-call:") {
+            (Kind::PluginCall, target.trim())
         } else if let Some(target) = pattern.strip_prefix("page-option:") {
             (Kind::PageOption, target.trim())
         } else {
             return Err(format!(
-                "第 {line_no} 行：模式必须以 `call:` 或 `page-option:` 开头：{pattern}"
+                "第 {line_no} 行：模式必须以 `call:`、`plugin-call:` 或 `page-option:` 开头：{pattern}"
             ));
         };
         if target.is_empty() {
@@ -139,8 +156,8 @@ fn parse(source: &'static str) -> Result<Vec<Entry>, String> {
 mod tests {
     use crate::rules::Rule;
 
-    use super::super::testutil::{messages, single, single_with_app};
-    use super::{UnsupportedApi, parse};
+    use super::super::testutil::{messages, plugin, single, single_with_app};
+    use super::{Kind, UnsupportedApi, parse};
 
     #[test]
     fn unsupported_calls_and_page_options_are_reported() {
@@ -201,11 +218,16 @@ mod tests {
     }
 
     #[test]
-    fn data_file_parses_both_prefixes() {
+    fn data_file_parses_every_prefix() {
         let entries = parse(super::SOURCE).unwrap();
-        assert_eq!(entries.len(), 2);
+        assert_eq!(entries.len(), 3);
         assert!(entries.iter().any(|e| e.target == "this.animate"));
         assert!(entries.iter().any(|e| e.target == "onPageScroll"));
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.kind == Kind::PluginCall && e.target == "wx.router")
+        );
 
         let err = parse("call:foo\n").unwrap_err();
         assert!(err.contains("分隔符"), "{err}");
@@ -213,5 +235,35 @@ mod tests {
         assert!(err.contains("call:"), "{err}");
         let err = parse("call: | baz\n").unwrap_err();
         assert!(err.contains("缺少目标"), "{err}");
+    }
+
+    #[test]
+    fn router_calls_are_reported_only_in_plugin_projects() {
+        let (_f, plugin_project) = plugin(
+            "unsupported-plugin-router",
+            "wx.router.navigateTo({ url: 'x' });\nwx.router.addRouteBuilder('a', b);",
+        );
+        let diagnostics = UnsupportedApi.check(&plugin_project);
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.message.contains("wx.router"))
+        );
+
+        let (_n, normal) = single(
+            "unsupported-normal-router",
+            "wx.router.navigateTo({ url: 'x' });",
+        );
+        assert_eq!(messages(&UnsupportedApi, &normal), Vec::<String>::new());
+    }
+
+    #[test]
+    fn plugin_prefix_does_not_match_similar_names() {
+        let (_f, project) = plugin(
+            "unsupported-plugin-prefix",
+            "wx.routers.navigateTo({});\nmywx.router.x();\nwx.routerX.y();",
+        );
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
     }
 }

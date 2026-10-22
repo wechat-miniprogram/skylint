@@ -77,6 +77,11 @@ pub struct WxmlAttribute {
     /// 属性名（含前缀）到值结尾的范围。
     pub start: Position,
     pub end: Position,
+    /// 值的起点（开引号后第一个字符）；没有值时为 `None`。
+    ///
+    /// 只有 `start..end` 时规则只能落在属性名上，而 `worklet:ongesture="onPan"`
+    /// 这类诊断要指向被绑定的函数名。
+    pub value_start: Option<Position>,
 }
 
 #[derive(Debug, Clone)]
@@ -401,6 +406,7 @@ fn value_attribute(name: String, range: &Range<Position>, value: Option<&Value>)
             is_static: true,
             start: range.start,
             end: location.end,
+            value_start: Some(location.start),
         },
         Some(dynamic @ Value::Dynamic { .. }) => WxmlAttribute {
             name,
@@ -408,6 +414,7 @@ fn value_attribute(name: String, range: &Range<Position>, value: Option<&Value>)
             is_static: false,
             start: range.start,
             end: dynamic.location().end,
+            value_start: Some(dynamic.location().start),
         },
         // 解析器新增的值形态按「动态」处理，规则不会把它当成静态字符串。
         Some(_) => WxmlAttribute {
@@ -416,6 +423,7 @@ fn value_attribute(name: String, range: &Range<Position>, value: Option<&Value>)
             is_static: false,
             start: range.start,
             end: range.end,
+            value_start: None,
         },
         None => WxmlAttribute {
             name,
@@ -423,6 +431,7 @@ fn value_attribute(name: String, range: &Range<Position>, value: Option<&Value>)
             is_static: true,
             start: range.start,
             end: range.end,
+            value_start: None,
         },
     }
 }
@@ -454,6 +463,7 @@ fn static_attribute(attr: &StaticAttribute, source: &str) -> WxmlAttribute {
         is_static: true,
         start,
         end: attr.value.location.end,
+        value_start: Some(attr.value.location.start),
     }
 }
 
@@ -614,6 +624,22 @@ mod tests {
     }
 
     #[test]
+    fn worklet_attribute_keeps_its_colon_prefix_and_value_span() {
+        let doc = WxmlDoc::parse(
+            "t.wxml",
+            r#"<view worklet:ongesture="onPan" bind:ongesture="x"/>"#,
+        )
+        .unwrap();
+        let attrs = attributes(&doc);
+        let worklet = attrs.iter().find(|a| a.name == "worklet:ongesture").unwrap();
+        assert_eq!(worklet.value.as_deref(), Some("onPan"));
+        assert!(worklet.is_static);
+        assert_eq!(doc.position(worklet.value_start.unwrap()), (1, 26));
+        // 普通绑定保留原有名字，不会被当成 worklet 绑定。
+        assert!(attrs.iter().any(|a| a.name == "bind:ongesture"));
+    }
+
+    #[test]
     fn dynamic_attribute_value_is_not_a_static_string() {
         let doc = WxmlDoc::parse("t.wxml", r#"<view type="{{t}}"/>"#).unwrap();
         let attr = &attributes(&doc)[0];
@@ -678,3 +704,4 @@ mod tests {
         assert_eq!(element.branches.first().map(|branch| branch.arm), Some(0));
     }
 }
+

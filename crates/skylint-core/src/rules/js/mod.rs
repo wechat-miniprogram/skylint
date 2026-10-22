@@ -8,14 +8,69 @@ pub mod draggable_sheet_scroll_to;
 pub mod scroll_context_ref;
 pub mod unsupported_api;
 pub mod worklet_api_scope;
+pub mod worklet_data_freeze;
+pub mod worklet_directive;
+pub mod worklet_es5;
 
 pub use draggable_sheet_scroll_to::DraggableSheetScrollTo;
 pub use scroll_context_ref::ScrollContextRef;
 pub use unsupported_api::UnsupportedApi;
 pub use worklet_api_scope::WorkletApiScope;
+pub use worklet_data_freeze::WorkletDataFreeze;
+pub use worklet_directive::WorkletDirective;
+pub use worklet_es5::WorkletEs5;
 
-use crate::project::JsFile;
+use std::collections::HashSet;
+
+use serde_json::Value;
+
+use crate::project::{JsFile, Project, Scope};
 use crate::{Diagnostic, Severity};
+
+/// 插件工程：`compileType` 优先；缺省时按 minidev 的目录约定（没有 `miniprogramRoot`
+/// 但有 `pluginRoot`）判断。两者都读不到时不判。
+pub(crate) fn is_plugin(project: &Project) -> bool {
+    match project
+        .project_config
+        .get("compileType")
+        .and_then(Value::as_str)
+    {
+        Some(kind) => kind == "plugin",
+        None => {
+            !project.project_config.contains_key("miniprogramRoot")
+                && project.project_config.contains_key("pluginRoot")
+        }
+    }
+}
+
+/// 单元对应的脚本。`Project.scripts` 里一个文件只归一个单元，所以按 scope 查即可。
+pub(crate) fn scope_script<'a>(project: &'a Project, scope: &Scope) -> Option<&'a JsFile> {
+    project.scripts.iter().find(|file| &file.scope == scope)
+}
+
+/// 页面与组件的 WXML 及所属单元，按路径去重（同一文件被多次引用只留一份）。
+///
+/// 页面显式声明 `renderer: webview` 的整页跳过，与 wxml 规则同口径：那是「这页不迁
+/// Skyline」的决定，对它讲 Skyline 的限制只是误报。
+pub(crate) fn unit_wxml(project: &Project) -> Vec<(&str, Scope)> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for page in project.pages.iter().filter(|page| !page.opted_out) {
+        if let Some(path) = page.files.wxml.as_deref() {
+            if seen.insert(path) {
+                out.push((path, Scope::Page(page.route.clone())));
+            }
+        }
+    }
+    for component in &project.components {
+        if let Some(path) = component.files.wxml.as_deref() {
+            if seen.insert(path) {
+                out.push((path, Scope::Component(component.path.clone())));
+            }
+        }
+    }
+    out
+}
 
 /// 把诊断落到脚本文件的一段字节区间上。区间是 `[start, end)`，与解析器的 span 一致。
 pub(crate) fn at_span(

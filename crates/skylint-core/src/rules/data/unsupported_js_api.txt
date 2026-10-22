@@ -1,10 +1,14 @@
 # Skyline 不支持的 JS API / 页面配置项。
 #
-# 每行 `模式 | 说明`，`说明` 会原样成为诊断消息。两种模式前缀：
+# 每行 `模式 | 说明`，`说明` 会原样成为诊断消息。三种模式前缀：
 #   call:<callee>        callee 精确等于 <callee> 的调用
+#   plugin-call:<prefix> 同上，但只在插件工程里判；callee 等于 <prefix> 或以 `<prefix>.` 开头
 #   page-option:<key>    `Page({...})` 第一个实参对象里的静态键
 #
 # 证据：skyline-overview/references/migration/compatibility.md:198-205（不支持 animate
 # 接口）、:300（Page.onPageScroll ❌）；skyline-overview/SKILL.md:100。
 call:this.animate | Skyline 不支持 `this.animate`，动画不会执行；改用 worklet（wx.worklet.shared + applyAnimatedStyle）
+# 插件限制原文：skyline-route/references/api/router-api.md:9「所有 wx.router 方法均不支持
+# 小程序插件」。插件页内调这些接口不会报错，只是静默无效。
+plugin-call:wx.router | 小程序插件不支持 wx.router.*（自定义路由），插件页内调用无效
 page-option:onPageScroll | Skyline 不支持 `Page.onPageScroll`（页面不滚动），改用 scroll-view 的 bindscroll

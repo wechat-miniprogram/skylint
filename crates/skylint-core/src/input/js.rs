@@ -17,9 +17,9 @@ use std::fmt;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Argument, ArrowFunctionBody, ArrowFunctionExpression, CallExpression, ChainElement,
-    Expression, Function, FunctionBody, MethodDefinition, ObjectExpression, ObjectProperty,
-    ObjectPropertyKind, PropertyDefinition, PropertyKey, VariableDeclarator,
+    Argument, ArrowFunctionBody, ArrowFunctionExpression, BindingPattern, CallExpression,
+    ChainElement, Expression, Function, FunctionBody, MethodDefinition, ObjectExpression,
+    ObjectProperty, ObjectPropertyKind, PropertyDefinition, PropertyKey, VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::Parser;
@@ -59,6 +59,8 @@ pub struct JsDoc {
     source: String,
     functions: Vec<OwnedFunction>,
     calls: Vec<CallInfo>,
+    this_data_destructures: Vec<ThisDataDestructure>,
+    object_fns: Vec<ObjectFn>,
 }
 
 impl JsDoc {
@@ -85,6 +87,8 @@ impl JsDoc {
             source: owned,
             functions: collector.functions,
             calls: collector.calls,
+            this_data_destructures: collector.this_data_destructures,
+            object_fns: collector.object_fns,
         })
     }
 
@@ -115,6 +119,22 @@ impl JsDoc {
     /// 所有调用表达式，按遍历顺序（外层调用先于它实参里的调用）。
     pub fn calls(&self) -> &[CallInfo] {
         &self.calls
+    }
+
+    /// 所有 `const { .. } = this.data` / `let { .. } = this.data` 形式的声明。
+    ///
+    /// 只暴露这一个形状，不做通用 AST 暴露：worklet 的数据冻结规则（#156）只需要
+    /// 「解构了 `this.data`」与「在不在 worklet 里」，`calls()` 看不到解构。
+    pub fn this_data_destructures(&self) -> &[ThisDataDestructure] {
+        &self.this_data_destructures
+    }
+
+    /// 所有对象字面量里「值是函数、或指向函数的裸标识符」的属性，按遍历顺序。
+    ///
+    /// 路由动画的约束落在 builder **返回对象**的 `handle*Animation` 键上（#153），
+    /// 而 `calls()` 只看得到 builder 的实参、看不到它 return 了什么。
+    pub fn object_fns(&self) -> &[ObjectFn] {
+        &self.object_fns
     }
 
     /// 字节偏移 → `(line, column)`，均 1-based，`column` 按 Unicode 字符计。
@@ -179,6 +199,34 @@ pub struct ArgInfo {
     pub object_keys: Vec<String>,
     /// `object_keys` 里每个键的字节区间，与它同序。
     pub object_key_spans: Vec<(u32, u32)>,
+    /// 实参是内联函数（箭头函数 / 函数表达式）时，该函数是否声明了 `'worklet'`；
+    /// 其它写法为 `None`。
+    pub fn_worklet: Option<bool>,
+    /// 实参是裸标识符时的名字；成员访问、调用结果等写法为 `None`。
+    pub ident: Option<String>,
+}
+
+/// 一次 `{ .. } = this.data` 解构声明。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThisDataDestructure {
+    /// 整个声明器（`{ a } = this.data`）的字节区间。
+    pub start: u32,
+    pub end: u32,
+    /// 是否位于 worklet 函数体内（同样取最近的外层函数）。
+    pub worklet_scope: bool,
+}
+
+/// 对象字面量里「值是函数、或指向函数的裸标识符」的一个属性。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectFn {
+    /// 静态键名；计算键不收录。
+    pub key: String,
+    /// 键的位置，诊断落点。
+    pub key_start: u32,
+    /// 值是内联函数时，该函数是否声明了 `'worklet'`。
+    pub fn_worklet: Option<bool>,
+    /// 值是裸标识符时的名字，指向同文件里的函数。
+    pub ident: Option<String>,
 }
 
 impl ArgInfo {
@@ -205,6 +253,8 @@ struct OwnedFunction {
 struct Collector {
     functions: Vec<OwnedFunction>,
     calls: Vec<CallInfo>,
+    this_data_destructures: Vec<ThisDataDestructure>,
+    object_fns: Vec<ObjectFn>,
     /// 下一个函数表达式 / 箭头函数该沿用的名字（变量名或方法名）。
     pending: Option<String>,
     /// 外层函数栈，值为该函数是否 `has_worklet`。取最近的一层。
@@ -282,12 +332,24 @@ impl<'a> Visit<'a> for Collector {
         if it.init.as_ref().is_some_and(is_function) {
             self.pending = binding_name(&it.id);
         }
+        if matches!(it.id, BindingPattern::ObjectPattern(_))
+            && it.init.as_ref().is_some_and(is_this_data)
+        {
+            self.this_data_destructures.push(ThisDataDestructure {
+                start: it.span.start,
+                end: it.span.end,
+                worklet_scope: self.worklet_scope(),
+            });
+        }
         walk::walk_variable_declarator(self, it);
     }
 
     fn visit_object_property(&mut self, it: &ObjectProperty<'a>) {
         if is_function(&it.value) {
             self.pending = key_name(&it.key);
+        }
+        if let Some(item) = object_fn(it) {
+            self.object_fns.push(item);
         }
         walk::walk_object_property(self, it);
     }
@@ -323,13 +385,41 @@ fn is_function(expr: &Expression) -> bool {
     )
 }
 
-fn binding_name(pattern: &oxc_ast::ast::BindingPattern) -> Option<String> {
+fn binding_name(pattern: &BindingPattern) -> Option<String> {
     match pattern {
-        oxc_ast::ast::BindingPattern::BindingIdentifier(id) => {
-            Some(id.name.as_str().to_string())
-        }
+        BindingPattern::BindingIdentifier(id) => Some(id.name.as_str().to_string()),
         _ => None,
     }
+}
+
+/// `this.data` 成员访问（只认静态属性名，`this['data']` 不算）。
+fn is_this_data(expr: &Expression) -> bool {
+    matches!(
+        expr,
+        Expression::StaticMemberExpression(member)
+            if member.property.name == "data"
+                && matches!(&member.object, Expression::ThisExpression(_))
+    )
+}
+
+/// 对象字面量里值可判定的属性：内联函数或指向函数的裸标识符。
+fn object_fn(property: &ObjectProperty) -> Option<ObjectFn> {
+    if property.computed {
+        return None;
+    }
+    let key = property.key.static_name()?.as_str()?.to_string();
+    let (fn_worklet, ident) = match &property.value {
+        Expression::ArrowFunctionExpression(arrow) => (Some(arrow_has_worklet(arrow)), None),
+        Expression::FunctionExpression(function) => (Some(function_has_worklet(function)), None),
+        Expression::Identifier(id) => (None, Some(id.name.as_str().to_string())),
+        _ => return None,
+    };
+    Some(ObjectFn {
+        key_start: property.key.span().start,
+        key,
+        fn_worklet,
+        ident,
+    })
 }
 
 /// 属性名；计算属性（`[x]`、`[x + 1]`）与私有名拿不到静态值，返回 `None`。
@@ -383,12 +473,38 @@ fn arg_info(arg: &Argument) -> ArgInfo {
         Argument::ObjectExpression(object) => object_keys(object),
         _ => (Vec::new(), Vec::new()),
     };
+    let (fn_worklet, ident) = match arg {
+        Argument::ArrowFunctionExpression(arrow) => (Some(arrow_has_worklet(arrow)), None),
+        Argument::FunctionExpression(function) => (Some(function_has_worklet(function)), None),
+        Argument::Identifier(id) => (None, Some(id.name.as_str().to_string())),
+        _ => (None, None),
+    };
     ArgInfo {
         start: span.start,
         end: span.end,
         object_keys,
         object_key_spans,
+        fn_worklet,
+        ident,
     }
+}
+
+fn arrow_has_worklet(arrow: &ArrowFunctionExpression) -> bool {
+    match &arrow.body {
+        ArrowFunctionBody::FunctionBody(body) => has_worklet_directive(body),
+        // 表达式体没有指令序言，不可能是 worklet。
+        _ => false,
+    }
+}
+
+fn function_has_worklet(function: &Function) -> bool {
+    function.body.as_deref().is_some_and(has_worklet_directive)
+}
+
+fn has_worklet_directive(body: &FunctionBody) -> bool {
+    body.directives
+        .iter()
+        .any(|directive| directive.directive.as_str() == WORKLET)
 }
 
 /// 对象字面量的静态键与位置。计算键（`[x]`）跳过——它可能不是静态属性名。
@@ -692,5 +808,60 @@ mod tests {
             JsDoc::parse("a.wxs", "var a = 1;"),
             Err(ParseError::Syntax(_))
         ));
+    }
+
+    #[test]
+    fn argument_function_and_identifier_shape() {
+        let src = "f(() => { 'worklet'; }, () => {}, function () { 'worklet'; }, function () {}, method, this.fn);";
+        let doc = parse_js(src);
+        let args = &doc.calls()[0].args;
+        assert_eq!(
+            args.iter().map(|arg| arg.fn_worklet).collect::<Vec<_>>(),
+            [
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(false),
+                None,
+                None
+            ]
+        );
+        assert_eq!(
+            args.iter().map(|arg| arg.ident.as_deref()).collect::<Vec<_>>(),
+            [None, None, None, None, Some("method"), None]
+        );
+    }
+
+    #[test]
+    fn expression_body_arrow_argument_is_not_worklet() {
+        let doc = parse_js("applyAnimatedStyle('.x', () => offset.value);");
+        let arg = &doc.calls()[0].args[1];
+        assert_eq!(arg.fn_worklet, Some(false));
+        assert_eq!(arg.ident, None);
+    }
+
+    #[test]
+    fn destructured_this_data_is_collected_with_scope() {
+        let src = r#"
+            const { a } = this.data;
+            function normal() { let { b } = this.data; const c = this.data.c; const { d } = this.props; }
+            function animated() { 'worklet'; const { e } = this.data; }
+            function outer() { 'worklet'; const inner = () => { const { f } = this.data; }; }
+            const { g } = other.data;
+            const [h] = this.data;
+        "#;
+        let doc = parse_js(src);
+        let found: Vec<(u32, bool)> = doc
+            .this_data_destructures()
+            .iter()
+            .map(|d| (d.start, d.worklet_scope))
+            .collect();
+        // 顶层、普通函数内、worklet 内、worklet 内嵌普通函数：作用域取最近一层。
+        assert_eq!(found.len(), 4, "{found:?}");
+        assert_eq!(
+            found.iter().map(|(_, scope)| *scope).collect::<Vec<_>>(),
+            [false, false, true, false]
+        );
+        assert_eq!(doc.position(found[2].0 as usize), (4, 52));
     }
 }

@@ -17,13 +17,11 @@
 //! - 插件限制：`skyline-scroll-api/references/api/worklet-scroll-context.md:3`
 //!   （「小程序插件：**不支持**」）、`:96`，`skyline-scroll-api/SKILL.md:110`。
 
-use serde_json::Value;
-
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::Severity;
 
-use super::at_span;
+use super::{at_span, is_plugin};
 
 /// 只在 UI 线程（worklet）可用的方法。
 const SCROLL_TO: &str = "scrollViewContext.scrollTo";
@@ -85,22 +83,6 @@ impl Rule for WorkletApiScope {
             }
         }
         out
-    }
-}
-
-/// 插件工程：`compileType` 优先；缺省时按 minidev 的目录约定（没有 `miniprogramRoot`
-/// 但有 `pluginRoot`）判断。两者都读不到时不判。
-fn is_plugin(project: &Project) -> bool {
-    match project
-        .project_config
-        .get("compileType")
-        .and_then(Value::as_str)
-    {
-        Some(kind) => kind == "plugin",
-        None => {
-            !project.project_config.contains_key("miniprogramRoot")
-                && project.project_config.contains_key("pluginRoot")
-        }
     }
 }
 
