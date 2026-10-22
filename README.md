@@ -70,6 +70,21 @@ skylint --ignore skyline/no-pseudo --ignore skyline/flex-direction
 skylint --rules
 ```
 
+### 抑制单行
+
+注释紧贴在被抑制行的上一行：
+
+```html
+<!-- skylint-disable-next-line -->
+<view>{{a}}<image/></view>
+
+<!-- 只抑制指定规则 -->
+<!-- skylint-disable-next-line skyline/no-pseudo -->
+<view class="a b" />
+```
+
+WXSS 里用 `/* skylint-disable-next-line */` 同样有效。
+
 退出码：`0` 没有问题，`1` 有 error 级问题，`2` 项目加载失败。
 
 ## License

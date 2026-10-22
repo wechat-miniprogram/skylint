@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
-use skylint_core::{Project, Registry, Report};
+use skylint_core::{Project, Registry, Report, suppress};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Format {
@@ -49,7 +49,7 @@ fn main() -> ExitCode {
     };
 
     let ignored: HashSet<String> = cli.ignore.into_iter().collect();
-    let diagnostics = registry.run(&project, &ignored);
+    let diagnostics = suppress::apply(&project, registry.run(&project, &ignored));
     let report = Report::new(&project, diagnostics);
 
     match cli.format {

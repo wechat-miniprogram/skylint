@@ -12,6 +12,7 @@ pub mod input;
 pub mod project;
 pub mod report;
 pub mod rules;
+pub mod suppress;
 
 pub use diag::{Diagnostic, Severity};
 pub use project::{ComponentUnit, PageUnit, Project};
