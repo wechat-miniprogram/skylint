@@ -14,6 +14,11 @@
 #   关系 within:<容器>   ：最近的该容器祖先下，子标签必须声明目标里的 name=value
 #   目标写法            ：tag 或 tag[attr=value]，多个目标用 | 分隔
 #
+# 条件分支：同一个 `wx:if` 节点的不同分支互斥（运行时只会渲染其中一个），因此
+#   first-child / unique / before 比较兄弟时会跳过与当前节点互斥的候选：不同分支不算
+#   「排在前面」、不算重复、不算顺序违规。两个独立的 `wx:if` 之间不互斥，仍按原样判定；
+#   无条件元素与条件分支元素也不互斥（两者可能同时渲染）。
+#
 # 依据（每条都能指到原句）：
 # - sticky-section：scroll/sticky.md「它们必须在 <scroll-view type="custom"> 模式下使用」，
 #   MUST 1「必须在 type="custom" 的 scroll-view 中使用」，NEVER 1「不要在 type="list" 的 scroll-view 中使用」。

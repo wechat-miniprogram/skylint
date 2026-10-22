@@ -48,6 +48,19 @@ pub struct WxmlElement {
     pub tag_end: Position,
     pub attributes: Vec<WxmlAttribute>,
     pub children: Vec<WxmlNode>,
+    /// 元素所处的条件分支栈，从外到内；顶层元素为空。
+    ///
+    /// 嵌套 `wx:if` 时会叠加：外层分支与外层 `else` 里的元素各带一条栈，内层元素
+    /// 在栈顶再加自己那一层，这样「互斥」判定不会因为嵌套而丢失外层信息。
+    pub branches: Vec<Branch>,
+}
+
+/// 一个条件分支的标识：同一个 `wx:if` 节点的所有分支共享 `group`，`arm` 是分支序号
+/// （`wx:if` 为 0，`wx:elif` 依次递增，`else` 排在它们之后）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Branch {
+    pub group: u32,
+    pub arm: u32,
 }
 
 /// 元素上的一个属性。
@@ -98,9 +111,10 @@ impl WxmlDoc {
                 err.kind
             ));
         }
+        let mut next_group = 0;
         Ok(Self {
             source: source.to_string(),
-            nodes: flatten(&template.content, source),
+            nodes: flatten(&template.content, source, &mut next_group, &[]),
         })
     }
 
@@ -202,23 +216,41 @@ fn slice(source: &str, range: Range<Position>) -> String {
 }
 
 /// 包装节点摊平；元素保留。
-fn flatten(nodes: &[Node], source: &str) -> Vec<WxmlNode> {
+///
+/// `next_group` 为文件内递增的条件组编号；`branches` 是当前所处的条件分支栈，
+/// 由包装节点透传给摊平后的元素。
+fn flatten(
+    nodes: &[Node],
+    source: &str,
+    next_group: &mut u32,
+    branches: &[Branch],
+) -> Vec<WxmlNode> {
     nodes
         .iter()
-        .flat_map(|node| node_nodes(node, source))
+        .flat_map(|node| node_nodes(node, source, next_group, branches))
         .collect()
 }
 
-fn node_nodes(node: &Node, source: &str) -> Vec<WxmlNode> {
+fn node_nodes(
+    node: &Node,
+    source: &str,
+    next_group: &mut u32,
+    branches: &[Branch],
+) -> Vec<WxmlNode> {
     match node {
         Node::Text(value) => vec![WxmlNode::Text(text_node(value, source))],
-        Node::Element(element) => element_nodes(element, source),
+        Node::Element(element) => element_nodes(element, source, next_group, branches),
         Node::Comment(_) => vec![WxmlNode::Comment],
         _ => Vec::new(),
     }
 }
 
-fn element_nodes(element: &Element, source: &str) -> Vec<WxmlNode> {
+fn element_nodes(
+    element: &Element,
+    source: &str,
+    next_group: &mut u32,
+    branches: &[Branch],
+) -> Vec<WxmlNode> {
     match &element.kind {
         ElementKind::Normal {
             tag_name, children, ..
@@ -229,24 +261,39 @@ fn element_nodes(element: &Element, source: &str) -> Vec<WxmlNode> {
             tag_start: tag_name.location.start,
             tag_end: tag_name.location.end,
             attributes: attributes(element, source),
-            children: flatten(children, source),
+            children: flatten(children, source, next_group, branches),
+            branches: branches.to_vec(),
         })],
+        // 透明容器：不产生条件组，但把外层的分支栈透传下去。
         ElementKind::Pure { children, .. } | ElementKind::For { children, .. } => {
-            flatten(children, source)
+            flatten(children, source, next_group, branches)
         }
         ElementKind::If {
-            branches,
+            branches: arms,
             else_branch,
             ..
-        } => branches
-            .iter()
-            .flat_map(|(_, _, children)| flatten(children, source))
-            .chain(
-                else_branch
-                    .iter()
-                    .flat_map(|(_, children)| flatten(children, source)),
-            )
-            .collect(),
+        } => {
+            let group = *next_group;
+            *next_group += 1;
+            let inner = |arm: u32| {
+                let mut stack = branches.to_vec();
+                stack.push(Branch { group, arm });
+                stack
+            };
+            let mut out = Vec::new();
+            for (arm, (_, _, children)) in arms.iter().enumerate() {
+                out.extend(flatten(children, source, next_group, &inner(arm as u32)));
+            }
+            if let Some((_, children)) = else_branch {
+                out.extend(flatten(
+                    children,
+                    source,
+                    next_group,
+                    &inner(arms.len() as u32),
+                ));
+            }
+            out
+        }
         ElementKind::Slot { .. } => vec![WxmlNode::Element(WxmlElement {
             tag: "slot".to_string(),
             start: element.location().start,
@@ -255,6 +302,7 @@ fn element_nodes(element: &Element, source: &str) -> Vec<WxmlNode> {
             tag_end: element.tag_location.start.1.end,
             attributes: attributes(element, source),
             children: Vec::new(),
+            branches: branches.to_vec(),
         })],
         _ => Vec::new(),
     }
@@ -590,5 +638,43 @@ mod tests {
         let tags: Vec<&str> = doc.elements().map(|e| e.tag.as_str()).collect();
         assert_eq!(tags, ["view"]);
         assert_eq!(text_nodes(&doc)[0].text, "{{item}}");
+    }
+
+    #[test]
+    fn if_and_else_branches_share_group_with_distinct_arms() {
+        let doc = WxmlDoc::parse(
+            "t.wxml",
+            r#"<block wx:if="{{a}}"><view/></block><block wx:else><text/></block>"#,
+        )
+        .unwrap();
+        let branches: Vec<&Vec<Branch>> = doc.elements().map(|element| &element.branches).collect();
+        let (Some(if_branch), Some(else_branch)) = (branches[0].first(), branches[1].first()) else {
+            panic!("两个分支的元素都应带 branch: {branches:?}");
+        };
+        assert_eq!(if_branch.group, else_branch.group);
+        assert_ne!(if_branch.arm, else_branch.arm);
+    }
+
+    #[test]
+    fn nested_if_keeps_the_outer_branch_on_the_stack() {
+        let doc = parse(
+            "a.wxml",
+            r#"<block wx:if="{{a}}"><block wx:if="{{b}}"><view/></block></block>"#,
+        )
+        .unwrap();
+        let element = doc.elements().find(|element| element.tag == "view").unwrap();
+        assert_eq!(element.branches.len(), 2, "{:?}", element.branches);
+        assert_ne!(element.branches[0].group, element.branches[1].group);
+    }
+
+    #[test]
+    fn for_inside_if_branch_inherits_branch() {
+        let doc = WxmlDoc::parse(
+            "t.wxml",
+            r#"<block wx:if="{{a}}"><block wx:for="{{list}}"><view/></block></block>"#,
+        )
+        .unwrap();
+        let element = doc.elements().next().unwrap();
+        assert_eq!(element.branches.first().map(|branch| branch.arm), Some(0));
     }
 }

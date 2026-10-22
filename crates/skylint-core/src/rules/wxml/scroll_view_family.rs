@@ -233,6 +233,18 @@ fn element_children(element: &WxmlElement) -> impl Iterator<Item = &WxmlElement>
     })
 }
 
+/// 两个元素是否分属同一个 `wx:if` 的不同分支：互斥，运行时不会同时渲染。
+/// 无条件元素与任何条件分支元素都不互斥（两者可能同时渲染）。
+fn exclusive(a: &WxmlElement, b: &WxmlElement) -> bool {
+    // 只要有一层 `wx:if` 把两者分到不同分支，它们就不可能同时渲染；嵌套时靠分支栈
+    // 逐层比对，任一层互斥即互斥。
+    a.branches.iter().any(|left| {
+        b.branches
+            .iter()
+            .any(|right| left.group == right.group && left.arm != right.arm)
+    })
+}
+
 /// 父节点是否属于目标容器（属性不符不算，动态绑定不阻断）。
 fn is_container(element: &WxmlElement, containers: &[Target]) -> bool {
     containers.iter().any(|target| match target.attr {
@@ -350,6 +362,10 @@ fn first_child_violation(
         if std::ptr::eq(sibling, element) {
             break;
         }
+        // 互斥分支的兄弟不会与它同时渲染，不算排在它前面。
+        if exclusive(sibling, element) {
+            continue;
+        }
         // 同标签的重复节点交给 unique，避免同一位置两条诊断。
         if sibling.tag == element.tag {
             return None;
@@ -369,8 +385,9 @@ fn unique_violation(
     containers: &[Target],
 ) -> Option<String> {
     let container = nearest_container(ancestors, containers)?;
+    // 互斥分支里的同标签节点不会与它同时渲染，不计入重复。
     let siblings: Vec<&WxmlElement> = element_children(container)
-        .filter(|sibling| sibling.tag == element.tag)
+        .filter(|sibling| sibling.tag == element.tag && !exclusive(sibling, element))
         .collect();
     if siblings.len() < 2 {
         return None;
@@ -400,9 +417,10 @@ fn before_violation(
     let this = siblings
         .iter()
         .position(|sibling| std::ptr::eq(*sibling, element))?;
+    // 互斥分支里的 `<tag>` 与它不会同时渲染，不构成顺序违规。
     let other = siblings
         .iter()
-        .position(|sibling| sibling.tag == sibling_tag)?;
+        .position(|sibling| sibling.tag == sibling_tag && !exclusive(sibling, element))?;
     if other > this {
         return None;
     }
@@ -1503,5 +1521,123 @@ mod tests {
             r#"<draggable-sheet><scroll-view type="list" associative-container="{{c}}"/></draggable-sheet>"#,
         ));
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    // ---- 条件分支：同一个 wx:if 的不同分支互斥 ----
+
+    #[test]
+    fn nested_bodies_in_if_and_else_are_allowed() {
+        let diagnostics = check(&project(
+            "nested-body-branches",
+            concat!(
+                r#"<scroll-view type="nested">"#,
+                r#"<block wx:if="{{a}}"><nested-scroll-body><view/></nested-scroll-body></block>"#,
+                r#"<block wx:else><nested-scroll-body><view/></nested-scroll-body></block>"#,
+                r#"</scroll-view>"#,
+            ),
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn sticky_headers_in_if_and_else_are_allowed() {
+        let diagnostics = check(&project(
+            "sticky-branches",
+            concat!(
+                r#"<scroll-view type="custom"><sticky-section>"#,
+                r#"<block wx:if="{{a}}"><sticky-header>一</sticky-header></block>"#,
+                r#"<block wx:else><sticky-header>二</sticky-header></block>"#,
+                r#"</sticky-section></scroll-view>"#,
+            ),
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn nested_header_in_if_and_body_in_else_are_allowed() {
+        let diagnostics = check(&project(
+            "nested-before-branches",
+            concat!(
+                r#"<scroll-view type="nested">"#,
+                r#"<block wx:if="{{a}}"><nested-scroll-header><view/></nested-scroll-header></block>"#,
+                r#"<block wx:else><nested-scroll-body><view/></nested-scroll-body></block>"#,
+                r#"</scroll-view>"#,
+            ),
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn unconditional_body_plus_body_in_if_is_reported() {
+        // 无条件 body 与 if 里的 body 可能同时渲染。
+        let diagnostics = check(&project(
+            "nested-body-mixed",
+            concat!(
+                r#"<scroll-view type="nested"><nested-scroll-body><view/></nested-scroll-body>"#,
+                r#"<block wx:if="{{a}}"><nested-scroll-body><view/></nested-scroll-body></block>"#,
+                r#"</scroll-view>"#,
+            ),
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("2 个 `<nested-scroll-body>`")
+        );
+    }
+
+    #[test]
+    fn nested_bodies_in_separate_if_blocks_are_reported() {
+        // 两个独立的 wx:if 分别求值，理论上可同时成立。
+        let diagnostics = check(&project(
+            "nested-body-two-ifs",
+            concat!(
+                r#"<scroll-view type="nested">"#,
+                r#"<block wx:if="{{a}}"><nested-scroll-body><view/></nested-scroll-body></block>"#,
+                r#"<block wx:if="{{b}}"><nested-scroll-body><view/></nested-scroll-body></block>"#,
+                r#"</scroll-view>"#,
+            ),
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn nested_if_bodies_are_not_counted_twice() {
+        // 外层 if/else 各自又套一层 if：分支栈要能看出最外层互斥。
+        let diagnostics = check(&project(
+            "nested-if",
+            r#"<scroll-view type="nested"><block wx:if="{{a}}"><block wx:if="{{b}}"><nested-scroll-body/></block></block><block wx:else><nested-scroll-body/></block></scroll-view>"#,
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn sticky_header_after_sibling_in_else_branch_is_allowed() {
+        let diagnostics = check(&project(
+            "sticky-first-branches",
+            concat!(
+                r#"<scroll-view type="custom"><sticky-section>"#,
+                r#"<block wx:if="{{a}}"><view/></block>"#,
+                r#"<block wx:else><sticky-header>标题</sticky-header></block>"#,
+                r#"</sticky-section></scroll-view>"#,
+            ),
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn sticky_header_after_view_in_partial_if_is_reported() {
+        // 没有 else 的 if 与无条件 header 不互斥，view 可能同时渲染在 header 之前。
+        let diagnostics = check(&project(
+            "sticky-first-partial-if",
+            concat!(
+                r#"<scroll-view type="custom"><sticky-section>"#,
+                r#"<block wx:if="{{a}}"><view/></block>"#,
+                r#"<sticky-header>标题</sticky-header>"#,
+                r#"</sticky-section></scroll-view>"#,
+            ),
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("<view>"));
     }
 }
