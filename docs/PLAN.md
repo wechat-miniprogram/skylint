@@ -65,7 +65,7 @@ skylint/
 
 | ID | 问题 | 已知证据 |
 |---|---|---|
-| **V1** `[?]` | `AppConf.comps` 漏掉 npm 裸包名组件（`resolve_path` 是纯词法拼接；`check_component_path` 才有 `miniprogram_npm` 回溯）。消费点包含 `json/generate.rs:229`（组件 JSON 产物生成） | 修它会改变编译产物，可能破坏与 miniprogram-ci 的 parity。必须先用含 npm 组件的 fixture 对比 `minidev build` 前后产物，再决定修在 minidev 还是只在 lint 侧用 M6 规避 |
+| **V1** `[x]` | **已确认**：`collect_comps` 把 `usingComponents` 的值纯词法拼到引用方目录（`conf.rs:185-282`），`my-lib/button` 这类 npm 裸名 stat 失败后被静默丢弃——`miniprogram_npm` 回溯只存在于 `check_component_path`。**已解在 lint 侧**：自建闭包，种子取 `AppConf.comps`（兜住 appBar / custom-tab-bar / agent.skills 等非声明式入口）+ 页面与 app 的 `usingComponents`，npm 分支交给编译器的 `resolve_component_path`。`collect_comps` 不动 | 剩余未决：minidev 自身的产物是否因此缺 npm 组件的 json/wxml。没有 devtools 作为 oracle 无法判定，且修它可能破坏 parity，故推迟——lint 的正确性已不依赖它 |
 
 ### 2.4 明确不改
 
@@ -91,10 +91,10 @@ crates/skylint-core/src/
 
 | # | 工作 | 状态 |
 |---|---|---|
-| 0.1 | V1 验证（npm 组件 fixture 对比编译产物） | `[ ]` |
+| 0.1 | V1 验证（npm 组件闭包） | `[x]` 结论见 2.3 |
 | 0.2 | minidev 低风险批 M1/M2/M3/M6/M8 | `[x]` |
 | 0.3 | minidev M4/M7/M9 | `[ ]` |
-| 0.4 | `ProjectView` + `Project::load` + 报告管道 + 单文件失败不终止 | `[x]` |
+| 0.4 | `ProjectView` + `Project::load` + 报告管道 + 单文件失败不终止 | `[x]` 真实工程验证：31 页混合项目（3 skyline）与独立脚本逐页对照一致 |
 | 0.5 | CLI：`--format text/json`、退出码（0 无 error / 1 有 error / 2 加载失败）、`--ignore`、inline disable | 部分（`--ignore` 与 disable 未做） |
 | 0.6 | 6 条规则验证管道：`unsupported-component`、`scroll-view-type`、`no-pseudo`、`box-sizing`、`no-inline-text`、`flex-direction` | `[ ]` |
 | 0.7 | 规则文档从 TOML 生成 | `[ ]` |

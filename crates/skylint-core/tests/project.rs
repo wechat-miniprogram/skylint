@@ -118,6 +118,32 @@ fn skyline_flag_follows_page_then_app_renderer() {
 }
 
 #[test]
+fn npm_components_join_the_closure() {
+    let f = Fixture::new("npm");
+    f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+        .write("app.json", r#"{"pages":["pages/index/index"]}"#)
+        .write(
+            "pages/index/index.json",
+            r#"{"usingComponents":{"btn":"my-lib/button"}}"#,
+        )
+        .write("pages/index/index.wxml", "<btn/>")
+        .write(
+            "miniprogram_npm/my-lib/button.json",
+            r#"{"component":true}"#,
+        )
+        .write("miniprogram_npm/my-lib/button.wxml", "<view/>")
+        .write("miniprogram_npm/my-lib/button.js", "Component({})");
+
+    let project = Project::load(f.path()).unwrap();
+    assert_eq!(project.components.len(), 1);
+    assert_eq!(project.components[0].path, "miniprogram_npm/my-lib/button");
+    assert_eq!(
+        project.components[0].files.wxml.as_deref(),
+        Some("miniprogram_npm/my-lib/button.wxml")
+    );
+}
+
+#[test]
 fn missing_app_json_is_an_error() {
     let f = Fixture::new("no-app");
     f.write("project.config.json", r#"{"miniprogramRoot":""}"#);
