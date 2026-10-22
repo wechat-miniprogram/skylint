@@ -289,11 +289,23 @@ impl Project {
         }
     }
 
-    fn app_display_block(&self) -> bool {
+    /// app 级 `defaultDisplayBlock` 是否开启。运行时两种写法都认，见 [`renderer_flag`]。
+    pub fn app_display_block(&self) -> bool {
         self.app_json
             .get("rendererOptions")
             .and_then(Value::as_object)
             .map(|options| renderer_flag(options, "defaultDisplayBlock"))
+            .unwrap_or(false)
+    }
+
+    /// app 级 `defaultContentBox` 是否开启。运行时只读 `rendererOptions.skyline` 这一层
+    /// （`runtime/index.ts:145`），写在顶层的同名单键不生效，所以这里也只认嵌套写法。
+    pub fn app_content_box(&self) -> bool {
+        self.app_json
+            .get("rendererOptions")
+            .and_then(|options| options.get("skyline"))
+            .and_then(|skyline| skyline.get("defaultContentBox"))
+            .and_then(Value::as_bool)
             .unwrap_or(false)
     }
 

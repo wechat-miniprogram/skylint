@@ -12,9 +12,11 @@
 //! 无关的过时告警）。
 
 pub mod config_ignored;
+pub mod default_layout_drift;
 pub mod lib_version;
 pub mod renderer_options;
 
 pub use config_ignored::ConfigIgnored;
+pub use default_layout_drift::DefaultLayoutDrift;
 pub use lib_version::LibVersion;
 pub use renderer_options::RendererOptions;

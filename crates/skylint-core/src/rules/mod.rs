@@ -67,6 +67,7 @@ impl Registry {
             Box::new(wxss::CalcAngle),
             Box::new(wxss::MaskImageGradient),
             Box::new(config::ConfigIgnored),
+            Box::new(config::DefaultLayoutDrift),
             Box::new(config::LibVersion),
             Box::new(config::RendererOptions),
         ])
