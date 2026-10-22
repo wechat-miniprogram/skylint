@@ -66,6 +66,7 @@ impl Registry {
             Box::new(wxss::TextDecorationTarget),
             Box::new(wxss::CalcAngle),
             Box::new(wxss::MaskImageGradient),
+            Box::new(config::ConfigIgnored),
             Box::new(config::LibVersion),
             Box::new(config::RendererOptions),
         ])

@@ -7,12 +7,14 @@
 //! `tagNameStyleIsolation: "bogus"` 都能通过）。运行时又只按自己认的键和类型取值，
 //! 取不到就回落默认值——于是配置写错不会崩，只会静默失效。
 //!
-//! 两条规则把这个「静默」变成诊断，且只做静态可判定的事：不做版本协商、不做
+//! 这组规则把这个「静默」变成诊断，且只做静态可判定的事：不做版本协商、不做
 //! 运行时求值，也不去补 minidev 缺失的 app.json schema（那会引入大量与本工具
 //! 无关的过时告警）。
 
+pub mod config_ignored;
 pub mod lib_version;
 pub mod renderer_options;
 
+pub use config_ignored::ConfigIgnored;
 pub use lib_version::LibVersion;
 pub use renderer_options::RendererOptions;
