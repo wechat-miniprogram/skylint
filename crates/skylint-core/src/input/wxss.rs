@@ -202,6 +202,10 @@ struct Scanner<'a> {
     line_comments: bool,
 }
 
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
+}
+
 /// less 的混入定义：`.mixin(...)` / `#ns(...)`——括号紧跟名字，和 `:not(...)` 不同。
 fn is_mixin_definition(raw: &str) -> bool {
     let mut chars = raw.chars();
@@ -266,11 +270,21 @@ impl<'a> Scanner<'a> {
                         self.body(out, &selectors, at, true, depth + 1);
                     }
                 }
-                Stop::Close => {
-                    self.pos += 1;
+                // `}` / EOF 前允许省掉最后一个分号（SASS 常见写法）：那份待处理文本
+                // 仍是一条声明。
+                Stop::Close | Stop::Eof => {
+                    let raw = self.src[start..end].trim();
+                    if !raw.is_empty()
+                        && !raw.starts_with('@')
+                        && let Some(decl) = declaration(raw, start)
+                    {
+                        declarations.push(decl);
+                    }
+                    if stop == Stop::Close {
+                        self.pos += 1;
+                    }
                     break;
                 }
-                Stop::Eof => break,
             }
         }
 
@@ -371,6 +385,10 @@ impl<'a> Scanner<'a> {
                 b'/' if self.line_comments && bytes.get(self.pos + 1) == Some(&b'/') => {
                     self.skip_comment(true);
                 }
+                b'u' | b'U' if self.at_url() => {
+                    // `url(http://…)`：整体当不透明内容，里面的 `//` 不是注释
+                    self.skip_url();
+                }
                 b'#' | b'@' if bytes.get(self.pos + 1) == Some(&b'{') => {
                     // 插值 `#{…}` / `@{…}`：整体跳过，不做选择器切分
                     self.pos += 2;
@@ -433,6 +451,10 @@ impl<'a> Scanner<'a> {
                     self.skip_comment(true);
                     continue;
                 }
+                b'u' | b'U' if self.at_url() => {
+                    self.skip_url();
+                    continue;
+                }
                 b'{' => depth += 1,
                 b'}' => {
                     depth -= 1;
@@ -442,6 +464,40 @@ impl<'a> Scanner<'a> {
                     }
                 }
                 _ => {}
+            }
+            self.pos += 1;
+        }
+    }
+
+    /// 当前位置是否是 `url(` 的起点（ASCII 大小写不敏感）。
+    fn at_url(&self) -> bool {
+        let rest = &self.src[self.pos..];
+        rest.len() >= 4
+            && rest[..4].eq_ignore_ascii_case("url(")
+            && (self.pos == 0 || !is_ident_byte(self.src.as_bytes()[self.pos - 1]))
+    }
+
+    /// 跳过 `url(` 到配对的 `)`（含）。url 里不解析注释与括号嵌套之外的东西。
+    fn skip_url(&mut self) {
+        self.pos += 4;
+        let bytes = self.src.as_bytes();
+        let mut quote: Option<u8> = None;
+        let mut escaped = false;
+        while self.pos < bytes.len() {
+            let b = bytes[self.pos];
+            if let Some(q) = quote {
+                if escaped {
+                    escaped = false;
+                } else if b == b'\\' {
+                    escaped = true;
+                } else if b == q {
+                    quote = None;
+                }
+            } else if b == b'"' || b == b'\'' {
+                quote = Some(b);
+            } else if b == b')' {
+                self.pos += 1;
+                return;
             }
             self.pos += 1;
         }
@@ -873,6 +929,35 @@ mod tests {
     fn interpolation_in_selector_is_kept_verbatim() {
         let doc = parse("a.scss", ".icon-#{$name} { color: red; }").unwrap();
         assert_eq!(doc.rules[0].selectors[0].text, ".icon-#{$name}");
+    }
+
+    #[test]
+    fn url_with_protocol_is_not_a_line_comment() {
+        let doc = parse(
+            "a.scss",
+            ".a {\n  background-image: url(https://x.com/a.svg);\n  background-size: cover;\n}\n.b { color: red; }",
+        )
+        .unwrap();
+        assert_eq!(doc.rules.len(), 2, "{:?}", doc.rules);
+        assert_eq!(doc.rules[0].declarations.len(), 2);
+        assert_eq!(
+            doc.rules[0].declarations[0].value,
+            "url(https://x.com/a.svg)"
+        );
+    }
+
+    #[test]
+    fn last_declaration_without_semicolon_is_kept() {
+        let doc = parse(
+            "a.scss",
+            ".a {\n  color: red;\n  padding-bottom: 0\n}\n.b { margin: 0 }",
+        )
+        .unwrap();
+        assert_eq!(doc.rules.len(), 2);
+        assert_eq!(doc.rules[0].declarations.len(), 2);
+        assert_eq!(doc.rules[0].declarations[1].name, "padding-bottom");
+        assert_eq!(doc.rules[0].declarations[1].value, "0");
+        assert_eq!(doc.rules[1].declarations[0].name, "margin");
     }
 
     #[test]
