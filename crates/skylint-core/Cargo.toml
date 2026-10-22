@@ -15,5 +15,7 @@ compiler-graph = { workspace = true }
 
 anyhow = { workspace = true }
 glass-easel-template-compiler = "1.2.0"
+# 0.0.x 会有破坏性变更，必须精确锁版本。
+oxc-css-parser = "=0.0.17"
 serde = { workspace = true }
 serde_json = { workspace = true }

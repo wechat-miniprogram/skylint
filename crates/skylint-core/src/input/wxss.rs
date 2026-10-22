@@ -11,7 +11,15 @@
 //!   属性/值类规则照样能检查，选择器类规则自然跳过；
 //! - `$var` / `@var` / `#{}` 一律原样保留：静态求值不了，交给规则层判断。
 //!
-//! 容错策略：坏块逐块丢弃，不因单条规则失败而让整个文件不可用。
+//! 词法与语法交给 `oxc-css-parser`，这里只负责把 AST 里的嵌套摊平成规则。
+//! 容错策略：oxc 能恢复的坏块照常产出 AST；它彻底放弃解析时才返回 `Err`——
+//! 此时没有可用的结构，宁可让调用方跳过这份文件，也不臆造规则。
+
+use oxc_css_parser::{
+    Allocator, ParserBuilder, Span, Syntax,
+    ast::{AtRule, Declaration, SelectorList, Statement, Stylesheet},
+    token::Comment,
+};
 
 /// 一份解析后的样式文档。
 #[derive(Debug, Clone)]
@@ -122,19 +130,66 @@ pub struct WxssImport {
     pub offset: usize,
 }
 
-/// 解析样式表。`path` 决定是否启用 `//` 行注释（仅预处理器）。
-pub fn parse(path: &str, source: &str) -> Result<WxssDoc, String> {
-    if !has_token(source) {
-        return Err("样式文件不含任何有效内容".to_string());
+/// 解析失败的原因。区分「空文件」（跳过是正常的）与「语法错误」（必须报出来，
+/// 否则整份样式会在没有任何提示的情况下不被检查）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ParseError {
+    /// 不含任何有效内容：空文件或只有注释。
+    Empty,
+    /// 语法错误，整份文件无法建立结构。
+    Syntax(String),
+}
+
+impl std::error::Error for ParseError {}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Empty => f.write_str("样式文件不含任何有效内容"),
+            Self::Syntax(detail) => f.write_str(detail),
+        }
+    }
+}
+
+/// 解析样式表。`path` 决定语法与 `//` 行注释的判定（仅预处理器）。
+pub fn parse(path: &str, source: &str) -> Result<WxssDoc, ParseError> {
+    let depth = nesting_depth(source);
+    if depth > MAX_DEPTH {
+        return Err(ParseError::Syntax(format!(
+            "样式嵌套超过 {MAX_DEPTH} 层，已跳过"
+        )));
+    }
+    // oxc 是递归下降解析器，深嵌套时递归帧很大（调试构建下 64 层能吃掉几 MB 栈），
+    // 超过安全阈值就换到 16 MiB 栈的线程里跑，不拖垮调用方的栈。
+    if depth > INLINE_DEPTH {
+        let (path, source) = (path.to_string(), source.to_string());
+        return std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(move || parse_document(&path, &source))
+            .map_err(|e| ParseError::Syntax(format!("无法创建解析线程：{e}")))?
+            .join()
+            .map_err(|_| ParseError::Syntax("样式解析线程异常退出".to_string()))?;
+    }
+    parse_document(path, source)
+}
+
+fn parse_document(path: &str, source: &str) -> Result<WxssDoc, ParseError> {
+    let allocator = Allocator::default();
+    let mut parser = ParserBuilder::new(&allocator, source)
+        .syntax(syntax_for(path))
+        .comments()
+        .build();
+    // lint 场景下局部坏块不该让整文件失效：oxc 自带错误恢复，优先用 `Ok` 的结果，
+    // 只有它彻底放弃解析时才把错误抛给调用方。
+    let ast = parser
+        .parse::<Stylesheet>()
+        .map_err(|e| ParseError::Syntax(format!("{e:?}")))?;
+    if !has_content(source, parser.comments()) {
+        return Err(ParseError::Empty);
     }
 
-    let mut scanner = Scanner {
-        src: source,
-        pos: 0,
-        line_comments: is_preprocessor(path),
-    };
     let mut out = Collector::default();
-    scanner.body(&mut out, &[], &[], false, 0);
+    walk(&mut out, &ast.statements, source, &[], &[], false, 0);
 
     Ok(WxssDoc {
         path: path.to_string(),
@@ -144,23 +199,73 @@ pub fn parse(path: &str, source: &str) -> Result<WxssDoc, String> {
     })
 }
 
-fn is_preprocessor(path: &str) -> bool {
+/// 后缀 → 语法。`.wxss` 等其余后缀按纯 CSS 处理。
+fn syntax_for(path: &str) -> Syntax {
     let lower = path.to_ascii_lowercase();
-    lower.ends_with(".less") || lower.ends_with(".scss") || lower.ends_with(".sass")
+    if lower.ends_with(".less") {
+        Syntax::Less
+    } else if lower.ends_with(".scss") {
+        Syntax::Scss
+    } else if lower.ends_with(".sass") {
+        Syntax::Sass
+    } else {
+        Syntax::Css
+    }
 }
 
-/// 文件里是否存在非空白、非注释的内容。
-fn has_token(source: &str) -> bool {
-    let mut scanner = Scanner {
-        src: source,
-        pos: 0,
-        line_comments: true,
-    };
-    scanner.skip_trivia();
-    scanner.pos < source.len()
+/// 去掉注释后是否还剩内容。注释由解析器收集：`.wxss`（CSS）里 `//` 不是注释。
+fn has_content(source: &str, comments: &[Comment<'_>]) -> bool {
+    let mut pos = 0;
+    for comment in comments {
+        let start = comment.span.start.max(pos);
+        if !source[pos..start].trim().is_empty() {
+            return true;
+        }
+        pos = comment.span.end.max(start).min(source.len());
+    }
+    !source[pos..].trim().is_empty()
 }
 
 const MAX_DEPTH: usize = 64;
+
+/// 不超过这个层数就在当前线程里解析（普通样式表远远到不了）。
+const INLINE_DEPTH: usize = 16;
+
+/// 花括号嵌套的最大层数。只做粗测（跳过字符串与块注释），
+/// 宁可误拒极端的合法输入，也不让解析器打爆栈。
+fn nesting_depth(source: &str) -> usize {
+    let bytes = source.as_bytes();
+    let mut depth = 0usize;
+    let mut max = 0usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            quote @ (b'"' | b'\'') => {
+                i += 1;
+                while i < bytes.len() && bytes[i] != quote {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                i = source[i + 2..]
+                    .find("*/")
+                    .map_or(bytes.len(), |end| i + end + 4);
+                continue;
+            }
+            b'{' => {
+                depth += 1;
+                max = max.max(depth);
+                if depth > MAX_DEPTH {
+                    return depth;
+                }
+            }
+            b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        i += 1;
+    }
+    max
+}
 
 /// 块内仍然是「样式规则列表」的 at-rule：父选择器上下文继续有效。
 const RULE_CONTAINERS: [&str; 7] = [
@@ -177,8 +282,8 @@ const RULE_CONTAINERS: [&str; 7] = [
 ///
 /// 顶层 `@mixin` 的函数体没有选择器，于是产出一条无选择器的规则——属性/值类规则
 /// 照样能检查到 mixin 里的声明。
-const TRANSPARENT: [&str; 8] = [
-    "mixin", "function", "if", "else", "each", "for", "while", "include",
+const TRANSPARENT: [&str; 10] = [
+    "mixin", "function", "if", "else", "each", "for", "while", "include", "use", "forward",
 ];
 
 #[derive(Default)]
@@ -187,367 +292,224 @@ struct Collector {
     imports: Vec<WxssImport>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Stop {
-    Open,
-    Semi,
-    Close,
-    Eof,
-}
-
-struct Scanner<'a> {
-    src: &'a str,
-    pos: usize,
-    /// `.less` / `.scss` 里 `//` 是行注释；`.wxss` 里不是。
-    line_comments: bool,
-}
-
-fn is_ident_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'-' || b == b'_'
-}
-
-/// less 的混入定义：`.mixin(...)` / `#ns(...)`——括号紧跟名字，和 `:not(...)` 不同。
-fn is_mixin_definition(raw: &str) -> bool {
-    let mut chars = raw.chars();
-    if !matches!(chars.next(), Some('.') | Some('#')) {
-        return false;
+/// 按源码顺序遍历一层语句：声明归到当前选择器，嵌套规则递归摊平。
+fn walk<'a>(
+    out: &mut Collector,
+    statements: &[Statement<'a>],
+    source: &str,
+    parents: &[WxssSelector],
+    at: &[WxssAtRule],
+    emit: bool,
+    depth: usize,
+) {
+    if depth > MAX_DEPTH {
+        return;
     }
-    let rest = &raw[1..];
-    let name_len = rest
-        .char_indices()
-        .take_while(|(_, ch)| ch.is_alphanumeric() || *ch == '-' || *ch == '_')
-        .map(|(i, ch)| i + ch.len_utf8())
-        .last()
-        .unwrap_or(0);
-    name_len > 0 && rest[name_len..].starts_with('(')
-}
-
-impl<'a> Scanner<'a> {
-    fn body(
-        &mut self,
-        out: &mut Collector,
-        parents: &[WxssSelector],
-        at: &[WxssAtRule],
-        emit: bool,
-        depth: usize,
-    ) {
-        if depth > MAX_DEPTH {
-            return;
-        }
-        let mut declarations = Vec::new();
-
-        loop {
-            let (start, end, stop) = self.scan();
-            match stop {
-                Stop::Semi => {
-                    // 消费 `;`：空语句（`;;`）也要前进
-                    self.pos += 1;
-                    let raw = self.src[start..end].trim();
-                    // at-rule 语句优先：`@include flex($a: 1)` 里的冒号不是声明分隔符
-                    if raw.starts_with('@') {
-                        let (name, rest) = at_rule_head(raw);
-                        if name == "import"
-                            && let Some((target, offset)) = import_target(&rest, start)
-                        {
-                            out.imports.push(WxssImport { target, offset });
-                        }
-                    } else if let Some(decl) = declaration(raw, start) {
-                        declarations.push(decl);
-                    }
-                }
-                Stop::Open => {
-                    let raw = self.src[start..end].trim();
-                    if raw.starts_with('@') {
-                        // at-rule 自己决定是吃掉块还是跳过（`{` 由它消费）
-                        self.at_rule(out, parents, at, depth, raw, start);
-                    } else if is_mixin_definition(raw) {
-                        // less 的 `.mixin(@x) { … }` 是函数体，不是选择器
-                        self.pos += 1;
-                        self.body(out, parents, at, true, depth + 1);
-                    } else {
-                        self.pos += 1;
-                        let selectors = self.selectors(raw, start, parents);
-                        self.body(out, &selectors, at, true, depth + 1);
-                    }
-                }
-                // `}` / EOF 前允许省掉最后一个分号（SASS 常见写法）：那份待处理文本
-                // 仍是一条声明。
-                Stop::Close | Stop::Eof => {
-                    let raw = self.src[start..end].trim();
-                    if !raw.is_empty()
-                        && !raw.starts_with('@')
-                        && let Some(decl) = declaration(raw, start)
-                    {
-                        declarations.push(decl);
-                    }
-                    if stop == Stop::Close {
-                        self.pos += 1;
-                    }
-                    break;
+    let mut declarations = Vec::new();
+    for statement in statements {
+        match statement {
+            Statement::Declaration(decl) => {
+                if let Some(decl) = declaration(decl, source) {
+                    declarations.push(decl);
                 }
             }
+            Statement::QualifiedRule(rule) => {
+                let selectors = selectors(&rule.selector, source, parents);
+                walk(
+                    out,
+                    &rule.block.statements,
+                    source,
+                    &selectors,
+                    at,
+                    true,
+                    depth + 1,
+                );
+            }
+            Statement::LessConditionalQualifiedRule(rule) => {
+                let selectors = selectors(&rule.selector, source, parents);
+                walk(
+                    out,
+                    &rule.block.statements,
+                    source,
+                    &selectors,
+                    at,
+                    true,
+                    depth + 1,
+                );
+            }
+            // less 的 `.mixin(@x) { … }` 是函数体，不是选择器。
+            Statement::LessMixinDefinition(def) => {
+                walk(
+                    out,
+                    &def.block.statements,
+                    source,
+                    parents,
+                    at,
+                    true,
+                    depth + 1,
+                );
+            }
+            // Scss 的 `@if / @else if / @else` 各是一个块，都按透明容器摊平。
+            Statement::SassIfAtRule(rule) => {
+                walk(
+                    out,
+                    &rule.if_clause.block.statements,
+                    source,
+                    parents,
+                    at,
+                    true,
+                    depth + 1,
+                );
+                for clause in &rule.else_if_clauses {
+                    walk(
+                        out,
+                        &clause.block.statements,
+                        source,
+                        parents,
+                        at,
+                        true,
+                        depth + 1,
+                    );
+                }
+                if let Some(block) = &rule.else_clause {
+                    walk(out, &block.statements, source, parents, at, true, depth + 1);
+                }
+            }
+            Statement::AtRule(rule) => at_rule(out, rule, source, parents, at, depth),
+            // 变量、混入调用、extend、错误恢复节点等：不是样式规则，忽略。
+            _ => {}
         }
+    }
 
-        // 没有声明就不留规则：空规则对任何规则层判断都没有意义。
-        // 无选择器但含声明的块是顶层 `@mixin` / `@if` 的函数体。
-        if emit && !declarations.is_empty() {
-            out.rules.push(WxssRule {
-                selectors: parents.to_vec(),
-                declarations,
-                at_rules: at.to_vec(),
+    // 没有声明就不留规则：空规则对任何规则层判断都没有意义。
+    // 无选择器但含声明的块是顶层 `@mixin` / `@if` 的函数体。
+    if emit && !declarations.is_empty() {
+        out.rules.push(WxssRule {
+            selectors: parents.to_vec(),
+            declarations,
+            at_rules: at.to_vec(),
+        });
+    }
+}
+
+fn at_rule(
+    out: &mut Collector,
+    rule: &AtRule<'_>,
+    source: &str,
+    parents: &[WxssSelector],
+    at: &[WxssAtRule],
+    depth: usize,
+) {
+    let name = rule.name.name.to_ascii_lowercase();
+    if name == "import"
+        && let Some((prelude, offset)) = prelude(rule, source)
+        && let Some((target, offset)) = import_target(prelude, offset)
+    {
+        out.imports.push(WxssImport { target, offset });
+    }
+    let Some(block) = &rule.block else {
+        return;
+    };
+    if RULE_CONTAINERS.contains(&name.as_str()) {
+        let mut nested = at.to_vec();
+        let (text, offset) = prelude(rule, source).unwrap_or(("", rule.name.span.end));
+        nested.push(WxssAtRule {
+            name,
+            prelude: text.to_string(),
+            offset,
+        });
+        walk(
+            out,
+            &block.statements,
+            source,
+            parents,
+            &nested,
+            !parents.is_empty(),
+            depth + 1,
+        );
+    } else if TRANSPARENT.contains(&name.as_str()) {
+        walk(out, &block.statements, source, parents, at, true, depth + 1);
+    }
+    // `@keyframes` / `@font-face` / `@page` 的块内容不是元素样式，整块跳过。
+}
+
+/// at-rule 的 prelude 原文（已 trim）与起点偏移；没有 prelude 时返回 `None`。
+fn prelude<'s>(rule: &AtRule<'_>, source: &'s str) -> Option<(&'s str, usize)> {
+    let span = rule.prelude.as_ref()?.span();
+    let raw = source.get(span.start..span.end)?;
+    Some((
+        raw.trim(),
+        span.start + (raw.len() - raw.trim_start().len()),
+    ))
+}
+
+/// 组合父选择器与子选择器：`&` 原地替换，否则用后代组合器拼接。
+fn selectors(list: &SelectorList<'_>, source: &str, parents: &[WxssSelector]) -> Vec<WxssSelector> {
+    // 每个 `ComplexSelector.span` 就是一个逗号分隔后的选择器；直接切原文，
+    // 保留 `.a>.b`、`#{…}` 这些既有写法。
+    let children: Vec<WxssSelector> = list
+        .selectors
+        .iter()
+        .filter_map(|complex| {
+            let raw = source.get(complex.span.start..complex.span.end)?;
+            let text = raw.trim();
+            (!text.is_empty()).then(|| WxssSelector {
+                text: text.to_string(),
+                offset: complex.span.start + (raw.len() - raw.trim_start().len()),
+            })
+        })
+        .collect();
+    if parents.is_empty() {
+        return children;
+    }
+    let mut out = Vec::new();
+    for child in &children {
+        for parent in parents {
+            let text = if child.text.contains('&') {
+                child.text.replace('&', &parent.text)
+            } else {
+                format!("{} {}", parent.text, child.text)
+            };
+            out.push(WxssSelector {
+                text,
+                offset: child.offset,
             });
         }
     }
-
-    fn at_rule(
-        &mut self,
-        out: &mut Collector,
-        parents: &[WxssSelector],
-        at: &[WxssAtRule],
-        depth: usize,
-        raw: &str,
-        start: usize,
-    ) {
-        let (name, rest) = at_rule_head(raw);
-        if RULE_CONTAINERS.contains(&name.as_str()) {
-            let mut nested = at.to_vec();
-            let prelude_offset = start + raw.find(&rest).unwrap_or(1);
-            nested.push(WxssAtRule {
-                name,
-                prelude: rest,
-                offset: prelude_offset,
-            });
-            self.pos += 1;
-            self.body(out, parents, &nested, !parents.is_empty(), depth + 1);
-        } else if TRANSPARENT.contains(&name.as_str()) {
-            self.pos += 1;
-            self.body(out, parents, at, true, depth + 1);
-        } else {
-            // `@keyframes` / `@font-face` / `@page` 的块内容不是元素样式，整块跳过。
-            self.skip_block();
-        }
-    }
-
-    /// 组合父选择器与子选择器：`&` 原地替换，否则用后代组合器拼接。
-    fn selectors(&self, raw: &str, start: usize, parents: &[WxssSelector]) -> Vec<WxssSelector> {
-        let lead = raw.len() - raw.trim_start().len();
-        let children = split_selectors(raw, start + lead);
-        if parents.is_empty() {
-            return children;
-        }
-        let mut out = Vec::new();
-        for child in &children {
-            for parent in parents {
-                let text = if child.text.contains('&') {
-                    child.text.replace('&', &parent.text)
-                } else {
-                    format!("{} {}", parent.text, child.text)
-                };
-                out.push(WxssSelector {
-                    text,
-                    offset: child.offset,
-                });
-            }
-        }
-        out
-    }
-
-    /// 扫描到下一个顶层 `{` / `;` / `}`，返回 `(起, 止, 终止符)`；终止符本身未消费。
-    fn scan(&mut self) -> (usize, usize, Stop) {
-        self.skip_trivia();
-        let start = self.pos;
-        let bytes = self.src.as_bytes();
-        let mut depth = 0i32;
-        let mut quote: Option<u8> = None;
-        let mut escaped = false;
-
-        while self.pos < bytes.len() {
-            let b = bytes[self.pos];
-            if let Some(q) = quote {
-                if escaped {
-                    escaped = false;
-                } else if b == b'\\' {
-                    escaped = true;
-                } else if b == q {
-                    quote = None;
-                }
-                self.pos += 1;
-                continue;
-            }
-            match b {
-                b'"' | b'\'' => {
-                    quote = Some(b);
-                    self.pos += 1;
-                }
-                b'/' if bytes.get(self.pos + 1) == Some(&b'*') => {
-                    self.skip_comment(false);
-                }
-                b'/' if self.line_comments && bytes.get(self.pos + 1) == Some(&b'/') => {
-                    self.skip_comment(true);
-                }
-                b'u' | b'U' if self.at_url() => {
-                    // `url(http://…)`：整体当不透明内容，里面的 `//` 不是注释
-                    self.skip_url();
-                }
-                b'#' | b'@' if bytes.get(self.pos + 1) == Some(&b'{') => {
-                    // 插值 `#{…}` / `@{…}`：整体跳过，不做选择器切分
-                    self.pos += 2;
-                    while self.pos < bytes.len() && bytes[self.pos] != b'}' {
-                        self.pos += 1;
-                    }
-                    if self.pos < bytes.len() {
-                        self.pos += 1;
-                    }
-                }
-                b'(' | b'[' => {
-                    depth += 1;
-                    self.pos += 1;
-                }
-                b')' | b']' => {
-                    depth -= 1;
-                    self.pos += 1;
-                }
-                b'{' if depth <= 0 => return (start, self.pos, Stop::Open),
-                b';' if depth <= 0 => return (start, self.pos, Stop::Semi),
-                b'}' if depth <= 0 => return (start, self.pos, Stop::Close),
-                _ => self.pos += 1,
-            }
-        }
-        (start, bytes.len(), Stop::Eof)
-    }
-
-    /// 消费当前块的 `{ … }`（含括号本身）。
-    fn skip_block(&mut self) {
-        // 调用时 `{` 尚未消费。
-        if self.src.as_bytes().get(self.pos) == Some(&b'{') {
-            self.pos += 1;
-        } else {
-            return;
-        }
-        let mut depth = 1i32;
-        let bytes = self.src.as_bytes();
-        let mut quote: Option<u8> = None;
-        let mut escaped = false;
-        while self.pos < bytes.len() {
-            let b = bytes[self.pos];
-            if let Some(q) = quote {
-                if escaped {
-                    escaped = false;
-                } else if b == b'\\' {
-                    escaped = true;
-                } else if b == q {
-                    quote = None;
-                }
-                self.pos += 1;
-                continue;
-            }
-            match b {
-                b'"' | b'\'' => quote = Some(b),
-                b'/' if bytes.get(self.pos + 1) == Some(&b'*') => {
-                    self.skip_comment(false);
-                    continue;
-                }
-                b'/' if self.line_comments && bytes.get(self.pos + 1) == Some(&b'/') => {
-                    self.skip_comment(true);
-                    continue;
-                }
-                b'u' | b'U' if self.at_url() => {
-                    self.skip_url();
-                    continue;
-                }
-                b'{' => depth += 1,
-                b'}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        self.pos += 1;
-                        return;
-                    }
-                }
-                _ => {}
-            }
-            self.pos += 1;
-        }
-    }
-
-    /// 当前位置是否是 `url(` 的起点（ASCII 大小写不敏感）。
-    fn at_url(&self) -> bool {
-        let rest = &self.src[self.pos..];
-        rest.len() >= 4
-            && rest[..4].eq_ignore_ascii_case("url(")
-            && (self.pos == 0 || !is_ident_byte(self.src.as_bytes()[self.pos - 1]))
-    }
-
-    /// 跳过 `url(` 到配对的 `)`（含）。url 里不解析注释与括号嵌套之外的东西。
-    fn skip_url(&mut self) {
-        self.pos += 4;
-        let bytes = self.src.as_bytes();
-        let mut quote: Option<u8> = None;
-        let mut escaped = false;
-        while self.pos < bytes.len() {
-            let b = bytes[self.pos];
-            if let Some(q) = quote {
-                if escaped {
-                    escaped = false;
-                } else if b == b'\\' {
-                    escaped = true;
-                } else if b == q {
-                    quote = None;
-                }
-            } else if b == b'"' || b == b'\'' {
-                quote = Some(b);
-            } else if b == b')' {
-                self.pos += 1;
-                return;
-            }
-            self.pos += 1;
-        }
-    }
-
-    fn skip_comment(&mut self, line: bool) {
-        let rest = &self.src[self.pos..];
-        let end = if line {
-            rest.find('\n').unwrap_or(rest.len())
-        } else {
-            rest[2..].find("*/").map(|i| i + 4).unwrap_or(rest.len())
-        };
-        self.pos += end;
-    }
-
-    fn skip_trivia(&mut self) {
-        loop {
-            while let Some(ch) = self.src[self.pos..].chars().next() {
-                if !ch.is_whitespace() {
-                    break;
-                }
-                self.pos += ch.len_utf8();
-            }
-            let rest = &self.src[self.pos..];
-            if rest.starts_with("/*") {
-                self.skip_comment(false);
-                continue;
-            }
-            if self.line_comments && rest.starts_with("//") {
-                self.skip_comment(true);
-                continue;
-            }
-            return;
-        }
-    }
+    out
 }
 
-/// 拆出 at-rule 名（小写，不含 `@`）与 `@` 之后的原文。
-fn at_rule_head(raw: &str) -> (String, String) {
-    let rest = raw.strip_prefix('@').unwrap_or(raw);
-    let end = rest
-        .char_indices()
-        .take_while(|(_, ch)| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
-        .map(|(i, ch)| i + ch.len_utf8())
-        .last()
-        .unwrap_or(0);
-    (
-        rest[..end].to_ascii_lowercase(),
-        rest[end..].trim().to_string(),
-    )
+/// 一条声明。名字与值都从源码切片取，避开 `ComponentValue` 的几十个变体。
+fn declaration(decl: &Declaration<'_>, source: &str) -> Option<WxssDeclaration> {
+    let name_raw = source.get(decl.span.start..decl.colon_span.start)?;
+    let name = name_raw.trim();
+    // 预处理器变量定义（`$gap: 4px;`）不是声明
+    if name.is_empty() || name.starts_with('$') {
+        return None;
+    }
+    // 只有紧贴的 `!important` 才算标记：`! important`（中间带空白）旧实现不识别，
+    // 保留原文交给规则层，而 oxc 会把两者都认成 ImportantAnnotation。
+    let important = decl
+        .important
+        .as_ref()
+        .filter(|annotation| is_important(&annotation.span, source));
+    let value_end = important.map_or(decl.span.end, |annotation| annotation.span.start);
+    let raw_value = source.get(decl.colon_span.end..value_end)?;
+    let lead = raw_value.len() - raw_value.trim_start().len();
+    Some(WxssDeclaration {
+        name: name.to_string(),
+        value: raw_value.trim().to_string(),
+        important: important.is_some(),
+        offset: decl.span.start + (name_raw.len() - name_raw.trim_start().len()),
+        value_offset: decl.colon_span.end + lead,
+    })
+}
+
+/// 源码里的 `!important` 是否紧贴（`! important` 不算）。
+fn is_important(span: &Span, source: &str) -> bool {
+    source
+        .get(span.start..span.end)
+        .is_some_and(|text| text.eq_ignore_ascii_case("!important"))
 }
 
 /// 从 `@import` 的 prelude 里取目标路径，返回 `(target, 源文件偏移)`。
@@ -580,142 +542,6 @@ fn import_target(prelude: &str, base: usize) -> Option<(String, usize)> {
         target,
         base + prelude.find(after_options).unwrap_or(0) + lead,
     ))
-}
-
-/// 按顶层逗号切分选择器。括号 / 方括号 / 字符串内的逗号不切。
-fn split_selectors(prelude: &str, base: usize) -> Vec<WxssSelector> {
-    let mut out = Vec::new();
-    let mut start = 0usize;
-    let mut depth = 0i32;
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-
-    for (i, ch) in prelude.char_indices() {
-        if let Some(q) = quote {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == q {
-                quote = None;
-            }
-            continue;
-        }
-        match ch {
-            '"' | '\'' => quote = Some(ch),
-            '(' | '[' => depth += 1,
-            ')' | ']' => depth -= 1,
-            ',' if depth == 0 => {
-                push_selector(&mut out, &prelude[start..i], base + start);
-                start = i + ch.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    push_selector(&mut out, &prelude[start..], base + start);
-    out
-}
-
-fn push_selector(out: &mut Vec<WxssSelector>, raw: &str, base: usize) {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-    let lead = raw.len() - raw.trim_start().len();
-    out.push(WxssSelector {
-        text: trimmed.to_string(),
-        offset: base + lead,
-    });
-}
-
-/// 一条声明：`name: value`。没有顶层冒号（比如坏写法的 `color red`）返回 `None`。
-fn declaration(raw: &str, base: usize) -> Option<WxssDeclaration> {
-    let colon = top_level_colon(raw)?;
-    let name_raw = &raw[..colon];
-    let name = name_raw.trim();
-    // 预处理器变量定义（`$gap: 4px;`）不是声明
-    if name.is_empty() || name.starts_with('$') || name.contains(['{', '}']) {
-        return None;
-    }
-    let name_lead = name_raw.len() - name_raw.trim_start().len();
-    let (value, value_offset, important) = normalize_value(&raw[colon + 1..], base + colon + 1);
-    Some(WxssDeclaration {
-        name: name.to_string(),
-        value,
-        important,
-        offset: base + name_lead,
-        value_offset,
-    })
-}
-
-/// 顶层冒号：跳过字符串、括号、方括号内的冒号（`url(http://…)`、`[data-x="a:b"]`）。
-fn top_level_colon(raw: &str) -> Option<usize> {
-    let mut depth = 0i32;
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-    for (i, ch) in raw.char_indices() {
-        if let Some(q) = quote {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == q {
-                quote = None;
-            }
-            continue;
-        }
-        match ch {
-            '"' | '\'' => quote = Some(ch),
-            '(' | '[' => depth += 1,
-            ')' | ']' => depth -= 1,
-            ':' if depth <= 0 => return Some(i),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// 去掉首尾空白与结尾的 `!important`，返回 `(值, 值起点, 是否 important)`。
-fn normalize_value(raw: &str, base: usize) -> (String, usize, bool) {
-    let lead = raw.len() - raw.trim_start().len();
-    let value = raw.trim();
-    match strip_important(value) {
-        Some(head) => (head.to_string(), base + lead, true),
-        None => (value.to_string(), base + lead, false),
-    }
-}
-
-/// 剥离结尾的 `!important`（ASCII 大小写不敏感）。字符串里的同名字样不算。
-fn strip_important(value: &str) -> Option<&str> {
-    const FLAG: &str = "!important";
-    let idx = value.len().checked_sub(FLAG.len())?;
-    if !value.is_char_boundary(idx)
-        || !value[idx..].eq_ignore_ascii_case(FLAG)
-        || inside_string(&value[..idx])
-    {
-        return None;
-    }
-    Some(value[..idx].trim_end())
-}
-
-/// 扫描到末尾时是否仍处于引号内。
-fn inside_string(text: &str) -> bool {
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-    for ch in text.chars() {
-        if let Some(q) = quote {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == q {
-                quote = None;
-            }
-        } else if ch == '"' || ch == '\'' {
-            quote = Some(ch);
-        }
-    }
-    quote.is_some()
 }
 
 #[cfg(test)]
@@ -809,11 +635,19 @@ mod tests {
 
     #[test]
     fn bad_blocks_are_dropped_not_fatal() {
-        // 坏声明被丢弃，同文件后续规则仍要解析出来；没声明的规则不留。
-        let doc = parse("a.wxss", ".a { color red; ; } .b { width: 1px; }").unwrap();
+        // 空语句块被丢弃，同文件后续规则仍要解析出来；没声明的规则不留。
+        let doc = parse("a.wxss", ".a { ; } .b { width: 1px; }").unwrap();
         assert_eq!(doc.rules.len(), 1);
         assert_eq!(doc.rules[0].selectors[0].text, ".b");
         assert_eq!(doc.rules[0].declarations[0].value, "1px");
+
+        // 缺少冒号的声明（`color red`）在 CSS 语法下是硬错误，oxc 不做块级恢复：
+        // 整份解析失败，因此整文件被拒绝。旧的自写扫描器只丢这一块。
+        // 这条失败必须冒泡成「文件未被检查」的告警，不能静默。
+        assert!(matches!(
+            parse("a.wxss", ".a { color red; ; } .b { width: 1px; }"),
+            Err(ParseError::Syntax(_))
+        ));
     }
 
     // ---- 预处理器：嵌套摊平 ----
@@ -920,9 +754,9 @@ mod tests {
     fn line_comments_only_apply_to_preprocessor_files() {
         let scss = parse("a.scss", "// 注释\n.a { color: red; }").unwrap();
         assert_eq!(scss.rules.len(), 1);
-        // .wxss 里 `//` 不是注释：原样落进选择器文本（规则层会跳过解析不了的选择器）
-        let wxss = parse("a.wxss", "// x\n.b { color: red; }").unwrap();
-        assert!(wxss.rules[0].selectors[0].text.contains("//"));
+        // .wxss（CSS 语法）里 `//` 不是注释，且 `//` 不能当选择器开头：oxc 直接报错。
+        // 新行为是整文件被拒绝（旧扫描器会把 `// x` 当选择器原文保留）。
+        assert!(parse("a.wxss", "// x\n.b { color: red; }").is_err());
     }
 
     #[test]
@@ -962,8 +796,17 @@ mod tests {
 
     #[test]
     fn empty_stylesheet_is_an_error() {
-        assert!(parse("a.wxss", "").is_err());
-        assert!(parse("a.wxss", "  \n\t ").is_err());
-        assert!(parse("a.wxss", "/* only a comment */").is_err());
+        // 空文件与「只有注释」是正常情况：跳过即可，不该产生告警。
+        for source in ["", "  \n\t ", "/* only a comment */"] {
+            assert_eq!(parse("a.wxss", source).unwrap_err(), ParseError::Empty);
+        }
+    }
+
+    #[test]
+    fn excessive_nesting_is_rejected_instead_of_overflowing() {
+        // oxc 是递归下降解析器，极深嵌套会打爆栈；解析前先守住深度上限。
+        let deep = |n: usize| format!("{}{}{}", ".a{".repeat(n), "color:red;", "}".repeat(n));
+        assert!(parse("a.scss", &deep(64)).is_ok());
+        assert!(parse("a.scss", &deep(65)).is_err());
     }
 }

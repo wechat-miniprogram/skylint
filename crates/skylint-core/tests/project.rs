@@ -164,3 +164,29 @@ fn broken_page_json_becomes_a_warning() {
     assert_eq!(project.warnings.len(), 1);
     assert_eq!(project.warnings[0].severity, skylint_core::Severity::Error);
 }
+
+#[test]
+fn unparsable_stylesheet_is_reported_not_silently_skipped() {
+    let f = standard_project("unparsed-style");
+    // 这个工程开了 less 插件，样式源是 index.less（wxss 不参与）
+    f.write("miniprogram/pages/index/index.less", ".a { color red; }");
+    let project = Project::load(f.path()).unwrap();
+    let reported: Vec<_> = project
+        .warnings
+        .iter()
+        .filter(|w| w.rule == "skylint/unparsed-style")
+        .collect();
+    assert_eq!(reported.len(), 1, "{:?}", project.warnings);
+    assert_eq!(reported[0].path, "pages/index/index.less");
+
+    // 空文件是正常情况，不该产生任何告警
+    let g = standard_project("empty-style");
+    g.write("miniprogram/pages/index/index.wxss", "/* nothing */");
+    let project = Project::load(g.path()).unwrap();
+    assert!(
+        project
+            .warnings
+            .iter()
+            .all(|w| w.rule != "skylint/unparsed-style")
+    );
+}

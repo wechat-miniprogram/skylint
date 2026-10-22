@@ -18,7 +18,7 @@ use compiler_graph::{AppConf, ResolveExtConf, Resolver, is_skyline_page, resolve
 use serde_json::{Map, Value};
 
 use crate::diag::from_compiler_diag;
-use crate::input::wxss::{self, WxssDoc};
+use crate::input::wxss::{self, ParseError, WxssDoc};
 use crate::{Diagnostic, Severity};
 
 /// 一个编译单元（页面或自定义组件）的四件套，值为项目相对 posix 路径。
@@ -157,7 +157,7 @@ impl Project {
             })
             .collect();
 
-        let styles = collect_styles(&root, &miniprogram_root, &pages, &components);
+        let styles = collect_styles(&root, &miniprogram_root, &pages, &components, &mut warnings);
 
         Ok(Self {
             root,
@@ -377,6 +377,7 @@ fn collect_styles(
     miniprogram_root: &str,
     pages: &[PageUnit],
     components: &[ComponentUnit],
+    warnings: &mut Vec<Diagnostic>,
 ) -> Vec<StyleSheet> {
     let mut scopes: BTreeMap<String, Vec<Scope>> = BTreeMap::new();
     let mut docs: BTreeMap<String, WxssDoc> = BTreeMap::new();
@@ -412,8 +413,25 @@ fn collect_styles(
         let Ok(source) = std::fs::read_to_string(&abs) else {
             continue;
         };
-        let Ok(doc) = wxss::parse(&path, &source) else {
-            continue;
+        let doc = match wxss::parse(&path, &source) {
+            Ok(doc) => doc,
+            // 空文件不算问题；解析不了的必须说出来——否则这份样式（以及它的
+            // `@import` 子图）会在没有任何提示的情况下不被检查。
+            Err(ParseError::Empty) => continue,
+            Err(ParseError::Syntax(detail)) => {
+                warnings.push(
+                    Diagnostic::new(
+                        "skylint/unparsed-style",
+                        Severity::Warning,
+                        format!("样式文件无法解析，其中的规则未做任何检查：{detail}"),
+                        path.clone(),
+                        1,
+                        1,
+                    )
+                    .help("修正语法错误后重新运行；这份文件的 @import 也不会被展开"),
+                );
+                continue;
+            }
         };
         // WXSS 的 @import 只认相对路径与根路径（`/a.wxss`）；.less/.scss 的变量式导入
         // 在这里解析不到，跳过即可——它们本来也不在 wxss 图里。

@@ -77,7 +77,8 @@ app 级 `"renderer": "webview"`、页面没表态的不跳——那只是「还�
 
 ## 预处理器（`.less` / `.scss`）
 
-三种后缀走同一个解析器，`.wxss` 之外的文件不再被跳过。预处理器差异只体现在把嵌套摊平：
+词法/语法由 [`oxc-css-parser`](https://crates.io/crates/oxc-css-parser) 负责，本工具只做
+「把嵌套摊平成规则」，`.wxss` 之外的文件不再被跳过。预处理器差异只体现在摊平：
 
 | 写法 | 处理 |
 |---|---|
@@ -85,7 +86,7 @@ app 级 `"renderer": "webview"`、页面没表态的不跳——那只是「还�
 | `.a { &:hover { … } }`、`.block { &-title { … } }` | `&` 原地替换 → `.a:hover`、`.block-title` |
 | `.a { @media … { … } }` | 选择器上下文保留，声明归属 `.a` |
 | `@mixin` / `@if` / `@include` / `@each` | 透明块，声明记到当前选择器；顶层 mixin 函数体没有选择器 |
-| `//` 行注释 | 仅 `.less` / `.scss` 视为注释（`.wxss` 里不是） |
+| `//` 行注释 | 仅 `.less` / `.scss` 视为注释（`.wxss` 里不是，一份含 `//` 的 `.wxss` 会整份解析失败并报 `skylint/unparsed-style` 告警） |
 | `.mixin(@x) { … }` | 识别为混入定义，不当选择器 |
 | `$var` / `@var` / `#{…}` | 原样保留，值类规则看到变量就跳过 |
 

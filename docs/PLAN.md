@@ -187,17 +187,33 @@ businessview 82 scss / 13 wxss）。原先用 `cssparser`，它对嵌套不展�
 预处理器语法冲突：SASS 声明可以不带分号、LESS 用 `//` 注释，`cssparser` 遇到就整块丢弃，
 再叠加不展开嵌套——两件事都必须解决才能用。
 
-改成自写扫描器（`input/wxss.rs`，替换 `cssparser`，依赖减一）：同一套代码吃 `.wxss` /
-`.less` / `.scss`，差异只在「怎么摊平嵌套」——`&` 原地替换、后代组合器拼接、
-`@media` 保留父选择器上下文、`@mixin`/`@if` 透明、`.mixin(@x)` 识别为函数体、
-`#{…}`/`@{…}` 插值整体跳过。**不做**变量求值/mixin 展开/`@extend`/条件求值，代价是保守：
-值里含 `$`/`@`/`#{` 就不判；无选择器的函数体只做属性级检查（属性本身不支持与调用处无关），
-pairwise 规则（`display:flex` 配 `flex-direction`）跳过。
+后来先换成自写扫描器，再换成 `oxc-css-parser`（0.0.17，精确锁版本）的 AST——词法与语法
+交给成熟实现，`input/wxss.rs` 只保留「把嵌套摊平成规则」这一层。三套语法（CSS / SCSS /
+LESS，外加缩进语法）都是同一个 `Syntax` 枚举，差异只剩摊平——`&` 原地替换、后代组合器
+拼接、`@media` 保留父选择器上下文、`@mixin`/`@if` 透明、`.mixin(@x)` 识别为函数体、
+`#{…}`/`@{…}` 插值原样保留。**仍然不做**变量求值/mixin 展开/`@extend`/条件求值，代价是
+保守：值里含 `$`/`@`/`#{` 就不判；无选择器的函数体只做属性级检查，pairwise 规则
+（`display:flex` 配 `flex-direction`）跳过。实测只有 0.4% 的声明值含变量/插值。
+
+换 oxc 的依据是差分实验，不是「换个更正统的库」：拿 172 个真实预处理器文件
+（skit_1 67 less + novel 27 less + businessview 78 scss）逐条比较「声明起点 + 属性名」，
+自写扫描器与 oxc **170 个完全一致**，其余 2 个差异全落在 `@keyframes` 内部（按设计跳过）；
+再拿 grass 编译 businessview 的 39 个不含 `@import` 的 scss 与自写摊平结果对照，
+37 个逐条一致、2 个只差组合器两侧空格。这两个实验同时抓出了自写扫描器的两个静默漏判
+（见下）。
+
+解析失败现在会**冒出来**：`ParseError::Empty`（空文件/只有注释）静默跳过，
+`ParseError::Syntax` 报 `skylint/unparsed-style` 告警——否则一份语法坏掉的样式（以及它的
+`@import` 子图）会无声无息地不被检查。
 
 覆盖面变化（真实工程）：miniprogram-novel 0e/11w → 0e/95w，miniprogram-skit_1 0e/3w →
 1e/101w，businessview 50e/538w → 59e/766w。抽查确认新命中都是真的（`float`、
 `mask-position`、`filter: drop-shadow`、嵌套块里的 `display:flex` 缺方向），
 选择器摊平也正确（`.cnt .subscribe-list .subscribe-item:last-child`）。
+
+自写扫描器被换掉前修掉的两个静默漏判（都会导致整块声明凭空消失、不报任何错）：
+`url(https://…)` 里的 `//` 被当成 LESS 行注释（声明连同后续规则一起丢）；`}` 前省略
+最后一个分号（SASS 常见写法）时那份待处理文本被直接丢弃。修完 businessview 766w → 811w。
 
 顺带修掉一个预处理器独有的重复：`&:hover` 在裸块和 `@media` 块里各写一次时，摊平后是
 两条同选择器规则，选择器类规则会重复报同一条。`Report::new` 在排序后 `dedup`——全字段
