@@ -75,6 +75,7 @@ pub(crate) mod testutil {
 
     use crate::project::Project;
     use crate::rules::Rule;
+    use crate::fixture_root;
 
     pub(crate) struct Fixture {
         root: PathBuf,
@@ -82,8 +83,7 @@ pub(crate) mod testutil {
 
     impl Fixture {
         pub(crate) fn new(name: &str) -> Self {
-            let root =
-                std::env::temp_dir().join(format!("skylint-wxss-{name}-{}", std::process::id()));
+            let root = fixture_root("skylint-wxss", name);
             let _ = fs::remove_dir_all(&root);
             fs::create_dir_all(&root).unwrap();
             Self { root }

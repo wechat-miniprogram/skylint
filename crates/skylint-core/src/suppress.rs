@@ -81,8 +81,7 @@ mod tests {
 
     impl Fixture {
         fn new(name: &str) -> Self {
-            let root =
-                std::env::temp_dir().join(format!("skylint-sup-{name}-{}", std::process::id()));
+            let root = crate::fixture_root("skylint-sup", name);
             let _ = fs::remove_dir_all(&root);
             fs::create_dir_all(root.join("pages/a")).unwrap();
             fs::write(

@@ -89,6 +89,7 @@ pub(crate) mod testutil {
     use std::fs;
     use std::path::{Path, PathBuf};
 
+    use crate::fixture_root;
     use crate::project::Project;
     use crate::rules::Rule;
 
@@ -98,8 +99,7 @@ pub(crate) mod testutil {
 
     impl Fixture {
         pub(crate) fn new(name: &str) -> Self {
-            let root =
-                std::env::temp_dir().join(format!("skylint-wxml-{name}-{}", std::process::id()));
+            let root = fixture_root("skylint-wxml", name);
             let _ = fs::remove_dir_all(&root);
             fs::create_dir_all(&root).unwrap();
             Self { root }

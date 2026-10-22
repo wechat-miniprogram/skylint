@@ -12,7 +12,7 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Self {
-        let root = std::env::temp_dir().join(format!("skylint-{name}-{}", std::process::id()));
+        let root = fixture_root(name);
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         Self { root }
@@ -189,4 +189,10 @@ fn unparsable_stylesheet_is_reported_not_silently_skipped() {
             .iter()
             .all(|w| w.rule != "skylint/unparsed-style")
     );
+}
+
+fn fixture_root(name: &str) -> std::path::PathBuf {
+    let thread = std::thread::current();
+    let test = thread.name().unwrap_or("shared").replace("::", "-");
+    std::env::temp_dir().join(format!("skylint-{name}-{test}-{}", std::process::id()))
 }
