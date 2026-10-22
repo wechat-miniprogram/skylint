@@ -78,6 +78,13 @@ pub struct Project {
     pub app_json: Map<String, Value>,
     pub pages: Vec<PageUnit>,
     pub components: Vec<ComponentUnit>,
+    /// 单元 → 它**直接**引用的组件。页面用 route 作 key，组件用自身路径。
+    ///
+    /// 组件闭包本身是全局扁平表，看不出「这个页面到底用了哪些组件」；跨文件规则
+    /// （标签选择器跨组件、类名可达性）必须知道归属，所以边也一并记下来。
+    pub deps: BTreeMap<String, Vec<String>>,
+    /// 页面 json 原文（按 route），只读不改。配置类规则要判断「用户写了什么」。
+    pub page_json: BTreeMap<String, Map<String, Value>>,
     /// 样式文件 → 引入方（`app.wxss` 记为 [`Scope::Global`]），按路径排序。
     ///
     /// 跨文件规则（`text-overflow` 要落到具体 `<text>` 上、标签选择器隔离要判断
@@ -134,20 +141,21 @@ impl Project {
             })
             .collect();
 
-        let components: Vec<ComponentUnit> = collect_components(
+        let (component_paths, deps) = collect_components(
             &fs,
             &miniprogram_root,
             &app.app_value,
             &page_json,
             &app.comps,
             &mut warnings,
-        )
-        .into_iter()
-        .map(|path| ComponentUnit {
-            files: resolve_unit_files(&resolver, &path),
-            path,
-        })
-        .collect();
+        );
+        let components: Vec<ComponentUnit> = component_paths
+            .into_iter()
+            .map(|path| ComponentUnit {
+                files: resolve_unit_files(&resolver, &path),
+                path,
+            })
+            .collect();
 
         let styles = collect_styles(&root, &miniprogram_root, &pages, &components);
 
@@ -157,9 +165,56 @@ impl Project {
             app_json: app.app_value.clone(),
             pages,
             components,
+            deps,
+            page_json: page_json
+                .into_iter()
+                .filter_map(|(route, json)| Some((route, json?)))
+                .collect(),
             styles,
             warnings,
         })
+    }
+
+    /// 某个页面（含 app 级声明）**传递**用到的组件。
+    pub fn page_components(&self, route: &str) -> Vec<&str> {
+        self.reachable(&[route, "app.json"])
+            .into_iter()
+            .filter_map(|unit| {
+                self.components
+                    .iter()
+                    .find(|c| c.path == unit)
+                    .map(|c| c.path.as_str())
+            })
+            .collect()
+    }
+
+    /// 传递用到某个组件的页面。
+    pub fn component_pages(&self, path: &str) -> Vec<&str> {
+        self.pages
+            .iter()
+            .filter(|page| self.page_components(&page.route).contains(&path))
+            .map(|page| page.route.as_str())
+            .collect()
+    }
+
+    /// 从若干单元出发，沿组件边可达的单元（不含起点本身）。
+    fn reachable(&self, start: &[&str]) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut queue: Vec<String> = start.iter().map(|s| s.to_string()).collect();
+        for unit in &queue {
+            out.push(unit.clone());
+        }
+        while let Some(unit) = queue.pop() {
+            for target in self.deps.get(&unit).into_iter().flatten() {
+                if out.contains(target) {
+                    continue;
+                }
+                out.push(target.clone());
+                queue.push(target.clone());
+            }
+        }
+        out.retain(|unit| !start.contains(&unit.as_str()));
+        out
     }
 
     /// 某份样式的全部引入方对应的 WXML（按路径去重）。规则拿它做选择器匹配；
@@ -215,21 +270,24 @@ fn collect_components(
     page_json: &[(String, Option<Map<String, Value>>)],
     seeds: &[String],
     warnings: &mut Vec<Diagnostic>,
-) -> Vec<String> {
+) -> (Vec<String>, BTreeMap<String, Vec<String>>) {
     // 入口：页面的组件引用（页面本身不是组件，不入 comps）。
-    let mut queue: Vec<String> = page_json
-        .iter()
-        .flat_map(|(route, json)| match json {
-            Some(json) => routes_of(fs, root, route, json),
-            None => Vec::new(),
-        })
-        .collect();
+    let mut queue: Vec<String> = Vec::new();
+    let mut deps: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+    for (route, json) in page_json {
+        let Some(json) = json else { continue };
+        let targets = routes_of(fs, root, route, json);
+        queue.extend(targets.iter().cloned());
+        deps.insert(route.clone(), targets);
+    }
     // app 级 usingComponents 以主包根为基准。
-    queue.extend(
-        using_components(app_json)
-            .iter()
-            .filter_map(|target| resolve_component_route(fs, root, "app.json", target)),
-    );
+    let app_targets: Vec<String> = using_components(app_json)
+        .iter()
+        .filter_map(|target| resolve_component_route(fs, root, "app.json", target))
+        .collect();
+    queue.extend(app_targets.iter().cloned());
+    deps.insert("app.json".to_string(), app_targets);
     // AppConf.comps 兜住 appBar / custom-tab-bar / agent.skills 这类非声明式入口。
     queue.extend(seeds.iter().cloned());
 
@@ -243,9 +301,12 @@ fn collect_components(
             continue;
         };
         comps.push(unit.clone());
-        queue.extend(routes_of(fs, root, &unit, &json));
+        let targets = routes_of(fs, root, &unit, &json);
+        queue.extend(targets.iter().cloned());
+        deps.insert(unit, targets);
     }
-    comps
+    comps.sort();
+    (comps, deps)
 }
 
 /// 一个单元声明的组件引用解析后得到的根相对路径。

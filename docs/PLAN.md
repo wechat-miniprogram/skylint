@@ -187,8 +187,20 @@ businessview 82 scss / 13 wxss）。`cssparser` 对嵌套语法并不实现展�
 （JSON 里是 `summary.skippedStyles`），不让「0 问题」变成假象。解析预处理器 / 改 lint 编译产物
 两条路线都留待单独决策。
 
-剩余：`scroll-view` 直接子节点 margin、标签选择器隔离（`tagNameStyleIsolation`）、
-类名可达性。
+- `skyline/tag-selector-isolation`：标签 / id 选择器在 Skyline 下不跨组件匹配。
+  引擎证据在 `skyline/style/selector_matcher.cc`：页面/组件样式表走 `MatchScopedRules`，
+  命中前要求 `node.StyleScopeId() == rule_scope_id`；`legacy` 只把**标签**选择器改查
+  全局标签规则表，id 选择器那段没有 legacy 分支。`app.wxss` 走 `MatchGlobalRules`，
+  本来就不分作用域，因此不受影响——这正是规则只在 page/component 样式表里判的原因。
+  判定要用「页面用了哪些组件」，为此 `Project` 记下了 `deps`（单元 → 直接引用的组件），
+  提供 `page_components()` / `component_pages()` 两个传递闭包。
+
+真实工程结果：四个工程都是 0 命中，原因经核对是**真的没有**这种写法，不是规则坏了——
+非全局 wxss 里的纯标签选择器只有 `page {}`（`page` 是页面自身节点，同作用域），
+没有页面级 `view {}` 依赖。规则属于防御性的：它只在「确实命中了别的单元的节点」时开口，
+所以不产生推测性告警。
+
+剩余：`scroll-view` 直接子节点 margin、类名可达性。
 
 ### P4 JS（约 30 条）
 

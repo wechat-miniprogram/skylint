@@ -57,6 +57,7 @@ skyline/unsupported-component
 | `skyline/box-sizing` | error | box-sizing 的值在 Skyline 下不受支持，声明会被忽略 |
 | `skyline/flex-direction` | warning | display: flex 未声明 flex-direction，迁移后默认方向会从 row 变为 column |
 | `skyline/text-overflow-ellipsis` | warning | text-overflow: ellipsis 在 Skyline 下只对 <text> 生效 |
+| `skyline/tag-selector-isolation` | warning | 标签 / id 选择器在 Skyline 下不跨组件匹配，WebView 上生效的样式会静默失效 |
 | `skyline/unsupported-property` | error | 声明了 Skyline 完全不支持的属性，该属性不会生效 |
 | `skyline/unsupported-value` | error | 属性在 Skyline 下可用，但该值不支持，声明会被静默忽略 |
 | `skyline/gradient-limit` | warning | 渐变的形状 / 尺寸 / 颜色停止位置超出 Skyline 支持范围 |

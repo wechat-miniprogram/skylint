@@ -69,6 +69,25 @@ impl SimpleSelector {
         (!empty).then_some(selector)
     }
 
+    /// 纯标签选择器（`view`、`*` 之外的）。WebView 下它会命中组件内部节点，
+    /// Skyline 默认不跨组件匹配。
+    pub fn is_tag_only(&self) -> bool {
+        self.tag.is_some() && self.id.is_none() && self.classes.is_empty()
+    }
+
+    /// 纯 id 选择器（`#foo`）。
+    pub fn is_id_only(&self) -> bool {
+        self.id.is_some() && self.classes.is_empty()
+    }
+
+    pub fn tag(&self) -> Option<&str> {
+        self.tag.as_deref()
+    }
+
+    pub fn id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
     pub fn matches(&self, element: &WxmlElement) -> Match {
         if let Some(tag) = &self.tag
             && &element.tag != tag

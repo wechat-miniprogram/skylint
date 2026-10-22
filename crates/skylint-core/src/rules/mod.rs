@@ -49,6 +49,7 @@ impl Registry {
             Box::new(wxss::BoxSizing),
             Box::new(wxss::FlexDirection),
             Box::new(wxss::TextOverflowEllipsis),
+            Box::new(wxss::TagSelectorIsolation),
             Box::new(wxss::UnsupportedProperty),
             Box::new(wxss::UnsupportedValue),
             Box::new(wxss::GradientLimit),

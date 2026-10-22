@@ -276,7 +276,10 @@ mod tests {
             .write("components/c/c.json", "{}")
             .write("components/c/c.wxml", "<view/>")
             .write("components/c/c.scss", ".b { color: red; }")
-            .write("pages/index/index.json", r#"{"usingComponents":{"c":"/components/c/c"}}"#);
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"c":"/components/c/c"}}"#,
+            );
         let report = Report::new(&fixture.project(), Vec::new());
         assert_eq!(report.summary.skipped_styles.get("scss"), Some(&1));
         let text = report.to_text(|_| None, Style::default());
