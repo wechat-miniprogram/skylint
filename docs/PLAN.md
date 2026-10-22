@@ -160,7 +160,7 @@ text-decoration-line 单值、calc 角度、mask-image 渐变。
 
 ### P3 跨文件语义（差异化最大）
 
-`[~]` 进行中。前置基建已落地：**样式图**（`Project.styles`）。
+`[x]` 完成（2 条规则落地 + 2 条撤销，撤销都有取证）。前置基建：**样式图**（`Project.styles`）。
 
 `wxss` 不再只是「一个单元一个文件」：页面 / 组件 / `app.wxss` 是入口，`@import` 展开成
 传递闭包，于是每条样式文件都带着「会被哪些页面/组件的 wxml 消费」——跨文件规则要的
@@ -241,7 +241,15 @@ businessview +10（`text-overflow-ellipsis` 2 条、`tag-selector-isolation` 8 �
 所以曾经四个工程都是 0 命中。规则仍然只在「确实命中了别的单元的节点」时开口，
 所以不产生推测性告警。
 
-剩余：`scroll-view` 直接子节点 margin、类名可达性。
+两条原本排在这一阶段的候选，取证后**撤销**：
+
+- **`scroll-view` 直接子节点 margin**（旧项目叫 `scroll-view-margin`，Info 级，建议「给子节点套一层
+  view」）。知识库 `changelog.md` 的 1.0.0（2023-05-11）写着「scroll-view 组件直接子节点支持
+  CSS margin」，旧项目也在 2024-05-31 的 `feat: remove scroll-view-margin rule` 里删掉了。
+  对着现代基线实现只会产生误报。
+- **类名可达性**（wxss 里定义的 class 没有任何 wxml 使用）。这不是 Skyline 语义差异——死样式
+  在 WebView 里同样是死的，属于通用死代码检查，越过了「只报 WebView 能跑、Skyline 不能或
+  不一样」的规则边界；而且按 `weui.wxss` 这类被 `@import` 进来的公共样式算，噪声会非常大。
 
 ### P4 JS（约 30 条）
 
