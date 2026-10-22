@@ -1,0 +1,242 @@
+//! Skyline 下不可用的组件（如 web-view / movable-view / editor）。
+
+use std::collections::{HashMap, HashSet};
+
+use crate::diag::{Diagnostic, Severity};
+use crate::project::Project;
+use crate::rules::{Rule, RuleMeta};
+
+use super::{COMPONENTS_DATA, load_doc, wxml_files};
+
+struct ComponentTable {
+    supported: HashSet<&'static str>,
+    unsupported: HashMap<&'static str, &'static str>,
+}
+
+impl ComponentTable {
+    fn load() -> Self {
+        let mut supported = HashSet::new();
+        let mut unsupported = HashMap::new();
+        let mut section = "";
+        for line in COMPONENTS_DATA.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            match line {
+                "[supported]" => {
+                    section = "supported";
+                    continue;
+                }
+                "[unsupported]" => {
+                    section = "unsupported";
+                    continue;
+                }
+                _ => {}
+            }
+            match section {
+                "supported" => {
+                    supported.insert(line);
+                }
+                "unsupported" => {
+                    if let Some((name, replacement)) = line.split_once('|') {
+                        unsupported.insert(name.trim(), replacement.trim());
+                    }
+                }
+                _ => {}
+            }
+        }
+        Self {
+            supported,
+            unsupported,
+        }
+    }
+
+    /// 黑名单命中才返回替代方案；白名单与未知自定义组件都不报。
+    fn replacement(&self, tag: &str) -> Option<&'static str> {
+        if self.supported.contains(tag) {
+            return None;
+        }
+        self.unsupported.get(tag).copied()
+    }
+}
+
+pub struct UnsupportedComponent;
+
+impl UnsupportedComponent {
+    pub const ID: &'static str = "skyline/unsupported-component";
+}
+
+impl Rule for UnsupportedComponent {
+    fn meta(&self) -> RuleMeta {
+        RuleMeta {
+            id: Self::ID,
+            severity: Severity::Error,
+            description: "Skyline 下不可用的组件（如 web-view / movable-view / editor）",
+        }
+    }
+
+    fn check(&self, project: &Project) -> Vec<Diagnostic> {
+        let table = ComponentTable::load();
+        let mut diagnostics = Vec::new();
+        for path in wxml_files(project) {
+            let Some(doc) = load_doc(project, path) else {
+                continue;
+            };
+            for element in doc.elements() {
+                let tag = element.tag.to_ascii_lowercase();
+                let Some(replacement) = table.replacement(&tag) else {
+                    continue;
+                };
+                let (line, column) = doc.position(element.tag_start);
+                let (end_line, end_column) = doc.position(element.tag_end);
+                diagnostics.push(
+                    Diagnostic::new(
+                        Self::ID,
+                        Severity::Error,
+                        format!("Skyline 不支持组件 `<{}>`", element.tag),
+                        path,
+                        line,
+                        column,
+                    )
+                    .end(end_line, end_column)
+                    .help(replacement),
+                );
+            }
+        }
+        diagnostics
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::testutil::{Fixture, check_rule, project};
+    use super::UnsupportedComponent;
+
+    /// 页面 json 显式 `"renderer": "webview"`：这页不迁 Skyline，整页跳过。
+    #[test]
+    fn explicit_webview_page_is_skipped() {
+        let fixture = Fixture::new("opt-out");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index","pages/webview/webview"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", "<view>skyline</view>")
+            .write("pages/webview/webview.json", r#"{"renderer":"webview"}"#)
+            .write(
+                "pages/webview/webview.wxml",
+                r#"<web-view src="https://x"/>"#,
+            );
+        let diagnostics = check_rule(&fixture, &UnsupportedComponent);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    /// app 级 webview、页面自己没表态：只是还没迁，仍然检查。
+    #[test]
+    fn inherited_webview_page_is_still_checked() {
+        let fixture = Fixture::new("not-migrated");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"webview"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", r#"<web-view src="https://x"/>"#);
+        let diagnostics = check_rule(&fixture, &UnsupportedComponent);
+        assert_eq!(diagnostics.len(), 1);
+    }
+
+    /// 跳过是按页的：同一工程里没表态的页面照样检查。
+    #[test]
+    fn opt_out_does_not_leak_to_sibling_pages() {
+        let fixture = Fixture::new("opt-out-sibling");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/a/a","pages/b/b"],"renderer":"skyline"}"#,
+            )
+            .write("pages/a/a.json", r#"{"renderer":"webview"}"#)
+            .write("pages/a/a.wxml", r#"<web-view src="https://a"/>"#)
+            .write("pages/b/b.json", "{}")
+            .write("pages/b/b.wxml", r#"<web-view src="https://b"/>"#);
+        let diagnostics = check_rule(&fixture, &UnsupportedComponent);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].path, "pages/b/b.wxml");
+    }
+
+    #[test]
+    fn unsupported_components_are_reported() {
+        let diagnostics = check_rule(
+            &project(
+                "unsupported",
+                r#"<view>
+  <web-view src="https://example.com"/>
+  <movable-view/>
+  <editor/>
+  <progress/>
+  <xr-frame/>
+</view>"#,
+            ),
+            &UnsupportedComponent,
+        );
+        assert_eq!(diagnostics.len(), 5);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.severity == crate::Severity::Error)
+        );
+
+        let web_view = diagnostics
+            .iter()
+            .find(|d| d.message.contains("web-view"))
+            .unwrap();
+        assert!(
+            web_view
+                .help
+                .as_deref()
+                .unwrap()
+                .contains(r#""renderer": "webview""#)
+        );
+
+        let movable_view = diagnostics
+            .iter()
+            .find(|d| d.message.contains("movable-view"))
+            .unwrap();
+        assert!(movable_view.help.as_deref().unwrap().contains("worklet"));
+    }
+
+    #[test]
+    fn every_unsupported_occurrence_is_reported() {
+        let diagnostics = check_rule(
+            &project("unsupported-twice", "<view><web-view/><web-view/></view>"),
+            &UnsupportedComponent,
+        );
+        assert_eq!(diagnostics.len(), 2);
+    }
+
+    #[test]
+    fn supported_components_are_allowed() {
+        let diagnostics = check_rule(
+            &project(
+                "supported",
+                "<view><form/><scroll-view/><navigator/><rich-text/><page-meta/><span/><sticky-header/><list-view/></view>",
+            ),
+            &UnsupportedComponent,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn unknown_custom_component_is_ignored() {
+        let diagnostics = check_rule(
+            &project("custom-component", "<my-widget/>"),
+            &UnsupportedComponent,
+        );
+        assert!(diagnostics.is_empty());
+    }
+}

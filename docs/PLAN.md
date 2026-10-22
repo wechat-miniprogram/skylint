@@ -160,8 +160,33 @@ text-decoration-line 单值、calc 角度、mask-image 渐变。
 
 ### P3 跨文件语义（差异化最大）
 
-`text-overflow:ellipsis` × `<text>`、`scroll-view` 直接子节点 margin、标签选择器隔离、
-类名可达性。页→组件归属由 skylint 自建闭包提供（原 M7 已撤销）。
+`[~]` 进行中。前置基建已落地：**样式图**（`Project.styles`）。
+
+`wxss` 不再只是「一个单元一个文件」：页面 / 组件 / `app.wxss` 是入口，`@import` 展开成
+传递闭包，于是每条样式文件都带着「会被哪些页面/组件的 wxml 消费」——跨文件规则要的
+就是这张表。`Project::scope_wxml(scope)` 给出该作用域的 wxml 文档，`Scope::Global`
+覆盖全部页面与组件（页面按 opt-out 过滤）。
+
+已完成的规则：
+- `skyline/text-overflow-ellipsis`：`text-overflow: ellipsis` 在 Skyline 下只对 `<text>`
+  生效。判定 = 选择器命中的节点及其后代里有没有 `<text>`（可继承）；选择器只认能静态
+  判定的形状（tag / `.class` / `#id`），组合符、伪类、属性选择器、动态属性一律放过。
+  逗号分隔的选择器各判各的。
+
+样式图的覆盖面变化（真实工程实测）：`@import` 进来的样式文件以前完全没被检查过。
+`businessview` 从 16 error / 91 warning 变成 50 error / 538 warning——新增的全部落在
+`@import` 进来的 `weui.wxss` 等文件上，是覆盖率提升而不是新误报（最集中的一条是
+`no-pseudo` 在 `weui.wxss` 上的 237 条，两份分包拷贝各一份）。
+
+**已知盲区：预处理器。** 三个真实工程的样式源几乎都是 `.less` / `.scss`
+（miniprogram-novel 27 less / 1 wxss，miniprogram-skit_1 67 less / 0 wxss，
+businessview 82 scss / 13 wxss）。`cssparser` 对嵌套语法并不实现展开（实测
+`.a { display:flex; .b { … } }` 只出 `.a` 一条规则），变量、mixin、`&` 也无法静态求值，
+所以当前所有样式规则只作用于 `.wxss` 源文件——对 `.less`/`.scss` 工程等于没检查。
+这是路线问题，不是补丁能解决的，需要单独决策（详见 §7 遗留）。
+
+剩余：`scroll-view` 直接子节点 margin、标签选择器隔离（`tagNameStyleIsolation`）、
+类名可达性。
 
 ### P4 JS（约 30 条）
 

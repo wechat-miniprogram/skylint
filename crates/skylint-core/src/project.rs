@@ -9,6 +9,7 @@
 //!   `disableScroll`/`navigationStyle`、并把全局 `usingComponents` 摊进页面，
 //!   那会抹掉「用户没写」和「继承来的」这个区别——而这恰是迁移检查要判断的。
 
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use compiler_common::pathutil::{posix_dirname, posix_join};
@@ -17,6 +18,7 @@ use compiler_graph::{AppConf, ResolveExtConf, Resolver, is_skyline_page, resolve
 use serde_json::{Map, Value};
 
 use crate::diag::from_compiler_diag;
+use crate::input::wxss::{self, WxssDoc};
 use crate::{Diagnostic, Severity};
 
 /// 一个编译单元（页面或自定义组件）的四件套，值为项目相对 posix 路径。
@@ -26,6 +28,23 @@ pub struct UnitFiles {
     pub wxml: Option<String>,
     pub wxss: Option<String>,
     pub js: Option<String>,
+}
+
+/// 一个单元（页面 / 组件）在样式图里的身份。
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Scope {
+    /// `app.wxss`：对全部页面与组件生效。
+    Global,
+    Page(String),
+    Component(String),
+}
+
+/// 一份样式文件，以及它被哪些单元引入（含 `@import` 传递闭包）。
+#[derive(Debug)]
+pub struct StyleSheet {
+    pub doc: WxssDoc,
+    /// 去重后的引入方；同一文件被页面和组件同时引入时会同时出现。
+    pub scopes: Vec<Scope>,
 }
 
 #[derive(Debug, Clone)]
@@ -59,6 +78,12 @@ pub struct Project {
     pub app_json: Map<String, Value>,
     pub pages: Vec<PageUnit>,
     pub components: Vec<ComponentUnit>,
+    /// 样式文件 → 引入方（`app.wxss` 记为 [`Scope::Global`]），按路径排序。
+    ///
+    /// 跨文件规则（`text-overflow` 要落到具体 `<text>` 上、标签选择器隔离要判断
+    /// 能不能跨组件）需要「这份 wxss 的样式会作用到哪些 wxml」，这个表就是答案。
+    /// `@import` 的传递闭包在这里展开，所以被 `@import` 进来的样式文件也会被检查。
+    pub styles: Vec<StyleSheet>,
     /// 建图过程中发现的非阻断问题（如页面声明了但 wxml 缺失）。
     pub warnings: Vec<Diagnostic>,
 }
@@ -95,7 +120,7 @@ impl Project {
             })
             .collect();
 
-        let pages = page_json
+        let pages: Vec<PageUnit> = page_json
             .iter()
             .map(|(route, json)| {
                 let empty = Map::new();
@@ -109,7 +134,7 @@ impl Project {
             })
             .collect();
 
-        let components = collect_components(
+        let components: Vec<ComponentUnit> = collect_components(
             &fs,
             &miniprogram_root,
             &app.app_value,
@@ -124,14 +149,50 @@ impl Project {
         })
         .collect();
 
+        let styles = collect_styles(&root, &miniprogram_root, &pages, &components);
+
         Ok(Self {
             root,
             miniprogram_root,
             app_json: app.app_value.clone(),
             pages,
             components,
+            styles,
             warnings,
         })
+    }
+
+    /// 某份样式的全部引入方对应的 WXML（按路径去重）。规则拿它做选择器匹配；
+    /// 拿不到（页面被 opt-out、wxml 缺失、解析失败）就跳过该单元。
+    pub fn scope_wxml(&self, scope: &Scope) -> Option<&str> {
+        match scope {
+            Scope::Global => None,
+            Scope::Page(route) => self
+                .pages
+                .iter()
+                .find(|page| &page.route == route && !page.opted_out)
+                .and_then(|page| page.files.wxml.as_deref()),
+            Scope::Component(path) => self
+                .components
+                .iter()
+                .find(|component| &component.path == path)
+                .and_then(|component| component.files.wxml.as_deref()),
+        }
+    }
+
+    /// `Scope::Global` 覆盖的全部 WXML（页面 + 组件，页面按 opt-out 过滤）。
+    pub fn global_wxml(&self) -> impl Iterator<Item = &str> {
+        let mut seen = HashSet::new();
+        self.pages
+            .iter()
+            .filter(|page| !page.opted_out)
+            .filter_map(|page| page.files.wxml.as_deref())
+            .chain(
+                self.components
+                    .iter()
+                    .filter_map(|component| component.files.wxml.as_deref()),
+            )
+            .filter(move |path| seen.insert(*path))
     }
 
     /// 项目根下某个相对路径的绝对路径。
@@ -246,6 +307,88 @@ fn existing_unit(fs: &dyn ProjectFs, root: &str, base: &str) -> Option<String> {
 
 /// 四件套按目标后缀向 resolver 查询实际源文件（`.ts`/`.less`/`.scss` 会被解析成
 /// 真实源，而不是假定 `.js`/`.wxss`）。
+/// 样式图：每个 wxss 被哪些单元引入，`@import` 的传递闭包在此展开。
+///
+/// 只解析一次（`WxssDoc` 连同源码存在 `Project.styles` 里），规则侧不再重复读盘。
+/// 读失败 / 解析失败的文件直接跳过——单文件坏掉不该拖垮整轮检查。
+fn collect_styles(
+    root: &Path,
+    miniprogram_root: &str,
+    pages: &[PageUnit],
+    components: &[ComponentUnit],
+) -> Vec<StyleSheet> {
+    let mut scopes: BTreeMap<String, Vec<Scope>> = BTreeMap::new();
+    let mut docs: BTreeMap<String, WxssDoc> = BTreeMap::new();
+
+    let mut entries: Vec<(String, Scope)> = Vec::new();
+    if root.join(miniprogram_root).join("app.wxss").is_file() {
+        entries.push((posix_join(miniprogram_root, "app.wxss"), Scope::Global));
+    }
+    entries.extend(pages.iter().filter_map(|page| {
+        page.files
+            .wxss
+            .clone()
+            .map(|p| (p, Scope::Page(page.route.clone())))
+    }));
+    entries.extend(components.iter().filter_map(|c| {
+        c.files
+            .wxss
+            .clone()
+            .map(|p| (p, Scope::Component(c.path.clone())))
+    }));
+
+    let mut queue: Vec<(String, Scope)> = entries;
+    while let Some((path, scope)) = queue.pop() {
+        let seen = scopes.entry(path.clone()).or_default();
+        if seen.contains(&scope) {
+            continue;
+        }
+        seen.push(scope.clone());
+        if docs.contains_key(&path) {
+            continue;
+        }
+        let abs = root.join(miniprogram_root).join(&path);
+        let Ok(source) = std::fs::read_to_string(&abs) else {
+            continue;
+        };
+        let Ok(doc) = wxss::parse(&path, &source) else {
+            continue;
+        };
+        // WXSS 的 @import 只认相对路径与根路径（`/a.wxss`）；.less/.scss 的变量式导入
+        // 在这里解析不到，跳过即可——它们本来也不在 wxss 图里。
+        for import in &doc.imports {
+            if let Some(target) = resolve_style_import(&path, &import.target) {
+                queue.push((target, scope.clone()));
+            }
+        }
+        docs.insert(path, doc);
+    }
+
+    scopes
+        .into_iter()
+        .filter_map(|(path, scopes)| {
+            let doc = docs.remove(&path)?;
+            let mut scopes = scopes;
+            scopes.sort();
+            Some(StyleSheet { doc, scopes })
+        })
+        .collect()
+}
+
+/// `@import "a.wxss"` → 项目相对路径（相对引用方目录，`/` 开头按主包根）。
+fn resolve_style_import(from: &str, target: &str) -> Option<String> {
+    let target = target.trim().trim_matches(['"', '\'']);
+    if target.is_empty() || target.starts_with("http") {
+        return None;
+    }
+    let joined = if target.starts_with('/') {
+        target.trim_start_matches('/').to_string()
+    } else {
+        posix_join(&posix_dirname(from), target)
+    };
+    Some(posix_join("", &joined))
+}
+
 fn resolve_unit_files(resolver: &Resolver, unit: &str) -> UnitFiles {
     let at = |ext: &str| {
         resolver

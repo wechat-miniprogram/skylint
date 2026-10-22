@@ -1,61 +1,122 @@
 //! WXSS 语义类规则。
 //!
-//! 三条 P0 规则都只依赖「单条规则内的原始声明」，不做级联、不解析值、不匹配选择器。
-//!
-//! 文件划分按「判断形状」而不是按主题：`baseline` 是手写判定的少量规则，
-//! `dict` 是纯数据驱动的属性/值支持表，`shape` 是「值的个数/结构」类限制
-//! （多值数量、函数参数约束）。三者共用同一个 [`visit`]。
+//! 一条规则一个文件：手写判定的少量规则、纯数据驱动的属性/值支持表、以及
+//! 「值的个数/结构」类限制各占一个文件。它们共用同一个 [`visit`] 与
+//! [`value_util`] 的值分词工具。
 
-pub mod baseline;
-pub mod dict;
-pub mod shape;
+pub mod box_sizing;
+pub mod calc_angle;
+pub mod dict_table;
+pub mod filter_limit;
+pub mod flex_direction;
+pub mod gradient_limit;
+pub mod mask_image_gradient;
+pub mod multi_value_limit;
+pub mod no_pseudo;
+pub mod selector;
+pub mod text_decoration_line;
+pub mod text_overflow_ellipsis;
+pub mod unsupported_property;
+pub mod unsupported_value;
+pub mod value_util;
 
-pub use baseline::{BoxSizing, FlexDirection, NoPseudo};
-
-use std::collections::HashSet;
+pub use box_sizing::BoxSizing;
+pub use calc_angle::CalcAngle;
+pub use filter_limit::FilterLimit;
+pub use flex_direction::FlexDirection;
+pub use gradient_limit::GradientLimit;
+pub use mask_image_gradient::MaskImageGradient;
+pub use multi_value_limit::MultiValueLimit;
+pub use no_pseudo::NoPseudo;
+pub use text_decoration_line::TextDecorationLine;
+pub use text_overflow_ellipsis::TextOverflowEllipsis;
+pub use unsupported_property::UnsupportedProperty;
+pub use unsupported_value::UnsupportedValue;
 
 use crate::Diagnostic;
-use crate::input::wxss::{self, WxssDoc};
+use crate::input::wxss::WxssDoc;
 use crate::project::Project;
 
-/// 遍历所有需要检查的 WXSS 文件：全部页面 + 全部自定义组件。
+/// 遍历全部样式文件（页面 / 组件 / `app.wxss` / 被 `@import` 进来的）。
 ///
-/// 不按 `is_skyline` 过滤：这是**迁移**检查工具，目标用户是还在 WebView 上的项目。
+/// 数据来自 `Project.styles`：建图时已经解析过一遍，规则侧不重复读盘。不按
+/// `is_skyline` 过滤：这是**迁移**检查工具，目标用户是还在 WebView 上的项目。
 /// 若只查已迁移的页面，纯 WebView 工程会一条都不报，「迁移前拿到问题清单」的用途
 /// 就落空了。
-///
-/// 单文件读失败 / 解析失败 / 非 `.wxss` 源（`.less`、`.scss`）一律跳过，不终止扫描。
 pub(crate) fn visit(
     project: &Project,
     mut f: impl FnMut(&WxssDoc, &mut Vec<Diagnostic>),
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
-    let mut seen = HashSet::new();
-    let paths = project
-        .pages
-        .iter()
-        .filter_map(|page| page.files.wxss.as_ref())
-        .chain(
-            project
-                .components
-                .iter()
-                .filter_map(|c| c.files.wxss.as_ref()),
-        );
-
-    for rel in paths {
-        if !seen.insert(rel.as_str()) {
+    for sheet in &project.styles {
+        // 单文件读失败 / 解析失败 / 非 `.wxss` 源（`.less`、`.scss`）一律跳过，不终止扫描。
+        if !sheet.doc.path().to_ascii_lowercase().ends_with(".wxss") {
             continue;
         }
-        if !rel.to_ascii_lowercase().ends_with(".wxss") {
-            continue;
-        }
-        let Ok(source) = std::fs::read_to_string(project.abs(rel)) else {
-            continue;
-        };
-        let Ok(doc) = wxss::parse(rel, &source) else {
-            continue;
-        };
-        f(&doc, &mut out);
+        f(&sheet.doc, &mut out);
     }
     out
+}
+
+#[cfg(test)]
+pub(crate) mod testutil {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use crate::project::Project;
+    use crate::rules::Rule;
+
+    pub(crate) struct Fixture {
+        root: PathBuf,
+    }
+
+    impl Fixture {
+        pub(crate) fn new(name: &str) -> Self {
+            let root =
+                std::env::temp_dir().join(format!("skylint-wxss-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(&root).unwrap();
+            Self { root }
+        }
+
+        pub(crate) fn write(&self, rel: &str, content: &str) -> &Self {
+            self.write_bytes(rel, content.as_bytes())
+        }
+
+        pub(crate) fn write_bytes(&self, rel: &str, content: &[u8]) -> &Self {
+            let path = self.root.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, content).unwrap();
+            self
+        }
+
+        pub(crate) fn project(&self) -> Project {
+            Project::load(&self.root).unwrap()
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// 单页 Skyline 工程，页面 wxss 即 `wxss`。
+    pub(crate) fn single(name: &str, wxss: &str) -> (Fixture, Project) {
+        let f = Fixture::new(name);
+        f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", "<view/>")
+            .write("pages/index/index.wxss", wxss);
+        let project = f.project();
+        (f, project)
+    }
+
+    pub(crate) fn messages(rule: &dyn Rule, project: &Project) -> Vec<String> {
+        rule.check(project).into_iter().map(|d| d.message).collect()
+    }
 }

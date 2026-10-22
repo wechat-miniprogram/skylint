@@ -48,14 +48,15 @@ impl Registry {
             Box::new(wxss::NoPseudo),
             Box::new(wxss::BoxSizing),
             Box::new(wxss::FlexDirection),
-            Box::new(wxss::dict::UnsupportedProperty),
-            Box::new(wxss::dict::UnsupportedValue),
-            Box::new(wxss::shape::GradientLimit),
-            Box::new(wxss::shape::MultiValueLimit),
-            Box::new(wxss::shape::FilterLimit),
-            Box::new(wxss::shape::TextDecorationLine),
-            Box::new(wxss::shape::CalcAngle),
-            Box::new(wxss::shape::MaskImageGradient),
+            Box::new(wxss::TextOverflowEllipsis),
+            Box::new(wxss::UnsupportedProperty),
+            Box::new(wxss::UnsupportedValue),
+            Box::new(wxss::GradientLimit),
+            Box::new(wxss::MultiValueLimit),
+            Box::new(wxss::FilterLimit),
+            Box::new(wxss::TextDecorationLine),
+            Box::new(wxss::CalcAngle),
+            Box::new(wxss::MaskImageGradient),
         ])
     }
 

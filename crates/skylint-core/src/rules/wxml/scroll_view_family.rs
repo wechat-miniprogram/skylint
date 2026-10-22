@@ -1,27 +1,16 @@
-//! 父子结构约束类规则。
-//!
-//! 两个规则：
-//! - `ScrollViewFamily`：`scroll-view` 家族组件的挂载位置。约束写在
-//!   `data/scroll_family.txt` 里，Rust 侧只做「直接父节点 / 最近祖先」查表，
-//!   再加两条无法用表表达的否定约束（nested-scroll-header 不能在 body 内、
-//!   draggable-sheet 内部的 scroll-view 必须关联容器）。
-//! - `HorizontalScrollEnableFlex`：横向滚动的 `scroll-view` 必须开启 `enable-flex`。
-//!
-//! 父子关系直接来自视图层的渲染树：`block` / `wx:if` / `wx:for` 已被
-//! `input::wxml` 摊平，这里不再处理包装层。自定义组件的内部渲染树（`slot`
-//! 落点）无法静态得知，遇到自定义组件就停止向上判定，宁可漏报。
+//! `scroll-view` 家族组件的挂载位置。约束写在 `data/scroll_family.txt` 里，
+//! Rust 侧只做「直接父节点 / 最近祖先」查表，再加两条无法用表表达的否定约束
+//! （nested-scroll-header 不能在 body 内、draggable-sheet 内部的 scroll-view
+//! 必须关联容器）。
 
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::{load_doc, wxml_files};
+use super::{element_diagnostic, is_builtin, load_doc, wxml_files};
 
 pub const ID: &str = "skyline/scroll-view-family";
-
-/// 组件支持表，用来区分内置组件与自定义组件。
-const COMPONENTS_DATA: &str = include_str!("../data/components.txt");
 
 /// 家族挂载约束表。
 const CONSTRAINTS_DATA: &str = include_str!("data/scroll_family.txt");
@@ -83,16 +72,6 @@ fn parse_target(raw: &'static str) -> Target {
     }
 }
 
-fn is_builtin(tag: &str) -> bool {
-    COMPONENTS_DATA
-        .lines()
-        .skip_while(|line| line.trim() != "[supported]")
-        .skip(1)
-        .take_while(|line| line.trim() != "[unsupported]")
-        .map(str::trim)
-        .any(|line| !line.is_empty() && !line.starts_with('#') && line == tag)
-}
-
 enum AttrCheck {
     Ok,
     Violation,
@@ -108,19 +87,6 @@ fn check_attr(element: &WxmlElement, name: &str, expected: &str) -> AttrCheck {
             Some(value) if value.trim().eq_ignore_ascii_case(expected) => AttrCheck::Ok,
             _ => AttrCheck::Violation,
         },
-    }
-}
-
-/// 三态布尔属性：`None` 表示动态绑定；属性缺省为 `Some(false)`。
-fn flag(element: &WxmlElement, name: &str) -> Option<bool> {
-    match find_attr(element, name) {
-        None => Some(false),
-        Some(attr) if !attr.is_static => None,
-        Some(attr) => Some(
-            attr.value
-                .as_deref()
-                .is_none_or(|value| !matches!(value.trim(), "" | "false" | "0")),
-        ),
     }
 }
 
@@ -307,7 +273,10 @@ fn check_element(
         let Some(message) = placement(element, ancestors, constraint) else {
             continue;
         };
-        out.push(diagnostic(doc, element, path, Severity::Error, message).help(constraint.help));
+        out.push(
+            element_diagnostic(ID, doc, element, path, Severity::Error, message)
+                .help(constraint.help),
+        );
     }
 
     // nested-scroll.md NEVER 1「不要在 nested-scroll-body 下面放 nested-scroll-header」。
@@ -319,7 +288,8 @@ fn check_element(
             .any(|ancestor| ancestor.tag == "nested-scroll-body")
     {
         out.push(
-            diagnostic(
+            element_diagnostic(
+                ID,
                 doc,
                 element,
                 path,
@@ -341,7 +311,8 @@ fn check_element(
         )
     {
         out.push(
-            diagnostic(
+            element_diagnostic(
+                ID,
                 doc,
                 element,
                 path,
@@ -353,131 +324,15 @@ fn check_element(
     }
 }
 
-fn diagnostic(
-    doc: &WxmlDoc,
-    element: &WxmlElement,
-    path: &str,
-    severity: Severity,
-    message: impl Into<String>,
-) -> Diagnostic {
-    let (line, column) = doc.position(element.tag_start);
-    let (end_line, end_column) = doc.position(element.tag_end);
-    Diagnostic::new(ID, severity, message, path, line, column).end(end_line, end_column)
-}
-
-pub const HORIZONTAL_FLEX_ID: &str = "skyline/horizontal-scroll-enable-flex";
-
-pub struct HorizontalScrollEnableFlex;
-
-impl Rule for HorizontalScrollEnableFlex {
-    fn meta(&self) -> RuleMeta {
-        RuleMeta {
-            id: HORIZONTAL_FLEX_ID,
-            severity: Severity::Warning,
-            description: "横向滚动的 `<scroll-view>` 需开启 `enable-flex` 以兼容 WebView",
-        }
-    }
-
-    fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
-        for path in wxml_files(project) {
-            let Some(doc) = load_doc(project, path) else {
-                continue;
-            };
-            for element in doc.elements() {
-                if element.tag != "scroll-view"
-                    || flag(element, "scroll-x") != Some(true)
-                    || flag(element, "enable-flex") != Some(false)
-                {
-                    continue;
-                }
-                let Some(attr) = find_attr(element, "scroll-x") else {
-                    continue;
-                };
-                let (line, column) = doc.position(attr.start);
-                let (end_line, end_column) = doc.position(attr.end);
-                diagnostics.push(
-                    Diagnostic::new(
-                        HORIZONTAL_FLEX_ID,
-                        Severity::Warning,
-                        "横向滚动的 `<scroll-view>` 未开启 `enable-flex`，WebView 下横向滚动不会生效",
-                        path,
-                        line,
-                        column,
-                    )
-                    .end(end_line, end_column)
-                    .help(
-                        "添加 `enable-flex`，并给容器写 `style=\"display: flex; flex-direction: row;\"`",
-                    ),
-                );
-            }
-        }
-        diagnostics
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::fs;
-    use std::path::{Path, PathBuf};
-
+    use super::super::testutil::{Fixture, check_rule, project};
+    use super::ScrollViewFamily;
+    use super::constraints;
     use crate::Severity;
-    use crate::project::Project;
-    use crate::rules::Rule;
-
-    use super::{HorizontalScrollEnableFlex, ScrollViewFamily, constraints};
-
-    struct Fixture {
-        root: PathBuf,
-    }
-
-    impl Fixture {
-        fn new(name: &str) -> Self {
-            let root =
-                std::env::temp_dir().join(format!("skylint-scroll-{name}-{}", std::process::id()));
-            let _ = fs::remove_dir_all(&root);
-            fs::create_dir_all(&root).unwrap();
-            Self { root }
-        }
-
-        fn write(&self, rel: &str, content: &str) -> &Self {
-            let path = self.root.join(rel);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, content).unwrap();
-            self
-        }
-
-        fn path(&self) -> &Path {
-            &self.root
-        }
-    }
-
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.root);
-        }
-    }
-
-    /// 单页 Skyline 工程。
-    fn project(name: &str, wxml: &str) -> Fixture {
-        let fixture = Fixture::new(name);
-        fixture
-            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
-            .write(
-                "app.json",
-                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
-            )
-            .write("pages/index/index.json", "{}")
-            .write("pages/index/index.wxml", wxml);
-        fixture
-    }
 
     fn check(fixture: &Fixture) -> Vec<crate::Diagnostic> {
-        ScrollViewFamily.check(&Project::load(fixture.path()).unwrap())
-    }
-
-    fn check_flex(fixture: &Fixture) -> Vec<crate::Diagnostic> {
-        HorizontalScrollEnableFlex.check(&Project::load(fixture.path()).unwrap())
+        check_rule(fixture, &ScrollViewFamily)
     }
 
     // ---- 数据表 ----
@@ -796,55 +651,6 @@ mod tests {
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
-    // ---- enable-flex ----
-
-    #[test]
-    fn horizontal_scroll_without_enable_flex_is_reported() {
-        let diagnostics = check_flex(&project(
-            "flex-missing",
-            r#"<scroll-view type="list" scroll-x><view/></scroll-view>"#,
-        ));
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].severity, Severity::Warning);
-        assert!(diagnostics[0].message.contains("enable-flex"));
-    }
-
-    #[test]
-    fn horizontal_scroll_with_true_value_without_enable_flex_is_reported() {
-        let diagnostics = check_flex(&project(
-            "flex-true",
-            r#"<scroll-view type="list" scroll-x="true"><view/></scroll-view>"#,
-        ));
-        assert_eq!(diagnostics.len(), 1);
-    }
-
-    #[test]
-    fn horizontal_scroll_with_enable_flex_is_allowed() {
-        let diagnostics = check_flex(&project(
-            "flex-ok",
-            r#"<scroll-view type="list" scroll-x enable-flex><view/></scroll-view>"#,
-        ));
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
-    }
-
-    #[test]
-    fn dynamic_scroll_x_is_skipped() {
-        let diagnostics = check_flex(&project(
-            "flex-dynamic",
-            r#"<scroll-view type="list" scroll-x="{{x}}"><view/></scroll-view>"#,
-        ));
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
-    }
-
-    #[test]
-    fn scroll_x_false_without_enable_flex_is_allowed() {
-        let diagnostics = check_flex(&project(
-            "flex-false",
-            r#"<scroll-view type="list" scroll-x="false"><view/></scroll-view>"#,
-        ));
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
-    }
-
     // ---- 页面 + 组件 ----
 
     #[test]
@@ -878,7 +684,7 @@ mod tests {
 
     #[test]
     fn broken_file_does_not_stop_other_files() {
-        let fixture = Fixture::new("broken");
+        let fixture = Fixture::new("scroll-broken");
         fixture
             .write("project.config.json", r#"{"miniprogramRoot":""}"#)
             .write(
