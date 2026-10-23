@@ -6,6 +6,7 @@
 use crate::project::Project;
 use crate::{Diagnostic, Severity};
 
+use super::value_util::is_dynamic;
 use super::visit;
 use crate::rules::{Rule, RuleMeta};
 
@@ -36,8 +37,8 @@ impl Rule for BoxSizing {
                         continue;
                     }
                     let lower = value.to_ascii_lowercase();
-                    // 变量/插值无法静态判定，交给运行时。
-                    if lower.contains("var(") || lower.contains("env(") {
+                    // 变量 / 插值无法静态判定，交给运行时（$var、@var、#{} 同样算）。
+                    if is_dynamic(&decl.tokens) {
                         continue;
                     }
                     if is_box_sizing_value(&lower) {
@@ -107,6 +108,21 @@ mod tests {
             .d { box-sizing: var(--box); }
             .e { box-sizing: initial; }
             .f { padding-box: 1px; }
+            "#,
+        );
+        assert_eq!(messages(&BoxSizing, &project), Vec::<String>::new());
+    }
+
+    /// 预处理器变量不是「不受支持的值」，必须全静默（SCSS / Less 工程上 error 级误报）。
+    #[test]
+    fn preprocessor_variables_are_not_reported() {
+        let (_f, project) = single(
+            "box-sizing-dynamic",
+            r#"
+            .a { box-sizing: $box; }
+            .b { box-sizing: @box; }
+            .c { box-sizing: #{$box}; }
+            .d { box-sizing: calc(var(--x)); }
             "#,
         );
         assert_eq!(messages(&BoxSizing, &project), Vec::<String>::new());

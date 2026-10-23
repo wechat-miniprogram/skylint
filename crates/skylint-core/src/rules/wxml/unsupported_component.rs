@@ -150,6 +150,26 @@ mod tests {
         assert_eq!(diagnostics.len(), 1);
     }
 
+    /// 内联 `<template name>` 的定义体同样要查：它是文件里真实存在的标签。
+    #[test]
+    fn component_inside_inline_template_is_reported() {
+        let fixture = Fixture::new("inline-template");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<template name="card"><web-view src="https://x"/></template><template is="card"/>"#,
+            );
+        let diagnostics = check_rule(&fixture, &UnsupportedComponent);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].message.contains("web-view"));
+    }
+
     /// 跳过是按页的：同一工程里没表态的页面照样检查。
     #[test]
     fn opt_out_does_not_leak_to_sibling_pages() {

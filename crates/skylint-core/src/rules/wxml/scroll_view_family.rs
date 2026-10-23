@@ -557,6 +557,10 @@ fn collect<'a>(
         let WxmlNode::Element(element) = node else {
             continue;
         };
+        // 模板定义体只在实例化处渲染，真实祖先链静态不可知，结构约束无法判定。
+        if element.in_template {
+            continue;
+        }
         check_element(doc, element, ancestors, constraints, path, out);
         ancestors.push(element);
         collect(doc, &element.children, ancestors, constraints, path, out);
@@ -710,6 +714,16 @@ mod tests {
     fn list_view_at_root_is_reported() {
         let diagnostics = check(&project("list-view-root", "<list-view/>"));
         assert_eq!(diagnostics.len(), 1);
+    }
+
+    /// 模板定义体只在实例化处渲染，真实容器静态不可知：不能当成「文件顶层」报。
+    #[test]
+    fn list_view_inside_inline_template_is_skipped() {
+        let diagnostics = check(&project(
+            "list-view-template",
+            r#"<template name="t"><list-view/></template>"#,
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     #[test]

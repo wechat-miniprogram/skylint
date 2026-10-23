@@ -400,19 +400,17 @@ impl Rule for ComponentAttribute {
                     if !attr.is_static {
                         continue;
                     }
-                    let Some(value) = attr.value.as_deref().map(str::trim) else {
-                        // 无值属性在 WXML 里表示布尔 true，不判定取值。
-                        continue;
-                    };
-                    if value.is_empty() {
-                        continue;
-                    }
                     let name = attr.name.to_ascii_lowercase();
                     let Some(entries) = table.lookup(&element.tag, &name) else {
                         continue;
                     };
-                    let Some(entry) = entries.iter().find(|entry| entry.constraint.rejects(value))
-                    else {
+                    // 无值属性是布尔 true：`[unsupported]` 只看属性是否存在，
+                    // 取值类约束（枚举 / 区间）无法判定，跳过。
+                    let value = attr.value.as_deref().map(str::trim).unwrap_or("");
+                    let Some(entry) = entries.iter().find(|entry| match entry.constraint {
+                        Constraint::Unsupported => true,
+                        _ => !value.is_empty() && entry.constraint.rejects(value),
+                    }) else {
                         continue;
                     };
                     let (line, column) = doc.position(attr.start);
@@ -642,15 +640,31 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_and_valueless_attributes_are_skipped() {
+    fn dynamic_and_valueless_enum_attributes_are_skipped() {
         let diagnostics = check_rule(
             &project(
                 "attr-dynamic",
-                r#"<image mode="{{m}}"/><image mode="a{{m}}"/><text space/><share-element shuttle-on-pop/><picker-view indicator-class mask-style/><text max-lines="{{n}}"/>"#,
+                r#"<image mode="{{m}}"/><image mode="a{{m}}"/><share-element shuttle-on-pop/><text max-lines="{{n}}"/>"#,
             ),
             &ComponentAttribute,
         );
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 无值属性是布尔 true：`[unsupported]` 的属性出现即无效，不能因为没写值就跳过。
+    #[test]
+    fn unsupported_attribute_without_value_is_reported() {
+        let diagnostics = check_rule(
+            &project(
+                "attr-bare",
+                r#"<text space/><picker-view indicator-class/>"#,
+            ),
+            &ComponentAttribute,
+        );
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+        assert!(diagnostics.iter().all(|d| d.message.contains("不支持")));
+        assert!(diagnostics[0].message.contains("space"));
+        assert!(diagnostics[1].message.contains("indicator-class"));
     }
 
     #[test]

@@ -16,6 +16,10 @@ impl ScrollViewType {
 /// 依据 `scroll-view.md` 的 type 属性表：list / custom / nested。
 const SCROLL_VIEW_TYPES: [&str; 3] = ["list", "custom", "nested"];
 
+/// 引擎接受但退化为传统滚动：`scroll_view_shadow_node.cc:20-23` 把 `default` 映射成
+/// `ScrollView::Type::kFlex`，走普通 Inflate、不触发按需渲染。知识库缺失这个值。
+const DEGRADED_TYPE: &str = "default";
+
 impl Rule for ScrollViewType {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -67,19 +71,30 @@ impl Rule for ScrollViewType {
                         }
                         let (line, column) = doc.position(attr.start);
                         let (end_line, end_column) = doc.position(attr.end);
+                        let (severity, message, help) = if value == DEGRADED_TYPE {
+                            (
+                                Severity::Warning,
+                                "`<scroll-view type=\"default\">` 在 Skyline 下按传统滚动渲染，没有按需渲染".to_string(),
+                                "type=default 是合法的（引擎映射到 kFlex），但长列表下性能明显低于 list/custom；建议改用 list（普通长列表）、custom（list-view/grid-view/sticky 布局）、nested（嵌套滚动）",
+                            )
+                        } else {
+                            (
+                                Severity::Error,
+                                format!("`<scroll-view type=\"{value}\">` 不是 Skyline 支持的滚动模式"),
+                                "合法值：list（普通长列表）、custom（list-view/grid-view/sticky 布局）、nested（嵌套滚动）",
+                            )
+                        };
                         diagnostics.push(
                             Diagnostic::new(
                                 Self::ID,
-                                Severity::Error,
-                                format!("`<scroll-view type=\"{value}\">` 不是 Skyline 支持的滚动模式"),
+                                severity,
+                                message,
                                 path,
                                 line,
                                 column,
                             )
                             .end(end_line, end_column)
-                            .help(
-                                "合法值：list（普通长列表）、custom（list-view/grid-view/sticky 布局）、nested（嵌套滚动）",
-                            ),
+                            .help(help),
                         );
                     }
                 }
@@ -130,5 +145,20 @@ mod tests {
             &ScrollViewType,
         );
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// `default` 是引擎接受的合法值（映射到 kFlex），只是没有按需渲染，不能报 error。
+    #[test]
+    fn default_type_is_valid_but_warns_about_missing_lazy_rendering() {
+        let diagnostics = check_rule(
+            &project(
+                "scroll-default",
+                r#"<scroll-view type="default"></scroll-view>"#,
+            ),
+            &ScrollViewType,
+        );
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].severity, crate::Severity::Warning);
+        assert!(diagnostics[0].message.contains("按需渲染"));
     }
 }

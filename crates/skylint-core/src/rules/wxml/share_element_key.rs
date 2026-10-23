@@ -72,8 +72,12 @@ impl Rule for ShareElementKey {
 
 fn check_file(doc: &WxmlDoc, path: &str, out: &mut Vec<Diagnostic>) {
     // 已出现的 (元素, key)，按文档顺序；比较时跳过互斥分支。
+    // 模板定义体里的 `share-element` 只在实例化处出现，跨定义的重复不一定是错，跳过。
     let mut seen: Vec<(&WxmlElement, &str)> = Vec::new();
-    for element in doc.elements().filter(|element| element.tag == TAG) {
+    for element in doc
+        .elements()
+        .filter(|element| element.tag == TAG && !element.in_template)
+    {
         let key = match find_attr(element, "key") {
             None => {
                 out.push(

@@ -6,9 +6,9 @@
 //!
 //! 子节点按 `input/wxml.rs` 的摊平语义计数：`<block>` / `wx:for` / `wx:if` 不产生
 //! 自己的层级，所以同一个 `wx:if` 的 if 与 else 分支会同时挂在一个父节点下。
-//! `exactly:<n>` 数的是「能同时渲染的子元素」：同一个 `wx:if` 的不同分支互斥，只算
-//! 一个——与 `scroll_view_family` 的 `unique` / `before` 口径一致。真实工程
-//! `miniprogram-skit_1` 的 `components/index-block/index-block.wxml:62,139` 就在
+//! `exactly:<n>` 数的是「能同时渲染的子元素」的最大值：同一个 `wx:if` 的不同分支互斥，
+//! 取各分支里最多的那一支；不同分支组之间相加。真实工程 `miniprogram-skit_1` 的
+//! `components/index-block/index-block.wxml:62,139` 就在
 //! `<horizontal-drag-gesture-handler>` 里用 `wx:if` / `wx:else` 各包一个 `<swiper>`；
 //! 按摊平结果直接计数会把它误报成 2 个子节点。
 
@@ -30,13 +30,21 @@ enum Constraint {
     Only(Vec<&'static str>),
     /// 直接元素子节点个数必须正好是 n；文本子节点不计。
     Exactly(usize),
-    /// 自身 `name=value` 成立时，直接子节点里必须有 `child_name=child_value`。
+    /// 自身条件成立时，直接子节点里必须有 `child_name=child_value`。
     RequiresChild {
         child_name: &'static str,
         child_value: &'static str,
-        name: &'static str,
-        value: &'static str,
+        /// 多个条件必须同时成立（`@` 分隔）。
+        conditions: Vec<Trigger>,
     },
+}
+
+/// 一个触发条件。`value` 为 `None` 时只看属性是否存在（未被静态置为假）——
+/// WXML 布尔属性的写法太多（`refresher-enabled`、`refresher-enabled=""`、`"{{true}}"`），
+/// 静默阶段无法区分 `{{true}}` 与 `{{refreshing}}`，所以只排除「确实没开」。
+struct Trigger {
+    name: &'static str,
+    value: Option<&'static str>,
 }
 
 struct Row {
@@ -78,14 +86,23 @@ fn parse_constraint(raw: &'static str) -> Option<Constraint> {
         "only" => Some(Constraint::Only(rest.split('|').collect())),
         "exactly" => rest.parse().ok().map(Constraint::Exactly),
         "requires-child" => {
-            let (child, condition) = rest.split_once('@')?;
+            let (child, triggers) = rest.split_once('@')?;
             let (child_name, child_value) = child.split_once('=')?;
-            let (name, value) = condition.split_once('=')?;
+            let conditions = triggers
+                .split('@')
+                .map(|trigger| {
+                    let trigger = trigger.trim();
+                    let (name, value) = trigger.split_once('=').unwrap_or((trigger, ""));
+                    Trigger {
+                        name: name.trim(),
+                        value: (!value.trim().is_empty()).then(|| value.trim()),
+                    }
+                })
+                .collect();
             Some(Constraint::RequiresChild {
                 child_name: child_name.trim(),
                 child_value: child_value.trim(),
-                name: name.trim(),
-                value: value.trim(),
+                conditions,
             })
         }
         _ => None,
@@ -127,6 +144,27 @@ fn element_children(element: &WxmlElement) -> impl Iterator<Item = &WxmlElement>
     })
 }
 
+/// 属性是否被明确关掉：缺失，或静态假值（`false` / `0`）。
+/// 动态值（`{{...}}`，包括 `{{true}}`）无法区分，按「可能开启」处理。
+fn attr_is_off(element: &WxmlElement, name: &str) -> bool {
+    match find_attr(element, name) {
+        None => true,
+        Some(attr) if attr.is_static => attr
+            .value
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|value| value.eq_ignore_ascii_case("false") || value == "0"),
+        Some(_) => false,
+    }
+}
+
+fn trigger_text(trigger: &Trigger) -> String {
+    match trigger.value {
+        Some(value) => format!(" {}=\"{value}\"", trigger.name),
+        None => format!(" {}", trigger.name),
+    }
+}
+
 /// 允许的子节点渲染成文档里的写法：`text` 指 `<text>` 组件与裸文本节点，其余按标签名。
 fn render_allowed(allowed: &[&str]) -> String {
     allowed
@@ -139,25 +177,42 @@ fn render_allowed(allowed: &[&str]) -> String {
         .join(" 或 ")
 }
 
-/// 两个元素是否分属同一个 `wx:if` 的不同分支：互斥，运行时不会同时渲染。
-fn exclusive(a: &WxmlElement, b: &WxmlElement) -> bool {
-    a.branches.iter().any(|left| {
-        b.branches
-            .iter()
-            .any(|right| left.group == right.group && left.arm != right.arm)
-    })
+/// 能同时渲染的直接子元素数量的**最大值**。
+///
+/// 同一个 `wx:if` 的不同分支互斥，取各分支里最多的那一支；不同分支组之间可以同时
+/// 渲染，直接相加。因此 `if` 一个子节点 + `else` 两个子节点算 2，而不是贪心保留的 1。
+fn max_rendered_children(element: &WxmlElement) -> usize {
+    count_rendered(&element_children(element).collect::<Vec<_>>(), 0)
 }
 
-/// 能同时渲染的直接子元素个数：互斥分支的子节点合并成一个。
-/// 贪心保留先出现的分支，`wx:if` + `wx:else` 因此算 1 个。
-fn rendered_children(element: &WxmlElement) -> Vec<&WxmlElement> {
-    let mut counted: Vec<&WxmlElement> = Vec::new();
-    for child in element_children(element) {
-        if !counted.iter().copied().any(|other| exclusive(other, child)) {
-            counted.push(child);
+fn count_rendered(children: &[&WxmlElement], depth: usize) -> usize {
+    let mut total = 0;
+    let mut groups: Vec<(u32, Vec<&WxmlElement>)> = Vec::new();
+    for &child in children {
+        match child.branches.get(depth) {
+            None => total += 1,
+            Some(branch) => match groups.iter_mut().find(|(group, _)| *group == branch.group) {
+                Some((_, bucket)) => bucket.push(child),
+                None => groups.push((branch.group, vec![child])),
+            },
         }
     }
-    counted
+    for (_, bucket) in groups {
+        let mut arms: Vec<(u32, Vec<&WxmlElement>)> = Vec::new();
+        for child in bucket {
+            let arm = child.branches[depth].arm;
+            match arms.iter_mut().find(|(value, _)| *value == arm) {
+                Some((_, list)) => list.push(child),
+                None => arms.push((arm, vec![child])),
+            }
+        }
+        total += arms
+            .into_iter()
+            .map(|(_, list)| count_rendered(&list, depth + 1))
+            .max()
+            .unwrap_or(0);
+    }
+    total
 }
 
 fn violations(doc: &WxmlDoc, element: &WxmlElement, row: &Row, path: &str) -> Vec<Diagnostic> {
@@ -186,7 +241,7 @@ fn violations(doc: &WxmlDoc, element: &WxmlElement, row: &Row, path: &str) -> Ve
             })
             .collect(),
         Constraint::Exactly(expected) => {
-            let count = rendered_children(element).len();
+            let count = max_rendered_children(element);
             if count == *expected {
                 return Vec::new();
             }
@@ -206,11 +261,14 @@ fn violations(doc: &WxmlDoc, element: &WxmlElement, row: &Row, path: &str) -> Ve
         Constraint::RequiresChild {
             child_name,
             child_value,
-            name,
-            value,
+            conditions,
         } => {
-            // 动态值不触发：无法确认实际的刷新样式。
-            if !matches!(check_attr(element, name, value), AttrCheck::Ok) {
+            // 任一触发条件不成立就不报；动态值无法确认，一律按不成立处理。
+            let satisfied = conditions.iter().all(|condition| match condition.value {
+                Some(value) => matches!(check_attr(element, condition.name, value), AttrCheck::Ok),
+                None => !attr_is_off(element, condition.name),
+            });
+            if !satisfied {
                 return Vec::new();
             }
             let mut unknown = false;
@@ -226,8 +284,11 @@ fn violations(doc: &WxmlDoc, element: &WxmlElement, row: &Row, path: &str) -> Ve
                 return Vec::new();
             }
             vec![on_element(format!(
-                "`<{} {}=\"{}\">` 没有 `{}=\"{}\"` 的直接子节点，自定义刷新节点不会被渲染",
-                element.tag, name, value, child_name, child_value
+                "`<{}{}>` 没有 `{}=\"{}\"` 的直接子节点，自定义刷新节点不会被渲染",
+                element.tag,
+                conditions.first().map(trigger_text).unwrap_or_default(),
+                child_name,
+                child_value
             ))]
         }
     }
@@ -252,6 +313,10 @@ impl Rule for ComponentChildren {
                 continue;
             };
             for element in doc.elements() {
+                // 模板定义体的真实子节点在实例化处，静态不可知。
+                if element.in_template {
+                    continue;
+                }
                 for row in rows.iter().filter(|row| row.tag == element.tag) {
                     diagnostics.extend(violations(&doc, element, row, path));
                 }
@@ -485,6 +550,47 @@ mod tests {
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
+    /// 分支子节点数不相等时，按最多的一支计数：else 分支有两个子节点就是 2。
+    #[test]
+    fn branches_with_different_child_counts_take_the_largest() {
+        let diagnostics = check(&project(
+            "gesture-uneven-branches",
+            concat!(
+                r#"<pan-gesture-handler>"#,
+                r#"<block wx:if="{{a}}"><view/></block>"#,
+                r#"<block wx:else><view/><view/></block>"#,
+                r#"</pan-gesture-handler>"#,
+            ),
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("2 个直接子元素"));
+    }
+
+    /// 模板定义体里的手势组件只在实例化处渲染，真实子节点静态不可知，不判。
+    #[test]
+    fn gesture_handler_inside_inline_template_is_not_judged() {
+        let diagnostics = check(&project(
+            "gesture-template",
+            r#"<template name="t"><horizontal-drag-gesture-handler><template is="row"/></horizontal-drag-gesture-handler></template>"#,
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 两个不同的 `wx:if` 组各自只留一个子节点，但两组可以同时渲染 → 2。
+    #[test]
+    fn independent_branch_groups_add_up() {
+        let diagnostics = check(&project(
+            "gesture-two-groups",
+            concat!(
+                r#"<pan-gesture-handler>"#,
+                r#"<block wx:if="{{a}}"><view/></block>"#,
+                r#"<block wx:if="{{b}}"><view/></block>"#,
+                r#"</pan-gesture-handler>"#,
+            ),
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    }
+
     #[test]
     fn other_components_are_not_counted() {
         let diagnostics = check(&project("view-multi", "<view><view/><view/><view/></view>"));
@@ -504,13 +610,33 @@ mod tests {
         assert!(diagnostics[0].message.contains(r#"slot="refresher""#));
     }
 
+    /// 没开 `refresher-enabled` 时 `refresher-default-style` 不产生刷新节点，不能报。
     #[test]
-    fn scroll_view_with_empty_body_and_none_style_is_reported() {
+    fn scroll_view_without_refresher_enabled_is_not_reported() {
+        let diagnostics = check(&project(
+            "refresher-disabled",
+            r#"<scroll-view refresher-default-style="none"><view>内容</view></scroll-view>"#,
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// `refresher-enabled="{{false}}"` 是动态值，无法区分真假 → 仍可能开启，继续报。
+    #[test]
+    fn scroll_view_with_statically_disabled_refresher_is_not_reported() {
+        let diagnostics = check(&project(
+            "refresher-static-false",
+            r#"<scroll-view refresher-enabled="false" refresher-default-style="none"><view>内容</view></scroll-view>"#,
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn scroll_view_with_enabled_refresher_and_empty_body_is_reported() {
         let diagnostics = check(&project(
             "refresher-empty",
-            r#"<scroll-view refresher-default-style="none"/>"#,
+            r#"<scroll-view refresher-enabled refresher-default-style="none"/>"#,
         ));
-        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     }
 
     #[test]
@@ -559,7 +685,7 @@ mod tests {
         let diagnostics = check(&project(
             "refresher-nested",
             concat!(
-                r#"<scroll-view refresher-default-style="none">"#,
+                r#"<scroll-view refresher-enabled refresher-default-style="none">"#,
                 r#"<view><view slot="refresher">下拉刷新</view></view>"#,
                 r#"</scroll-view>"#,
             ),
@@ -572,7 +698,7 @@ mod tests {
         let diagnostics = check(&project(
             "refresher-dynamic-slot",
             concat!(
-                r#"<scroll-view refresher-default-style="none">"#,
+                r#"<scroll-view refresher-enabled refresher-default-style="none">"#,
                 "<view slot=\"{{slotName}}\">下拉刷新</view>",
                 "</scroll-view>",
             ),

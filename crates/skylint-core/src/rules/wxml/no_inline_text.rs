@@ -1,12 +1,11 @@
 //! 文本与元素混排时 Skyline 会把文本当成独立 flex item，需用 `<text>` 包裹。
 
-use std::collections::HashSet;
-use std::fs;
-
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxml::{self, WxmlDoc, WxmlElement, WxmlNode};
+use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
+
+use super::{load_doc, wxml_files};
 
 pub const ID: &str = "skyline/no-inline-text";
 
@@ -29,30 +28,9 @@ impl Rule for NoInlineText {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let wxml_files = project
-            .pages
-            .iter()
-            .filter_map(|page| page.files.wxml.as_deref())
-            .chain(
-                project
-                    .components
-                    .iter()
-                    .filter_map(|component| component.files.wxml.as_deref()),
-            )
-            // 模板不属于任何单元，但同样可能把文字与元素混排。
-            .chain(project.template_files.iter().map(String::as_str));
-
-        let mut seen = HashSet::new();
         let mut diagnostics = Vec::new();
-        for path in wxml_files {
-            if !seen.insert(path) {
-                continue;
-            }
-            // 单文件读取/解析失败只跳过该单元，绝不终止整次扫描。
-            let Ok(source) = fs::read_to_string(project.abs(path)) else {
-                continue;
-            };
-            let Ok(doc) = wxml::parse(path, &source) else {
+        for path in wxml_files(project) {
+            let Some(doc) = load_doc(project, path) else {
                 continue;
             };
             collect(&doc, &doc.nodes, path, &mut diagnostics);
@@ -315,5 +293,25 @@ mod tests {
         let diagnostics = check(&fixture);
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].path, "pages/good/good.wxml");
+    }
+
+    /// 页面明确声明 `renderer: webview` 就是不迁 Skyline，整页跳过（与其它 WXML 规则同口径）。
+    #[test]
+    fn opted_out_page_is_skipped() {
+        let fixture = Fixture::new("opt-out");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/a/a","pages/b/b"],"renderer":"skyline"}"#,
+            )
+            .write("pages/a/a.json", "{}")
+            .write("pages/a/a.wxml", "<view>hello<image/></view>")
+            .write("pages/b/b.json", r#"{"renderer":"webview"}"#)
+            .write("pages/b/b.wxml", "<view>hello<image/></view>");
+
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].path, "pages/a/a.wxml");
     }
 }

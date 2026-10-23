@@ -59,17 +59,12 @@ impl Rule for WorkletDirective {
         let mut out = Vec::new();
         wxml_bindings(project, &mut out);
         for file in &project.scripts {
-            let mut registers_routes = false;
             for call in file.doc.calls() {
                 if call.callee.ends_with(APPLY_ANIMATED_STYLE) {
                     out.extend(updater_diagnostic(file, call));
                 }
-                registers_routes |= call.callee.ends_with(ADD_ROUTE_BUILDER);
             }
-            // 只在文件确实注册了路由时才看这几个键：同名键在别的对象上很常见。
-            if registers_routes {
-                out.extend(route_animation_diagnostics(file));
-            }
+            out.extend(route_animation_diagnostics(file));
         }
         out
     }
@@ -118,11 +113,23 @@ fn updater_diagnostic(file: &JsFile, call: &CallInfo) -> Option<Diagnostic> {
 }
 
 /// builder 返回对象里的三个路由动画处理函数。落点统一在键名上。
+///
+/// 只认 `addRouteBuilder` 那个 builder 函数体里的对象：同名键在别的对象上很常见，
+/// 按「文件里有 addRouteBuilder」整份扫描会误报。
 fn route_animation_diagnostics(file: &JsFile) -> Vec<Diagnostic> {
+    let builders = route_builder_spans(file);
+    if builders.is_empty() {
+        return Vec::new();
+    }
     file.doc
         .object_fns()
         .iter()
         .filter(|item| ROUTE_ANIMATIONS.contains(&item.key.as_str()))
+        .filter(|item| {
+            builders
+                .iter()
+                .any(|(start, end)| (*start..*end).contains(&item.key_start))
+        })
         .filter_map(|item| {
             let key = item.key.as_str();
             let (subject, help) = if item.fn_worklet == Some(false) {
@@ -155,13 +162,43 @@ fn route_animation_diagnostics(file: &JsFile) -> Vec<Diagnostic> {
         .collect()
 }
 
+/// 每个 `addRouteBuilder(type, builder)` 的 builder 函数体区间。
+///
+/// builder 是具名函数时取它的函数体；是内联函数时取实参本身。查不到定义
+/// （跨文件 / mixin）就不收录——找不到就无法证明它缺指令。
+fn route_builder_spans(file: &JsFile) -> Vec<(u32, u32)> {
+    let mut spans = Vec::new();
+    for call in file.doc.calls() {
+        if !call.callee.ends_with(ADD_ROUTE_BUILDER) {
+            continue;
+        }
+        let Some(arg) = call.args.get(1) else {
+            continue;
+        };
+        if let Some(name) = arg.ident.as_deref() {
+            if let Some(function) = file.doc.functions().iter().find(|f| f.name == Some(name)) {
+                spans.push((function.body_start, function.body_end));
+            }
+        } else if arg.fn_worklet.is_some() {
+            spans.push((arg.start, arg.end));
+        }
+    }
+    spans
+}
+
 /// 同文件里是否有这个具名函数，以及它是否 worklet；找不到为 `None`。
+///
+/// 同名函数出现多次时（极罕见）只要有任意一个带指令就放行：宁可漏报。
 fn named_has_worklet(file: &JsFile, name: &str) -> Option<bool> {
-    file.doc
-        .functions()
-        .iter()
-        .find(|function| function.name == Some(name))
-        .map(|function| function.has_worklet)
+    let mut found = false;
+    let mut any_worklet = false;
+    for function in file.doc.functions() {
+        if function.name == Some(name) {
+            found = true;
+            any_worklet |= function.has_worklet;
+        }
+    }
+    found.then_some(any_worklet)
 }
 
 /// WXML 上的 `worklet:` 绑定：值必须是静态标识符，且在同一单元脚本里能找到同名函数。
@@ -521,5 +558,35 @@ Page({ gesture, config });
 "#,
         );
         assert_eq!(messages(&WorkletDirective, &project), Vec::<String>::new());
+    }
+
+    /// 文件里注册了路由，但别的对象上有同名键：不能按「文件级」开关整份扫描。
+    #[test]
+    fn unrelated_object_in_a_file_that_registers_routes_is_ignored() {
+        let (_f, project) = single(
+            "directive-route-mixed",
+            r#"
+const gesture = { handlePrimaryAnimation: () => ({}) };
+wx.router.addRouteBuilder('slide', () => ({
+  handlePrimaryAnimation: () => { 'worklet'; return {}; },
+}));
+"#,
+        );
+        assert_eq!(messages(&WorkletDirective, &project), Vec::<String>::new());
+    }
+
+    /// 同一文件里两个对象都缺指令时，只报 builder 里那一个。
+    #[test]
+    fn only_the_builder_object_is_reported() {
+        let (_f, project) = single(
+            "directive-route-scope",
+            r#"
+const gesture = { handlePrimaryAnimation: () => ({}) };
+wx.router.addRouteBuilder('slide', () => ({ handlePrimaryAnimation: () => ({}) }));
+"#,
+        );
+        let diagnostics = WorkletDirective.check(&project);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].line, 3);
     }
 }

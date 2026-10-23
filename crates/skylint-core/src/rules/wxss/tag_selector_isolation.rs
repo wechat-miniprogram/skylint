@@ -78,8 +78,18 @@ impl crate::rules::Rule for TagSelectorIsolation {
                         Self::legacy(project, Some(route)),
                     ),
                     Scope::Component(path) => {
-                        // 组件样式漏到页面上：WebView 能命中，Skyline 不跨作用域
-                        (project.component_pages(path), Self::legacy(project, None))
+                        // 组件样式漏到外部：用到它的页面，以及同一页面里的兄弟组件。
+                        // WebView 能命中，Skyline 不跨作用域。
+                        let pages = project.component_pages(path);
+                        let mut foreign = pages.clone();
+                        for page in &pages {
+                            for component in project.page_components(page) {
+                                if component != path.as_str() && !foreign.contains(&component) {
+                                    foreign.push(component);
+                                }
+                            }
+                        }
+                        (foreign, Self::legacy(project, None))
                     }
                     // 样式图不会产生 Loose。
                     Scope::Loose(_) => continue,
@@ -171,10 +181,14 @@ fn find_foreign<'a>(
         else {
             continue;
         };
-        let doc = docs
+        let Some(doc) = docs
             .entry(wxml_path)
             .or_insert_with(|| super::super::wxml::load_doc(project, wxml_path))
-            .as_ref()?;
+            .as_ref()
+        else {
+            // 该单元 WXML 解析失败只跳过它，不影响其它外部单元。
+            continue;
+        };
         for element in doc.elements() {
             if selector.matches(element) == super::selector::Match::Yes {
                 return Some((unit.to_string(), element.tag.clone()));
@@ -280,6 +294,40 @@ mod tests {
         let diagnostics = check(&fixture);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
         assert_eq!(diagnostics[0].path, "components/c/c.wxss");
+    }
+
+    /// 组件样式漏到同一个页面里的兄弟组件：WebView 下 `view {}` 会命中它，
+    /// Skyline 下不跨组件，必须报（之前只对比页面，整类漏报）。
+    #[test]
+    fn component_tag_selector_matching_sibling_component_is_reported() {
+        let fixture = fixture("component-sibling", "");
+        fixture
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"c":"/components/c/c","d":"/components/d/d"}}"#,
+            )
+            .write("pages/index/index.wxml", "<c/><d/>")
+            .write("components/c/c.wxml", r#"<view class="inner"/>"#)
+            .write("components/c/c.wxss", "view { margin: 0; }")
+            .write("components/d/d.json", "{}")
+            .write("components/d/d.wxml", "<view class=\"other\"/>")
+            .write("components/d/d.wxss", "");
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].path, "components/c/c.wxss");
+        assert!(diagnostics[0].message.contains("components/d/d"));
+    }
+
+    /// 组件自己的标签选择器命中的是自己内部的节点，不算跨作用域。
+    #[test]
+    fn component_tag_selector_matching_own_node_is_fine() {
+        let fixture = fixture("component-own", "");
+        fixture
+            .write("pages/index/index.wxml", "<c/>")
+            .write("components/c/c.wxml", r#"<view class="inner"/>"#)
+            .write("components/c/c.wxss", "view { margin: 0; }");
+        let diagnostics = check(&fixture);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
     // ---- negative ----

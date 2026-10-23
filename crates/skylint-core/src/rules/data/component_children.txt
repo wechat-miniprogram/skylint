@@ -5,16 +5,17 @@
 #                              「文本节点也允许」，其余按标签名精确匹配。
 #   约束 exactly:<n>         ：直接元素子节点个数必须正好是 n；文本子节点（含空白）
 #                              一律不计，因为 WXML 里换行缩进就是文本节点。
-#   约束 requires-child:<子属性>=<值>@<自身属性>=<值>
-#                            ：自身该属性静态取值等于目标时，直接子节点里必须有
-#                              一个该属性取到目标值的节点。动态属性值不触发。
+#   约束 requires-child:<子属性>=<值>@<自身属性>=<值>[@<自身属性>]
+#                            ：自身条件全部成立时，直接子节点里必须有一个该属性取到
+#                              目标值的节点。多个条件用 `@` 分隔，必须同时成立；
+#                              不带 `=值` 的条件只要求属性存在（未被静态置为假）。
+#                              动态属性值不触发。
 #
 # 所有属性判断只认静态值（`is_static`）；`{{}}` 插值一律跳过——静态阶段无法确定
 # 实际取值，宁可漏报。兄弟节点按 `input/wxml.rs` 的摊平语义展开：`<block>`、
 # `wx:for`、`wx:if` 都不产生自己的层级，`wx:if` / `wx:else` 两个分支的子节点会
-# 同时挂在同一个父节点下；`exactly:<n>` 数的是「能同时渲染的子元素」，同一
-# `wx:if` 的不同分支互斥、只算一个（与 scroll_view_family 的 unique / before
-# 同一口径）。
+# 同时挂在同一个父节点下；`exactly:<n>` 数的是「能同时渲染的子元素」的最大值：
+# 同一 `wx:if` 的不同分支互斥，取各分支里最多的那一支，不同分支组之间相加。
 #
 # 依据：
 # - navigator：skyline-overview/references/introduction/component-support.md:23
@@ -29,7 +30,8 @@
 #   :195（`refresher-default-style` 取 black/white/none）、:214-222（none 的示例
 #   必须给 `<view slot="refresher">`）、:377 Bug&Tip 第 4 条「自定义下拉刷新节点需
 #   声明 slot="refresher"」。取 none 时不给自定义节点，下拉刷新区就是空白，故为
-#   warning 而不是 error。
+#   warning 而不是 error。触发还要 `refresher-enabled`（:193 默认 false）：没开
+#   下拉刷新时 `refresher-default-style` 不产生任何刷新节点。
 #
 navigator	only:text	error	把 `<navigator>` 的内容改成 `<text>` 或文本节点；需要自定义布局时改用 `bind:tap` 的 `<view>`
 pan-gesture-handler	exactly:1	error	用一个 `<view>` 包住手势内容，`<pan-gesture-handler>` 内只留这一个子节点
@@ -40,4 +42,4 @@ vertical-drag-gesture-handler	exactly:1	error	用一个 `<view>` 包住手势内
 scale-gesture-handler	exactly:1	error	用一个 `<view>` 包住手势内容，`<scale-gesture-handler>` 内只留这一个子节点
 force-press-gesture-handler	exactly:1	error	用一个 `<view>` 包住手势内容，`<force-press-gesture-handler>` 内只留这一个子节点
 tap-gesture-handler	exactly:1	error	用一个 `<view>` 包住手势内容，`<tap-gesture-handler>` 内只留这一个子节点
-scroll-view	requires-child:slot=refresher@refresher-default-style=none	warning	给 `<scroll-view refresher-default-style="none">` 补一个 `<view slot="refresher">` 作为自定义刷新节点
+scroll-view	requires-child:slot=refresher@refresher-default-style=none@refresher-enabled	warning	给 `<scroll-view refresher-default-style="none">` 补一个 `<view slot="refresher">` 作为自定义刷新节点
