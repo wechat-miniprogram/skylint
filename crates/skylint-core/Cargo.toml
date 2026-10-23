@@ -8,8 +8,8 @@ repository.workspace = true
 description = "Skyline 迁移检查核心：工程图、输入解析、规则、诊断"
 
 [dependencies]
-compiler-common = { workspace = true }
-compiler-diag = { workspace = true }
+common = { workspace = true }
+diag = { workspace = true }
 miette = { workspace = true }
 compiler-graph = { workspace = true }
 

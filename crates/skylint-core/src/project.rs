@@ -12,8 +12,8 @@
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use compiler_common::pathutil::{posix_dirname, posix_join};
-use compiler_common::{LocalFs, ProjectFs};
+use common::pathutil::{posix_dirname, posix_join};
+use common::{LocalFs, ProjectFs};
 use compiler_graph::{AppConf, ResolveExtConf, Resolver, is_skyline_page, resolve_component_path};
 use serde_json::{Map, Value};
 
@@ -833,7 +833,7 @@ fn read_project_config(root: &Path) -> (Value, String) {
 /// minidev 的错误链里可能挂着结构化诊断，优先取它（带行列），否则用 Display。
 fn describe(err: &anyhow::Error) -> String {
     err.chain()
-        .find_map(|e| e.downcast_ref::<compiler_diag::Diagnostic>())
+        .find_map(|e| e.downcast_ref::<diag::Diagnostic>())
         .map(|d| from_compiler_diag(d).message)
         .unwrap_or_else(|| err.to_string())
 }

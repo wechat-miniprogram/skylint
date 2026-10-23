@@ -87,10 +87,10 @@ impl Diagnostic {
 
 /// minidev 的诊断只有「起点行列 + 字节区间」，跨 crate 边界时补齐成我们的形状。
 /// 它的 `column` 是 0-based，这里转成 1-based。
-pub fn from_compiler_diag(d: &compiler_diag::Diagnostic) -> Diagnostic {
+pub fn from_compiler_diag(d: &diag::Diagnostic) -> Diagnostic {
     let severity = match d.severity {
-        compiler_diag::Severity::Error => Severity::Error,
-        compiler_diag::Severity::Warning => Severity::Warning,
+        diag::Severity::Error => Severity::Error,
+        diag::Severity::Warning => Severity::Warning,
     };
     let line = d.line.unwrap_or(1);
     let column = d.column.unwrap_or(0) + 1;

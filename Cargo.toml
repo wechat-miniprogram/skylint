@@ -15,12 +15,12 @@ skylint-core = { path = "crates/skylint-core" }
 # 工程图与诊断复用 minidev（版本对齐 minidev workspace）。
 # 开发期由 .cargo/config.toml 的 [patch.crates-io] 指向本地/内网源码；
 # minidev 发布到 crates.io 后此处无需改动。
-compiler-common = "0.10"
-compiler-diag = "0.10"
+common = "0.12"
+diag = "0.12"
 # 终端渲染：与 minidev 的错误出口同一套（GraphicalReportHandler）。
 # fancy-no-backtrace 不带 backtrace，够渲染源码片段 + caret。
 miette = { version = "7.6", default-features = false, features = ["fancy-no-backtrace"] }
-compiler-graph = "0.10"
+compiler-graph = "0.12"
 
 anyhow = "1"
 clap = { version = "4", features = ["derive", "wrap_help"] }
