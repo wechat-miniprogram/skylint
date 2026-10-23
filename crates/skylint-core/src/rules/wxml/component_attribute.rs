@@ -39,8 +39,8 @@ enum Constraint {
 
 #[derive(Debug, Clone, Copy)]
 enum NumberRange {
-    /// 正整数。
-    Positive,
+    /// 非负整数（≥ 0）。
+    NonNegative,
     /// 闭区间。
     Between(f64, f64),
 }
@@ -51,9 +51,9 @@ impl Constraint {
             Self::Enum(values) => !contains(values, value),
             Self::WebviewOnly(values) => contains(values, value),
             Self::Unsupported => true,
-            Self::Number(NumberRange::Positive) => !value
+            Self::Number(NumberRange::NonNegative) => !value
                 .parse::<f64>()
-                .is_ok_and(|number| number >= 1.0 && number.fract() == 0.0),
+                .is_ok_and(|number| number >= 0.0 && number.fract() == 0.0),
             Self::Number(NumberRange::Between(min, max)) => !value
                 .parse::<f64>()
                 .is_ok_and(|number| number >= *min && number <= *max),
@@ -163,9 +163,9 @@ const ATTRIBUTES: &[AttributeRule] = &[
     AttributeRule {
         tags: &["text"],
         attrs: &["overflow"],
-        constraint: Constraint::Enum(&["visible", "clip", "fade", "ellipsis"]),
+        constraint: Constraint::Enum(&["visible", "clip", "fade", "ellipsis", "unset"]),
         help: None,
-    }, // media/text.md:50-55
+    }, // media/text.md:50-55；text_shadow_node.cc:280-281 有 unset 分支
     AttributeRule {
         tags: &["image"],
         attrs: &["mode"],
@@ -175,9 +175,10 @@ const ATTRIBUTES: &[AttributeRule] = &[
             "aspectFill",
             "widthFix",
             "heightFix",
+            "auto",
         ]),
-        help: Some("合法值：scaleToFill、aspectFit、aspectFill、widthFix、heightFix"),
-    }, // media/image.md:32-38
+        help: Some("合法值：scaleToFill、aspectFit、aspectFill、widthFix、heightFix、auto"),
+    }, // media/image.md:32-38；image_shadow_node.cc:99-101 有 auto
     AttributeRule {
         tags: &["input"],
         attrs: &["type"],
@@ -187,9 +188,9 @@ const ATTRIBUTES: &[AttributeRule] = &[
     AttributeRule {
         tags: &["input"],
         attrs: &["confirm-type"],
-        constraint: Constraint::Enum(&["send", "search", "next", "go", "done"]),
-        help: Some("合法值：send、search、next、go、done"),
-    }, // form/input.md:54-60
+        constraint: Constraint::Enum(&["send", "search", "next", "go", "done", "return"]),
+        help: Some("合法值：send、search、next、go、done、return"),
+    }, // form/input.md:54-60；input.dart:1121-1122 映射 return
     AttributeRule {
         tags: &["swiper"],
         attrs: &["layout-type"],
@@ -346,18 +347,6 @@ const ATTRIBUTES: &[AttributeRule] = &[
         help: Some("仅支持 scroll-view、swiper"),
     }, // gesture/gesture-system.md:15-22,56-67；gesture/gesture-negotiation.md:127-129
     AttributeRule {
-        tags: &["text"],
-        attrs: &["space"],
-        constraint: Constraint::Unsupported,
-        help: Some("Skyline 不支持 space 属性，空格改用 CSS white-space 控制"),
-    }, // media/text.md:327
-    AttributeRule {
-        tags: &["text"],
-        attrs: &["decode"],
-        constraint: Constraint::Unsupported,
-        help: Some("Skyline 不解码 HTML 实体，直接写目标字符"),
-    }, // media/text.md:328
-    AttributeRule {
         tags: &["picker-view"],
         attrs: &["indicator-class", "mask-style"],
         constraint: Constraint::Unsupported,
@@ -378,9 +367,9 @@ const ATTRIBUTES: &[AttributeRule] = &[
     AttributeRule {
         tags: &["text"],
         attrs: &["max-lines"],
-        constraint: Constraint::Number(NumberRange::Positive),
-        help: Some("合法值：正整数"),
-    }, // media/text.md:46
+        constraint: Constraint::Number(NumberRange::NonNegative),
+        help: Some("合法值：非负整数（0 表示不限制行数）"),
+    }, // media/text.md:46；text_shadow_node.h:102-103「0 means not apply max-lines constraints」
     AttributeRule {
         tags: &["draggable-sheet"],
         attrs: &["initial-child-size", "min-child-size", "max-child-size"],
@@ -620,8 +609,8 @@ fn message(tag: &str, attr: &str, value: &str, constraint: &Constraint) -> Strin
         Constraint::Unsupported => {
             format!("`<{tag}>` 的 `{attr}` 属性在 Skyline 下不支持，会被静默忽略")
         }
-        Constraint::Number(NumberRange::Positive) => {
-            format!("`<{tag} {attr}=\"{value}\">` 必须是正整数")
+        Constraint::Number(NumberRange::NonNegative) => {
+            format!("`<{tag} {attr}=\"{value}\">` 必须是非负整数")
         }
         Constraint::Number(NumberRange::Between(min, max)) => {
             format!("`<{tag} {attr}=\"{value}\">` 必须是 {min}~{max} 的数值")
@@ -648,7 +637,7 @@ fn help(entry: &Entry) -> String {
         Constraint::WebviewOnly(_) => "改用 aspectFill 配合 CSS 定位".to_string(),
         Constraint::Unsupported => "Skyline 不支持该属性，建议删除".to_string(),
         Constraint::Number(NumberRange::Between(min, max)) => format!("合法值：{min}~{max}"),
-        Constraint::Number(NumberRange::Positive) => "合法值：正整数".to_string(),
+        Constraint::Number(NumberRange::NonNegative) => "合法值：非负整数".to_string(),
     }
 }
 
@@ -681,8 +670,31 @@ mod tests {
         assert_eq!((image.line, image.column), (1, 14));
         assert_eq!(
             image.help.as_deref().unwrap(),
-            "合法值：scaleToFill、aspectFit、aspectFill、widthFix、heightFix"
+            "合法值：scaleToFill、aspectFit、aspectFill、widthFix、heightFix、auto"
         );
+    }
+
+    /// 引擎实际接受、但旧白名单漏掉的取值：补上后不再误报。
+    #[test]
+    fn engine_accepted_values_are_allowed() {
+        let diagnostics = check_rule(
+            &project(
+                "attr-engine-values",
+                r#"<image mode="auto"/><text overflow="unset"/><input confirm-type="return"/><text max-lines="0"/>
+<image mode="cover"/><text overflow="hidden"/><input confirm-type="enter"/><text max-lines="-1"/>"#,
+            ),
+            &ComponentAttribute,
+        );
+        assert_eq!(diagnostics.len(), 4, "{diagnostics:#?}");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.severity == crate::Severity::Warning)
+        );
+        assert!(diagnostics[0].message.contains("cover"));
+        assert!(diagnostics[1].message.contains("hidden"));
+        assert!(diagnostics[2].message.contains("enter"));
+        assert!(diagnostics[3].message.contains("max-lines"));
     }
 
     #[test]
@@ -695,8 +707,12 @@ mod tests {
 <share-element rect-tween-type="cubic-bezier(0.4, 0, 0.2, 1)" shuttle-on-push="from"/>
 <scroll-view scroll-into-view-alignment="CENTER" associative-container="nested-scroll-view"/>
 <input type="nickname" confirm-type="done"/>
+<input type="text" confirm-type="return"/>
 <snapshot mode="picture"/>
-<text overflow="ellipsis"/>"#,
+<text overflow="ellipsis"/>
+<text overflow="unset"/>
+<image mode="auto"/>
+<text max-lines="0"/>"#,
             ),
             &ComponentAttribute,
         );
@@ -721,14 +737,14 @@ mod tests {
         let diagnostics = check_rule(
             &project(
                 "attr-bare",
-                r#"<text space/><picker-view indicator-class/>"#,
+                r#"<picker-view indicator-class/><input placeholder-class/>"#,
             ),
             &ComponentAttribute,
         );
         assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
         assert!(diagnostics.iter().all(|d| d.message.contains("不支持")));
-        assert!(diagnostics[0].message.contains("space"));
-        assert!(diagnostics[1].message.contains("indicator-class"));
+        assert!(diagnostics[0].message.contains("indicator-class"));
+        assert!(diagnostics[1].message.contains("placeholder-class"));
     }
 
     #[test]
@@ -753,21 +769,29 @@ mod tests {
         let diagnostics = check_rule(
             &project(
                 "attr-unsupported",
-                r#"<text space="nbsp"/><text decode="true"/><picker-view indicator-class="a" mask-style="b"/>"#,
+                r#"<picker-view indicator-class="a" mask-style="b"/><input placeholder-class="ph"/>"#,
             ),
             &ComponentAttribute,
         );
-        assert_eq!(diagnostics.len(), 4);
+        assert_eq!(diagnostics.len(), 3);
         assert!(
             diagnostics
                 .iter()
                 .all(|d| d.message.contains("不支持") && d.severity == crate::Severity::Warning)
         );
-        assert!(
-            diagnostics
-                .iter()
-                .any(|d| d.help.as_deref().unwrap().contains("white-space"))
+    }
+
+    /// `text_support_space_and_decode` 硬编码开启，两个属性都已实现。
+    #[test]
+    fn text_space_and_decode_are_supported() {
+        let diagnostics = check_rule(
+            &project(
+                "attr-text-space-decode",
+                r#"<text space="nbsp" decode="true"/><text space/><text decode/>"#,
+            ),
+            &ComponentAttribute,
         );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     #[test]
@@ -787,7 +811,7 @@ mod tests {
         let diagnostics = check_rule(
             &project(
                 "attr-number",
-                r#"<text max-lines="0"/><text max-lines="2.5"/><text max-lines="abc"/>
+                r#"<text max-lines="-1"/><text max-lines="2.5"/><text max-lines="abc"/>
 <draggable-sheet initial-child-size="1.5" min-child-size="-0.1" max-child-size="2"/>"#,
             ),
             &ComponentAttribute,
@@ -796,7 +820,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
-                .any(|d| d.message.contains("正整数") && d.message.contains("max-lines"))
+                .any(|d| d.message.contains("非负整数") && d.message.contains("max-lines"))
         );
         assert!(
             diagnostics
@@ -810,7 +834,7 @@ mod tests {
         let diagnostics = check_rule(
             &project(
                 "attr-number-ok",
-                r#"<text max-lines="1"/><text max-lines="1.0"/><text max-lines="{{n}}"/>
+                r#"<text max-lines="0"/><text max-lines="1"/><text max-lines="1.0"/><text max-lines="{{n}}"/>
 <draggable-sheet initial-child-size="0" min-child-size="0.25" max-child-size="1"/>"#,
             ),
             &ComponentAttribute,

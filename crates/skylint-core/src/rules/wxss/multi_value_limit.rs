@@ -35,17 +35,10 @@ impl Rule for MultiValueLimit {
             if count <= max {
                 return;
             }
-            let message = if max == 1 {
-                format!(
-                    "`{}` 在 Skyline 下不支持多组值，当前有 {count} 组",
-                    decl.name
-                )
-            } else {
-                format!(
-                    "`{}` 在 Skyline 下最多支持 {max} 个值，当前有 {count} 个",
-                    decl.name
-                )
-            };
+            let message = format!(
+                "`{}` 在 Skyline 下最多支持 {max} 个值，当前有 {count} 个",
+                decl.name
+            );
             out.push(at_value(
                 Self::ID,
                 doc,
@@ -59,8 +52,11 @@ impl Rule for MultiValueLimit {
 
 fn value_limit(name: &str) -> Option<usize> {
     match name.to_ascii_lowercase().as_str() {
-        "background-image" | "mask-image" | "background-position" => Some(2),
-        "background-repeat" | "background-size" => Some(1),
+        "background-image"
+        | "mask-image"
+        | "background-position"
+        | "background-repeat"
+        | "background-size" => Some(2),
         _ => None,
     }
 }
@@ -79,8 +75,8 @@ mod tests {
             r#"
             .a { background-image: url(a.png), url(b.png), url(c.png); }
             .b { background-position: 0 0, 10px 10px, 20px 20px; }
-            .c { background-repeat: no-repeat, repeat; }
-            .d { background-size: 10px 10px, 20px 20px; }
+            .c { background-repeat: no-repeat, repeat, repeat-x; }
+            .d { background-size: 10px 10px, 20px 20px, 30px 30px; }
             "#,
         );
         let diags = MultiValueLimit.check(&project);
@@ -99,6 +95,8 @@ mod tests {
             .c { background-position: 0 0, 10px 10px; }
             .d { background-repeat: no-repeat; }
             .e { background-size: 10px 10px; }
+            .h { background-repeat: no-repeat, repeat; }
+            .i { background-size: 10px 10px, 20px 20px; }
             .f { background-image: var(--imgs); }
             .g { background-image: linear-gradient(red, blue), url(a.png); }
             "#,

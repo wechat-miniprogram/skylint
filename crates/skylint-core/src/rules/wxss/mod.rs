@@ -4,13 +4,15 @@
 //! 「值的个数/结构」类限制各占一个文件。它们共用 [`visit_rules`] /
 //! [`visit_declarations`] 两层遍历与 [`value_util`] 的值分词工具。
 
+pub mod border_none_width;
 pub mod box_sizing;
 pub mod calc_angle;
+pub mod calc_min_max;
 pub mod dict_table;
 pub mod filter_limit;
 pub mod flex_direction;
 pub mod gradient_limit;
-pub mod mask_image_gradient;
+pub mod gradient_unsupported;
 pub mod multi_value_limit;
 pub mod no_pseudo;
 pub mod selector;
@@ -25,12 +27,14 @@ pub mod unsupported_value;
 pub mod value_degraded;
 pub mod value_util;
 
+pub use border_none_width::BorderNoneWidth;
 pub use box_sizing::BoxSizing;
 pub use calc_angle::CalcAngle;
+pub use calc_min_max::CalcMinMax;
 pub use filter_limit::FilterLimit;
 pub use flex_direction::FlexDirection;
 pub use gradient_limit::GradientLimit;
-pub use mask_image_gradient::MaskImageGradient;
+pub use gradient_unsupported::GradientUnsupported;
 pub use multi_value_limit::MultiValueLimit;
 pub use no_pseudo::NoPseudo;
 pub use shorthand_partial::ShorthandPartial;

@@ -149,9 +149,12 @@ const SUPPORTED_COMPONENTS: &[&str] = &[
     "sticky-section",
     "list-view",
     "grid-view",
+    "list-builder",
+    "grid-builder",
     "nested-scroll-header",
     "nested-scroll-body",
     "draggable-sheet",
+    "open-container",
     "snapshot",
     "tap-gesture-handler",
     "double-tap-gesture-handler",
@@ -234,4 +237,15 @@ fn element_diagnostic(
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::is_builtin;
+
+    /// 引擎节点工厂注册的内置组件（shadow/node_factory.cc:329,331,342-343）
+    /// 必须在白名单里，否则结构规则会把它们当成自定义组件边界而跳过内部约束。
+    #[test]
+    fn engine_builtin_components_are_known() {
+        for tag in ["open-container", "list-builder", "grid-builder"] {
+            assert!(is_builtin(tag), "{tag} should be builtin");
+        }
+    }
+}

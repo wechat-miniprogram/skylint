@@ -44,7 +44,7 @@ impl crate::rules::Rule for TextDecorationTarget {
         RuleMeta {
             id: ID,
             severity: Severity::Warning,
-            description: "text-decoration 在 Skyline 下只对 <text>/<span>/<input> 生效",
+            description: "text-decoration 在 Skyline 下只对 <text>/<span>/<input>/<navigator> 生效",
         }
     }
 
@@ -109,7 +109,7 @@ impl crate::rules::Rule for TextDecorationTarget {
                             decl,
                             Severity::Warning,
                             format!(
-                                "`{}` 在 Skyline 下只作用于 `<text>` / `<span>` / `<input>`；选择器 `{selectors}` 在某处命中的节点都不是文本节点，装饰不会显示",
+                                "`{}` 在 Skyline 下只作用于 `<text>` / `<span>` / `<input>` / `<navigator>`；选择器 `{selectors}` 在某处命中的节点都不是文本节点，装饰不会显示",
                                 decl.name
                             ),
                             "把文本包进 `<text>` 并在它上面写装饰；`<view>` 上的装饰在 Skyline 下不会绘制",
@@ -135,7 +135,10 @@ fn can_decorate(element: &WxmlElement) -> bool {
     if !is_builtin(&element.tag) {
         return true;
     }
-    matches!(element.tag.as_str(), "text" | "span" | "input")
+    matches!(
+        element.tag.as_str(),
+        "text" | "span" | "input" | "navigator"
+    )
 }
 
 #[cfg(test)]
@@ -190,6 +193,16 @@ mod tests {
         let diagnostics = check(
             "text",
             r#"<text class="link">详情</text>"#,
+            ".link { text-decoration: underline; }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn decoration_on_navigator_is_fine() {
+        let diagnostics = check(
+            "navigator",
+            r#"<navigator class="link">详情</navigator>"#,
             ".link { text-decoration: underline; }",
         );
         assert!(diagnostics.is_empty(), "{diagnostics:?}");

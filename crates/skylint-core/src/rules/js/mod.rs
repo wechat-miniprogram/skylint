@@ -22,7 +22,7 @@ pub use unsupported_api::UnsupportedApi;
 pub use worklet_api_scope::WorkletApiScope;
 pub use worklet_data_freeze::WorkletDataFreeze;
 pub use worklet_directive::WorkletDirective;
-pub use worklet_es5::WorkletEs5;
+pub use worklet_es5::WorkletCompileSetting;
 
 use std::collections::HashSet;
 

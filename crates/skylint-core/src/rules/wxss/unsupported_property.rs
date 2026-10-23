@@ -92,12 +92,34 @@ mod tests {
             .f { color: red; }
             .g { --writing-mode: vertical-rl; }
             .h { border-left: 1px solid red; }
+            .i { mask-position: center; }
             "#,
         );
         assert_eq!(
             messages(&UnsupportedProperty, &project),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn property_reports_animation_play_state_and_missing_property_ids() {
+        let (_f, project) = single(
+            "property-unconditional",
+            r#"
+            .a { animation-play-state: paused; }
+            .b { animation-play-state: running; }
+            .c { text-transform: uppercase; }
+            .d { user-select: none; }
+            "#,
+        );
+        let diags = UnsupportedProperty.check(&project);
+        assert_eq!(diags.len(), 4);
+        assert!(diags.iter().all(|d| d.severity == crate::Severity::Error));
+        assert!(diags[0].message.contains("`animation-play-state`"));
+        assert!(diags[1].message.contains("`animation-play-state`"));
+        assert!(diags[2].message.contains("`text-transform`"));
+        assert!(diags[3].message.contains("`user-select`"));
+        assert!(diags[3].help.as_deref().unwrap().contains("user-select"));
     }
 
     #[test]

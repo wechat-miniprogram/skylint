@@ -101,6 +101,8 @@ mod tests {
             .j { width: calc(100% - 1px); }
             .k { text-decoration-line: underline line-through; }
             .l { --grid: 1; }
+            .m { border-style: hidden; }
+            .n { border-top-style: hidden; }
             "#,
         );
         assert_eq!(messages(&UnsupportedValue, &project), Vec::<String>::new());

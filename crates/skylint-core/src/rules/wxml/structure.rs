@@ -9,7 +9,6 @@
 //! - `Ancestor`：最近的同名祖先必须是目标，并满足目标上的属性要求
 //! - `FirstChild`：父节点是目标容器时，子标签必须是它的第一个元素子节点
 //! - `Unique`：最近的目标容器内，子标签最多出现一次（多余的不会生效）
-//! - `Before { sibling, .. }`：目标容器内，子标签必须排在同级 `<sibling>` 之前
 //! - `RendersFirst`：子标签只渲染第一个直接子元素，多写的会被静默丢弃
 //! - `RequiresAttr { name, unless }`：子标签必须显式声明 `name`；`unless` 为
 //!   `(attr, v)` 时，自身 `<attr>=<v>` 不再要求（典型：list-builder 的 child-height
@@ -19,12 +18,13 @@
 //! - `ChildrenOnly`：直接元素子节点只能是这些标签。`text` 是特殊值，表示文本节点也允许
 //! - `Exactly`：直接元素子节点个数必须正好是 n；文本子节点（含空白）不计
 //! - `RequiresChild`：自身条件全部成立时，直接子节点里必须有一个该属性取到目标值的节点
+//! - `RequiresChildTag`：自身条件全部成立时，直接子节点里必须有一个该标签的节点
 //! - 目标写法：`Target { tag, attr }`，多个目标直接列成数组
 //!
 //! # 条件分支
 //!
 //! 同一个 `wx:if` 节点的不同分支互斥（运行时只会渲染其中一个），因此
-//!   first-child / unique / before 比较兄弟时会跳过与当前节点互斥的候选：不同分支不算
+//!   first-child / unique 比较兄弟时会跳过与当前节点互斥的候选：不同分支不算
 //!   「排在前面」、不算重复、不算顺序违规。两个独立的 `wx:if` 之间不互斥，仍按原样判定；
 //!   无条件元素与条件分支元素也不互斥（两者可能同时渲染）。
 //!
@@ -66,11 +66,6 @@ pub(crate) enum Relation {
     FirstChild(&'static [Target]),
     /// 最近的目标容器内，子节点最多出现一次。
     Unique(&'static [Target]),
-    /// 目标容器内，子节点必须排在同级 `<sibling>` 之前。
-    Before {
-        sibling: &'static str,
-        containers: &'static [Target],
-    },
     /// 子节点只渲染第一个直接子元素。
     RendersFirst,
     /// 子节点自身必须声明该属性；`unless` 里的属性取该值时不再要求。
@@ -97,6 +92,12 @@ pub(crate) enum Relation {
     RequiresChild {
         child_attr: &'static str,
         child_value: &'static str,
+        /// 多个条件必须同时成立。
+        own: &'static [Condition],
+    },
+    /// 自身条件成立时，直接子节点里必须有一个 `child_tag` 标签的节点。
+    RequiresChildTag {
+        child_tag: &'static str,
         /// 多个条件必须同时成立。
         own: &'static [Condition],
     },
@@ -357,30 +358,6 @@ fn descendants(element: &WxmlElement) -> Vec<&WxmlElement> {
     out
 }
 
-fn before_violation(
-    element: &WxmlElement,
-    ancestors: &[&WxmlElement],
-    containers: &[Target],
-    sibling_tag: &str,
-) -> Option<String> {
-    let container = nearest_container(ancestors, containers)?;
-    let siblings: Vec<&WxmlElement> = element_children(container).collect();
-    let this = siblings
-        .iter()
-        .position(|sibling| std::ptr::eq(*sibling, element))?;
-    // 互斥分支里的 `<tag>` 与它不会同时渲染，不构成顺序违规。
-    let other = siblings
-        .iter()
-        .position(|sibling| sibling.tag == sibling_tag && !exclusive(sibling, element))?;
-    if other > this {
-        return None;
-    }
-    Some(format!(
-        "`<{}>` 排在 `<{}>` 之后，必须放在同级 `<{}>` 之前",
-        element.tag, sibling_tag, sibling_tag
-    ))
-}
-
 fn renders_first_violation(element: &WxmlElement) -> Option<String> {
     let count = max_rendered_children(element);
     if count < 2 {
@@ -483,7 +460,7 @@ fn render_allowed(allowed: &[&str]) -> String {
         .join(" 或 ")
 }
 
-/// 子节点类约束（`ChildrenOnly` / `Exactly` / `RequiresChild`）的诊断。
+/// 子节点类约束（`ChildrenOnly` / `Exactly` / `RequiresChild` / `RequiresChildTag`）的诊断。
 fn children_violations(
     id: &'static str,
     doc: &WxmlDoc,
@@ -540,13 +517,7 @@ fn children_violations(
             own,
         } => {
             // 任一触发条件不成立就不报；动态值无法确认，一律按不成立处理。
-            let satisfied = own.iter().all(|condition| match condition {
-                Condition::Equals(name, value) => {
-                    matches!(check_attr(element, name, value), AttrCheck::Ok)
-                }
-                Condition::Present(name) => !attr_is_off(element, name),
-            });
-            if !satisfied {
+            if !conditions_hold(element, own) {
                 return Vec::new();
             }
             let mut unknown = false;
@@ -569,8 +540,28 @@ fn children_violations(
                 child_value
             ))]
         }
+        Relation::RequiresChildTag { child_tag, own } => {
+            if !conditions_hold(element, own)
+                || element_children(element).any(|child| child.tag == *child_tag)
+            {
+                return Vec::new();
+            }
+            vec![on_element(format!(
+                "`<{}{}>` 没有必需的 `<{child_tag}>` 直接子节点",
+                element.tag,
+                own.first().map(condition_text).unwrap_or_default()
+            ))]
+        }
         _ => Vec::new(),
     }
+}
+
+/// 触发条件是否全部成立；动态值无法确认，按不成立处理。
+fn conditions_hold(element: &WxmlElement, conditions: &[Condition]) -> bool {
+    conditions.iter().all(|condition| match condition {
+        Condition::Equals(name, value) => matches!(check_attr(element, name, value), AttrCheck::Ok),
+        Condition::Present(name) => !attr_is_off(element, name),
+    })
 }
 
 /// 对单个元素应用约束表，命中的关系直接产出诊断。
@@ -585,7 +576,10 @@ pub(crate) fn check_element(
 ) {
     for constraint in constraints.iter().filter(|c| c.tag == element.tag) {
         match &constraint.relation {
-            Relation::ChildrenOnly(_) | Relation::Exactly(_) | Relation::RequiresChild { .. } => {
+            Relation::ChildrenOnly(_)
+            | Relation::Exactly(_)
+            | Relation::RequiresChild { .. }
+            | Relation::RequiresChildTag { .. } => {
                 out.extend(children_violations(id, doc, element, constraint, path));
                 continue;
             }
@@ -612,10 +606,6 @@ pub(crate) fn check_element(
                 }
             }
             Relation::Unique(targets) => unique_violation(element, ancestors, targets),
-            Relation::Before {
-                sibling,
-                containers,
-            } => before_violation(element, ancestors, containers, sibling),
             Relation::RendersFirst => renders_first_violation(element),
             Relation::RequiresAttr { name, unless } => {
                 requires_attr_violation(element, name, *unless)
@@ -628,7 +618,10 @@ pub(crate) fn check_element(
                 name,
                 value,
             } => within_violation(element, ancestors, container, name, value),
-            Relation::ChildrenOnly(_) | Relation::Exactly(_) | Relation::RequiresChild { .. } => {
+            Relation::ChildrenOnly(_)
+            | Relation::Exactly(_)
+            | Relation::RequiresChild { .. }
+            | Relation::RequiresChildTag { .. } => {
                 unreachable!("子节点类约束已在上面处理")
             }
         };

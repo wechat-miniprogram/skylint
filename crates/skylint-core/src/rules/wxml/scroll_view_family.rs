@@ -16,11 +16,15 @@
 //!   只加「在 sticky-section 内时」的条件约束，挂载位置仍不约束（见下方整条撤销的记录）。
 //! - nested-scroll-body 唯一：scroll/nested-scroll.md MUST 4「外层只能有一个 nested-scroll-body」（:166）、
 //!   NEVER 2「不要有多个 nested-scroll-body」。
-//! - nested-scroll-header 顺序：nested-scroll.md:29「只能渲染在 nested-scroll-body 上面」、
-//!   NEVER 1「不要在 nested-scroll-body 下面放 nested-scroll-header」（:170）。
+//! - nested-scroll-body 必需：nested-scroll.md:38 只渲染第一个 body；
+//!   skyline_scroll_view.dart:1559-1562 用 `firstWhere((child) => child is NestedScrollBody)`
+//!   且没有 orElse，缺 body 时直接抛 StateError（`?? SizedBox()` 是死代码）。
+//! - nested-scroll-header 与 body 的顺序无关：skyline_scroll_view.dart:1551-1554 用
+//!   `children.whereType<NestedScrollHeader>()` 收集，不依赖声明顺序。
 //! - 只渲染第一个子节点：nested-scroll.md:29（header）、:38（body）。多写的会被静默丢弃，故为 warning。
-//! - list-builder / grid-view 必需属性：scroll/list-grid-view.md MUST 2「使用 list-builder 时必须指定
-//!   child-height（定高模式）」（:271）、MUST 3「网格布局必须指定 cross-axis-count」（:272）。
+//! - list-builder 必需属性：scroll/list-grid-view.md MUST 2「使用 list-builder 时必须指定
+//!   child-height（定高模式）」（:271）。grid-view 的 cross-axis-count 不是必填：
+//!   grid_view_shadow_node.h:38 默认值为 2，省略时按 2 列渲染。
 //! - list-builder type：list-grid-view.md:155「type | string | static | 列表模式：static（定高）/ dynamic（不定高）」。
 //! - grid-view type：list-grid-view.md:65「type | string | aligned / masonry」。
 //! - 内层 scroll-view 关联容器：nested-scroll.md MUST 2「内层 scroll-view 必须设置
@@ -49,7 +53,7 @@ use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::structure::{self, Constraint, Relation, Target};
+use super::structure::{self, Condition, Constraint, Relation, Target};
 use super::{element_diagnostic, is_builtin, visit, walk};
 
 pub const ID: &str = "skyline/scroll-view-family";
@@ -118,13 +122,13 @@ const CONSTRAINTS: &[Constraint] = &[
         help: "外层 `<scroll-view type=\"nested\">` 只保留一个 `<nested-scroll-body>`",
     },
     Constraint {
-        tag: "nested-scroll-header",
-        relation: Relation::Before {
-            sibling: "nested-scroll-body",
-            containers: &[NESTED_SCROLL],
+        tag: "scroll-view",
+        relation: Relation::RequiresChildTag {
+            child_tag: "nested-scroll-body",
+            own: &[Condition::Equals("type", "nested")],
         },
         severity: Severity::Error,
-        help: "把 `<nested-scroll-header>` 移到 `<nested-scroll-body>` 之前",
+        help: "在 `<scroll-view type=\"nested\">` 内加一个 `<nested-scroll-body>`",
     },
     Constraint {
         tag: "nested-scroll-header",
@@ -146,15 +150,6 @@ const CONSTRAINTS: &[Constraint] = &[
         },
         severity: Severity::Error,
         help: "在 `<list-builder>` 上声明列表项高度 `child-height`（定高模式必填）",
-    },
-    Constraint {
-        tag: "grid-view",
-        relation: Relation::RequiresAttr {
-            name: "cross-axis-count",
-            unless: None,
-        },
-        severity: Severity::Error,
-        help: "在 `<grid-view>` 上声明交叉轴元素数量 `cross-axis-count`",
     },
     Constraint {
         tag: "list-builder",
@@ -438,7 +433,7 @@ mod tests {
             "sticky-conflict",
             concat!(
                 r#"<scroll-view type="custom"><sticky-header>标题</sticky-header></scroll-view>"#,
-                r#"<scroll-view type="nested"><nested-scroll-header><sticky-header>标题</sticky-header></nested-scroll-header></scroll-view>"#,
+                r#"<scroll-view type="nested"><nested-scroll-header><sticky-header>标题</sticky-header></nested-scroll-header><nested-scroll-body><view/></nested-scroll-body></scroll-view>"#,
                 "<view><sticky-header>标题</sticky-header></view>",
             ),
         ));
@@ -779,26 +774,24 @@ mod tests {
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
-    // ---- 顺序：nested-scroll-header 必须排在 nested-scroll-body 之前 ----
+    // ---- 顺序无关：nested-scroll-header 由 whereType 收集 ----
 
     #[test]
-    fn nested_header_after_body_is_reported() {
+    fn nested_header_after_body_is_allowed() {
         let diagnostics = check(&project(
             "nested-before",
             r#"<scroll-view type="nested"><nested-scroll-body><view/></nested-scroll-body><nested-scroll-header><view/></nested-scroll-header></scroll-view>"#,
         ));
-        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-        assert_eq!(diagnostics[0].severity, Severity::Error);
-        assert!(diagnostics[0].message.contains("必须放在同级"));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     #[test]
-    fn nested_header_after_body_with_sibling_between_is_reported() {
+    fn nested_header_after_body_with_sibling_between_is_allowed() {
         let diagnostics = check(&project(
             "nested-before-between",
             r#"<scroll-view type="nested"><nested-scroll-body><view/></nested-scroll-body><view/><nested-scroll-header><view/></nested-scroll-header></scroll-view>"#,
         ));
-        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     #[test]
@@ -820,12 +813,41 @@ mod tests {
     }
 
     #[test]
-    fn nested_header_without_body_is_allowed() {
+    fn nested_header_without_body_is_reported() {
         let diagnostics = check(&project(
             "nested-before-no-body",
             r#"<scroll-view type="nested"><nested-scroll-header><view/></nested-scroll-header></scroll-view>"#,
         ));
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+        assert!(diagnostics[0].message.contains("nested-scroll-body"));
+        assert!(
+            diagnostics[0]
+                .help
+                .as_deref()
+                .unwrap()
+                .contains("nested-scroll-body")
+        );
+    }
+
+    #[test]
+    fn nested_scroll_without_body_is_reported() {
+        let diagnostics = check(&project(
+            "nested-no-body",
+            r#"<scroll-view type="nested"><view/></scroll-view>"#,
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("nested-scroll-body"));
+    }
+
+    #[test]
+    fn nested_body_must_be_a_direct_child() {
+        let diagnostics = check(&project(
+            "nested-body-indirect",
+            r#"<scroll-view type="nested"><view><nested-scroll-body/></view></scroll-view>"#,
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("nested-scroll-body"));
     }
 
     // ---- 只渲染第一个直接子节点 ----
@@ -912,23 +934,22 @@ mod tests {
     }
 
     #[test]
-    fn grid_view_without_cross_axis_count_is_reported() {
+    fn grid_view_without_cross_axis_count_is_allowed() {
+        // grid_view_shadow_node.h:38：cross_axis_count_ 默认 2，省略即可用。
         let diagnostics = check(&project(
             "grid-view-attr",
             r#"<scroll-view type="custom"><grid-view/></scroll-view>"#,
         ));
-        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-        assert_eq!(diagnostics[0].severity, Severity::Error);
-        assert!(diagnostics[0].message.contains("cross-axis-count"));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     #[test]
-    fn grid_view_in_sticky_section_without_cross_axis_count_is_reported() {
+    fn grid_view_in_sticky_section_without_cross_axis_count_is_allowed() {
         let diagnostics = check(&project(
             "grid-view-attr-sticky",
             r#"<scroll-view type="custom"><sticky-section><grid-view/></sticky-section></scroll-view>"#,
         ));
-        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     #[test]

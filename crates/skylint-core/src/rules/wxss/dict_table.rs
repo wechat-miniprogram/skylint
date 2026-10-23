@@ -31,7 +31,15 @@ const UNSUPPORTED_PROPERTIES: &[(&str, &str)] = &[
     ("list-style-type", "无替代"),                       // SKILL.md NEVER 表（一格多属性拆分）
     ("list-style-image", "无替代"),                      // SKILL.md NEVER 表（一格多属性拆分）
     ("list-style-position", "无替代"),                   // SKILL.md NEVER 表（一格多属性拆分）
-    ("mask-position", "无替代"), // css_parser_impl.h:83 kInvalid（文档未列，引擎拒绝）
+    (
+        "animation-play-state",
+        "改用 animation 简写；Skyline 不支持在运行中暂停 / 恢复动画",
+    ), // animation_play_state.cc:53-55 无条件 Diag
+    ("text-transform", "改用 WXML 里预先转换好的文本"), // css_property_names.h 无该属性 id，声明整条丢弃
+    (
+        "user-select",
+        "改用 `<text user-select=\"{{false}}\">` 属性",
+    ), // css_property_names.h 无该属性 id
 ];
 
 // 已移除 direction / overflow-x / overflow-y：引擎实际接受（css_parser_impl.h:136 映射 kDirection，
@@ -127,11 +135,6 @@ const UNSUPPORTED_VALUES: &[(&[&str], &str, &str)] = &[
         "blink",
         "仅支持 none/underline/overline/line-through，且只能单值",
     ), // SKILL.md Quick Reference
-    (
-        BORDER_STYLE_PROPERTIES,
-        "hidden",
-        "border-*-style 仅支持 none/solid/dashed/dotted",
-    ), // SKILL.md Quick Reference、visual.md「border-style」
     (
         BORDER_STYLE_PROPERTIES,
         "double",

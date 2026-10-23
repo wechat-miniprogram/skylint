@@ -1,17 +1,17 @@
-//! 用了 worklet 就必须开 `setting.es6`（把 JS 编译成 ES5）。
+//! 用了 worklet 就必须开 `setting.compileWorklet`（编译 worklet 代码）。
 //!
-//! worklet 代码要被搬到 UI 线程执行，编译产物必须是 ES5；开发者工具的「将 JS 编译成
-//! ES5」关闭时（`project.config.json` 里 `setting.es6` 不为 `true`），worklet 不会被
-//! 正确编译，运行时表现为动画直接不生效，而构建过程没有任何提示。
+//! worklet 代码要被搬到 UI 线程执行，只有显式开启「编译 worklet 代码」时构建才会做
+//! worklet 转换（`minidev compiler-js/src/babel_pipeline.rs:140-142`：
+//! `support_worklet = compile_worklet && 源码含 "worklet"`）。关闭时 worklet 不会被
+//! 转换，运行时表现为动画直接不生效，而构建过程没有任何提示。
 //!
 //! 这是工程级判定：只要有一处用到 worklet 就要求开关打开。「用到」包括脚本里任何
 //! 带 `'worklet'` 指令的函数，以及 WXML 上的 `worklet:` 属性——后者在函数定义于
 //! mixin / 外部模块时是唯一痕迹。
 //!
-//! 证据：`skyline-worklet/references/core/worklet-overview.md:11`（前置条件：勾选
-//! 「将 JS 编译成 ES5」）、`skyline-overview/references/migration/getting-started.md:17`
-//! （使用 worklet 时勾选「编译 worklet 代码」）、`skyline-config/references/project-config.md:42`
-//! （`es6` = 是否启用 ES6 转 ES5）。
+//! 证据：`skyline-overview/references/migration/getting-started.md:17`（使用 worklet 时
+//! 勾选「编译 worklet 代码」）、`skyline-config/references/project-config.md`
+//! （`compileWorklet` = 是否编译 worklet 代码）。
 
 use serde_json::Value;
 
@@ -23,22 +23,21 @@ use crate::{Diagnostic, Severity};
 
 use super::unit_wxml;
 
-const MESSAGE: &str =
-    "工程使用了 worklet，但没有开启 setting.es6（将 JS 编译成 ES5），worklet 代码不会被正确编译";
-const HELP: &str = "在开发者工具 详情 > 本地设置 勾选「将 JS 编译成 ES5」，或把 project.config.json（或 project.private.config.json）的 setting.es6 设为 true";
+const MESSAGE: &str = "工程使用了 worklet，但没有开启 setting.compileWorklet（编译 worklet 代码），worklet 代码不会被转换";
+const HELP: &str = "在开发者工具 详情 > 本地设置 勾选「编译 worklet 代码」，或把 project.config.json（或 project.private.config.json）的 setting.compileWorklet 设为 true";
 
-pub struct WorkletEs5;
+pub struct WorkletCompileSetting;
 
-impl WorkletEs5 {
-    pub const ID: &'static str = "skyline/worklet-es5";
+impl WorkletCompileSetting {
+    pub const ID: &'static str = "skyline/worklet-compile-setting";
 }
 
-impl Rule for WorkletEs5 {
+impl Rule for WorkletCompileSetting {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Warning,
-            description: "工程使用了 worklet，但 project.config.json 没有开启 setting.es6",
+            description: "工程使用了 worklet，但 project.config.json 没有开启 setting.compileWorklet",
         }
     }
 
@@ -49,7 +48,7 @@ impl Rule for WorkletEs5 {
         {
             return Vec::new();
         }
-        if !uses_worklet(project) || es6_enabled(project) {
+        if !uses_worklet(project) || compile_worklet_enabled(project) {
             return Vec::new();
         }
         // 诊断落在实际写了 `setting` 的那份文件上；private 优先（同 `Project::setting`）。
@@ -64,15 +63,15 @@ impl Rule for WorkletEs5 {
         };
         let positions = JsonPositions::new(source);
         let (line, column) = positions
-            .key("es6")
+            .key("compileWorklet")
             .or_else(|| positions.key("setting"))
             .unwrap_or((1, 1));
         vec![Diagnostic::new(Self::ID, Severity::Warning, MESSAGE, path, line, column).help(HELP)]
     }
 }
 
-fn es6_enabled(project: &Project) -> bool {
-    project.setting("es6").and_then(Value::as_bool) == Some(true)
+fn compile_worklet_enabled(project: &Project) -> bool {
+    project.setting("compileWorklet").and_then(Value::as_bool) == Some(true)
 }
 
 /// 工程里是否出现 worklet：脚本里的 `'worklet'` 指令，或 WXML 上的 `worklet:` 属性。
@@ -102,7 +101,7 @@ mod tests {
     use crate::rules::Rule;
     use crate::rules::testutil::js::{Fixture, messages, single};
 
-    use super::WorkletEs5;
+    use super::WorkletCompileSetting;
 
     const WORKLET_JS: &str = "function tick() { 'worklet'; return 1; }";
 
@@ -121,19 +120,26 @@ mod tests {
     }
 
     #[test]
-    fn worklet_without_es6_is_reported() {
+    fn worklet_without_compile_worklet_is_reported() {
         let (_f, project) = project(
-            "es5-missing",
-            "{\n  \"miniprogramRoot\": \"\",\n  \"setting\": {\n    \"es6\": false\n  }\n}",
+            "worklet-missing",
+            "{\n  \"miniprogramRoot\": \"\",\n  \"setting\": {\n    \"compileWorklet\": false\n  }\n}",
             "<view/>",
             WORKLET_JS,
         );
-        let diagnostics = WorkletEs5.check(&project);
+        let diagnostics = WorkletCompileSetting.check(&project);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert_eq!(diagnostics[0].severity, crate::Severity::Warning);
         assert_eq!(diagnostics[0].path, "project.config.json");
         assert_eq!((diagnostics[0].line, diagnostics[0].column), (4, 5));
-        assert!(diagnostics[0].message.contains("setting.es6"));
+        assert!(diagnostics[0].message.contains("setting.compileWorklet"));
+        assert!(
+            diagnostics[0]
+                .help
+                .as_deref()
+                .unwrap()
+                .contains("编译 worklet 代码")
+        );
     }
 
     /// private 配置覆盖 project.config.json（开发者工具的合并顺序）：
@@ -141,61 +147,80 @@ mod tests {
     #[test]
     fn private_config_overrides_public() {
         let (f, _) = project(
-            "es5-private-override",
-            r#"{"miniprogramRoot":"","setting":{"es6":true}}"#,
+            "worklet-private-override",
+            r#"{"miniprogramRoot":"","setting":{"compileWorklet":true}}"#,
             "<view/>",
             WORKLET_JS,
         );
         f.write(
             "project.private.config.json",
-            "{\n  \"setting\": {\n    \"es6\": false\n  }\n}",
+            "{\n  \"setting\": {\n    \"compileWorklet\": false\n  }\n}",
         );
         let project = f.project();
-        let diagnostics = WorkletEs5.check(&project);
+        let diagnostics = WorkletCompileSetting.check(&project);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert_eq!(diagnostics[0].path, "project.private.config.json");
         assert_eq!((diagnostics[0].line, diagnostics[0].column), (3, 5));
     }
 
+    /// worklet 的门控与 `es6` 无关：es6 关着但 compileWorklet 开着时正常。
     #[test]
-    fn worklet_with_es6_enabled_is_accepted() {
+    fn worklet_with_compile_worklet_enabled_is_accepted() {
         let (_f, project) = project(
-            "es5-enabled",
+            "worklet-enabled",
+            r#"{"miniprogramRoot":"","setting":{"es6":false,"compileWorklet":true}}"#,
+            "<view/>",
+            WORKLET_JS,
+        );
+        assert_eq!(
+            messages(&WorkletCompileSetting, &project),
+            Vec::<String>::new()
+        );
+    }
+
+    /// es6 开着也不能替代 compileWorklet。
+    #[test]
+    fn es6_enabled_does_not_replace_compile_worklet() {
+        let (_f, project) = project(
+            "worklet-es6-only",
             r#"{"miniprogramRoot":"","setting":{"es6":true}}"#,
             "<view/>",
             WORKLET_JS,
         );
-        assert_eq!(messages(&WorkletEs5, &project), Vec::<String>::new());
+        assert_eq!(messages(&WorkletCompileSetting, &project).len(), 1);
     }
 
     #[test]
     fn no_worklet_anywhere_is_ignored() {
-        let (_f, project) = single("es5-no-worklet", "Page({ onLoad() {} });");
-        assert_eq!(messages(&WorkletEs5, &project), Vec::<String>::new());
+        let (_f, project) = single("worklet-none", "Page({ onLoad() {} });");
+        assert_eq!(
+            messages(&WorkletCompileSetting, &project),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
     fn missing_setting_is_reported_at_the_top() {
         let (_f, project) = project(
-            "es5-no-setting",
+            "worklet-no-setting",
             r#"{"miniprogramRoot":""}"#,
             "<view/>",
             WORKLET_JS,
         );
-        let diagnostics = WorkletEs5.check(&project);
+        let diagnostics = WorkletCompileSetting.check(&project);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert_eq!((diagnostics[0].line, diagnostics[0].column), (1, 1));
     }
 
     #[test]
-    fn setting_without_es6_points_at_the_setting_key() {
+    fn setting_without_compile_worklet_points_at_the_setting_key() {
         let (_f, project) = project(
-            "es5-setting-only",
+            "worklet-setting-only",
             "{\n  \"setting\": {\n    \"minified\": true\n  }\n}",
             "<view/>",
             WORKLET_JS,
         );
-        let diagnostics = WorkletEs5.check(&project);
+        let diagnostics = WorkletCompileSetting.check(&project);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert_eq!((diagnostics[0].line, diagnostics[0].column), (2, 3));
     }
@@ -204,17 +229,17 @@ mod tests {
     fn wxml_worklet_attribute_alone_counts_as_usage() {
         // 函数定义在 mixin / 外部模块，脚本里看不到 `'worklet'`。
         let (_f, project) = project(
-            "es5-wxml-only",
+            "worklet-wxml-only",
             r#"{"miniprogramRoot":""}"#,
             r#"<pan-gesture-handler worklet:ongesture="onPan"/>"#,
             "Behavior({});",
         );
-        assert_eq!(messages(&WorkletEs5, &project).len(), 1);
+        assert_eq!(messages(&WorkletCompileSetting, &project).len(), 1);
     }
 
     #[test]
     fn missing_config_file_is_not_reported() {
-        let f = Fixture::new("es5-no-config");
+        let f = Fixture::new("worklet-no-config");
         f.write(
             "app.json",
             r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
@@ -223,17 +248,20 @@ mod tests {
         .write("pages/index/index.wxml", "<view/>")
         .write("pages/index/index.js", WORKLET_JS);
         let project = f.project();
-        assert_eq!(messages(&WorkletEs5, &project), Vec::<String>::new());
+        assert_eq!(
+            messages(&WorkletCompileSetting, &project),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
-    fn es6_as_a_string_is_not_enabled() {
+    fn compile_worklet_as_a_string_is_not_enabled() {
         let (_f, project) = project(
-            "es5-string",
-            r#"{"miniprogramRoot":"","setting":{"es6":"true"}}"#,
+            "worklet-string",
+            r#"{"miniprogramRoot":"","setting":{"compileWorklet":"true"}}"#,
             "<view/>",
             WORKLET_JS,
         );
-        assert_eq!(messages(&WorkletEs5, &project).len(), 1);
+        assert_eq!(messages(&WorkletCompileSetting, &project).len(), 1);
     }
 }

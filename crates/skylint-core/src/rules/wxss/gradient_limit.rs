@@ -28,7 +28,7 @@ impl Rule for GradientLimit {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit_declarations(project, |doc, decl, out| {
-            // mask-image 的渐变由 MaskImageGradient 统一处理，避免重复报。
+            // mask-image 的渐变由 GradientUnsupported 统一处理，避免重复报。
             if decl.name.eq_ignore_ascii_case("mask-image") {
                 return;
             }
@@ -56,7 +56,7 @@ impl Rule for GradientLimit {
                             decl.name,
                             problems.join("；")
                         ),
-                        "radial-gradient 仅支持 circle 形状、px 尺寸与 % 颜色停止；linear-gradient 颜色停止仅支持 % 与固定长度单位（px、rpx 等）",
+                        "radial-gradient 仅支持 circle 形状、px 尺寸，颜色停止仅支持 % 与 px；linear-gradient 颜色停止仅支持 % 与固定长度单位（px、rpx 等）",
                     ));
         })
     }
@@ -95,7 +95,7 @@ fn check_radial(args: &[ValueToken]) -> Vec<String> {
     for stop in stops {
         if let Some(token) = non_percentage_position(stop) {
             problems.push(format!(
-                "radial-gradient 颜色停止位置仅支持 %，`{}` 不受支持",
+                "radial-gradient 颜色停止位置仅支持 % 与 px，`{}` 不受支持",
                 token_text(token)
             ));
         }
@@ -148,11 +148,11 @@ fn radial_size(pre: &[ValueToken]) -> Option<&ValueToken> {
     groups.first().and_then(|group| group.first())
 }
 
-/// 颜色停止里第一个非 `%` 的位置值。
+/// 颜色停止里第一个既不是 `%` 也不是 `px` 的位置值。
 fn non_percentage_position(stop: &[ValueToken]) -> Option<&ValueToken> {
     split_tokens(stop).into_iter().find_map(|group| {
         let token = group.first()?;
-        (length_unit(token).is_some_and(|unit| unit != "%")).then_some(token)
+        (length_unit(token).is_some_and(|unit| unit != "%" && unit != "px")).then_some(token)
     })
 }
 
@@ -213,16 +213,18 @@ mod tests {
             r#"
             .a { background-image: radial-gradient(ellipse, red 0%, blue 100%); }
             .b { background-image: radial-gradient(circle 10em, red 0%, blue 100%); }
-            .c { background-image: radial-gradient(circle, red 10px, blue 100%); }
+            .c { background-image: radial-gradient(circle, red 0rpx, blue 100%); }
             .d { background-image: linear-gradient(red 10em, blue 100%); }
+            .e { background-image: radial-gradient(circle, red 0em, blue 100%); }
             "#,
         );
         let diags = GradientLimit.check(&project);
-        assert_eq!(diags.len(), 4);
+        assert_eq!(diags.len(), 5);
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
         assert!(diags.iter().any(|d| d.message.contains("ellipse")));
         assert!(diags.iter().any(|d| d.message.contains("10em")));
-        assert!(diags.iter().any(|d| d.message.contains("10px")));
+        assert!(diags.iter().any(|d| d.message.contains("`0rpx`")));
+        assert!(diags.iter().any(|d| d.message.contains("`0em`")));
     }
 
     /// 长度型前言（没有形状关键字）不能被当成颜色停止。
@@ -253,6 +255,7 @@ mod tests {
             .d { background-image: radial-gradient(circle, red var(--stop), blue 100%); }
             .e { mask-image: linear-gradient(red 10em, blue); }
             .f { background-image: linear-gradient(to right, red 0%, rgba(0, 0, 0, .5) 50%); }
+            .g { background-image: radial-gradient(circle, red 0px, blue 30px); }
             "#,
         );
         assert_eq!(messages(&GradientLimit, &project), Vec::<String>::new());

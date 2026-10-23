@@ -1,5 +1,7 @@
-//! `skyline/lib-version`：`project.config.json` 的基础库版本低于工程实际用到的
-//! Skyline 特性的最低版本。
+//! `skyline/lib-version`：项目配置的基础库版本低于工程实际用到的 Skyline 特性的最低版本。
+//!
+//! `libVersion` 以 `project.private.config.json` 为准（开发者工具合并时 private 覆盖
+//! public），两处都没有则跳过。
 //!
 //! 为什么需要这条规则：`libVersion` 不参与小程序运行时的 schema 校验，`minidev
 //! build` 对版本偏低的工程完全静默（实测 `libVersion: "2.20.0"` + 全套 Skyline
@@ -30,7 +32,7 @@ impl Rule for LibVersion {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Error,
-            description: "project.config.json 的 libVersion 低于所用 Skyline 特性的最低要求",
+            description: "项目配置的 libVersion 低于所用 Skyline 特性的最低要求",
         }
     }
 
@@ -38,11 +40,7 @@ impl Rule for LibVersion {
         let Some((min, feature)) = requirement(project) else {
             return Vec::new();
         };
-        let Some(raw) = project
-            .project_config
-            .get("libVersion")
-            .and_then(Value::as_str)
-        else {
+        let Some((raw, path, source)) = project.effective_lib_version() else {
             return Vec::new();
         };
         let Some(actual) = parse_version(raw) else {
@@ -65,7 +63,7 @@ impl Rule for LibVersion {
             ""
         };
         // 指向值本身（开引号处），而不是 `libVersion` 这个键。
-        let (line, column) = JsonPositions::new(&project.project_config_source)
+        let (line, column) = JsonPositions::new(source)
             .value_after("libVersion")
             .unwrap_or((1, 1));
         vec![
@@ -73,12 +71,12 @@ impl Rule for LibVersion {
                 Self::ID,
                 Severity::Error,
                 format!("libVersion \"{raw}\" 低于{space_before}{feature}{space_after}要求的 {floor}"),
-                "project.config.json",
+                path,
                 line,
                 column,
             )
             .help(format!(
-                "低于该版本时这部分配置不生效（Skyline 渲染会退回 WebView），而 project.config.json 没有 schema 校验、构建也不会提示；真机运行 Skyline 还需要 3.0.2 以上。请把 libVersion 提到 {floor} 或更高"
+                "低于该版本时这部分配置不生效（Skyline 渲染会退回 WebView），而 project.config.json / project.private.config.json 没有 schema 校验、构建也不会提示；真机运行 Skyline 还需要 3.0.2 以上。请把 libVersion 提到 {floor} 或更高"
             )),
         ]
     }
@@ -86,12 +84,6 @@ impl Rule for LibVersion {
 
 /// 工程实际用到的最高要求。同一工程只报一条，所以这里直接返回阈值最高的那项。
 fn requirement(project: &Project) -> Option<(Version, &'static str)> {
-    let options: Vec<&Value> = project
-        .page_json
-        .values()
-        .filter_map(|json| json.get("rendererOptions"))
-        .chain(project.app_json.get("rendererOptions"))
-        .collect();
     let skyline = project.pages.iter().any(|page| page.is_skyline)
         || project.app_json.get("renderer").and_then(Value::as_str) == Some("skyline");
 
@@ -107,32 +99,22 @@ fn requirement(project: &Project) -> Option<(Version, &'static str)> {
     if project.app_json.contains_key("rendererOptions") {
         bump(((2, 31, 1), "app 级 rendererOptions"));
     }
-    if project
-        .page_json
-        .values()
-        .any(|json| json.contains_key("rendererOptions"))
-    {
+    // 页面级 rendererOptions 只有 Skyline 页会读；WebView 页上的是死配置，不抬阈值。
+    if project.pages.iter().any(|page| {
+        page.is_skyline
+            && project
+                .page_json
+                .get(&page.route)
+                .is_some_and(|json| json.contains_key("rendererOptions"))
+    }) {
         bump(((3, 1, 0), "页面级 rendererOptions"));
     }
-    // app 级与页面级都查：两种写法在不同版本里都出现过，位置差异交给另一条规则。
-    if options
-        .iter()
-        .any(|value| mentions(value, "convertRpxToVw"))
-    {
+    // 只认 app.json 顶层：写在 rendererOptions 里的 convertRpxToVw 运行时不会读，
+    // 位置错误由 `skyline/renderer-options` 报。
+    if project.app_json.contains_key("convertRpxToVw") {
         bump(((3, 3, 0), "convertRpxToVw"));
     }
     required
-}
-
-/// 只在 `rendererOptions` 子树里找键（不区分挂在 `skyline` 下还是顶层）。
-fn mentions(value: &Value, key: &str) -> bool {
-    match value {
-        Value::Object(map) => {
-            map.contains_key(key) || map.values().any(|child| mentions(child, key))
-        }
-        Value::Array(items) => items.iter().any(|item| mentions(item, key)),
-        _ => false,
-    }
 }
 
 /// `x.y.z`（各段纯数字）。其余写法（`latest` 等）返回 `None`。
@@ -233,13 +215,72 @@ mod tests {
         let (_f, project) = project(
             "lib-version-rpx-to-vw",
             &config("3.2.0"),
-            r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"convertRpxToVw":true}}}"#,
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","convertRpxToVw":true}"#,
             "{}",
         );
         let diags = LibVersion.check(&project);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("3.3.0"), "{}", diags[0].message);
         assert!(diags[0].message.contains("convertRpxToVw"));
+    }
+
+    #[test]
+    fn ignores_convert_rpx_to_vw_written_inside_renderer_options() {
+        // 位置错由 renderer-options 报，这里不抬阈值。
+        let (_f, project) = project(
+            "lib-version-rpx-to-vw-misplaced",
+            &config("3.2.0"),
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"convertRpxToVw":true}}}"#,
+            "{}",
+        );
+        assert!(LibVersion.check(&project).is_empty());
+    }
+
+    #[test]
+    fn private_lib_version_overrides_public() {
+        // public 低、private 高：实际生效的是 private，不报。
+        let fixture = Fixture::new("lib-version-private-high");
+        fixture
+            .write("project.config.json", &config("2.20.0"))
+            .write("project.private.config.json", r#"{"libVersion":"3.3.0"}"#)
+            .write("app.json", SKYLINE_APP)
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", "<view/>");
+        let project = fixture.project();
+        assert!(LibVersion.check(&project).is_empty());
+    }
+
+    #[test]
+    fn reports_private_lib_version_even_when_public_is_high() {
+        // public 高、private 低：实际生效的是 private，诊断落在 private 文件上。
+        let fixture = Fixture::new("lib-version-private-low");
+        fixture
+            .write("project.config.json", &config("3.3.0"))
+            .write(
+                "project.private.config.json",
+                "{\n  \"libVersion\": \"2.20.0\"\n}",
+            )
+            .write("app.json", SKYLINE_APP)
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", "<view/>");
+        let project = fixture.project();
+        let diags = LibVersion.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].path, "project.private.config.json");
+        assert_eq!((diags[0].line, diags[0].column), (2, 17));
+        assert!(diags[0].message.contains("\"2.20.0\""));
+    }
+
+    #[test]
+    fn ignores_page_renderer_options_on_webview_pages() {
+        // WebView 页的 rendererOptions 是死配置，不应把阈值抬到 3.1.0。
+        let (_f, project) = project(
+            "lib-version-webview-page-options",
+            &config("3.0.5"),
+            r#"{"pages":["pages/index/index"],"renderer":"webview"}"#,
+            r#"{"rendererOptions":{"skyline":{"defaultDisplayBlock":true}}}"#,
+        );
+        assert!(LibVersion.check(&project).is_empty());
     }
 
     #[test]
@@ -260,7 +301,7 @@ mod tests {
         let (_f, project) = project(
             "lib-version-ok",
             &config("3.3.0"),
-            r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"convertRpxToVw":true}}}"#,
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","convertRpxToVw":true}"#,
             r#"{"rendererOptions":{"skyline":{"defaultDisplayBlock":true}}}"#,
         );
         assert!(LibVersion.check(&project).is_empty());

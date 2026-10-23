@@ -1,26 +1,22 @@
 //! Skyline 不支持的 JS API / 页面配置项。
 //!
-//! 条目直接写在 [`ENTRIES`] 里，Rust 侧只做三种匹配：`Call` 命中 callee 精确相等的调用；
-//! `PluginCall` 同上（callee 等于目标或以 `目标.` 开头），但只在插件工程里判；`PageOption`
-//! 命中裸 `Page({...})` 第一个对象实参里的静态键。加条目只改 [`ENTRIES`]。
+//! 条目直接写在 [`ENTRIES`] 里，Rust 侧只做两种匹配：`Call` 命中 callee 精确相等的调用；
+//! `PluginCall` 同上（callee 等于目标或以 `目标.` 开头），但只在插件工程里判。
+//! 加条目只改 [`ENTRIES`]。
 //!
 //! 证据：
 //! - `skyline-overview/references/migration/compatibility.md:198-205`（Q: 不支持 animate
-//!   动画接口，给了 worklet 替代写法）、`:300`（Page.onPageScroll ❌）；
+//!   动画接口，给了 worklet 替代写法）；
 //! - `skyline-overview/SKILL.md:100`（不支持 animate 接口）；
 //! - `skyline-route/references/api/router-api.md:9`（所有 `wx.router` 方法均不支持小程序插件）。
 //!
-//! 只认裸 `Page`：`wx.Page`、`some.Page` 不是页面注册入口。注释与字符串里的
-//! `this.animate` 不在 AST 的调用节点上，天然不会命中。
+//! 注释与字符串里的 `this.animate` 不在 AST 的调用节点上，天然不会命中。
 
 use crate::Severity;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
 use super::{Callee, at_span, is_plugin};
-
-/// 页面注册函数。规范写法就是裸 `Page`。
-const PAGE: &str = "Page";
 
 #[derive(Debug, Clone, Copy)]
 enum Entry {
@@ -37,11 +33,6 @@ enum Entry {
         prefix: &'static str,
         message: &'static str,
     },
-    /// `Page({...})` 第一个对象实参里的静态键。
-    PageOption {
-        key: &'static str,
-        message: &'static str,
-    },
 }
 
 const ENTRIES: &[Entry] = &[
@@ -53,18 +44,12 @@ const ENTRIES: &[Entry] = &[
         prefix: "wx.router",
         message: "小程序插件不支持 wx.router.*（自定义路由），插件页内调用无效",
     },
-    Entry::PageOption {
-        key: "onPageScroll",
-        message: "Skyline 不支持 `Page.onPageScroll`（页面不滚动），改用 scroll-view 的 bindscroll",
-    },
 ];
 
 impl Entry {
     fn message(&self) -> &'static str {
         match self {
-            Self::Call { message, .. }
-            | Self::PluginCall { message, .. }
-            | Self::PageOption { message, .. } => message,
+            Self::Call { message, .. } | Self::PluginCall { message, .. } => message,
         }
     }
 }
@@ -80,7 +65,7 @@ impl Rule for UnsupportedApi {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Warning,
-            description: "Skyline 不支持的 JS API / 页面配置（如 this.animate、Page.onPageScroll）",
+            description: "Skyline 不支持的 JS API（如 this.animate、插件内的 wx.router.*）",
         }
     }
 
@@ -97,12 +82,6 @@ impl Rule for UnsupportedApi {
                         Entry::PluginCall { prefix, .. } => (plugin
                             && Callee::Namespace(prefix).matches(&call.callee))
                         .then_some((call.start, call.end)),
-                        Entry::PageOption { key, .. } => {
-                            if call.callee != PAGE {
-                                continue;
-                            }
-                            call.args.first().and_then(|page| page.key_span(key))
-                        }
                     };
                     let Some((start, end)) = span else { continue };
                     out.push(at_span(
@@ -177,13 +156,13 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_calls_and_page_options_are_reported() {
+    fn unsupported_calls_are_reported() {
         let (_f, project) = single(
             "unsupported-positive",
-            "this.animate('.a', [], 1000);\nPage({\n  onPageScroll() {},\n  data: {},\n});\nthis.animate('.b', [], 200);",
+            "this.animate('.a', [], 1000);\nPage({\n  data: {},\n});\nthis.animate('.b', [], 200);",
         );
         let diagnostics = UnsupportedApi.check(&project);
-        assert_eq!(diagnostics.len(), 3, "{diagnostics:#?}");
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
         assert!(
             diagnostics
                 .iter()
@@ -191,19 +170,21 @@ mod tests {
         );
         assert_eq!(diagnostics[0].path, "pages/index/index.js");
         assert!(diagnostics[0].message.contains("this.animate"));
-        assert!(diagnostics[1].message.contains("onPageScroll"));
-        assert!(diagnostics[1].message.contains("bindscroll"));
-        // Page 选项报在键上，不是调用起点。
-        assert_eq!(diagnostics[1].line, 3);
-        assert_eq!(diagnostics[1].column, 3);
-        assert_eq!(diagnostics[2].message, diagnostics[0].message);
+        assert_eq!(diagnostics[1].message, diagnostics[0].message);
+    }
+
+    /// `onPageScroll` 由 `feature_flag.GetEnablePageScroll()` 支持，不再是无效配置。
+    #[test]
+    fn page_on_page_scroll_is_supported() {
+        let (_f, project) = single("unsupported-page-scroll", "Page({ onPageScroll() {} });");
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
     }
 
     #[test]
     fn app_js_is_scanned_too() {
         let (_f, project) = single_with_app(
             "unsupported-app",
-            "Page({ onPageScroll() {} });",
+            "this.animate('.b', [], 1);",
             Some("this.animate('.a', [], 1);"),
         );
         let diagnostics = UnsupportedApi.check(&project);

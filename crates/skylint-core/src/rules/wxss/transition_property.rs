@@ -1,8 +1,13 @@
 //! `transition` / `transition-property` 里的属性名必须落在 `<animatable-property>` 白名单内。
 //!
-//! 数据来自 `references/animation.md:38-58` 的 BNF；文本/字体类、`visibility`、
-//! `pointer-events` 不在表内（同文档 :60-64）。`animation` 简写不判：其中的
+//! 数据来自 `references/animation.md:38-58` 的 BNF，颜色与字号等带 `kInterpolable` 的属性
+//! 也已在引擎中实现（`css_properties/transition_property.cc:223-256`）。`visibility`、
+//! `pointer-events` 等不在表内。`animation` 简写不判：其中的
 //! `animation-name` 是自定义标识符，无法与属性名区分。
+//!
+//! 引擎的 case 列表只有长写（`MarginLeft`、`BorderTopWidth`、`BackgroundColor` 等），
+//! 简写 `margin`/`padding`/`flex`/`border`/`background` 会落到 `default:` 分支被丢弃
+//! （`transition_property.cc:308-310`），所以白名单里也只保留长写。
 
 use crate::input::wxss::ValueToken;
 use crate::project::Project;
@@ -28,12 +33,10 @@ const ANIMATABLE_PROPERTIES: &[&str] = &[
     "max-width",
     "min-height",
     "max-height",
-    "margin",
     "margin-top",
     "margin-right",
     "margin-bottom",
     "margin-left",
-    "padding",
     "padding-top",
     "padding-right",
     "padding-bottom",
@@ -42,14 +45,9 @@ const ANIMATABLE_PROPERTIES: &[&str] = &[
     "right",
     "bottom",
     "left",
-    "flex",
     "flex-grow",
     "flex-shrink",
     "flex-basis",
-    "border",
-    "border-width",
-    "border-color",
-    "border-radius",
     "border-top-width",
     "border-right-width",
     "border-bottom-width",
@@ -62,14 +60,8 @@ const ANIMATABLE_PROPERTIES: &[&str] = &[
     "border-top-right-radius",
     "border-bottom-left-radius",
     "border-bottom-right-radius",
-    "border-top",
-    "border-right",
-    "border-bottom",
-    "border-left",
     "background-color",
     "background-position",
-    "background-size",
-    "background",
     "background-position-x",
     "background-position-y",
     "filter",
@@ -77,6 +69,11 @@ const ANIMATABLE_PROPERTIES: &[&str] = &[
     "box-shadow",
     "z-index",
     "text-decoration-color",
+    "color",
+    "font-size",
+    "font-weight",
+    "letter-spacing",
+    "word-spacing",
     "mask",
     "mask-size",
     "mask-position",
@@ -106,21 +103,16 @@ const TIMING_KEYWORDS: [&str; 8] = [
 const BEHAVIOR_KEYWORDS: [&str; 2] = ["allow-discrete", "normal"];
 
 /// 文档明确列出「不支持 transition/animation」的文本与字体相关属性。
-const TEXT_FONT: [&str; 14] = [
+const TEXT_FONT: [&str; 9] = [
     "text-align",
     "text-shadow",
     "direction",
     "white-space",
     "word-break",
-    "color",
-    "font-size",
-    "font-weight",
     "font-style",
     "font-family",
     "font-feature-settings",
     "line-height",
-    "letter-spacing",
-    "word-spacing",
 ];
 
 const TEXT_FONT_TAIL: &str = "Skyline 下文本与字体相关属性不会产生过渡动画";
@@ -228,22 +220,24 @@ mod tests {
         let (_f, project) = single(
             "transition-positive",
             r#"
-            .a { transition: color .2s; }
+            .a { transition: text-shadow .2s; }
             .b { transition-property: color, text-shadow; }
             .c { transition: visibility .2s; }
-            .d { transition: color .2s, font-size .2s; }
+            .d { transition: text-align .2s, font-size .2s; }
             "#,
         );
         let diags = TransitionProperty.check(&project);
         assert_eq!(diags.len(), 4);
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
-        assert!(diags[0].message.contains("`color`"));
+        assert!(diags[0].message.contains("`text-shadow`"));
         assert!(diags[0].message.contains("文本与字体相关属性"));
-        assert!(diags[1].message.contains("`color`、`text-shadow`"));
+        assert!(diags[1].message.contains("`text-shadow`"));
+        assert!(!diags[1].message.contains("`color`"));
         assert!(diags[2].message.contains("`visibility`"));
         assert!(diags[2].message.contains(super::OTHER_TAIL));
         // 同一声明里多个违规 ident 合成一条。
-        assert!(diags[3].message.contains("`color`、`font-size`"));
+        assert!(diags[3].message.contains("`text-align`"));
+        assert!(!diags[3].message.contains("`font-size`"));
     }
 
     #[test]
@@ -257,13 +251,38 @@ mod tests {
             .d { transition-property: all, background-position-x, mask-position-y; }
             .e { transition: -webkit-transform .2s; }
             .f { transition: color var(--d) ease; }
-            .g { transition: background .2s steps(4, end); }
+            .g { transition: border-top-width 1s; }
+            .h { transition: color .2s; }
+            .i { transition-property: font-size, font-weight, letter-spacing, word-spacing; }
             "#,
         );
         assert_eq!(
             messages(&TransitionProperty, &project),
             Vec::<String>::new()
         );
+    }
+
+    /// 引擎只实现了长写，`margin` / `border` / `background` 等简写落到 default 分支被丢弃。
+    #[test]
+    fn shorthand_properties_are_rejected() {
+        let (_f, project) = single(
+            "transition-shorthands",
+            r#"
+            .a { transition: margin .3s; }
+            .b { transition: border 1s; }
+            .c { transition: background .2s steps(4, end); }
+            .d { transition-property: padding, border-radius, background-size; }
+            "#,
+        );
+        let diags = TransitionProperty.check(&project);
+        assert_eq!(diags.len(), 4);
+        assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
+        assert!(diags[0].message.contains("`margin`"));
+        assert!(diags[1].message.contains("`border`"));
+        assert!(diags[2].message.contains("`background`"));
+        assert!(diags[3].message.contains("`padding`"));
+        assert!(diags[3].message.contains("`border-radius`"));
+        assert!(diags[3].message.contains("`background-size`"));
     }
 
     #[test]

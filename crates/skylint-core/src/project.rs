@@ -275,6 +275,26 @@ impl Project {
             })
     }
 
+    /// 生效的 `libVersion`：`project.private.config.json` 覆盖 `project.config.json`
+    /// （开发者工具按这个顺序合并），两处都没有时 `None`。
+    ///
+    /// 返回 `(值, 命中的文件名, 该文件的原文)`，诊断直接落到实际生效的那份文件上。
+    pub fn effective_lib_version(&self) -> Option<(&str, &'static str, &str)> {
+        let (value, path, source) = match self.project_private_config.get("libVersion") {
+            Some(value) => (
+                value,
+                "project.private.config.json",
+                self.project_private_config_source.as_str(),
+            ),
+            None => (
+                self.project_config.get("libVersion")?,
+                "project.config.json",
+                self.project_config_source.as_str(),
+            ),
+        };
+        value.as_str().map(|raw| (raw, path, source))
+    }
+
     /// 从若干单元出发，沿组件边可达的单元（不含起点本身）。
     fn reachable(&self, start: &[&str]) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();

@@ -2,7 +2,7 @@
 
 分母：175 条（口径：给定输入文件即可静态判定真假；其中 #172-#175 是实现期补入的审计漏项）。
 
-统计：已实现 145 条 / 待实现 0 条 / 不实现 30 条。
+统计：已实现 141 条 / 待实现 0 条 / 不实现 34 条。
 
 | # | 分组 | 约束（一句话） | 证据 | 状态 | 规则 / 理由 |
 |---|------|----------------|------|------|-------------|
@@ -52,16 +52,16 @@
 | 44 | 1A WXSS 值 | `animation-fill-mode` 仅 forwards/both 可用 | skyline-skills/skills/skyline-wxss/references/animation.md:75 | 已实现 | `skyline/value-degraded` |
 | 45 | 1A WXSS 值 | `radial-gradient` 不支持 ellipse 形状 | skyline-skills/skills/skyline-wxss/SKILL.md:79 | 已实现 | `skyline/gradient-limit` |
 | 46 | 1A WXSS 值 | `radial-gradient` 尺寸仅支持 px | skyline-skills/skills/skyline-wxss/SKILL.md:79 | 已实现 | `skyline/gradient-limit` |
-| 47 | 1A WXSS 值 | `radial-gradient` 颜色停止位置仅支持 % | skyline-skills/skills/skyline-wxss/SKILL.md:79 | 已实现 | `skyline/gradient-limit` |
+| 47 | 1A WXSS 值 | `radial-gradient` 颜色停止位置仅支持 % | skyline-skills/skills/skyline-wxss/SKILL.md:79 | 已实现 | `skyline/gradient-limit`（按引擎放宽：`%` 与 `px` 都可用，见 AUDIT-2026-10 §2.6） |
 | 48 | 1A WXSS 值 | `linear-gradient` 停止位置仅支持 % 与固定长度单位 | skyline-skills/skills/skyline-wxss/SKILL.md:80 | 已实现 | `skyline/gradient-limit` |
-| 49 | 1A WXSS 值 | `mask-image` 不支持渐变，仅 url() | skyline-skills/skills/skyline-wxss/SKILL.md:107 | 已实现 | `skyline/mask-image-gradient` |
+| 49 | 1A WXSS 值 | `mask-image` 不支持渐变，仅 url() | skyline-skills/skills/skyline-wxss/SKILL.md:107 | 不实现 | 引擎支持 linear/radial 渐变（`widgets/decorated_box.cc:596-612`），该条知识库断言不成立；只剩 repeating 与 mask 的 conic 不支持，由 `skyline/gradient-unsupported` 覆盖 |
 | 50 | 1A WXSS 值 | `filter/backdrop-filter` 不支持 url() 与 drop-shadow() | skyline-skills/skills/skyline-wxss/SKILL.md:97 | 已实现 | `skyline/filter-limit` |
 | 51 | 1A WXSS 值 | `filter/backdrop-filter` 不支持多个函数组合 | skyline-skills/skills/skyline-wxss/SKILL.md:97 | 已实现 | `skyline/filter-limit` |
 | 52 | 1A WXSS 值 | `background-image` 最多 2 层 | skyline-skills/skills/skyline-wxss/SKILL.md:85 | 已实现 | `skyline/multi-value-limit` |
 | 53 | 1A WXSS 值 | `mask-image` 最多 2 层 | skyline-skills/skills/skyline-wxss/SKILL.md:85 | 已实现 | `skyline/multi-value-limit` |
 | 54 | 1A WXSS 值 | `background-position` 最多 2 组 | skyline-skills/skills/skyline-wxss/SKILL.md:86 | 已实现 | `skyline/multi-value-limit` |
-| 55 | 1A WXSS 值 | `background-repeat` 不支持多组值 | skyline-skills/skills/skyline-wxss/SKILL.md:87 | 已实现 | `skyline/multi-value-limit` |
-| 56 | 1A WXSS 值 | `background-size` 不支持多组值 | skyline-skills/skills/skyline-wxss/SKILL.md:87 | 已实现 | `skyline/multi-value-limit` |
+| 55 | 1A WXSS 值 | `background-repeat` 不支持多组值 | skyline-skills/skills/skyline-wxss/SKILL.md:87 | 不实现 | 引擎接受 1~2 组（`css/image_property_utils.h:517-524`），上限已改 2，>2 才报 |
+| 56 | 1A WXSS 值 | `background-size` 不支持多组值 | skyline-skills/skills/skyline-wxss/SKILL.md:87 | 不实现 | 引擎接受 1~2 组（`css/image_property_utils.h:650-660`），上限已改 2，>2 才报 |
 | 57 | 1A WXSS 值 | `calc()` 不支持角度计算 | skyline-skills/skills/skyline-wxss/SKILL.md:91 | 已实现 | `skyline/calc-angle` |
 | 58 | 1A WXSS 值 | `background` 简写中 attachment/origin/clip 不生效 | skyline-skills/skills/skyline-wxss/SKILL.md:115 | 已实现 | `skyline/shorthand-partial` |
 | 59 | 1A WXSS 值 | `text-decoration` 简写中 thickness 不生效 | skyline-skills/skills/skyline-wxss/SKILL.md:116 | 已实现 | `skyline/shorthand-partial` |
@@ -93,7 +93,7 @@
 | 85 | 1C 组件契约 | `scroll-view` 的 `type` 仅接受 list/custom/nested | skyline-skills/skills/skyline-components/references/scroll/scroll-view.md:20-24 | 已实现 | `skyline/scroll-view-type` |
 | 86 | 1C 组件契约 | `list-view`/`grid-view` 必须是 custom 模式或 sticky-section 的直接子节点 | skyline-skills/skills/skyline-components/references/scroll/list-grid-view.md:5 | 已实现 | `skyline/scroll-view-family` |
 | 87 | 1C 组件契约 | `list-builder` 定高模式必须声明 child-height | skyline-skills/skills/skyline-components/references/scroll/list-grid-view.md:271 | 已实现 | `skyline/scroll-view-family` |
-| 88 | 1C 组件契约 | `grid-view` 必须声明 cross-axis-count | skyline-skills/skills/skyline-components/references/scroll/list-grid-view.md:272 | 已实现 | `skyline/scroll-view-family` |
+| 88 | 1C 组件契约 | `grid-view` 必须声明 cross-axis-count | skyline-skills/skills/skyline-components/references/scroll/list-grid-view.md:272 | 不实现 | 引擎默认 `cross_axis_count_{2}`（`shadow/components/grid_view_shadow_node.h:38`），省略合法 |
 | 89 | 1C 组件契约 | `list-builder` 的 type 仅接受 static/dynamic | skyline-skills/skills/skyline-components/references/scroll/list-grid-view.md:155 | 已实现 | `skyline/scroll-view-family` |
 | 90 | 1C 组件契约 | `grid-view` 的 type 仅接受 aligned/masonry | skyline-skills/skills/skyline-components/references/scroll/list-grid-view.md:251 | 已实现 | `skyline/scroll-view-family` |
 | 91 | 1C 组件契约 | `sticky-section` 必须在 custom 模式 scroll-view 内 | skyline-skills/skills/skyline-components/references/scroll/sticky.md:152 | 已实现 | `skyline/scroll-view-family` |
@@ -149,7 +149,7 @@
 | 141 | 1D 配置 | project.config.json libVersion 必须 ≥ 2.30.4 | skyline-skills/skills/skyline-config/references/project-config.md:67-71 | 已实现 | `skyline/lib-version` |
 | 142 | 1D 配置 | 真机基础库必须 ≥ 3.0.2 | skyline-skills/skills/skyline-overview/references/migration/getting-started.md:9 | 不实现 | 不实现：真机基础库由微信客户端决定，project.config.json 的 libVersion 只影响开发者工具；可配置侧已由 `skyline/lib-version` 覆盖 |
 | 143 | 1D 配置 | 页面级 rendererOptions 需基础库 ≥ 3.1.0 | skyline-skills/skills/skyline-config/references/page-config.md:111 | 已实现 | `skyline/lib-version` |
-| 144 | 1D 配置 | rendererOptions.skyline.convertRpxToVw 必须为 boolean | skyline-skills/skills/skyline-config/references/app-config.md:145-153 | 已实现 | `skyline/renderer-options` |
+| 144 | 1D 配置 | rendererOptions.skyline.convertRpxToVw 必须为 boolean | skyline-skills/skills/skyline-config/references/app-config.md:145-153 | 已实现 | `skyline/renderer-options`（位置更正：只读 app.json 顶层，写进 rendererOptions 会报错） |
 | 145 | 1D 配置 | project.config.json setting.skylineRenderEnable 必须为 boolean | skyline-skills/skills/skyline-config/references/project-config.md:18-29 | 已实现 | `skyline/config-ignored` |
 | 146 | 1D 配置 | 分包可单独声明 renderer/componentFramework | skyline-skills/skills/skyline-overview/references/migration/best-practice.md:42-46 | 不实现 | 不实现：这是能力说明（分包可单独声明 renderer/componentFramework），不是缺陷；minidev 已按分包解析 |
 | 147 | 1D 配置 | disableScroll 只能出现在 page.json | skyline-skills/skills/skyline-config/references/page-config.md:49 | 已实现 | `skyline/config-ignored` |
@@ -175,7 +175,7 @@
 | 167 | 1E JS/worklet | 不支持 this.animate API | skyline-skills/skills/skyline-overview/references/migration/compatibility.md:301 | 已实现 | `skyline/unsupported-api`（`call:this.animate`） |
 | 168 | 1E JS/worklet | 不支持 Page.onPageScroll | skyline-skills/skills/skyline-overview/references/migration/compatibility.md:300 | 已实现 | `skyline/unsupported-api`（`page-option:onPageScroll`） |
 | 169 | 1E JS/worklet | worklet 仅在 Skyline 渲染模式下可用 | skyline-skills/skills/skyline-worklet/SKILL.md:128 | 不实现 | worklet 仅在 Skyline 模式下可用——用到 worklet 即已决定用 Skyline；纯 WebView 页面写 worklet 本身无效，不是迁移差异 |
-| 170 | 1E JS/worklet | 使用 worklet 时开发者工具需开启 ES5 编译 | skyline-skills/skills/skyline-worklet/references/core/worklet-overview.md:11 | 已实现 | `skyline/worklet-es5` |
+| 170 | 1E JS/worklet | 使用 worklet 时开发者工具需开启 ES5 编译 | skyline-skills/skills/skyline-worklet/references/core/worklet-overview.md:11 | 已实现 | `skyline/worklet-compile-setting`（判据更正：是 `setting.compileWorklet`，不是 `es6`） |
 | 171 | 1E JS/worklet | 小程序插件内不能使用 worklet.scrollViewContext.scrollTo | skyline-skills/skills/skyline-scroll-api/SKILL.md:110 | 已实现 | `skyline/worklet-api-scope`（compileType=plugin） |
 | 172 | 1C 组件契约 | 暂不支持的组件（web-view / movable-area / movable-view / editor / progress 等） | skyline-skills/skills/skyline-overview/references/introduction/component-support.md:54-61 | 已实现 | `skyline/unsupported-component` |
 | 173 | 1C 组件契约 | 内联文本只能放在 `<text>` 里，不能与元素混排 | skyline-skills/skills/skyline-components/references/media/text.md:5、component-support.md:111 | 已实现 | `skyline/no-inline-text`（只报「文本 + 元素混排」，纯文本节点不报） |
@@ -184,8 +184,9 @@
 
 ## 收口说明
 
-171 条审计项全部落账，加上实现期补入的四条审计漏项，台账共 **175 行：145 条已实现、
-30 条有意不实现、0 条待实现**。
+171 条审计项全部落账，加上实现期补入的四条审计漏项，台账共 **175 行：141 条已实现、
+34 条有意不实现、0 条待实现**（2026-10 按引擎源码复核后，7 条知识库断言被更正，4 条从
+「已实现」改为「不实现」，详见 `docs/AUDIT-2026-10.md`）。
 
 补入的四行都是分母自身的不完整，不是新增判断：#172（暂不支持的组件）、#173（内联文本必须用
 `<text>`）的规则早在 P0/P1 就写了；#174/#175 是 `project-config.md:64-75` 里 rendererOptions

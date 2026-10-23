@@ -9,7 +9,7 @@ use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
 use super::dict_table::normalize_value;
-use super::value_util::{all_calls, at_value, is_dynamic, top_level_calls};
+use super::value_util::{all_calls, at_value, is_dynamic, is_ident, top_level_calls};
 use super::visit_declarations;
 
 const EXACT_HELP: &str = "按实际渲染效果调整取值，或改用 Skyline 下表现一致的值";
@@ -19,6 +19,7 @@ const FUNCTION_HELP: &str =
 const ENV_HELP: &str =
     "仅支持 safe-area-inset-top / -right / -bottom / -left 四个变量，其他尺寸改用固定值或自行计算";
 const FONT_WEIGHT_HELP: &str = "Skyline 在 font_weight.cc 里先 round 到百位、再在 SetFontWeight(int) 的 switch 里回落 normal，所以 950 会变成普通字重；直接写 400/500/…/900";
+const FONT_FAMILY_HELP: &str = "把 system-ui 换成具体字体名（如 -apple-system / sans-serif），并保留一个 Skyline 可用的兜底字体";
 
 pub struct ValueDegraded;
 
@@ -44,6 +45,7 @@ impl Rule for ValueDegraded {
             check_only(doc, decl, out);
             check_function(doc, decl, out);
             check_font_weight(doc, decl, out);
+            check_font_family(doc, decl, out);
             check_env(doc, decl, out);
         })
     }
@@ -192,6 +194,27 @@ fn check_font_weight(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagno
         decl,
         message,
         FONT_WEIGHT_HELP,
+    ));
+}
+
+/// `font-family` 里的 `system-ui`：`font_family.cc:63-67` 的 `SystemUi` 分支只 `Diag`
+/// 不 push，若整条只有它，字体退回默认。
+fn check_font_family(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
+    if !decl.name.eq_ignore_ascii_case("font-family") || is_dynamic(&decl.tokens) {
+        return;
+    }
+    if !decl.tokens.iter().any(|token| is_ident(token, "system-ui")) {
+        return;
+    }
+    out.push(at_value(
+        ValueDegraded::ID,
+        doc,
+        decl,
+        format!(
+            "`font-family: {}` 里的 `system-ui` 在 Skyline 下被丢弃，若整条只含它字体会退回默认字体",
+            decl.value.trim()
+        ),
+        FONT_FAMILY_HELP,
     ));
 }
 
@@ -483,6 +506,38 @@ mod tests {
             .c { content: none; }
             .d { content: var(--label); }
             .e { background-image: url(a.png); }
+            "#,
+        );
+        assert_eq!(messages(&ValueDegraded, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn font_family_system_ui_is_reported() {
+        let (_f, project) = single(
+            "degraded-font-family",
+            r#"
+            .a { font-family: system-ui; }
+            .b { font-family: system-ui, -apple-system, sans-serif; }
+            .c { font-family: SYSTEM-UI, sans-serif; }
+            "#,
+        );
+        let diags = ValueDegraded.check(&project);
+        assert_eq!(diags.len(), 3);
+        assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
+        assert!(diags[0].message.contains("`system-ui`"));
+        assert!(diags[1].message.contains("退回默认字体"));
+        assert_eq!(diags[0].help.as_deref(), Some(super::FONT_FAMILY_HELP));
+    }
+
+    #[test]
+    fn font_family_without_system_ui_and_dynamic_values_are_accepted() {
+        let (_f, project) = single(
+            "degraded-font-family-negative",
+            r#"
+            .a { font-family: sans-serif; }
+            .b { font-family: -apple-system, BlinkMacSystemFont; }
+            .c { font-family: "system-ui"; }
+            .d { font-family: var(--font); }
             "#,
         );
         assert_eq!(messages(&ValueDegraded, &project), Vec::<String>::new());

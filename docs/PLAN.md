@@ -153,9 +153,9 @@ text-decoration-line 单值、calc 角度、mask-image 渐变。
 约束表用「关系」表达结构，Rust 侧只做分派：`direct` / `ancestor`（挂载位置）、
 `first-child`（`sticky-header` 必须是 `sticky-section` 第一个元素子节点）、
 `unique`（一个 `sticky-section` 只能有一个 `sticky-header`，一个 nested `scroll-view`
-只能有一个 `nested-scroll-body`）、`before:nested-scroll-body`（header 必须在 body 之前）、
-`renders-first`（header/body 只渲染第一个直接子节点，warning）、`requires-attr`
-（`list-builder` 的 `child-height`、`grid-view` 的 `cross-axis-count`）、
+只能有一个 `nested-scroll-body`）、`renders-first`（header/body 只渲染第一个直接子节点，warning）、
+`requires-child-tag`（`type="nested"` 的 `scroll-view` 必须有 `nested-scroll-body`）、
+`requires-attr`（`list-builder` 的 `child-height`）、
 `allowed-values`（`list-builder.type` / `grid-view.type`）、
 `within:<容器>`（内层 `scroll-view` 的 `associative-container`）。
 
@@ -338,7 +338,8 @@ miniprogram 侧。补插件根要处理 scope 归属（插件页面/组件不属
 `scroll-context-ref`（用 `scrollViewContext.scrollTo` 前必须有 `.ref()`）、
 `draggable-sheet-scroll-to`（`size` 与 `pixels` 同时传）、`worklet-directive`（`worklet:` 绑定 /
 `applyAnimatedStyle` 的 updater / 路由 builder 返回的 `handle*Animation`）、
-`worklet-data-freeze`（worklet 内解构 `this.data`）、`worklet-es5`（用 worklet 但没开 `setting.es6`）。
+`worklet-data-freeze`（worklet 内解构 `this.data`）、`worklet-compile-setting`（用 worklet 但没开
+`setting.compileWorklet`）。
 
 **路由那一处我判错过，记在这里。** 最初让 #153 判 `addRouteBuilder(type, builder)` 的 builder
 本身要有 `'worklet'`——依据是从文档 grep 到 `'worklet'` 命中。实际 `router-api.md:65` 的硬约束是
@@ -408,7 +409,7 @@ A 页失效、B 页正常时要报）、`no_pseudo` 的转义冒号（`.hover\:b
 
 **数据源：9 张 txt 表全部换成 Rust const**。删掉 `rules/data_table.rs`（读行骨架）与
 `include_str!` + 每表一份 `parse`，数据按**解析后的语义**直接写成 `const`：约束是 enum
-（`Constraint::Enum/WebviewOnly/Unsupported/Number`、`Relation::Direct/Ancestor/Before/…`）、
+（`Constraint::Enum/WebviewOnly/Unsupported/Number`、`Relation::Direct/Ancestor/RequiresChildTag/…`）、
 `[requires]` 表达式是 `Trigger`/`Requirement` 变体、组件表是两份共享 const（`is_builtin` 与
 `unsupported_replacement` 同一份数据）。证据（`文件:行号`）逐条保留为条目的行尾注释。
 顺带消掉三处同一事实的重复（`components.txt` 曾被两份手写解析各读一遍）。验收：四工程诊断

@@ -9,6 +9,9 @@
 //! 布尔开关是 `|| false`，隔离级别是 `=== 'isolated' ? Isolated : Legacy`，页面级
 //! 只读 `rendererOptions.skyline.*`。所以类型不符、层级写错都不会崩，只会静默
 //! 回落默认值——因此这里全部是 warning 而不是 error。
+//!
+//! `convertRpxToVw` 是例外：它不在 `rendererOptions` 里读，而是 webview-engine 直接读
+//! **app.json 顶层**（`wxapplib/src/webview-engine/src/index.ts:105`）。
 
 use serde_json::{Map, Value};
 
@@ -51,7 +54,6 @@ const KNOWN: &[(&str, Kind, Where)] = &[
     ("enableImagePreload", Kind::Bool, Where::Both),
     ("tagNameStyleIsolation", Kind::Isolation, Where::Both),
     ("keyframeStyleIsolation", Kind::Isolation, Where::Both),
-    ("convertRpxToVw", Kind::Bool, Where::AppOnly),
     ("disableABTest", Kind::Bool, Where::AppOnly),
     ("sdkVersionBegin", Kind::Text, Where::AppOnly),
     ("sdkVersionEnd", Kind::Text, Where::AppOnly),
@@ -59,6 +61,17 @@ const KNOWN: &[(&str, Kind, Where)] = &[
     ("iosVersionEnd", Kind::Text, Where::AppOnly),
     ("androidVersionBegin", Kind::Text, Where::AppOnly),
     ("androidVersionEnd", Kind::Text, Where::AppOnly),
+];
+
+/// app 级 `rendererOptions` 顶层**不生效**的键：运行时只读
+/// `rendererOptions.skyline.*`（`runtime/index.ts:126-151`）。
+/// `defaultDisplayBlock` 不在此列——运行时两种写法都认。
+const SKYLINE_ONLY_TOP: &[&str] = &[
+    "defaultContentBox",
+    "enableImagePreload",
+    "enableScrollViewAutoSize",
+    "tagNameStyleIsolation",
+    "keyframeStyleIsolation",
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -110,10 +123,26 @@ fn check_file(
     level: Level,
     out: &mut Vec<Diagnostic>,
 ) {
+    let positions = JsonPositions::new(source);
+    // app.json 顶层的 convertRpxToVw 是唯一生效的写法，顺带校验类型。
+    if level == Level::App
+        && let Some(value) = json.get("convertRpxToVw")
+        && !value.is_boolean()
+    {
+        warn(
+            out,
+            path,
+            positions.key("convertRpxToVw"),
+            format!(
+                "app.json 顶层的 convertRpxToVw 期望 boolean，实际是 {value}：运行时按真值判断，字符串或数字可能被误当成开启"
+            ),
+            "写成 JSON 布尔值 true / false，不要加引号或写数字",
+        );
+    }
+
     let Some(options) = json.get("rendererOptions") else {
         return;
     };
-    let positions = JsonPositions::new(source);
     let Some(options) = options.as_object() else {
         warn(
             out,
@@ -124,6 +153,9 @@ fn check_file(
         );
         return;
     };
+
+    // convertRpxToVw 在 rendererOptions 任意层级都不会被读取。
+    check_convert_rpx_to_vw(path, &positions, options, out);
 
     match options.get("skyline") {
         None => {}
@@ -138,11 +170,13 @@ fn check_file(
     }
 
     // 页面级只读 rendererOptions.skyline.*；写在顶层的开关是死配置。
-    // app 级顶层的 defaultDisplayBlock 是运行时明确支持的写法（另一条规则/视图也依赖它），
-    // 其余顶层键不在本规则范围内。
-    if level == Level::Page {
-        for key in options.keys() {
-            if key == "skyline" || kind_of(key).is_none() {
+    // app 级顶层只有 defaultDisplayBlock 生效，其余已知开关都在 skyline 层。
+    for key in options.keys() {
+        if key == "skyline" || key == "convertRpxToVw" {
+            continue;
+        }
+        if level == Level::Page {
+            if kind_of(key).is_none() {
                 continue;
             }
             warn(
@@ -154,7 +188,58 @@ fn check_file(
                 ),
                 "把该开关移进 rendererOptions.skyline 下",
             );
+        } else if key == "defaultDisplayBlock" {
+            // 运行时明确读取 rendererOptions.defaultDisplayBlock。
+        } else if SKYLINE_ONLY_TOP.contains(&key.as_str()) {
+            warn(
+                out,
+                path,
+                positions.key(key),
+                format!(
+                    "app 级 `{key}` 写在 rendererOptions 顶层不会生效，运行时只读 rendererOptions.skyline.{key}"
+                ),
+                "把该配置移进 rendererOptions.skyline 下",
+            );
         }
+    }
+}
+
+/// `convertRpxToVw` 只在 app.json 顶层被读取；出现在 `rendererOptions` 任意层级都无效。
+fn check_convert_rpx_to_vw(
+    path: &str,
+    positions: &JsonPositions,
+    options: &Map<String, Value>,
+    out: &mut Vec<Diagnostic>,
+) {
+    if options.contains_key("convertRpxToVw") {
+        warn(
+            out,
+            path,
+            positions.key("convertRpxToVw"),
+            "`convertRpxToVw` 写在 rendererOptions 里不会生效，运行时只读 app.json 顶层"
+                .to_string(),
+            "把 convertRpxToVw 移到 app.json 顶层（与 pages 同级），不要放进 rendererOptions",
+        );
+    }
+    for child in options.values() {
+        walk_convert_rpx_to_vw(path, positions, child, out);
+    }
+}
+
+fn walk_convert_rpx_to_vw(
+    path: &str,
+    positions: &JsonPositions,
+    value: &Value,
+    out: &mut Vec<Diagnostic>,
+) {
+    match value {
+        Value::Object(map) => check_convert_rpx_to_vw(path, positions, map, out),
+        Value::Array(items) => {
+            for item in items {
+                walk_convert_rpx_to_vw(path, positions, item, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -166,6 +251,9 @@ fn check_skyline(
     out: &mut Vec<Diagnostic>,
 ) {
     for (key, value) in skyline {
+        if key == "convertRpxToVw" {
+            continue;
+        }
         let Some((kind, scope)) = kind_of(key) else {
             warn(
                 out,
@@ -330,7 +418,7 @@ mod tests {
     fn reports_string_instead_of_boolean() {
         let (_f, project) = project(
             "renderer-options-boolean",
-            &app_with(r#"{"skyline":{"defaultDisplayBlock":"true","convertRpxToVw":1}}"#),
+            &app_with(r#"{"skyline":{"defaultDisplayBlock":"true","enableImagePreload":1}}"#),
             "{}",
         );
         let diags = RendererOptions.check(&project);
@@ -344,7 +432,89 @@ mod tests {
                 .iter()
                 .any(|d| d.message.contains("defaultDisplayBlock"))
         );
-        assert!(diags.iter().any(|d| d.message.contains("convertRpxToVw")));
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("enableImagePreload"))
+        );
+    }
+
+    #[test]
+    fn accepts_app_level_convert_rpx_to_vw() {
+        let (_f, project) = project(
+            "renderer-options-rpx-to-vw-top",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","convertRpxToVw":true}"#,
+            "{}",
+        );
+        assert!(RendererOptions.check(&project).is_empty());
+    }
+
+    #[test]
+    fn reports_convert_rpx_to_vw_inside_renderer_options() {
+        // app 级与页面级、顶层与 skyline 层：运行时都不读。
+        let (_f, project) = project(
+            "renderer-options-rpx-to-vw-nested",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"convertRpxToVw":true,"skyline":{"convertRpxToVw":false}}}"#,
+            r#"{"rendererOptions":{"skyline":{"convertRpxToVw":true}}}"#,
+        );
+        let diags = RendererOptions.check(&project);
+        assert_eq!(diags.len(), 3, "{diags:?}");
+        assert!(
+            diags.iter().all(
+                |d| d.message.contains("convertRpxToVw") && d.message.contains("app.json 顶层")
+            ),
+            "{diags:?}"
+        );
+        assert_eq!(
+            diags
+                .iter()
+                .filter(|d| d.path == "pages/index/index.json")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn reports_non_boolean_app_level_convert_rpx_to_vw() {
+        let (_f, project) = project(
+            "renderer-options-rpx-to-vw-type",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","convertRpxToVw":"true"}"#,
+            "{}",
+        );
+        let diags = RendererOptions.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert!(diags[0].message.contains("convertRpxToVw"));
+        assert!(
+            diags[0].message.contains("期望 boolean"),
+            "{}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn reports_app_level_top_keys_that_only_work_under_skyline() {
+        let (_f, project) = project(
+            "renderer-options-app-top-skyline-only",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"defaultContentBox":true,"enableImagePreload":true,"enableScrollViewAutoSize":true,"tagNameStyleIsolation":"isolated","keyframeStyleIsolation":"isolated"}}"#,
+            "{}",
+        );
+        let diags = RendererOptions.check(&project);
+        assert_eq!(diags.len(), 5, "{diags:?}");
+        for key in [
+            "defaultContentBox",
+            "enableImagePreload",
+            "enableScrollViewAutoSize",
+            "tagNameStyleIsolation",
+            "keyframeStyleIsolation",
+        ] {
+            assert!(
+                diags
+                    .iter()
+                    .any(|d| d.message.contains(key)
+                        && d.message.contains("rendererOptions.skyline")),
+                "应报 {key}: {diags:?}"
+            );
+        }
     }
 
     #[test]
@@ -439,9 +609,7 @@ mod tests {
     fn accepts_valid_configuration() {
         let (_f, project) = project(
             "renderer-options-valid",
-            &app_with(
-                r#"{"skyline":{"defaultDisplayBlock":true,"defaultContentBox":false,"tagNameStyleIsolation":"legacy","keyframeStyleIsolation":"isolated","enableScrollViewAutoSize":true,"enableImagePreload":false,"convertRpxToVw":false,"disableABTest":true,"sdkVersionBegin":"3.0.0","sdkVersionEnd":"15.255.255","iosVersionBegin":"10.0.0","iosVersionEnd":"15.255.255","androidVersionBegin":"5.0.0","androidVersionEnd":"15.255.255"}}"#,
-            ),
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","convertRpxToVw":false,"rendererOptions":{"skyline":{"defaultDisplayBlock":true,"defaultContentBox":false,"tagNameStyleIsolation":"legacy","keyframeStyleIsolation":"isolated","enableScrollViewAutoSize":true,"enableImagePreload":false,"disableABTest":true,"sdkVersionBegin":"3.0.0","sdkVersionEnd":"15.255.255","iosVersionBegin":"10.0.0","iosVersionEnd":"15.255.255","androidVersionBegin":"5.0.0","androidVersionEnd":"15.255.255"}}}"#,
             r#"{"rendererOptions":{"skyline":{"defaultDisplayBlock":false}}}"#,
         );
         assert!(RendererOptions.check(&project).is_empty());

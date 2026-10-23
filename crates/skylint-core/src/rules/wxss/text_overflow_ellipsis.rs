@@ -4,13 +4,14 @@
 //! 在 `<view>` 等组件上不生效」。WebView 上 `overflow: hidden` + `white-space: nowrap`
 //! + `text-overflow: ellipsis` 对任意块级元素都成立，迁移后静默失效。
 //!
-//! 判定范围是「声明所在选择器命中的节点 + 其后代」：`text-overflow` 可继承，所以
-//! `.list`（`<view>`）下面只要有 `<text>` 就不算失效。命中节点是自定义组件、或属性带
-//! 插值时静态判断不了，一律放过（宁可漏报）。
+//! `text-overflow` 不继承（`css/css_properties/text_overflow.h:12` 只带 `kProperty`），
+//! 所以判定范围就是「声明所在选择器命中的节点自身」：`.list`（`<view>`）下面有
+//! `<text>` 也不生效。命中节点是自定义组件、或属性带插值时静态判断不了，一律放过
+//! （宁可漏报）。
 
 use std::collections::HashMap;
 
-use crate::input::wxml::{self, WxmlElement, WxmlNode};
+use crate::input::wxml::{self, WxmlElement};
 use crate::project::{Project, Scope};
 use crate::rules::RuleMeta;
 use crate::rules::wxml::is_builtin;
@@ -93,7 +94,7 @@ impl crate::rules::Rule for TextOverflowEllipsis {
                     Diagnostic::new(
                         ID,
                         Severity::Warning,
-                        format!("`text-overflow: ellipsis` 在 Skyline 下只作用于 `<text>`；选择器 `{selectors}` 在某处命中的节点及其后代都没有 `<text>`，声明不会生效"),
+                        format!("`text-overflow: ellipsis` 在 Skyline 下只作用于 `<text>`；选择器 `{selectors}` 在某处命中的节点不是 `<text>`，声明不会生效"),
                         doc.path(),
                         line,
                         column,
@@ -114,15 +115,9 @@ fn scope_wxml<'a>(project: &'a Project, scope: &Scope) -> Vec<&'a str> {
     }
 }
 
-/// 这个节点（或它的后代）上能否有 `<text>` 承载 ellipsis。
+/// 这个节点自身能否承载 ellipsis。自定义组件内部结构不可见，按「可能」处理。
 fn can_host_text(element: &WxmlElement) -> bool {
-    if element.tag == "text" || !is_builtin(&element.tag) {
-        return true;
-    }
-    element
-        .children
-        .iter()
-        .any(|child| matches!(child, WxmlNode::Element(el) if can_host_text(el)))
+    !is_builtin(&element.tag) || matches!(element.tag.as_str(), "text" | "span" | "navigator")
 }
 
 #[cfg(test)]
@@ -240,14 +235,25 @@ mod tests {
         assert!(diagnostics.is_empty());
     }
 
+    /// `text-overflow` 不继承：容器里的 `<text>` 拿不到这条声明。
     #[test]
-    fn inherited_through_text_descendant_is_fine() {
+    fn text_descendant_does_not_exempt_the_container() {
         let diagnostics = check(
             "descendant",
             r#"<view class="list"><view class="row"><text>标题</text></view></view>"#,
             ".list { text-overflow: ellipsis; }",
         );
-        assert!(diagnostics.is_empty());
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    }
+
+    #[test]
+    fn span_and_navigator_are_fine() {
+        let diagnostics = check(
+            "text-nodes",
+            r#"<span class="a">x</span><navigator class="b">y</navigator>"#,
+            ".a, .b { text-overflow: ellipsis; }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
     #[test]
