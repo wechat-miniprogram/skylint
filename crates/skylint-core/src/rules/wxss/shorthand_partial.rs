@@ -2,21 +2,15 @@
 //!
 //! 与 [`super::unsupported_property`] 的分界：那里按**属性名**判（`background-attachment: fixed`
 //! 是 error），这里按**简写值里的 token** 判（`background: … fixed` 只是 warning，其余子属性照常）。
-//! 数据在 `data/shorthand_partial.txt`。
-
-use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+//! 数据以 const 形式定义在本模块。
 
 use crate::input::wxss::{ValueToken, WxssDeclaration, WxssDoc};
 use crate::project::Project;
-use crate::rules::data_table::{self, Columns};
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{at_value, is_dynamic, token_text};
 use super::visit;
-
-const SOURCE: &str = include_str!("../data/shorthand_partial.txt");
 
 const HELP: &str = "改用受支持的子属性，或从简写里去掉这一段";
 
@@ -39,27 +33,23 @@ impl Rule for ShorthandPartial {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let table = data();
         visit(project, |doc, out| {
             for rule in &doc.rules {
                 for decl in &rule.declarations {
-                    check_decl(table, doc, decl, out);
+                    check_decl(doc, decl, out);
                 }
             }
         })
     }
 }
 
-fn check_decl(table: &Table, doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
+fn check_decl(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
     let name = decl.name.to_ascii_lowercase();
-    let Some(rows) = table.get(name.as_str()) else {
-        return;
-    };
     if is_dynamic(&decl.tokens) {
         return;
     }
     // 一行数据最多报一条：同一行命中多个 token（`fixed border-box`）时合并，避免刷屏。
-    for row in rows {
+    for row in ROWS.iter().filter(|row| row.property == name.as_str()) {
         let mut hits: Vec<String> = Vec::new();
         for token in &decl.tokens {
             let Some(text) = row.trigger(token) else {
@@ -92,9 +82,9 @@ fn check_decl(table: &Table, doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Ve
     }
 }
 
-#[derive(Debug)]
 struct Row {
-    triggers: Vec<&'static str>,
+    property: &'static str,
+    triggers: &'static [&'static str],
     dropped: &'static str,
     note: &'static str,
 }
@@ -118,66 +108,56 @@ impl Row {
     }
 }
 
-type Table = HashMap<&'static str, Vec<Row>>;
-
-fn data() -> &'static Table {
-    static TABLE: OnceLock<Table> = OnceLock::new();
-    TABLE.get_or_init(|| parse(SOURCE).expect("WXSS 简写部分生效表格式错误"))
-}
-
-/// 解析数据文件。格式错误一律返回带行号的说明，便于同步时定位。
-fn parse(source: &'static str) -> Result<Table, String> {
-    let parsed = data_table::read(source, data_table::split_on('|'), |_| {
-        Columns::new(4, "`简写属性 | 触发的 token | 被丢弃的子属性 | 说明` 四列")
-    })?;
-
-    let mut table: Table = HashMap::new();
-    let mut seen = HashSet::new();
-    for row in parsed.rows {
-        let (property, triggers, dropped, note) =
-            (row.fields[0], row.fields[1], row.fields[2], row.fields[3]);
-        if property.is_empty() || triggers.is_empty() || dropped.is_empty() || note.is_empty() {
-            return Err(format!("第 {} 行：四列都不能为空", row.line_no));
-        }
-        if !is_lowercase(property) || !is_lowercase(triggers) {
-            return Err(format!(
-                "第 {} 行：属性与 token 必须小写：{property} | {triggers}",
-                row.line_no
-            ));
-        }
-        let triggers: Vec<&'static str> = triggers
-            .split(',')
-            .map(str::trim)
-            .filter(|trigger| !trigger.is_empty())
-            .collect();
-        for trigger in &triggers {
-            data_table::unique(
-                &mut seen,
-                (property, trigger.to_ascii_lowercase()),
-                row.line_no,
-                || format!("重复的 token {property} | {trigger}"),
-            )?;
-        }
-        table.entry(property).or_default().push(Row {
-            triggers,
-            dropped,
-            note,
-        });
-    }
-
-    Ok(table)
-}
-
-fn is_lowercase(text: &str) -> bool {
-    !text.bytes().any(|b| b.is_ascii_uppercase())
-}
+/// 来源：skyline-skills/skills/skyline-wxss/SKILL.md:132-142、references/visual.md:35、:135、references/text.md:86、:123
+///
+/// 语义：简写属性本身生效，但值里属于某个不受支持子属性的那部分会被静默丢弃，其余子属性照常。
+///       长写这些子属性属于不支持属性表（error），不在这里。
+/// 触发的 token = ident（大小写不敏感、整值匹配）；`length` 是伪 token，匹配任意长度 / 百分比词元。
+/// 与初始值相同的 token 不收录：写了等于没写，丢弃也不改变渲染（background-attachment
+/// 初始值 scroll、mask-origin / mask-clip 初始值 border-box）。
+/// 匹配：含 var( / env( / {{ / 预处理器变量的值无法静态判定，整条声明跳过。
+/// 同一属性按声明顺序匹配，`(property, trigger)` 不重复（见测试）。
+const ROWS: &[Row] = &[
+    Row {
+        property: "background",
+        triggers: &["fixed", "local"],
+        dropped: "background-attachment",
+        note: "简写里的 attachment 被丢弃",
+    },
+    Row {
+        property: "background",
+        triggers: &["border-box", "padding-box", "content-box"],
+        dropped: "background-origin / background-clip",
+        note: "简写里的盒关键字被丢弃",
+    },
+    Row {
+        property: "mask",
+        triggers: &["padding-box", "content-box"],
+        dropped: "mask-origin / mask-clip",
+        note: "简写里的盒关键字被丢弃",
+    },
+    Row {
+        property: "mask",
+        triggers: &["no-clip"],
+        dropped: "mask-clip",
+        note: "no-clip 被丢弃",
+    },
+    Row {
+        property: "text-decoration",
+        triggers: &[LENGTH],
+        dropped: "text-decoration-thickness",
+        note: "长度值被当作 thickness 丢弃",
+    },
+];
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use crate::rules::Rule;
 
-    use crate::rules::testutil::wxss::{messages, single};
     use super::ShorthandPartial;
+    use crate::rules::testutil::wxss::{messages, single};
 
     #[test]
     fn unsupported_sub_properties_in_shorthands_are_reported() {
@@ -256,19 +236,28 @@ mod tests {
     }
 
     #[test]
-    fn data_file_parses_without_duplicate_triggers() {
-        let table = super::parse(super::SOURCE).unwrap();
-        assert_eq!(table["background"].len(), 2);
-        assert_eq!(table["mask"].len(), 2);
-        assert!(table["background"][0].triggers.contains(&"fixed"));
-        assert!(table["text-decoration"][0].triggers.contains(&"length"));
+    fn table_contains_known_rows_and_has_no_duplicate_triggers() {
+        let rows_for = |property: &str| {
+            super::ROWS
+                .iter()
+                .filter(|row| row.property == property)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(rows_for("background").len(), 2);
+        assert_eq!(rows_for("mask").len(), 2);
+        assert!(rows_for("background")[0].triggers.contains(&"fixed"));
+        assert!(rows_for("text-decoration")[0].triggers.contains(&"length"));
 
-        let err =
-            super::parse("background | fixed | x | y\nbackground | fixed | z | w\n").unwrap_err();
-        assert!(err.contains("重复的 token"), "{err}");
-        let err = super::parse("background | FIXED | x | y\n").unwrap_err();
-        assert!(err.contains("必须小写"), "{err}");
-        let err = super::parse("background | fixed | x\n").unwrap_err();
-        assert!(err.contains("四列"), "{err}");
+        // 查表按首次命中返回，同一属性下不允许重复 token。
+        let mut seen = HashSet::new();
+        for row in super::ROWS {
+            for trigger in row.triggers {
+                assert!(
+                    seen.insert((row.property, *trigger)),
+                    "重复的 token {} | {trigger}",
+                    row.property
+                );
+            }
+        }
     }
 }

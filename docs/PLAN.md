@@ -1,8 +1,8 @@
 # skylint 重做计划
 
 > 状态标记：`[x]` 已完成 / `[ ]` 未开始 / `[?]` 待验证。
-> 本文件是计划与进度的唯一来源；规则清单由 `crates/skylint-core/src/rules/data/*.toml`
-> 生成，不在这里手写。
+> 本文件是计划与进度的唯一来源；规则清单以 `crates/skylint-core/src/rules/` 下的规则注册表
+> 为准（`skylint --rules` 输出整表），不在这里手写。
 
 ## 0. 前提
 
@@ -391,7 +391,8 @@ A 页失效、B 页正常时要报）、`no_pseudo` 的转义冒号（`.hover\:b
 共用层收敛（这轮做了什么）：`rules/wxml/branch.rs`（互斥 / 同时渲染计数）、
 `rules/js/callee.rs`（`Exact`/`Suffix`/`Qualified`/`Namespace`/`Method` 五种形态，替掉 5 处
 无边界 `ends_with`）、`value_util::text_is_dynamic`（单一动态值口径）、`Project::setting`
-（private 覆盖 public）、`rules/data_table.rs`（数据表读行骨架，9 个解析器迁移）、
+（private 覆盖 public）、`rules/data_table.rs`（数据表读行骨架，9 个解析器迁移；下一轮已整层删除，
+数据改为 Rust const）、
 `rules/testutil.rs`（三份 Fixture 合并，38 个测试文件改 import）、诊断构造收敛成
 `span_diagnostic` / `element_diagnostic` / `at_value` / `at_declaration` / config `warn` 五族
 （25 处手写 `Diagnostic::new` 替掉 13 处，剩 7 处因 `end` 缺失、级别不同或 help 类型不同而
@@ -405,13 +406,19 @@ A 页失效、B 页正常时要报）、`no_pseudo` 的转义冒号（`.hover\:b
 `:not(:placeholder-shown)` 各一条）。风险更高的副作用是 `text-overflow` / `tag-selector` 不再因
 `:first-child` 这类无参伪类退化成 Unknown——四个工程实测无新增，因为没有这类写法。
 
+**数据源：9 张 txt 表全部换成 Rust const**。删掉 `rules/data_table.rs`（读行骨架）与
+`include_str!` + 每表一份 `parse`，数据按**解析后的语义**直接写成 `const`：约束是 enum
+（`Constraint::Enum/WebviewOnly/Unsupported/Number`、`Relation::Direct/Ancestor/Before/…`）、
+`[requires]` 表达式是 `Trigger`/`Requirement` 变体、组件表是两份共享 const（`is_builtin` 与
+`unsupported_replacement` 同一份数据）。证据（`文件:行号`）逐条保留为条目的行尾注释。
+顺带消掉三处同一事实的重复（`components.txt` 曾被两份手写解析各读一遍）。验收：四工程诊断
+逐字段 identical（16 / 304 / 10 / 4），数据条目数与取值由脚本对旧 txt 逐表核对（9 张全部相同）。
+
 **明确不做（附理由）**：
 - 简写展开（`border: 1px double red` 这类）：子属性的失效是否导致整条声明被丢弃，取决于引擎
   对各简写的分解实现，没有证据前报出来就是猜；`unsupported-value` 数据表头已写明边界。
 - `scroll-context-ref` 的文件级启发：改成「同一函数内要有 `.ref`」会在「onReady 里取 ref、
   手势里 scrollTo」这种常见写法上误报，静态数据流不在工具边界内。
-- 数据表加载器的 8 份 `parse` 重复：只抽「读行骨架」（分区 / 注释 / 列数 / 去重 / 行号报错），
-  各表的行语义留在原处，不为统一扭曲数据文件格式。
 
 ### 不做
 

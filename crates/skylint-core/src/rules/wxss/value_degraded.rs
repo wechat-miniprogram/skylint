@@ -1,23 +1,16 @@
 //! 属性可用，但该值在 Skyline 下被降级 / 映射 / 无效果，表现与 WebView 不同。
 //!
 //! 与 [`super::unsupported_value`] 的分界：这里是「值有效但行为不同」（warning），
-//! 那里是「值根本无效，声明被静默忽略」（error）。数据在 `data/value_degraded.txt`。
-
-use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+//! 那里是「值根本无效，声明被静默忽略」（error）。数据以 const 形式定义在本模块。
 
 use crate::input::wxss::{ValueToken, WxssDeclaration, WxssDoc};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
-use crate::rules::data_table::{self, Columns};
-
 use super::dict_table::normalize_value;
 use super::value_util::{all_calls, at_value, is_dynamic, top_level_calls};
 use super::visit;
-
-const SOURCE: &str = include_str!("../data/value_degraded.txt");
 
 const EXACT_HELP: &str = "按实际渲染效果调整取值，或改用 Skyline 下表现一致的值";
 const ONLY_HELP: &str = "去掉不在支持范围内的值，只保留 auto 或 contents";
@@ -43,18 +36,17 @@ impl Rule for ValueDegraded {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let data = data();
         visit(project, |doc, out| {
             for rule in &doc.rules {
                 for decl in &rule.declarations {
                     if decl.value.trim().is_empty() {
                         continue;
                     }
-                    check_exact(data, doc, decl, out);
-                    check_only(data, doc, decl, out);
-                    check_function(data, doc, decl, out);
+                    check_exact(doc, decl, out);
+                    check_only(doc, decl, out);
+                    check_function(doc, decl, out);
                     check_font_weight(doc, decl, out);
-                    check_env(data, doc, decl, out);
+                    check_env(doc, decl, out);
                 }
             }
         })
@@ -62,15 +54,14 @@ impl Rule for ValueDegraded {
 }
 
 /// `[exact]`：整值与表里的值相等（与 `[unsupported-value]` 同一匹配口径）。
-fn check_exact(data: &Data, doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
+fn check_exact(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
     let name = decl.name.to_ascii_lowercase();
-    let Some(entries) = data.exact.get(name.as_str()) else {
-        return;
-    };
     let Some(value) = normalize_value(&decl.value) else {
         return;
     };
-    let Some(note) = entries.get(value.as_str()) else {
+    let Some((_, _, note)) = EXACT_VALUES.iter().find(|(names, candidate, _)| {
+        *candidate == value.as_str() && names.contains(&name.as_str())
+    }) else {
         return;
     };
     out.push(at_value(
@@ -86,9 +77,12 @@ fn check_exact(data: &Data, doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec
 }
 
 /// `[only]`：值里的每个 ident 都必须在允许列表内。
-fn check_only(data: &Data, doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
+fn check_only(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
     let name = decl.name.to_ascii_lowercase();
-    let Some(entry) = data.only.get(name.as_str()) else {
+    let Some((_, allowed, note)) = ONLY_VALUES
+        .iter()
+        .find(|(property, _, _)| *property == name.as_str())
+    else {
         return;
     };
     if is_dynamic(&decl.tokens) {
@@ -99,8 +93,7 @@ fn check_only(data: &Data, doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<
         let ValueToken::Ident(ident) = token else {
             continue;
         };
-        if entry
-            .allowed
+        if allowed
             .iter()
             .any(|allowed| allowed.eq_ignore_ascii_case(ident))
         {
@@ -128,25 +121,25 @@ fn check_only(data: &Data, doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<
         format!(
             "`{name}: {}` 在 Skyline 下的表现与 WebView 不同：{}，{list} 不生效",
             decl.value.trim(),
-            entry.note
+            note
         ),
         ONLY_HELP,
     ));
 }
 
 /// `[function]`：值里出现指定函数调用。
-fn check_function(data: &Data, doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
+fn check_function(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
     let name = decl.name.to_ascii_lowercase();
-    let Some(entries) = data.functions.get(name.as_str()) else {
+    let Some(note) = top_level_calls(&decl.tokens).into_iter().find_map(|call| {
+        FUNCTION_VALUES
+            .iter()
+            .find(|(property, function, _)| {
+                *property == name.as_str() && call.name.eq_ignore_ascii_case(function)
+            })
+            .map(|(_, _, note)| *note)
+    }) else {
         return;
     };
-    let Some(call) = top_level_calls(&decl.tokens)
-        .into_iter()
-        .find(|call| entries.contains_key(call.name.as_str()))
-    else {
-        return;
-    };
-    let note = entries[call.name.as_str()];
     out.push(at_value(
         ValueDegraded::ID,
         doc,
@@ -207,7 +200,7 @@ fn check_font_weight(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagno
 }
 
 /// `[env]`：不按属性，扫全部声明值里的 `env(<ident>)`（可能嵌在 `calc()` 里）。
-fn check_env(data: &Data, doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
+fn check_env(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
     // 自定义属性只是存值，真正生效在使用处；报在定义处是噪音。
     if decl.name.starts_with("--") {
         return;
@@ -221,8 +214,7 @@ fn check_env(data: &Data, doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<D
         let Some(ValueToken::Ident(var)) = call.args.first() else {
             continue;
         };
-        if data
-            .env
+        if ENV_VARIABLES
             .iter()
             .any(|allowed| allowed.eq_ignore_ascii_case(var))
         {
@@ -255,144 +247,66 @@ fn check_env(data: &Data, doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<D
     ));
 }
 
-struct Only {
-    allowed: Vec<&'static str>,
-    note: &'static str,
-}
+// 来源：/Volumes/2tb-ssd/nebula/Work/skyline-skills/skills/skyline-wxss/references/*.md
+// 语义：属性本身受支持，但该值在 Skyline 下被降级 / 映射 / 无效果，表现与 WebView 不同。
+//       「值根本无效」属于 wxss_support 表（error），不在这里。
 
-#[derive(Default)]
-struct Data {
-    /// 属性 → (整值 → 实际行为)。
-    exact: HashMap<&'static str, HashMap<&'static str, &'static str>>,
-    /// 属性 → (允许的 ident, 实际行为)。
-    only: HashMap<&'static str, Only>,
-    /// 属性 → (函数名 → 实际行为)。
-    functions: HashMap<&'static str, HashMap<&'static str, &'static str>>,
-    /// 允许的 `env()` 变量名。
-    env: Vec<&'static str>,
-}
+/// `[exact]` 条目：`(属性名列表, 整值, 说明)`。
+///
+/// 属性名列表对应原表一格多属性；值 trim + 小写后整值相等才命中。
+const EXACT_VALUES: &[(&[&str], &str, &str)] = &[
+    (
+        &["animation-fill-mode"],
+        "none",
+        "可写，但实际按 forwards 处理",
+    ), // animation.md:78
+    (
+        &["animation-fill-mode"],
+        "backwards",
+        "可写，但实际按 forwards 处理",
+    ), // animation.md:78
+    (
+        &["word-break"],
+        "keep-all",
+        "可解析，但渲染层未实现，实际等同 normal",
+    ), // text.md:58
+    (&["word-break"], "break-word", "实际被映射为 normal"), // text.md:59
+    (&["background-repeat"], "space", "实际被降级为 repeat"), // image_property_utils.h:512 兜底
+    (&["background-repeat"], "round", "实际被降级为 repeat"), // image_property_utils.h:512 兜底
+    (&["mask-repeat"], "space", "实际被降级为 repeat"),     // image_property_utils.h:512 兜底
+    (&["mask-repeat"], "round", "实际被降级为 repeat"),     // image_property_utils.h:512 兜底
+];
 
-fn data() -> &'static Data {
-    static TABLE: OnceLock<Data> = OnceLock::new();
-    TABLE.get_or_init(|| parse(SOURCE).expect("WXSS 降级值表格式错误"))
-}
+/// `[only]` 条目：`(属性名, 允许的 ident, 说明)`；值里每个 ident 都必须在列表内。
+const ONLY_VALUES: &[(&str, &[&str], &str)] = &[
+    (
+        "will-change",
+        &["auto", "contents"],
+        "仅支持 auto / contents",
+    ), // animation.md:106
+];
 
-#[derive(Clone, Copy)]
-enum Section {
-    Exact,
-    Only,
-    Function,
-    Env,
-}
+/// `[function]` 条目：`(属性名, 函数名, 说明)`；值里出现该函数调用即命中。
+const FUNCTION_VALUES: &[(&str, &str, &str)] = &[
+    ("content", "url", "图片不会渲染，改用 background-image"), // layout.md:56
+];
 
-/// `[env]` 分区每行只有一个逗号分隔的变量列表，其余分区按 `|` 切三列。
-fn split<'a>(section: Option<&'a str>, line: &'a str) -> Vec<&'a str> {
-    if section == Some("env") {
-        vec![line]
-    } else {
-        line.split('|').map(str::trim).collect()
-    }
-}
-
-fn columns(section: Option<&str>) -> Columns {
-    if section == Some("env") {
-        Columns::new(1, "一个逗号分隔的 env 变量列表")
-    } else {
-        Columns::new(3, "`键 | 值 | 说明` 三列")
-    }
-}
-
-/// 解析数据文件。格式错误一律返回带行号的说明，便于同步时定位。
-fn parse(source: &'static str) -> Result<Data, String> {
-    let parsed = data_table::read(source, split, columns)?;
-    for (line_no, name) in &parsed.sections {
-        if !matches!(*name, "exact" | "only" | "function" | "env") {
-            return Err(format!("第 {line_no} 行：未知分区 [{name}]"));
-        }
-    }
-
-    let mut data = Data::default();
-    let mut seen = HashSet::new();
-    for row in parsed.rows {
-        let section = match row.section {
-            Some("exact") => Section::Exact,
-            Some("only") => Section::Only,
-            Some("function") => Section::Function,
-            Some("env") => Section::Env,
-            Some(other) => return Err(format!("第 {} 行：未知分区 [{other}]", row.line_no)),
-            None => return Err(format!("第 {} 行：数据出现在分区之前", row.line_no)),
-        };
-        if matches!(section, Section::Env) {
-            let names: Vec<&str> = row.fields[0].split(',').map(str::trim).collect();
-            for name in names {
-                if name.is_empty() || !is_lowercase(name) {
-                    return Err(format!("第 {} 行：env 变量名非法：{name}", row.line_no));
-                }
-                data_table::unique(&mut seen, ("env", name, ""), row.line_no, || {
-                    format!("重复的 env 变量 {name}")
-                })?;
-                data.env.push(name);
-            }
-            continue;
-        }
-
-        let (key, value, note) = (row.fields[0], row.fields[1], row.fields[2]);
-        if key.is_empty() || value.is_empty() || note.is_empty() {
-            return Err(format!("第 {} 行：键、值与说明都不能为空", row.line_no));
-        }
-        if !is_lowercase(key) || !is_lowercase(value) {
-            return Err(format!(
-                "第 {} 行：键与值必须小写：{key} | {value}",
-                row.line_no
-            ));
-        }
-        match section {
-            Section::Exact => {
-                for name in key.split(',') {
-                    let name = name.trim();
-                    if name.is_empty() {
-                        return Err(format!("第 {} 行：属性名非法：{key}", row.line_no));
-                    }
-                    data_table::unique(&mut seen, ("exact", name, value), row.line_no, || {
-                        format!("重复的条目 {name}: {value}")
-                    })?;
-                    data.exact.entry(name).or_default().insert(value, note);
-                }
-            }
-            Section::Only => {
-                let allowed = value
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|name| !name.is_empty())
-                    .collect();
-                data_table::unique(&mut seen, ("only", key, ""), row.line_no, || {
-                    format!("重复的属性 {key}")
-                })?;
-                data.only.insert(key, Only { allowed, note });
-            }
-            Section::Function => {
-                data_table::unique(&mut seen, ("function", key, value), row.line_no, || {
-                    format!("重复的条目 {key}: {value}")
-                })?;
-                data.functions.entry(key).or_default().insert(value, note);
-            }
-            Section::Env => unreachable!("[env] 分区已在上面处理"),
-        }
-    }
-
-    Ok(data)
-}
-
-fn is_lowercase(text: &str) -> bool {
-    !text.bytes().any(|b| b.is_ascii_uppercase())
-}
+/// `[env]` 白名单：不按属性，扫全部声明值里的 `env()`。
+const ENV_VARIABLES: &[&str] = &[
+    "safe-area-inset-top",
+    "safe-area-inset-right",
+    "safe-area-inset-bottom",
+    "safe-area-inset-left",
+];
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use crate::rules::Rule;
 
-    use crate::rules::testutil::wxss::{Fixture, messages, single};
     use super::ValueDegraded;
+    use crate::rules::testutil::wxss::{Fixture, messages, single};
 
     #[test]
     fn exact_values_report_the_actual_behaviour() {
@@ -628,13 +542,49 @@ mod tests {
     }
 
     #[test]
-    fn data_file_parses_and_keeps_the_env_whitelist() {
-        let data = super::parse(super::SOURCE).unwrap();
-        assert_eq!(data.env.len(), 4);
-        assert!(data.env.contains(&"safe-area-inset-bottom"));
-        assert!(data.exact["word-break"].contains_key("keep-all"));
-        assert!(data.only["will-change"].allowed.contains(&"contents"));
-        assert!(data.functions["content"].contains_key("url"));
+    fn tables_contain_known_entries_and_have_no_duplicate_keys() {
+        assert_eq!(super::ENV_VARIABLES.len(), 4);
+        assert!(super::ENV_VARIABLES.contains(&"safe-area-inset-bottom"));
+
+        // 查表按首次命中返回，数据里不允许重复键。
+        let mut seen = HashSet::new();
+        for (names, value, _) in super::EXACT_VALUES {
+            for name in *names {
+                assert!(seen.insert((*name, *value)), "重复的条目 {name}: {value}");
+            }
+        }
+        let mut seen = HashSet::new();
+        for (property, _, _) in super::ONLY_VALUES {
+            assert!(seen.insert(*property), "重复的属性 {property}");
+        }
+        let mut seen = HashSet::new();
+        for (property, function, _) in super::FUNCTION_VALUES {
+            assert!(
+                seen.insert((*property, *function)),
+                "重复的条目 {property}: {function}"
+            );
+        }
+        let mut seen = HashSet::new();
+        for name in super::ENV_VARIABLES {
+            assert!(seen.insert(*name), "重复的 env 变量 {name}");
+        }
+
+        assert!(
+            super::EXACT_VALUES
+                .iter()
+                .any(|(names, value, _)| names.contains(&"word-break") && *value == "keep-all")
+        );
+        assert!(
+            super::ONLY_VALUES
+                .iter()
+                .any(|(property, allowed, _)| *property == "will-change"
+                    && allowed.contains(&"contents"))
+        );
+        assert!(
+            super::FUNCTION_VALUES
+                .iter()
+                .any(|(property, function, _)| *property == "content" && *function == "url")
+        );
     }
 
     #[test]

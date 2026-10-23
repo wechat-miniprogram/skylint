@@ -1,50 +1,62 @@
 //! Skyline 组件属性值白名单：写了但会被静默忽略的取值，以及跨属性的生效条件。
 //!
-//! 数据文件 `data/component_attributes.txt` 是唯一依据，Rust 侧只做查表。
+//! 约束以本文件的常量定义，来源：
+//! - /Volumes/2tb-ssd/nebula/Work/skyline-skills/skills/skyline-components/references/{media,form,layout,special,scroll}/*.md
+//! - /Volumes/2tb-ssd/nebula/Work/skyline-skills/skills/skyline-overview/references/introduction/component-support.md
+//! - /Volumes/2tb-ssd/nebula/Work/skyline/package/skyline/lib/widgets/{curve,hero}.dart（缓动名全集）
+//!
+//! 同步方式：只收录文档明确写「Skyline 不支持 / 仅 WebView 支持 / 取值范围」的属性取值；
+//!   枚举值以文档表格为准，条目行尾注释写 references 相对路径与行号。组件不能拆成多条规则。
+//!
 //! 只判静态属性：`{{}}` 插值（`WxmlAttribute::is_static == false`）一律跳过，
 //! 静态阶段无法确定它们的实际取值。`[requires]` 除外：无值属性视为布尔 true，
 //! 这足以确认 `circular=*` 这类触发条件。
+//! 已知未覆盖：textarea 的 placeholder-class 同为 WebView-only，但知识库无 textarea
+//!   证据文件，按不确定不报处理。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlAttribute, WxmlElement};
 use crate::project::Project;
-use crate::rules::data_table::{self, Columns};
 use crate::rules::{Rule, RuleMeta};
 
 use super::{load_doc, span_diagnostic, wxml_files};
 
-const DATA: &str = include_str!("../data/component_attributes.txt");
-
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 enum Constraint {
     /// 合法值白名单；值以 `*` 结尾表示前缀匹配。
-    OneOf(Vec<&'static str>),
-    /// 只在 WebView 下生效的值：命中即报。非命中值交给同 key 的 `OneOf`，
+    Enum(&'static [&'static str]),
+    /// 只在 WebView 下生效的值：命中即报。非命中值交给同 key 的 `Enum`，
     /// 这样裁剪模式才能拿到专门的 help。
-    WebviewOnly(Vec<&'static str>),
+    WebviewOnly(&'static [&'static str]),
     /// 属性本身不支持：出现即报。
     Unsupported,
-    /// 闭区间 `min..max`。
-    Between(f64, f64),
+    /// 数值范围。
+    Number(NumberRange),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NumberRange {
     /// 正整数。
-    PositiveInteger,
+    Positive,
+    /// 闭区间。
+    Between(f64, f64),
 }
 
 impl Constraint {
     fn rejects(&self, value: &str) -> bool {
         match self {
-            Self::OneOf(values) => !contains(values, value),
+            Self::Enum(values) => !contains(values, value),
             Self::WebviewOnly(values) => contains(values, value),
             Self::Unsupported => true,
-            Self::Between(min, max) => !value
-                .parse::<f64>()
-                .is_ok_and(|number| number >= *min && number <= *max),
-            Self::PositiveInteger => !value
+            Self::Number(NumberRange::Positive) => !value
                 .parse::<f64>()
                 .is_ok_and(|number| number >= 1.0 && number.fract() == 0.0),
+            Self::Number(NumberRange::Between(min, max)) => !value
+                .parse::<f64>()
+                .is_ok_and(|number| number >= *min && number <= *max),
         }
     }
 }
@@ -58,34 +70,45 @@ fn contains(values: &[&'static str], value: &str) -> bool {
     })
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct Entry {
     constraint: Constraint,
     help: Option<&'static str>,
 }
 
+/// 一行属性约束：`tags` / `attrs` 可写多个，共用同一约束。
+struct AttributeRule {
+    tags: &'static [&'static str],
+    attrs: &'static [&'static str],
+    constraint: Constraint,
+    help: Option<&'static str>,
+}
+
 /// 跨属性生效条件：触发属性命中时，要求属性必须满足约束。
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct Requires {
+    tag: &'static str,
     trigger: Trigger,
     requirement: Requirement,
     help: Option<&'static str>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum Trigger {
     /// `attr=*`：属性存在且取值非空；无值属性（布尔 true）同样触发。
     Present(&'static str),
+    /// `attr=v` 精确匹配。当前数据没有这种触发条件，保留以覆盖完整的表达式模型。
+    #[allow(dead_code)]
     Equals(&'static str, &'static str),
-    NotAny(&'static str, Vec<&'static str>),
+    NotAny(&'static str, &'static [&'static str]),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum Requirement {
     /// `attr=value`：属性必须存在且等于该值。
     Equals(&'static str, &'static str),
     /// `attr=!(a|b)`：属性不得等于其中任一值。
-    NotAny(&'static str, Vec<&'static str>),
+    NotAny(&'static str, &'static [&'static str]),
 }
 
 impl Trigger {
@@ -120,262 +143,303 @@ impl Table {
     }
 }
 
+const ATTRIBUTES: &[AttributeRule] = &[
+    AttributeRule {
+        tags: &["image"],
+        attrs: &["mode"],
+        constraint: Constraint::WebviewOnly(&[
+            "top",
+            "bottom",
+            "center",
+            "left",
+            "right",
+            "top left",
+            "top right",
+            "bottom left",
+            "bottom right",
+        ]),
+        help: Some("Skyline 不支持 WebView 的裁剪模式，改用 aspectFill 配合 CSS 定位"),
+    }, // media/image.md:42-54
+    AttributeRule {
+        tags: &["text"],
+        attrs: &["overflow"],
+        constraint: Constraint::Enum(&["visible", "clip", "fade", "ellipsis"]),
+        help: None,
+    }, // media/text.md:50-55
+    AttributeRule {
+        tags: &["image"],
+        attrs: &["mode"],
+        constraint: Constraint::Enum(&[
+            "scaleToFill",
+            "aspectFit",
+            "aspectFill",
+            "widthFix",
+            "heightFix",
+        ]),
+        help: Some("合法值：scaleToFill、aspectFit、aspectFill、widthFix、heightFix"),
+    }, // media/image.md:32-38
+    AttributeRule {
+        tags: &["input"],
+        attrs: &["type"],
+        constraint: Constraint::Enum(&["text", "number", "idcard", "digit", "nickname"]),
+        help: Some("合法值：text、number、idcard、digit、nickname"),
+    }, // form/input.md:44-50
+    AttributeRule {
+        tags: &["input"],
+        attrs: &["confirm-type"],
+        constraint: Constraint::Enum(&["send", "search", "next", "go", "done"]),
+        help: Some("合法值：send、search、next、go、done"),
+    }, // form/input.md:54-60
+    AttributeRule {
+        tags: &["swiper"],
+        attrs: &["layout-type"],
+        constraint: Constraint::Enum(&[
+            "normal",
+            "stackLeft",
+            "stackRight",
+            "tinder",
+            "transformer",
+        ]),
+        help: None,
+    }, // layout/swiper.md:44-50
+    AttributeRule {
+        tags: &["swiper"],
+        attrs: &["transformer-type"],
+        constraint: Constraint::Enum(&[
+            "scaleAndFade",
+            "accordion",
+            "threeD",
+            "zoomIn",
+            "zoomOut",
+            "deepthPage",
+        ]),
+        help: None,
+    }, // layout/swiper.md:56-63
+    AttributeRule {
+        tags: &["swiper"],
+        attrs: &["indicator-type"],
+        constraint: Constraint::Enum(&[
+            "normal",
+            "worm",
+            "wormThin",
+            "wormUnderground",
+            "wormThinUnderground",
+            "expand",
+            "jump",
+            "jumpWithOffset",
+            "scroll",
+            "scrollFixedCenter",
+            "slide",
+            "slideUnderground",
+            "scale",
+            "swap",
+            "swapYRotation",
+            "color",
+        ]),
+        help: None,
+    }, // layout/swiper.md:67-84
+    AttributeRule {
+        tags: &["swiper"],
+        attrs: &["direction"],
+        constraint: Constraint::Enum(&["all", "positive", "negative"]),
+        help: None,
+    }, // layout/swiper.md:109-114
+    AttributeRule {
+        tags: &["snapshot"],
+        attrs: &["mode"],
+        constraint: Constraint::Enum(&["view", "picture"]),
+        help: Some("合法值：view、picture"),
+    }, // special/snapshot.md:11
+    AttributeRule {
+        tags: &["share-element"],
+        attrs: &["rect-tween-type"],
+        constraint: Constraint::Enum(&[
+            "materialRectArc",
+            "materialRectCenterArc",
+            "linear",
+            "cubic-bezier*",
+            "fastLinearToSlowEaseIn",
+            "ease",
+            "easeIn",
+            "easeInToLinear",
+            "easeInSine",
+            "easeInQuad",
+            "easeInCubic",
+            "easeInQuart",
+            "easeInQuint",
+            "easeInExpo",
+            "easeInCirc",
+            "easeInBack",
+            "easeOut",
+            "linearToEaseOut",
+            "easeOutSine",
+            "easeOutQuad",
+            "easeOutCubic",
+            "easeOutQuart",
+            "easeOutQuint",
+            "easeOutExpo",
+            "easeOutCirc",
+            "easeOutBack",
+            "easeInOut",
+            "easeInOutSine",
+            "easeInOutQuad",
+            "easeInOutCubic",
+            "easeInOutQuart",
+            "easeInOutQuint",
+            "easeInOutExpo",
+            "easeInOutCirc",
+            "easeInOutBack",
+            "slowMiddle",
+            "elasticIn",
+            "elasticOut",
+            "elasticInOut",
+            "easeInElastic",
+            "easeOutElastic",
+            "easeInOutElastic",
+            "bounceIn",
+            "bounceOut",
+            "bounceInOut",
+            "easeInBounce",
+            "easeOutBounce",
+            "easeInOutBounce",
+            "fastOutSlowIn",
+        ]),
+        help: Some("用 materialRectArc / materialRectCenterArc / linear 或 cubic-bezier(...)"),
+    }, // special/share-element.md:85-98；缓动名全集见 curve.dart:23-70
+    AttributeRule {
+        tags: &["share-element"],
+        attrs: &["shuttle-on-push", "shuttle-on-pop"],
+        constraint: Constraint::Enum(&["to", "from"]),
+        help: Some("合法值：to（目标页面节点）、from（源页面节点）"),
+    }, // special/share-element.md:78-83
+    AttributeRule {
+        tags: &["scroll-view"],
+        attrs: &["refresher-default-style"],
+        constraint: Constraint::Enum(&["black", "white", "none"]),
+        help: None,
+    }, // scroll/scroll-view.md:195
+    AttributeRule {
+        tags: &["scroll-view"],
+        attrs: &["scroll-into-view-alignment"],
+        constraint: Constraint::Enum(&["start", "center", "end", "nearest"]),
+        help: None,
+    }, // scroll/scroll-view.md:113
+    AttributeRule {
+        tags: &["scroll-view"],
+        attrs: &["associative-container"],
+        constraint: Constraint::Enum(&["draggable-sheet", "nested-scroll-view", "pop-gesture"]),
+        help: None,
+    }, // scroll/scroll-view.md:182-185
+    AttributeRule {
+        tags: &[
+            "vertical-drag-gesture-handler",
+            "horizontal-drag-gesture-handler",
+            "pan-gesture-handler",
+            "tap-gesture-handler",
+            "double-tap-gesture-handler",
+            "long-press-gesture-handler",
+            "scale-gesture-handler",
+            "force-press-gesture-handler",
+        ],
+        attrs: &["native-view"],
+        constraint: Constraint::Enum(&["scroll-view", "swiper"]),
+        help: Some("仅支持 scroll-view、swiper"),
+    }, // gesture/gesture-system.md:15-22,56-67；gesture/gesture-negotiation.md:127-129
+    AttributeRule {
+        tags: &["text"],
+        attrs: &["space"],
+        constraint: Constraint::Unsupported,
+        help: Some("Skyline 不支持 space 属性，空格改用 CSS white-space 控制"),
+    }, // media/text.md:327
+    AttributeRule {
+        tags: &["text"],
+        attrs: &["decode"],
+        constraint: Constraint::Unsupported,
+        help: Some("Skyline 不解码 HTML 实体，直接写目标字符"),
+    }, // media/text.md:328
+    AttributeRule {
+        tags: &["picker-view"],
+        attrs: &["indicator-class", "mask-style"],
+        constraint: Constraint::Unsupported,
+        help: Some("Skyline 下该属性不生效，去掉后按 Skyline 样式重写"),
+    }, // introduction/component-support.md:50
+    AttributeRule {
+        tags: &["input"],
+        attrs: &["placeholder-class"],
+        constraint: Constraint::Unsupported,
+        help: Some("仅 WebView 生效，Skyline 下会被忽略，删除后按 Skyline 样式重写"),
+    }, // form/input.md:306-313
+    AttributeRule {
+        tags: &["input"],
+        attrs: &["safe-password-*"],
+        constraint: Constraint::Unsupported,
+        help: Some("仅 WebView 生效，Skyline 下会被忽略，删除后使用 Skyline 输入框"),
+    }, // form/input.md:313
+    AttributeRule {
+        tags: &["text"],
+        attrs: &["max-lines"],
+        constraint: Constraint::Number(NumberRange::Positive),
+        help: Some("合法值：正整数"),
+    }, // media/text.md:46
+    AttributeRule {
+        tags: &["draggable-sheet"],
+        attrs: &["initial-child-size", "min-child-size", "max-child-size"],
+        constraint: Constraint::Number(NumberRange::Between(0.0, 1.0)),
+        help: Some("尺寸是相对父容器的比例，取值 0~1"),
+    }, // scroll/draggable-sheet.md:26-28,343
+];
+
+const REQUIRES: &[Requires] = &[
+    Requires {
+        tag: "swiper",
+        trigger: Trigger::Present("transformer-type"),
+        requirement: Requirement::Equals("layout-type", "transformer"),
+        help: Some(
+            "transformer-type 仅当 layout-type=\"transformer\" 时生效，需同时设置 layout-type",
+        ),
+    }, // layout/swiper.md:54
+    Requires {
+        tag: "swiper",
+        trigger: Trigger::NotAny("indicator-type", &["normal"]),
+        requirement: Requirement::NotAny("layout-type", &["stackLeft", "stackRight", "tinder"]),
+        help: Some("stackLeft/stackRight/tinder 布局下 indicator-type 只能是 normal"),
+    }, // layout/swiper.md:269
+    Requires {
+        tag: "swiper",
+        trigger: Trigger::Present("circular"),
+        requirement: Requirement::NotAny(
+            "indicator-type",
+            &["scrollFixedCenter", "swap", "swapYRotation"],
+        ),
+        help: Some("这三个 indicator-type 不支持 circular，去掉 circular 或改用其它指示器动画"),
+    }, // layout/swiper.md:270
+];
+
 fn table() -> &'static Table {
     static TABLE: OnceLock<Table> = OnceLock::new();
-    TABLE.get_or_init(|| parse(DATA).expect("组件属性白名单格式错误"))
-}
-
-#[derive(Clone, Copy)]
-enum Section {
-    WebviewOnly,
-    Enum,
-    Unsupported,
-    Number,
-    Requires,
-}
-
-impl Section {
-    fn name(self) -> &'static str {
-        match self {
-            Self::WebviewOnly => "webview-only",
-            Self::Enum => "enum",
-            Self::Unsupported => "unsupported",
-            Self::Number => "number",
-            Self::Requires => "requires",
-        }
-    }
-}
-
-/// 解析数据文件。格式错误一律返回带行号的说明，便于同步时定位。
-fn parse(source: &'static str) -> Result<Table, String> {
-    let parsed = data_table::read(source, split_fields, |_| {
-        Columns::new(4, "`组件 | 属性 | 约束 | 说明` 四列")
-    })?;
-    for (line_no, name) in &parsed.sections {
-        if !matches!(
-            *name,
-            "webview-only" | "enum" | "unsupported" | "number" | "requires"
-        ) {
-            return Err(format!("第 {line_no} 行：未知分区 [{name}]"));
-        }
-    }
-
-    let mut table = Table::default();
-    let mut seen = HashSet::new();
-    for row in parsed.rows {
-        let section = match row.section {
-            Some("webview-only") => Section::WebviewOnly,
-            Some("enum") => Section::Enum,
-            Some("unsupported") => Section::Unsupported,
-            Some("number") => Section::Number,
-            Some("requires") => Section::Requires,
-            Some(other) => return Err(format!("第 {} 行：未知分区 [{other}]", row.line_no)),
-            None => return Err(format!("第 {} 行：数据出现在分区之前", row.line_no)),
-        };
-        let (tags, attrs, constraint, help) =
-            (row.fields[0], row.fields[1], row.fields[2], row.fields[3]);
-        if tags.is_empty() || !is_lowercase(tags) {
-            return Err(format!(
-                "第 {} 行：组件名必须非空且小写：{tags}",
-                row.line_no
-            ));
-        }
-        let help = (help != "-").then_some(help);
-        if matches!(section, Section::Requires) {
-            if tags.contains(',') {
-                return Err(format!(
-                    "第 {} 行：[requires] 每行只能写一个组件",
-                    row.line_no
-                ));
-            }
-            data_table::unique(
-                &mut seen,
-                (tags, attrs, section.name()),
-                row.line_no,
-                || format!("[requires] 重复的条目 {tags} {attrs}"),
-            )?;
-            table.requires.entry(tags).or_default().push(parse_requires(
-                attrs,
-                constraint,
-                help,
-                row.line_no,
-            )?);
-            continue;
-        }
-        let constraint = match section {
-            Section::WebviewOnly => Constraint::WebviewOnly(parse_values(constraint, row.line_no)?),
-            Section::Enum => Constraint::OneOf(parse_values(constraint, row.line_no)?),
-            Section::Unsupported => {
-                if constraint != "-" {
-                    return Err(format!(
-                        "第 {} 行：[unsupported] 的约束列固定为 `-`",
-                        row.line_no
-                    ));
+    TABLE.get_or_init(|| {
+        let mut table = Table::default();
+        for rule in ATTRIBUTES {
+            for &tag in rule.tags {
+                for &attr in rule.attrs {
+                    table
+                        .entries
+                        .entry(tag)
+                        .or_default()
+                        .entry(attr)
+                        .or_default()
+                        .push(Entry {
+                            constraint: rule.constraint,
+                            help: rule.help,
+                        });
                 }
-                Constraint::Unsupported
-            }
-            Section::Number => parse_number(constraint, row.line_no)?,
-            Section::Requires => unreachable!("[requires] 已在前面处理"),
-        };
-        for tag in tags.split(',').map(str::trim) {
-            if tag.is_empty() {
-                return Err(format!("第 {} 行：组件名不能为空", row.line_no));
-            }
-            for attr in attrs.split(',').map(str::trim) {
-                if attr.is_empty() || !is_lowercase(attr) {
-                    return Err(format!(
-                        "第 {} 行：属性名必须非空且小写：{attr}",
-                        row.line_no
-                    ));
-                }
-                data_table::unique(&mut seen, (tag, attr, section.name()), row.line_no, || {
-                    format!("[{}] 重复的条目 {tag} {attr}", section.name())
-                })?;
-                table
-                    .entries
-                    .entry(tag)
-                    .or_default()
-                    .entry(attr)
-                    .or_default()
-                    .push(Entry {
-                        constraint: constraint.clone(),
-                        help,
-                    });
             }
         }
-    }
-
-    Ok(table)
-}
-
-/// 按 `|` 分列，但括弧内的 `|` 属于 `!(a|b)`，不能当分隔符。
-fn split_fields<'a>(_: Option<&'a str>, line: &'a str) -> Vec<&'a str> {
-    let mut fields = Vec::new();
-    let mut depth = 0_u32;
-    let mut start = 0;
-    for (index, byte) in line.bytes().enumerate() {
-        match byte {
-            b'(' => depth += 1,
-            b')' => depth = depth.saturating_sub(1),
-            b'|' if depth == 0 => {
-                fields.push(line[start..index].trim());
-                start = index + 1;
-            }
-            _ => {}
+        for rule in REQUIRES {
+            table.requires.entry(rule.tag).or_default().push(*rule);
         }
-    }
-    fields.push(line[start..].trim());
-    fields
-}
-
-fn parse_values(text: &'static str, line_no: usize) -> Result<Vec<&'static str>, String> {
-    let mut values = Vec::new();
-    for value in text.split(',').map(str::trim) {
-        if value.is_empty() {
-            return Err(format!("第 {line_no} 行：合法值不能为空"));
-        }
-        if values
-            .iter()
-            .any(|seen: &&str| seen.eq_ignore_ascii_case(value))
-        {
-            return Err(format!("第 {line_no} 行：重复的合法值 {value}"));
-        }
-        values.push(value);
-    }
-    Ok(values)
-}
-
-fn parse_number(text: &str, line_no: usize) -> Result<Constraint, String> {
-    if text == "positive" {
-        return Ok(Constraint::PositiveInteger);
-    }
-    let Some((min, max)) = text.split_once("..") else {
-        return Err(format!(
-            "第 {line_no} 行：数值约束需要 `positive` 或 `min..max`"
-        ));
-    };
-    let (min, max) = (parse_bound(min, line_no)?, parse_bound(max, line_no)?);
-    if min > max {
-        return Err(format!("第 {line_no} 行：数值区间下界大于上界"));
-    }
-    Ok(Constraint::Between(min, max))
-}
-
-fn parse_bound(text: &str, line_no: usize) -> Result<f64, String> {
-    text.trim()
-        .parse()
-        .map_err(|_| format!("第 {line_no} 行：数值边界非法：{text}"))
-}
-
-fn is_lowercase(text: &str) -> bool {
-    !text.bytes().any(|byte| byte.is_ascii_uppercase())
-}
-
-/// `[requires]` 的一行：`触发 | 要求`。
-fn parse_requires(
-    trigger_text: &'static str,
-    requirement_text: &'static str,
-    help: Option<&'static str>,
-    line_no: usize,
-) -> Result<Requires, String> {
-    let (trigger_attr, trigger_expr) = parse_condition(trigger_text, line_no)?;
-    let trigger = match trigger_expr {
-        Expr::Any => Trigger::Present(trigger_attr),
-        Expr::Equals(value) => Trigger::Equals(trigger_attr, value),
-        Expr::NotAny(values) => Trigger::NotAny(trigger_attr, values),
-    };
-    let (requirement_attr, requirement_expr) = parse_condition(requirement_text, line_no)?;
-    let requirement = match requirement_expr {
-        Expr::Any => {
-            return Err(format!("第 {line_no} 行：[requires] 的要求列不支持 `*`"));
-        }
-        Expr::Equals(value) => Requirement::Equals(requirement_attr, value),
-        Expr::NotAny(values) => Requirement::NotAny(requirement_attr, values),
-    };
-    Ok(Requires {
-        trigger,
-        requirement,
-        help,
+        table
     })
-}
-
-#[derive(Debug)]
-enum Expr {
-    /// `*`：存在且非空。
-    Any,
-    Equals(&'static str),
-    NotAny(Vec<&'static str>),
-}
-
-fn parse_condition(text: &'static str, line_no: usize) -> Result<(&'static str, Expr), String> {
-    let Some((attr, expr)) = text.split_once('=') else {
-        return Err(format!("第 {line_no} 行：需要 `属性=取值`，实际 `{text}`"));
-    };
-    let (attr, expr) = (attr.trim(), expr.trim());
-    if attr.is_empty() || !is_lowercase(attr) {
-        return Err(format!("第 {line_no} 行：属性名必须非空且小写：{attr}"));
-    }
-    Ok((attr, parse_expr(expr, line_no)?))
-}
-
-fn parse_expr(text: &'static str, line_no: usize) -> Result<Expr, String> {
-    if text == "*" {
-        return Ok(Expr::Any);
-    }
-    if let Some(inner) = text.strip_prefix("!(") {
-        let inner = inner
-            .strip_suffix(')')
-            .ok_or_else(|| format!("第 {line_no} 行：`!(` 缺少右括号：{text}"))?;
-        let values: Vec<&'static str> = inner.split('|').map(str::trim).collect();
-        if values.iter().any(|value| value.is_empty()) {
-            return Err(format!("第 {line_no} 行：`!(...)` 里有空值：{text}"));
-        }
-        return Ok(Expr::NotAny(values));
-    }
-    if text.is_empty() {
-        return Err(format!("第 {line_no} 行：取值不能为空"));
-    }
-    Ok(Expr::Equals(text))
 }
 
 pub struct ComponentAttribute;
@@ -561,11 +625,13 @@ fn message(tag: &str, attr: &str, value: &str, constraint: &Constraint) -> Strin
         Constraint::Unsupported => {
             format!("`<{tag}>` 的 `{attr}` 属性在 Skyline 下不支持，会被静默忽略")
         }
-        Constraint::PositiveInteger => format!("`<{tag} {attr}=\"{value}\">` 必须是正整数"),
-        Constraint::Between(min, max) => {
+        Constraint::Number(NumberRange::Positive) => {
+            format!("`<{tag} {attr}=\"{value}\">` 必须是正整数")
+        }
+        Constraint::Number(NumberRange::Between(min, max)) => {
             format!("`<{tag} {attr}=\"{value}\">` 必须是 {min}~{max} 的数值")
         }
-        Constraint::OneOf(_) | Constraint::WebviewOnly(_) => {
+        Constraint::Enum(_) | Constraint::WebviewOnly(_) => {
             format!("`<{tag} {attr}=\"{value}\">` 不是 Skyline 支持的值，会被忽略")
         }
     }
@@ -576,7 +642,7 @@ fn help(entry: &Entry) -> String {
         return help.to_string();
     }
     match &entry.constraint {
-        Constraint::OneOf(values) => format!(
+        Constraint::Enum(values) => format!(
             "合法值：{}",
             values
                 .iter()
@@ -586,15 +652,42 @@ fn help(entry: &Entry) -> String {
         ),
         Constraint::WebviewOnly(_) => "改用 aspectFill 配合 CSS 定位".to_string(),
         Constraint::Unsupported => "Skyline 不支持该属性，建议删除".to_string(),
-        Constraint::Between(min, max) => format!("合法值：{min}~{max}"),
-        Constraint::PositiveInteger => "合法值：正整数".to_string(),
+        Constraint::Number(NumberRange::Between(min, max)) => format!("合法值：{min}~{max}"),
+        Constraint::Number(NumberRange::Positive) => "合法值：正整数".to_string(),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use crate::rules::testutil::wxml::{Fixture, check_rule, project};
-    use super::{ComponentAttribute, Constraint, DATA, Requirement, Trigger, parse};
+
+    use super::{ATTRIBUTES, ComponentAttribute, REQUIRES};
+
+    #[test]
+    fn table_has_no_duplicate_keys() {
+        let mut attrs = HashSet::new();
+        for rule in ATTRIBUTES {
+            for &tag in rule.tags {
+                for &attr in rule.attrs {
+                    assert!(
+                        attrs.insert((tag, attr, std::mem::discriminant(&rule.constraint))),
+                        "重复的属性约束：{tag} {attr}"
+                    );
+                }
+            }
+        }
+        let mut requires = HashSet::new();
+        for rule in REQUIRES {
+            assert!(
+                requires.insert((rule.tag, rule.trigger.attr())),
+                "重复的跨属性条件：{} {}",
+                rule.tag,
+                rule.trigger.attr()
+            );
+        }
+    }
 
     #[test]
     fn enum_violations_are_warnings_on_the_attribute() {
@@ -777,72 +870,6 @@ mod tests {
     }
 
     #[test]
-    fn data_file_parses_every_section() {
-        let table = parse(DATA).unwrap();
-
-        let image_mode = table.lookup("image", "mode").unwrap();
-        assert!(matches!(
-            image_mode[0].constraint,
-            Constraint::WebviewOnly(_)
-        ));
-        let Constraint::OneOf(values) = &image_mode[1].constraint else {
-            panic!("image mode 缺少枚举分区");
-        };
-        assert!(values.contains(&"aspectFill"));
-
-        assert!(matches!(
-            table.lookup("text", "space").unwrap()[0].constraint,
-            Constraint::Unsupported
-        ));
-        assert!(matches!(
-            table.lookup("picker-view", "mask-style").unwrap()[0].constraint,
-            Constraint::Unsupported
-        ));
-        assert!(matches!(
-            table.lookup("text", "max-lines").unwrap()[0].constraint,
-            Constraint::PositiveInteger
-        ));
-        assert!(matches!(
-            table.lookup("draggable-sheet", "initial-child-size").unwrap()[0].constraint,
-            Constraint::Between(min, max) if min == 0.0 && max == 1.0
-        ));
-        assert!(table.lookup("share-element", "shuttle-on-pop").is_some());
-        assert!(table.lookup("view", "space").is_none());
-
-        let Constraint::OneOf(values) = &table
-            .lookup("horizontal-drag-gesture-handler", "native-view")
-            .unwrap()[0]
-            .constraint
-        else {
-            panic!("native-view 缺少枚举分区");
-        };
-        assert_eq!(values, &["scroll-view", "swiper"]);
-
-        // `[unsupported]` 的属性名以 `*` 结尾时按前缀匹配。
-        assert!(matches!(
-            table.lookup("input", "placeholder-class").unwrap()[0].constraint,
-            Constraint::Unsupported
-        ));
-        assert!(matches!(
-            table.lookup("input", "safe-password-nonce").unwrap()[0].constraint,
-            Constraint::Unsupported
-        ));
-        assert!(table.lookup("input", "safe-password").is_none());
-        assert!(table.lookup("view", "placeholder-class").is_none());
-
-        let swiper = table.requires.get("swiper").unwrap();
-        assert_eq!(swiper.len(), 3);
-        assert!(matches!(
-            &swiper[0].trigger,
-            Trigger::Present("transformer-type")
-        ));
-        assert!(matches!(
-            &swiper[1].requirement,
-            Requirement::NotAny("layout-type", _)
-        ));
-    }
-
-    #[test]
     fn requires_transformer_type_needs_transformer_layout() {
         let diagnostics = check_rule(
             &project(
@@ -980,49 +1007,5 @@ mod tests {
         assert!(diagnostics[0].message.contains("placeholder-class"));
         assert!(diagnostics[1].message.contains("safe-password-nonce"));
         assert!(diagnostics[2].message.contains("safe-password-length"));
-    }
-
-    #[test]
-    fn every_data_row_cites_a_source() {
-        for (index, raw) in DATA.lines().enumerate() {
-            let line = raw.trim();
-            if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
-                continue;
-            }
-            assert!(
-                line.contains('#') && line.contains(".md:"),
-                "第 {} 行缺少文档来源：{line}",
-                index + 1
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_malformed_rows() {
-        let err = parse("[enum]\ntext | overflow | visible\n").unwrap_err();
-        assert!(err.contains("四列"), "{err}");
-
-        let err = parse("[nope]\n").unwrap_err();
-        assert!(err.contains("未知分区"), "{err}");
-
-        let err = parse("[number]\ntext | max-lines | lots | -  # x\n").unwrap_err();
-        assert!(err.contains("positive"), "{err}");
-
-        let err = parse("[enum]\ntext | overflow | visible,visible | -  # x\n").unwrap_err();
-        assert!(err.contains("重复的合法值"), "{err}");
-
-        let err =
-            parse("[enum]\ntext | overflow | visible | -  # x\ntext | overflow | fade | -  # x\n")
-                .unwrap_err();
-        assert!(err.contains("重复的条目"), "{err}");
-
-        let err =
-            parse("[requires]\nswiper | transformer-type | layout-type=transformer | -  # x\n")
-                .unwrap_err();
-        assert!(err.contains("属性=取值"), "{err}");
-
-        let err =
-            parse("[requires]\nswiper | circular=* | indicator-type=* | -  # x\n").unwrap_err();
-        assert!(err.contains("要求列不支持"), "{err}");
     }
 }

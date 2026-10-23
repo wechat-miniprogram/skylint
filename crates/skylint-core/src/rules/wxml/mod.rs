@@ -60,18 +60,102 @@ pub(crate) fn load_doc(project: &Project, path: &str) -> Option<WxmlDoc> {
     wxml::parse(path, &source).ok()
 }
 
-/// 组件支持表。数据文件是唯一依据，Rust 侧只做查表。
-const COMPONENTS_DATA: &str = include_str!("../data/components.txt");
+/// Skyline 组件支持表。
+///
+/// 来源：/Volumes/2tb-ssd/nebula/Work/skyline-skills/skills/skyline-overview/references/introduction/component-support.md
+/// 同步方式：按「完全支持的组件」「基本支持的组件」「Skyline 新增组件」更新本表，
+/// 按「暂不支持的组件」更新 `UNSUPPORTED_COMPONENTS`；替代方案为空时填「该组件在 Skyline 下不可用」。
+/// 标签一律小写。
+const SUPPORTED_COMPONENTS: &[&str] = &[
+    "view",
+    "cover-view",
+    "button",
+    "scroll-view",
+    "swiper",
+    "swiper-item",
+    "input",
+    "textarea",
+    "navigator",
+    "map",
+    "canvas",
+    "radio",
+    "radio-group",
+    "label",
+    "checkbox",
+    "checkbox-group",
+    "picker",
+    "camera",
+    "root-portal",
+    "form",
+    "ad",
+    "official-account",
+    "live-player",
+    "live-pusher",
+    "voip-room",
+    "icon",
+    "slider",
+    "switch",
+    "share-element",
+    "page-container",
+    "text",
+    "image",
+    "cover-image",
+    "video",
+    "picker-view",
+    "rich-text",
+    "page-meta",
+    "span",
+    "sticky-header",
+    "sticky-section",
+    "list-view",
+    "grid-view",
+    "nested-scroll-header",
+    "nested-scroll-body",
+    "draggable-sheet",
+    "snapshot",
+    "tap-gesture-handler",
+    "double-tap-gesture-handler",
+    "long-press-gesture-handler",
+    "pan-gesture-handler",
+    "scale-gesture-handler",
+    "horizontal-drag-gesture-handler",
+    "vertical-drag-gesture-handler",
+    "force-press-gesture-handler",
+];
+
+/// Skyline 下不可用的组件及替代方案。来源同 `SUPPORTED_COMPONENTS`。
+const UNSUPPORTED_COMPONENTS: &[(&str, &str)] = &[
+    ("web-view", r#"该页面配置 `"renderer": "webview"`"#),
+    ("movable-area", "手势 + worklet 动画方案"),
+    ("movable-view", "手势 + worklet 动画方案"),
+    ("editor", "该组件在 Skyline 下不可用"),
+    ("progress", "该组件在 Skyline 下不可用"),
+    ("match-media", "该组件在 Skyline 下不可用"),
+    // 知识库 component-support.md:63 把该组件拼成 `keyboard-accessary`（官方名为
+    // keyboard-accessory，developers.weixin.qq.com/miniprogram/dev/component/keyboard-accessory.html），
+    // 我们按官方名收录，否则真实使用永远命中不了。
+    (
+        "keyboard-accessory",
+        "input 的 worklet:onkeyboardheightchange 回调",
+    ),
+    ("navigation-bar", "Skyline 只能用自定义导航"),
+    ("xr-frame", "该组件在 Skyline 下不可用"),
+];
 
 /// 组件是否属于内置组件（用于区分自定义组件）。
 pub(crate) fn is_builtin(tag: &str) -> bool {
-    COMPONENTS_DATA
-        .lines()
-        .skip_while(|line| line.trim() != "[supported]")
-        .skip(1)
-        .take_while(|line| line.trim() != "[unsupported]")
-        .map(str::trim)
-        .any(|line| !line.is_empty() && !line.starts_with('#') && line == tag)
+    SUPPORTED_COMPONENTS.contains(&tag)
+}
+
+/// 黑名单命中才返回替代方案；白名单与未知自定义组件都不报。
+pub(crate) fn unsupported_replacement(tag: &str) -> Option<&'static str> {
+    if is_builtin(tag) {
+        return None;
+    }
+    UNSUPPORTED_COMPONENTS
+        .iter()
+        .find(|(name, _)| *name == tag)
+        .map(|(_, replacement)| *replacement)
 }
 
 /// 定位在 WXML 源文本任意一段区间上的诊断。
@@ -109,3 +193,22 @@ fn element_diagnostic(
     )
 }
 
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::{SUPPORTED_COMPONENTS, UNSUPPORTED_COMPONENTS};
+
+    #[test]
+    fn component_tables_have_unique_keys() {
+        let mut supported = HashSet::new();
+        for tag in SUPPORTED_COMPONENTS {
+            assert!(supported.insert(*tag), "重复的受支持组件：{tag}");
+        }
+        let mut unsupported = HashSet::new();
+        for (tag, _) in UNSUPPORTED_COMPONENTS {
+            assert!(unsupported.insert(*tag), "重复的不支持组件：{tag}");
+            assert!(!supported.contains(tag), "组件同时出现在两张表：{tag}");
+        }
+    }
+}

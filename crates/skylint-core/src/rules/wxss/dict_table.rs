@@ -1,102 +1,194 @@
-//! 属性 / 值支持表解析（两条 dict 规则共用）。
+//! 属性 / 值支持表（两条 dict 规则共用）。
 //!
-//! 数据文件是唯一依据，Rust 侧只做查表。
+//! 数据直接以 const 形式定义在本模块，来源与证据见各条目的行尾注释。
+//!
+//! 来源：/Volumes/2tb-ssd/nebula/Work/skyline-skills/skills/skyline-wxss/SKILL.md
+//!       /Volumes/2tb-ssd/nebula/Work/skyline-skills/skills/skyline-wxss/references/*.md
+//! 同步方式：
+//!   [`UNSUPPORTED_PROPERTIES`] 按 SKILL.md「NEVER: 使用不支持的 CSS 属性」表逐条更新，
+//!     一格多属性拆成多条；表外补充的属性以行尾注释标注 references 出处。
+//!   [`UNSUPPORTED_VALUES`] 按 references 中各属性的「支持值」表与 ⚠️ 标注更新，
+//!     只收录文档明确写「不支持 / 不可用 / 映射为其他值」的整值，不从语法推断。
 
-use std::collections::{HashMap, HashSet};
-use std::sync::OnceLock;
+/// Skyline 完全不支持的属性 → 建议。
+///
+/// 匹配：属性名小写比较。
+const UNSUPPORTED_PROPERTIES: &[(&str, &str)] = &[
+    ("float", "使用 flex 布局"),                         // SKILL.md NEVER 表
+    ("contain", "无替代（`-wx-contain` 同样不被接受）"), // SKILL.md NEVER 表；css_parser_impl.h:172 WxContain 亦为 kInvalid
+    ("resize", "无替代"),                                // SKILL.md NEVER 表
+    ("writing-mode", "无替代"),                          // SKILL.md NEVER 表
+    ("text-indent", "使用 padding-left 模拟"),           // SKILL.md NEVER 表
+    ("overflow-wrap", "使用 word-break"),                // SKILL.md NEVER 表
+    ("text-decoration-thickness", "无替代"),             // SKILL.md NEVER 表
+    ("background-attachment", "无替代"),                 // SKILL.md NEVER 表
+    ("background-clip", "无替代"),                       // SKILL.md NEVER 表
+    ("background-origin", "无替代"),                     // SKILL.md NEVER 表
+    ("mask-origin", "无替代"),                           // SKILL.md NEVER 表（一格多属性拆分）
+    ("mask-clip", "无替代"),                             // SKILL.md NEVER 表（一格多属性拆分）
+    ("mask-mode", "无替代"),                             // SKILL.md NEVER 表（一格多属性拆分）
+    ("justify-items", "无替代"),                         // SKILL.md NEVER 表
+    ("list-style-type", "无替代"),                       // SKILL.md NEVER 表（一格多属性拆分）
+    ("list-style-image", "无替代"),                      // SKILL.md NEVER 表（一格多属性拆分）
+    ("list-style-position", "无替代"),                   // SKILL.md NEVER 表（一格多属性拆分）
+    ("mask-position", "无替代"), // css_parser_impl.h:83 kInvalid（文档未列，引擎拒绝）
+];
 
-use crate::rules::data_table::{self, Columns};
+// 已移除 direction / overflow-x / overflow-y：引擎实际接受（css_parser_impl.h:136 映射 kDirection，
+//   direction.cc 实现 ltr/rtl 并由 style_builder.cc:1212 应用到 Text；css_parser_impl.h:40-41 映射
+//   kOverflowX/kOverflowY，overflow_x.cc/overflow_y.cc 的 Parse 把值折叠进 kOverflow，
+//   overflow.cc:20-37 应用 visible/hidden）。文档「不支持」的原文只对 auto/scroll 与「分轴独立设置」成立。
 
-const SUPPORT_DATA: &str = include_str!("../data/wxss_support.txt");
+/// border-*-style 系列共用同一套支持值。
+const BORDER_STYLE_PROPERTIES: &[&str] = &[
+    "border-style",
+    "border-top-style",
+    "border-right-style",
+    "border-bottom-style",
+    "border-left-style",
+];
 
-#[derive(Debug, Default)]
+/// 分轴 overflow 属性共用同一套支持值。
+const OVERFLOW_AXIS_PROPERTIES: &[&str] = &["overflow-x", "overflow-y"];
+
+/// 属性可用、但整值不支持的条目：`(属性名列表, 整值, 建议)`。
+///
+/// 属性名列表对应原表一格多属性；匹配口径：属性名小写比较，值 trim + 小写后整值相等才命中；
+/// 含 var( / env( / {{ 的值跳过。按声明顺序首次命中优先，键不重复（见测试）。
+const UNSUPPORTED_VALUES: &[(&[&str], &str, &str)] = &[
+    (&["display"], "grid", "改用 flex 布局替代 grid"), // layout.md「display」、SKILL.md MUST 示例
+    (&["display"], "flow-root", "改用 flex 或 block"), // layout.md「display」
+    (&["display"], "inline-grid", "改用 inline-flex"), // display.cc 无 InlineGrid case（property.rs:213 可解析）
+    (
+        &["position"],
+        "sticky",
+        "改用 relative/absolute/fixed；吸顶使用 sticky-header/sticky-section 组件",
+    ), // layout.md「position」、SKILL.md MUST 示例
+    (
+        &["overflow"],
+        "auto",
+        "改用 overflow: hidden；滚动使用 scroll-view 组件",
+    ), // layout.md「overflow」、SKILL.md MUST 示例
+    (
+        &["overflow"],
+        "scroll",
+        "改用 overflow: hidden；滚动使用 scroll-view 组件",
+    ), // layout.md「overflow」
+    // overflow-x/overflow-y 的属性名本身是支持的（visible/hidden 会折叠成 overflow），只有这两个值被拒
+    // （overflow_x.cc:33 / overflow_y.cc 同构）。属性条目因此不收录，值按分轴属性分别收录。
+    (
+        OVERFLOW_AXIS_PROPERTIES,
+        "auto",
+        "改用 overflow: hidden；滚动使用 scroll-view 组件",
+    ), // overflow_x.cc:33 拒绝
+    (
+        OVERFLOW_AXIS_PROPERTIES,
+        "scroll",
+        "改用 overflow: hidden；滚动使用 scroll-view 组件",
+    ), // overflow_x.cc:33 拒绝
+    (&["visibility"], "collapse", "改用 visible 或 hidden"), // layout.md「visibility」
+    (&["white-space"], "pre", "改用 normal 或 nowrap"), // text.md「white-space」、SKILL.md Quick Reference
+    (&["white-space"], "pre-wrap", "改用 normal 或 nowrap"), // text.md「white-space」、SKILL.md Quick Reference
+    (&["white-space"], "pre-line", "改用 normal 或 nowrap"), // text.md「white-space」、SKILL.md Quick Reference
+    (
+        &["font-weight"],
+        "bolder",
+        "改用 normal、bold 或 100-900 的数值",
+    ), // text.md「font-weight」
+    (
+        &["font-weight"],
+        "lighter",
+        "改用 normal、bold 或 100-900 的数值",
+    ), // text.md「font-weight」
+    (&["font-style"], "oblique", "改用 normal 或 italic"),   // text.md「font-style」
+    // word-break: break-word 不是无效值（被映射为 normal），由 skyline/value-degraded 按 warning 报。
+    (
+        &["vertical-align"],
+        "text-top",
+        "改用 baseline/top/middle/bottom",
+    ), // text.md「vertical-align」
+    (
+        &["vertical-align"],
+        "text-bottom",
+        "改用 baseline/top/middle/bottom",
+    ), // text.md「vertical-align」
+    (
+        &["text-align"],
+        "justify-all",
+        "改用 left/center/right/justify/start/end",
+    ), // text.md「text-align」
+    (
+        &["text-align"],
+        "match-parent",
+        "改用 left/center/right/justify/start/end",
+    ), // text.md「text-align」
+    (
+        &["text-decoration-line"],
+        "blink",
+        "仅支持 none/underline/overline/line-through，且只能单值",
+    ), // SKILL.md Quick Reference
+    (
+        BORDER_STYLE_PROPERTIES,
+        "hidden",
+        "border-*-style 仅支持 none/solid/dashed/dotted",
+    ), // SKILL.md Quick Reference、visual.md「border-style」
+    (
+        BORDER_STYLE_PROPERTIES,
+        "double",
+        "border-*-style 仅支持 none/solid/dashed/dotted",
+    ), // SKILL.md Quick Reference、visual.md「border-style」
+    (
+        BORDER_STYLE_PROPERTIES,
+        "groove",
+        "border-*-style 仅支持 none/solid/dashed/dotted",
+    ), // SKILL.md Quick Reference、visual.md「border-style」
+    (
+        BORDER_STYLE_PROPERTIES,
+        "ridge",
+        "border-*-style 仅支持 none/solid/dashed/dotted",
+    ), // SKILL.md Quick Reference、visual.md「border-style」
+    (
+        BORDER_STYLE_PROPERTIES,
+        "inset",
+        "border-*-style 仅支持 none/solid/dashed/dotted",
+    ), // SKILL.md Quick Reference、visual.md「border-style」
+    (
+        BORDER_STYLE_PROPERTIES,
+        "outset",
+        "border-*-style 仅支持 none/solid/dashed/dotted",
+    ), // SKILL.md Quick Reference、visual.md「border-style」
+];
+
+// background-repeat/mask-repeat 的 space / round 被降级为 repeat；will-change 的
+// scroll-position 与自定义 ident 不生效。三者都由 skyline/value-degraded 按 warning 报，不在本表。
+
 pub(crate) struct Table {
-    properties: HashMap<&'static str, &'static str>,
-    /// 属性 → (整值 → 建议)。
-    values: HashMap<&'static str, HashMap<&'static str, &'static str>>,
+    properties: &'static [(&'static str, &'static str)],
+    values: &'static [(&'static [&'static str], &'static str, &'static str)],
 }
 
 impl Table {
     pub(crate) fn property(&self, name: &str) -> Option<&'static str> {
-        self.properties.get(name).copied()
+        self.properties
+            .iter()
+            .find(|(property, _)| *property == name)
+            .map(|(_, advice)| *advice)
     }
 
     pub(crate) fn value(&self, name: &str, value: &str) -> Option<&'static str> {
-        self.values.get(name)?.get(value).copied()
+        self.values
+            .iter()
+            .find(|(names, candidate, _)| *candidate == value && names.contains(&name))
+            .map(|(_, _, advice)| *advice)
     }
 }
 
 pub(crate) fn table() -> &'static Table {
-    static TABLE: OnceLock<Table> = OnceLock::new();
-    TABLE.get_or_init(|| parse(SUPPORT_DATA).expect("WXSS 支持表格式错误"))
-}
-
-#[derive(Clone, Copy)]
-enum Section {
-    Property,
-    Value,
-}
-
-/// 解析数据文件。格式错误一律返回带行号的说明，便于同步时定位。
-fn parse(source: &'static str) -> Result<Table, String> {
-    let parsed = data_table::read(source, data_table::split_on('|'), |_| {
-        Columns::new(3, "`键 | 值 | 建议` 三列")
-    })?;
-    for (line_no, name) in &parsed.sections {
-        if !matches!(*name, "unsupported-property" | "unsupported-value") {
-            return Err(format!("第 {line_no} 行：未知分区 [{name}]"));
-        }
-    }
-
-    let mut table = Table::default();
-    let mut seen = HashSet::new();
-    for row in parsed.rows {
-        let section = match row.section {
-            Some("unsupported-property") => Section::Property,
-            Some("unsupported-value") => Section::Value,
-            Some(other) => return Err(format!("第 {} 行：未知分区 [{other}]", row.line_no)),
-            None => return Err(format!("第 {} 行：数据出现在分区之前", row.line_no)),
-        };
-        let (key, value, advice) = (row.fields[0], row.fields[1], row.fields[2]);
-        if key.is_empty() || advice.is_empty() {
-            return Err(format!("第 {} 行：键与建议不能为空", row.line_no));
-        }
-        if !is_lowercase(key) {
-            return Err(format!("第 {} 行：键必须小写：{key}", row.line_no));
-        }
-        match section {
-            Section::Property => {
-                if value != "-" {
-                    return Err(format!("第 {} 行：属性分区的值列固定为 `-`", row.line_no));
-                }
-                data_table::unique(&mut seen, ("property", key, ""), row.line_no, || {
-                    format!("重复的属性 {key}")
-                })?;
-                table.properties.insert(key, advice);
-            }
-            Section::Value => {
-                if value.is_empty() || !is_lowercase(value) {
-                    return Err(format!("第 {} 行：值必须非空且小写：{value}", row.line_no));
-                }
-                for name in key.split(',') {
-                    let name = name.trim();
-                    if name.is_empty() || !is_lowercase(name) {
-                        return Err(format!("第 {} 行：属性名非法：{name}", row.line_no));
-                    }
-                    data_table::unique(&mut seen, ("value", name, value), row.line_no, || {
-                        format!("重复的条目 {name}: {value}")
-                    })?;
-                    table.values.entry(name).or_default().insert(value, advice);
-                }
-            }
-        }
-    }
-
-    Ok(table)
-}
-
-fn is_lowercase(text: &str) -> bool {
-    !text.bytes().any(|b| b.is_ascii_uppercase())
+    static TABLE: Table = Table {
+        properties: UNSUPPORTED_PROPERTIES,
+        values: UNSUPPORTED_VALUES,
+    };
+    &TABLE
 }
 
 /// 值归一化：`trim` + 小写；含运行时变量/插值时返回 `None`（无法静态判定，口径同
@@ -111,11 +203,13 @@ pub(crate) fn normalize_value(value: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SUPPORT_DATA, parse};
+    use std::collections::HashSet;
+
+    use super::{UNSUPPORTED_PROPERTIES, UNSUPPORTED_VALUES, table};
 
     #[test]
-    fn data_file_parses_and_contains_known_entries() {
-        let table = parse(SUPPORT_DATA).unwrap();
+    fn table_contains_known_entries() {
+        let table = table();
         assert_eq!(table.property("float"), Some("使用 flex 布局"));
         assert!(table.property("mask-clip").is_some());
         assert_eq!(
@@ -127,24 +221,18 @@ mod tests {
         assert!(table.value("display", "flex").is_none());
     }
 
+    /// 查表按首次命中返回，数据里不允许重复键。
     #[test]
-    fn rejects_lines_with_missing_columns() {
-        let err = parse("[unsupported-property]\nfloat | 使用 flex 布局\n").unwrap_err();
-        assert!(err.contains("三列"), "{err}");
-
-        let err = parse("[unsupported-value]\ndisplay | grid\n").unwrap_err();
-        assert!(err.contains("三列"), "{err}");
-    }
-
-    #[test]
-    fn rejects_unknown_section_and_bad_property_row() {
-        let err = parse("[nope]\nfloat | - | x\n").unwrap_err();
-        assert!(err.contains("未知分区"), "{err}");
-
-        let err = parse("[unsupported-property]\nfloat | left | x\n").unwrap_err();
-        assert!(err.contains("值列固定为"), "{err}");
-
-        let err = parse("[unsupported-value]\nDisplay | grid | x\n").unwrap_err();
-        assert!(err.contains("必须小写"), "{err}");
+    fn table_has_no_duplicate_keys() {
+        let mut seen = HashSet::new();
+        for (property, _) in UNSUPPORTED_PROPERTIES {
+            assert!(seen.insert(*property), "重复的属性 {property}");
+        }
+        let mut seen = HashSet::new();
+        for (names, value, _) in UNSUPPORTED_VALUES {
+            for name in *names {
+                assert!(seen.insert((*name, *value)), "重复的条目 {name}: {value}");
+            }
+        }
     }
 }

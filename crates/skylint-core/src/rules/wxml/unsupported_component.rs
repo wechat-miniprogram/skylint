@@ -1,62 +1,10 @@
 //! Skyline 下不可用的组件（如 web-view / movable-view / editor）。
 
-use std::collections::{HashMap, HashSet};
-
 use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
-use crate::rules::data_table::{self, Columns};
 use crate::rules::{Rule, RuleMeta};
 
-use super::{COMPONENTS_DATA, element_diagnostic, load_doc, wxml_files};
-
-struct ComponentTable {
-    supported: HashSet<&'static str>,
-    unsupported: HashMap<&'static str, &'static str>,
-}
-
-impl ComponentTable {
-    fn load() -> Self {
-        let parsed = data_table::read(COMPONENTS_DATA, split, |section| match section {
-            Some("unsupported") => Columns::new(2, "`标签 | 替代方案` 两列"),
-            _ => Columns::new(1, "一个标签"),
-        })
-        .expect("组件支持表格式错误");
-
-        let mut supported = HashSet::new();
-        let mut unsupported = HashMap::new();
-        for row in parsed.rows {
-            match row.section {
-                Some("supported") => {
-                    supported.insert(row.fields[0]);
-                }
-                Some("unsupported") => {
-                    unsupported.insert(row.fields[0], row.fields[1]);
-                }
-                _ => {}
-            }
-        }
-        Self {
-            supported,
-            unsupported,
-        }
-    }
-
-    /// 黑名单命中才返回替代方案；白名单与未知自定义组件都不报。
-    fn replacement(&self, tag: &str) -> Option<&'static str> {
-        if self.supported.contains(tag) {
-            return None;
-        }
-        self.unsupported.get(tag).copied()
-    }
-}
-
-/// `[supported]` 一行一个标签；`[unsupported]` 按 `|` 切 `标签 | 替代方案`。
-fn split<'a>(section: Option<&'a str>, line: &'a str) -> Vec<&'a str> {
-    match section {
-        Some("unsupported") => line.split('|').map(str::trim).collect(),
-        _ => vec![line],
-    }
-}
+use super::{element_diagnostic, load_doc, unsupported_replacement, wxml_files};
 
 pub struct UnsupportedComponent;
 
@@ -74,7 +22,6 @@ impl Rule for UnsupportedComponent {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let table = ComponentTable::load();
         let mut diagnostics = Vec::new();
         for path in wxml_files(project) {
             let Some(doc) = load_doc(project, path) else {
@@ -82,7 +29,7 @@ impl Rule for UnsupportedComponent {
             };
             for element in doc.elements() {
                 let tag = element.tag.to_ascii_lowercase();
-                let Some(replacement) = table.replacement(&tag) else {
+                let Some(replacement) = unsupported_replacement(&tag) else {
                     continue;
                 };
                 diagnostics.push(
@@ -104,8 +51,8 @@ impl Rule for UnsupportedComponent {
 
 #[cfg(test)]
 mod tests {
-    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
     use super::UnsupportedComponent;
+    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
 
     /// 页面 json 显式 `"renderer": "webview"`：这页不迁 Skyline，整页跳过。
     #[test]

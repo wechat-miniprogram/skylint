@@ -1,52 +1,77 @@
 //! 组件对直接子节点的约束：只允许某类子节点、必须恰好一个子节点、条件必需的子节点。
 //!
-//! 约束写在 `data/component_children.txt` 里，Rust 侧只按约束类型解释表格。
-//! 属性一律只认静态值（`WxmlAttribute::is_static`），`{{}}` 插值跳过——静态阶段
-//! 无法确定实际取值，宁可漏报。
+//! 约束直接写在下方 `ROWS` 里，按组件标签查表。属性一律只认静态值
+//! （`WxmlAttribute::is_static`），`{{}}` 插值跳过——静态阶段无法确定实际取值，
+//! 宁可漏报。
 //!
 //! 子节点按 `input/wxml.rs` 的摊平语义计数：`<block>` / `wx:for` / `wx:if` 不产生
 //! 自己的层级，所以同一个 `wx:if` 的 if 与 else 分支会同时挂在一个父节点下。
-//! `exactly:<n>` 数的是「能同时渲染的子元素」的最大值：同一个 `wx:if` 的不同分支互斥，
+//! `Exactly(n)` 数的是「能同时渲染的子元素」的最大值：同一个 `wx:if` 的不同分支互斥，
 //! 取各分支里最多的那一支；不同分支组之间相加。真实工程 `miniprogram-skit_1` 的
 //! `components/index-block/index-block.wxml:62,139` 就在
 //! `<horizontal-drag-gesture-handler>` 里用 `wx:if` / `wx:else` 各包一个 `<swiper>`；
 //! 按摊平结果直接计数会把它误报成 2 个子节点。
+//!
+//! # 约束语义
+//!
+//! - `Only`：直接元素子节点只能是这些标签。`text` 是特殊值，表示「文本节点也允许」，
+//!   其余按标签名精确匹配。
+//! - `Exactly`：直接元素子节点个数必须正好是 n；文本子节点（含空白）一律不计，因为
+//!   WXML 里换行缩进就是文本节点。
+//! - `RequiresChild`：自身条件全部成立时，直接子节点里必须有一个该属性取到目标值的
+//!   节点。多个条件必须同时成立；不带 `=值` 的条件只要求属性存在（未被静态置为假）。
+//!   动态属性值不触发。
+//!
+//! # 依据
+//!
+//! - navigator：skyline-overview/references/introduction/component-support.md:23
+//!   「navigator | 只能嵌套 text 组件或文本节点」；同文件 :150-162 给出正反例
+//!   （❌ `<navigator><view>不能这样用</view></navigator>`）。
+//! - 手势组件单子节点：skyline-components/references/gesture/gesture-system.md:186
+//!   MUST「必须使用单子节点：手势组件只能包含一个直接子节点」；同文件 :11-22 的表
+//!   列出 8 个手势组件（tap / double-tap / long-press / pan / horizontal-drag /
+//!   vertical-drag / scale / force-press），:9 说明它们是「虚组件，不参与布局渲染，
+//!   事件由其直接子节点响应」——所以 0 个子节点等于手势没有响应目标，同为 error。
+//! - scroll-view 自定义刷新节点：skyline-components/references/scroll/scroll-view.md
+//!   :195（`refresher-default-style` 取 black/white/none）、:214-222（none 的示例
+//!   必须给 `<view slot="refresher">`）、:377 Bug&Tip 第 4 条「自定义下拉刷新节点需
+//!   声明 slot="refresher"」。取 none 时不给自定义节点，下拉刷新区就是空白，故为
+//!   warning 而不是 error。触发还要 `refresher-enabled`（:193 默认 false）：没开
+//!   下拉刷新时 `refresher-default-style` 不产生任何刷新节点。
 
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlDoc, WxmlElement};
 use crate::project::Project;
-use crate::rules::data_table::{self, Columns};
 use crate::rules::{Rule, RuleMeta};
 
-use super::{element_diagnostic, load_doc, wxml_files};
 use super::branch::{element_children, max_rendered_children};
+use super::{element_diagnostic, load_doc, wxml_files};
 
 pub const ID: &str = "skyline/component-children";
 
-/// 子节点约束表。
-const CONSTRAINTS_DATA: &str = include_str!("../data/component_children.txt");
-
-/// 表格「约束」列的第一段决定怎么读，其余部分是参数。
+/// 子节点约束。
 enum Constraint {
     /// 直接元素子节点只能是这些标签。`text` 是特殊值，表示文本节点也算合法。
-    Only(Vec<&'static str>),
+    Only(&'static [&'static str]),
     /// 直接元素子节点个数必须正好是 n；文本子节点不计。
-    Exactly(usize),
-    /// 自身条件成立时，直接子节点里必须有 `child_name=child_value`。
+    Exactly(u32),
+    /// 自身条件成立时，直接子节点里必须有 `child_attr=child_value`。
     RequiresChild {
-        child_name: &'static str,
+        child_attr: &'static str,
         child_value: &'static str,
-        /// 多个条件必须同时成立（`@` 分隔）。
-        conditions: Vec<Trigger>,
+        /// 多个条件必须同时成立。
+        own: &'static [Condition],
     },
 }
 
-/// 一个触发条件。`value` 为 `None` 时只看属性是否存在（未被静态置为假）——
-/// WXML 布尔属性的写法太多（`refresher-enabled`、`refresher-enabled=""`、`"{{true}}"`），
-/// 静默阶段无法区分 `{{true}}` 与 `{{refreshing}}`，所以只排除「确实没开」。
-struct Trigger {
-    name: &'static str,
-    value: Option<&'static str>,
+/// 一个触发条件。
+enum Condition {
+    /// `attr="value"`：静态值与 value 相等（忽略大小写）才算成立。
+    Equals(&'static str, &'static str),
+    /// `attr`：属性存在且未被静态置为假，即 `attr=!(false|0)`——WXML 布尔属性的写法
+    /// 太多（`refresher-enabled`、`refresher-enabled=""`、`"{{true}}"`），静态阶段
+    /// 无法区分 `{{true}}` 与 `{{refreshing}}`，所以只排除「确实没开」。
+    Present(&'static str),
 }
 
 struct Row {
@@ -56,61 +81,76 @@ struct Row {
     help: &'static str,
 }
 
-fn rows() -> Vec<Row> {
-    data_table::read(CONSTRAINTS_DATA, data_table::split_on('\t'), |_| {
-        Columns::new(4, "`组件 | 约束 | 级别 | 说明` 四列")
-    })
-    .expect("组件子节点约束表格式错误")
-    .rows
-    .into_iter()
-    .filter_map(parse_row)
-    .collect()
-}
-
-fn parse_row(row: data_table::Row<'static>) -> Option<Row> {
-    let (tag, raw, severity, help) = (row.fields[0], row.fields[1], row.fields[2], row.fields[3]);
-    let severity = match severity {
-        "error" => Severity::Error,
-        "warning" => Severity::Warning,
-        "info" => Severity::Info,
-        _ => return None,
-    };
-    Some(Row {
-        tag,
-        constraint: parse_constraint(raw)?,
-        severity,
-        help,
-    })
-}
-
-fn parse_constraint(raw: &'static str) -> Option<Constraint> {
-    let (kind, rest) = raw.split_once(':')?;
-    match kind {
-        "only" => Some(Constraint::Only(rest.split('|').collect())),
-        "exactly" => rest.parse().ok().map(Constraint::Exactly),
-        "requires-child" => {
-            let (child, triggers) = rest.split_once('@')?;
-            let (child_name, child_value) = child.split_once('=')?;
-            let conditions = triggers
-                .split('@')
-                .map(|trigger| {
-                    let trigger = trigger.trim();
-                    let (name, value) = trigger.split_once('=').unwrap_or((trigger, ""));
-                    Trigger {
-                        name: name.trim(),
-                        value: (!value.trim().is_empty()).then(|| value.trim()),
-                    }
-                })
-                .collect();
-            Some(Constraint::RequiresChild {
-                child_name: child_name.trim(),
-                child_value: child_value.trim(),
-                conditions,
-            })
-        }
-        _ => None,
-    }
-}
+/// 组件对直接子节点的约束表，组件标签唯一。
+const ROWS: &[Row] = &[
+    Row {
+        tag: "navigator",
+        constraint: Constraint::Only(&["text"]),
+        severity: Severity::Error,
+        help: "把 `<navigator>` 的内容改成 `<text>` 或文本节点；需要自定义布局时改用 `bind:tap` 的 `<view>`",
+    },
+    Row {
+        tag: "pan-gesture-handler",
+        constraint: Constraint::Exactly(1),
+        severity: Severity::Error,
+        help: "用一个 `<view>` 包住手势内容，`<pan-gesture-handler>` 内只留这一个子节点",
+    },
+    Row {
+        tag: "double-tap-gesture-handler",
+        constraint: Constraint::Exactly(1),
+        severity: Severity::Error,
+        help: "用一个 `<view>` 包住手势内容，`<double-tap-gesture-handler>` 内只留这一个子节点",
+    },
+    Row {
+        tag: "long-press-gesture-handler",
+        constraint: Constraint::Exactly(1),
+        severity: Severity::Error,
+        help: "用一个 `<view>` 包住手势内容，`<long-press-gesture-handler>` 内只留这一个子节点",
+    },
+    Row {
+        tag: "horizontal-drag-gesture-handler",
+        constraint: Constraint::Exactly(1),
+        severity: Severity::Error,
+        help: "用一个 `<view>` 包住手势内容，`<horizontal-drag-gesture-handler>` 内只留这一个子节点",
+    },
+    Row {
+        tag: "vertical-drag-gesture-handler",
+        constraint: Constraint::Exactly(1),
+        severity: Severity::Error,
+        help: "用一个 `<view>` 包住手势内容，`<vertical-drag-gesture-handler>` 内只留这一个子节点",
+    },
+    Row {
+        tag: "scale-gesture-handler",
+        constraint: Constraint::Exactly(1),
+        severity: Severity::Error,
+        help: "用一个 `<view>` 包住手势内容，`<scale-gesture-handler>` 内只留这一个子节点",
+    },
+    Row {
+        tag: "force-press-gesture-handler",
+        constraint: Constraint::Exactly(1),
+        severity: Severity::Error,
+        help: "用一个 `<view>` 包住手势内容，`<force-press-gesture-handler>` 内只留这一个子节点",
+    },
+    Row {
+        tag: "tap-gesture-handler",
+        constraint: Constraint::Exactly(1),
+        severity: Severity::Error,
+        help: "用一个 `<view>` 包住手势内容，`<tap-gesture-handler>` 内只留这一个子节点",
+    },
+    Row {
+        tag: "scroll-view",
+        constraint: Constraint::RequiresChild {
+            child_attr: "slot",
+            child_value: "refresher",
+            own: &[
+                Condition::Equals("refresher-default-style", "none"),
+                Condition::Present("refresher-enabled"),
+            ],
+        },
+        severity: Severity::Warning,
+        help: "给 `<scroll-view refresher-default-style=\"none\">` 补一个 `<view slot=\"refresher\">` 作为自定义刷新节点",
+    },
+];
 
 enum AttrCheck {
     Ok,
@@ -154,10 +194,10 @@ fn attr_is_off(element: &WxmlElement, name: &str) -> bool {
     }
 }
 
-fn trigger_text(trigger: &Trigger) -> String {
-    match trigger.value {
-        Some(value) => format!(" {}=\"{value}\"", trigger.name),
-        None => format!(" {}", trigger.name),
+fn condition_text(condition: &Condition) -> String {
+    match condition {
+        Condition::Equals(name, value) => format!(" {name}=\"{value}\""),
+        Condition::Present(name) => format!(" {name}"),
     }
 }
 
@@ -200,7 +240,7 @@ fn violations(doc: &WxmlDoc, element: &WxmlElement, row: &Row, path: &str) -> Ve
             .collect(),
         Constraint::Exactly(expected) => {
             let count = max_rendered_children(element);
-            if count == *expected {
+            if count == *expected as usize {
                 return Vec::new();
             }
             let message = if count == 0 {
@@ -217,21 +257,23 @@ fn violations(doc: &WxmlDoc, element: &WxmlElement, row: &Row, path: &str) -> Ve
             vec![on_element(message)]
         }
         Constraint::RequiresChild {
-            child_name,
+            child_attr,
             child_value,
-            conditions,
+            own,
         } => {
             // 任一触发条件不成立就不报；动态值无法确认，一律按不成立处理。
-            let satisfied = conditions.iter().all(|condition| match condition.value {
-                Some(value) => matches!(check_attr(element, condition.name, value), AttrCheck::Ok),
-                None => !attr_is_off(element, condition.name),
+            let satisfied = own.iter().all(|condition| match condition {
+                Condition::Equals(name, value) => {
+                    matches!(check_attr(element, name, value), AttrCheck::Ok)
+                }
+                Condition::Present(name) => !attr_is_off(element, name),
             });
             if !satisfied {
                 return Vec::new();
             }
             let mut unknown = false;
             for child in element_children(element) {
-                match check_attr(child, child_name, child_value) {
+                match check_attr(child, child_attr, child_value) {
                     AttrCheck::Ok => return Vec::new(),
                     // 子节点的该属性是动态值：可能是目标节点，静态阶段无法否定。
                     AttrCheck::Unknown => unknown = true,
@@ -244,8 +286,8 @@ fn violations(doc: &WxmlDoc, element: &WxmlElement, row: &Row, path: &str) -> Ve
             vec![on_element(format!(
                 "`<{}{}>` 没有 `{}=\"{}\"` 的直接子节点，自定义刷新节点不会被渲染",
                 element.tag,
-                conditions.first().map(trigger_text).unwrap_or_default(),
-                child_name,
+                own.first().map(condition_text).unwrap_or_default(),
+                child_attr,
                 child_value
             ))]
         }
@@ -264,7 +306,6 @@ impl Rule for ComponentChildren {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let rows = rows();
         let mut diagnostics = Vec::new();
         for path in wxml_files(project) {
             let Some(doc) = load_doc(project, path) else {
@@ -275,7 +316,7 @@ impl Rule for ComponentChildren {
                 if element.in_template {
                     continue;
                 }
-                for row in rows.iter().filter(|row| row.tag == element.tag) {
+                for row in ROWS.iter().filter(|row| row.tag == element.tag) {
                     diagnostics.extend(violations(&doc, element, row, path));
                 }
             }
@@ -286,25 +327,23 @@ impl Rule for ComponentChildren {
 
 #[cfg(test)]
 mod tests {
-    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
-    use super::ComponentChildren;
-    use super::rows;
+    use super::{ComponentChildren, ROWS};
     use crate::Severity;
+    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
 
     fn check(fixture: &Fixture) -> Vec<crate::Diagnostic> {
         check_rule(fixture, &ComponentChildren)
     }
 
-    // ---- 数据表 ----
+    // ---- 约束表 ----
 
     #[test]
-    fn data_table_is_well_formed() {
-        let rows = rows();
-        assert_eq!(rows.len(), 10);
-        assert!(
-            rows.iter()
-                .all(|row| !row.tag.is_empty() && !row.help.is_empty())
-        );
+    fn component_tags_are_unique() {
+        let mut tags: Vec<&str> = ROWS.iter().map(|row| row.tag).collect();
+        tags.sort_unstable();
+        let count = tags.len();
+        tags.dedup();
+        assert_eq!(tags.len(), count, "组件约束表里有重复的组件标签");
     }
 
     // ---- navigator：只能放 text / 文本节点 ----

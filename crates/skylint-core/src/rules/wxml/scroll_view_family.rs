@@ -1,12 +1,75 @@
 //! `scroll-view` 家族组件之间的结构约束：挂载位置、子节点顺序与唯一性、必需属性、
-//! 关联容器。约束写在 `data/scroll_family.txt` 里，Rust 侧只按关系类型解释表格。
+//! 关联容器。约束直接写在下方 `CONSTRAINTS` 里，按子标签查表。
 //!
 //! 表格表达不了的否定约束（nested-scroll-header 不能在 body 内）留在代码里。
+//!
+//! # 关系语义
+//!
+//! - `Direct`：直接父节点必须是目标之一（渲染树，block/wx:if/wx:for 已摊平）
+//! - `Ancestor`：最近的同名祖先必须是目标，并满足目标上的属性要求
+//! - `FirstChild`：父节点是目标容器时，子标签必须是它的第一个元素子节点
+//! - `Unique`：最近的目标容器内，子标签最多出现一次（多余的不会生效）
+//! - `Before { sibling, .. }`：目标容器内，子标签必须排在同级 `<sibling>` 之前
+//! - `RendersFirst`：子标签只渲染第一个直接子元素，多写的会被静默丢弃
+//! - `RequiresAttr { name, unless }`：子标签必须显式声明 `name`；`unless` 为
+//!   `(attr, v)` 时，自身 `<attr>=<v>` 不再要求（典型：list-builder 的 child-height
+//!   只在定高模式必填）
+//! - `AllowedValues`：子标签该属性只能取这些静态值；未声明不报
+//! - `Within`：最近的该容器祖先下，子标签必须声明 `name=value`
+//! - 目标写法：`Target { tag, attr }`，多个目标直接列成数组
+//!
+//! # 条件分支
+//!
+//! 同一个 `wx:if` 节点的不同分支互斥（运行时只会渲染其中一个），因此
+//!   first-child / unique / before 比较兄弟时会跳过与当前节点互斥的候选：不同分支不算
+//!   「排在前面」、不算重复、不算顺序违规。两个独立的 `wx:if` 之间不互斥，仍按原样判定；
+//!   无条件元素与条件分支元素也不互斥（两者可能同时渲染）。
+//!
+//! # 依据（每条都能指到原句）
+//!
+//! - sticky-section：scroll/sticky.md「它们必须在 <scroll-view type="custom"> 模式下使用」，
+//!   MUST 1「必须在 type="custom" 的 scroll-view 中使用」，NEVER 1「不要在 type="list" 的 scroll-view 中使用」。
+//! - list-view / grid-view：scroll/list-grid-view.md「它们必须作为 <scroll-view type="custom"> 或
+//!   <sticky-section> 的直接子节点使用」，NEVER 1「不要在 type="list" 的 scroll-view 中使用 list-view/grid-view」。
+//! - nested-scroll-header / nested-scroll-body：scroll/nested-scroll.md MUST 1
+//!   「外层 scroll-view 必须设置 type="nested"」。
+//! - sticky-header 顺序与唯一性：scroll/sticky.md MUST 2「sticky-header 必须是 sticky-section 的第一个
+//!   子元素」（:153）、MUST 3「每个 sticky-section 只能有一个 sticky-header」（:154）。
+//!   只加「在 sticky-section 内时」的条件约束，挂载位置仍不约束（见下方整条撤销的记录）。
+//! - nested-scroll-body 唯一：scroll/nested-scroll.md MUST 4「外层只能有一个 nested-scroll-body」（:166）、
+//!   NEVER 2「不要有多个 nested-scroll-body」。
+//! - nested-scroll-header 顺序：nested-scroll.md:29「只能渲染在 nested-scroll-body 上面」、
+//!   NEVER 1「不要在 nested-scroll-body 下面放 nested-scroll-header」（:170）。
+//! - 只渲染第一个子节点：nested-scroll.md:29（header）、:38（body）。多写的会被静默丢弃，故为 warning。
+//! - list-builder / grid-view 必需属性：scroll/list-grid-view.md MUST 2「使用 list-builder 时必须指定
+//!   child-height（定高模式）」（:271）、MUST 3「网格布局必须指定 cross-axis-count」（:272）。
+//! - list-builder type：list-grid-view.md:155「type | string | static | 列表模式：static（定高）/ dynamic（不定高）」。
+//! - grid-view type：list-grid-view.md:65「type | string | aligned / masonry」。
+//! - 内层 scroll-view 关联容器：nested-scroll.md MUST 2「内层 scroll-view 必须设置
+//!   associative-container="nested-scroll-view"」（:164）、NEVER 3「不要忘记给内层 scroll-view 设置」。作用域取
+//!   nested-scroll-body：文档示例里内层 scroll-view 在 body 内的 swiper 下（:210-:224），而 header 内的
+//!   scroll-view 不参与嵌套滚动（sticky 里的横向 tab 列表就属于这种）。
+//! - draggable-sheet 内 scroll-view 关联容器：draggable-sheet.md:50、:342
+//!   「内部的 scroll-view 必须设置 associative-container="draggable-sheet"」。
+//!
+//! # 文档冲突记录
+//!
+//! skyline-overview/references/introduction/component-support.md 写
+//! 「list-view | 列表布局容器，作为 scroll-view type="list" 的直接子节点」，与
+//! scroll/list-grid-view.md（必须 custom）以及 SKILL.md MUST 4 冲突。这里按更具体、
+//! 且被 scroll-view.md type 表（custom 支持 list-view/grid-view/sticky-section）
+//! 印证的 list-grid-view.md 实现。
+//!
+//! sticky-header 的挂载位置（整条撤销）：scroll/sticky.md NEVER 2 写「不要将
+//! sticky-header 放在 sticky-section 之外」，但 scroll/scroll-view.md:54 在 custom 模式的
+//! 「支持的子组件」里明确列出 `sticky-section` / `sticky-header`，即 sticky-header 也可以
+//! 作为 scroll-view 的直接子节点。生产工程 miniprogram-skit_1 的 rank.wxml 正是
+//! <nested-scroll-header><sticky-header> 的写法且在跑。两份文档互相冲突，按「文档没写清
+//! 或互相矛盾就不报」的原则，不对 sticky-header 的挂载位置做任何约束。
 
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::project::Project;
-use crate::rules::data_table::{self, Columns};
 use crate::rules::{Rule, RuleMeta};
 
 use super::branch::{element_children, exclusive, max_rendered_children};
@@ -14,27 +77,29 @@ use super::{element_diagnostic, is_builtin, load_doc, wxml_files};
 
 pub const ID: &str = "skyline/scroll-view-family";
 
-/// 家族结构约束表。
-const CONSTRAINTS_DATA: &str = include_str!("data/scroll_family.txt");
-
 /// 一个允许的父/祖先节点，`attr` 是该节点必须满足的属性。
+#[derive(Debug, Clone, Copy)]
 struct Target {
     tag: &'static str,
     attr: Option<(&'static str, &'static str)>,
 }
 
-/// 子标签与目标之间的关系。表格里「关系」列的值决定「目标」列怎么读。
+/// 子标签与目标之间的关系，目标容器直接内联在变体里。
+#[derive(Debug)]
 enum Relation {
     /// 直接父节点必须是目标之一。
-    Direct,
+    Direct(&'static [Target]),
     /// 最近的同名祖先必须是目标，并满足目标上的属性要求。
-    Ancestor,
+    Ancestor(&'static [Target]),
     /// 父节点是目标容器时，子节点必须是它的第一个元素子节点。
-    FirstChild,
+    FirstChild(&'static [Target]),
     /// 最近的目标容器内，子节点最多出现一次。
-    Unique,
-    /// 目标容器内，子节点必须排在同级 `<tag>` 之前。
-    Before(&'static str),
+    Unique(&'static [Target]),
+    /// 目标容器内，子节点必须排在同级 `<sibling>` 之前。
+    Before {
+        sibling: &'static str,
+        containers: &'static [Target],
+    },
     /// 子节点只渲染第一个直接子元素。
     RendersFirst,
     /// 子节点自身必须声明该属性；`unless` 里的属性取该值时不再要求。
@@ -45,7 +110,7 @@ enum Relation {
     /// 子节点自身的该属性只能取这些静态值。
     AllowedValues {
         name: &'static str,
-        values: Vec<&'static str>,
+        values: &'static [&'static str],
     },
     /// 最近的该容器祖先下，子节点必须声明 `name="value"`。
     Within {
@@ -58,130 +123,157 @@ enum Relation {
 struct Constraint {
     child: &'static str,
     relation: Relation,
-    /// `Direct` / `Ancestor` / `FirstChild` / `Unique` / `Before` 用的容器列表。
-    containers: Vec<Target>,
     severity: Severity,
     help: &'static str,
 }
 
-fn constraints() -> Vec<Constraint> {
-    data_table::read(CONSTRAINTS_DATA, data_table::split_on('\t'), |_| {
-        Columns::new(5, "`子标签 | 关系 | 目标 | 级别 | help` 五列")
-    })
-    .expect("scroll-view 家族约束表格式错误")
-    .rows
-    .into_iter()
-    .filter_map(parse_constraint)
-    .collect()
-}
+const CUSTOM_SCROLL: Target = Target {
+    tag: "scroll-view",
+    attr: Some(("type", "custom")),
+};
+const NESTED_SCROLL: Target = Target {
+    tag: "scroll-view",
+    attr: Some(("type", "nested")),
+};
+const STICKY_SECTION: Target = Target {
+    tag: "sticky-section",
+    attr: None,
+};
 
-fn parse_constraint(row: data_table::Row<'static>) -> Option<Constraint> {
-    let (child, raw_relation, target, severity, help) = (
-        row.fields[0],
-        row.fields[1],
-        row.fields[2],
-        row.fields[3],
-        row.fields[4],
-    );
-    let severity = match severity {
-        "error" => Severity::Error,
-        "warning" => Severity::Warning,
-        "info" => Severity::Info,
-        _ => return None,
-    };
-    let (relation, containers) = parse_relation(raw_relation, target)?;
-    Some(Constraint {
-        child,
-        relation,
-        containers,
-        severity,
-        help,
-    })
-}
-
-fn parse_relation(raw: &'static str, target: &'static str) -> Option<(Relation, Vec<Target>)> {
-    let (relation, containers) = match raw.split_once(':') {
-        Some(("before", sibling)) => (Relation::Before(sibling), parse_targets(target)),
-        Some(("within", container)) => {
-            let (name, value) = split_attr(target);
-            (
-                Relation::Within {
-                    container: parse_target(container),
-                    name,
-                    value: value?,
-                },
-                Vec::new(),
-            )
-        }
-        Some(("requires-attr-unless", condition)) => {
-            let (attribute, value) = condition.split_once('=')?;
-            (
-                Relation::RequiresAttr {
-                    name: split_attr(target).0,
-                    unless: Some((attribute.trim(), value.trim())),
-                },
-                Vec::new(),
-            )
-        }
-        Some(_) => return None,
-        None => match raw {
-            "direct" => (Relation::Direct, parse_targets(target)),
-            "ancestor" => (Relation::Ancestor, parse_targets(target)),
-            "first-child" => (Relation::FirstChild, parse_targets(target)),
-            "unique" => (Relation::Unique, parse_targets(target)),
-            "renders-first" => (Relation::RendersFirst, Vec::new()),
-            "requires-attr" => (
-                Relation::RequiresAttr {
-                    name: split_attr(target).0,
-                    unless: None,
-                },
-                Vec::new(),
-            ),
-            "allowed-values" => {
-                let (name, values) = target.split_once('=')?;
-                (
-                    Relation::AllowedValues {
-                        name,
-                        values: values.split('|').collect(),
-                    },
-                    Vec::new(),
-                )
-            }
-            _ => return None,
+/// scroll-view 家族结构约束表。
+const CONSTRAINTS: &[Constraint] = &[
+    Constraint {
+        child: "sticky-section",
+        relation: Relation::Ancestor(&[CUSTOM_SCROLL]),
+        severity: Severity::Error,
+        help: "把 `<sticky-section>` 放进 `<scroll-view type=\"custom\">`，type 不能是 list/nested",
+    },
+    Constraint {
+        child: "list-view",
+        relation: Relation::Direct(&[CUSTOM_SCROLL, STICKY_SECTION]),
+        severity: Severity::Error,
+        help: "把 `<list-view>` 移为 `<scroll-view type=\"custom\">` 或 `<sticky-section>` 的直接子节点",
+    },
+    Constraint {
+        child: "grid-view",
+        relation: Relation::Direct(&[CUSTOM_SCROLL, STICKY_SECTION]),
+        severity: Severity::Error,
+        help: "把 `<grid-view>` 移为 `<scroll-view type=\"custom\">` 或 `<sticky-section>` 的直接子节点",
+    },
+    Constraint {
+        child: "nested-scroll-header",
+        relation: Relation::Ancestor(&[NESTED_SCROLL]),
+        severity: Severity::Error,
+        help: "把 `<nested-scroll-header>` 放在外层 `<scroll-view type=\"nested\">` 内",
+    },
+    Constraint {
+        child: "nested-scroll-body",
+        relation: Relation::Ancestor(&[NESTED_SCROLL]),
+        severity: Severity::Error,
+        help: "把 `<nested-scroll-body>` 放在外层 `<scroll-view type=\"nested\">` 内",
+    },
+    Constraint {
+        child: "sticky-header",
+        relation: Relation::FirstChild(&[STICKY_SECTION]),
+        severity: Severity::Error,
+        help: "把 `<sticky-header>` 移到 `<sticky-section>` 的第一个元素子节点位置",
+    },
+    Constraint {
+        child: "sticky-header",
+        relation: Relation::Unique(&[STICKY_SECTION]),
+        severity: Severity::Error,
+        help: "一个 `<sticky-section>` 只保留一个 `<sticky-header>`",
+    },
+    Constraint {
+        child: "nested-scroll-body",
+        relation: Relation::Unique(&[NESTED_SCROLL]),
+        severity: Severity::Error,
+        help: "外层 `<scroll-view type=\"nested\">` 只保留一个 `<nested-scroll-body>`",
+    },
+    Constraint {
+        child: "nested-scroll-header",
+        relation: Relation::Before {
+            sibling: "nested-scroll-body",
+            containers: &[NESTED_SCROLL],
         },
-    };
-    Some((relation, containers))
-}
-
-fn parse_targets(raw: &'static str) -> Vec<Target> {
-    raw.split('|').map(parse_target).collect()
-}
-
-fn parse_target(raw: &'static str) -> Target {
-    let raw = raw.trim();
-    match raw.split_once('[') {
-        Some((tag, rest)) => {
-            let inner = rest.strip_suffix(']').unwrap_or(rest);
-            let (name, value) = inner.split_once('=').unwrap_or((inner, ""));
-            Target {
-                tag: tag.trim(),
-                attr: Some((name.trim(), value.trim())),
-            }
-        }
-        None => Target {
-            tag: raw,
-            attr: None,
+        severity: Severity::Error,
+        help: "把 `<nested-scroll-header>` 移到 `<nested-scroll-body>` 之前",
+    },
+    Constraint {
+        child: "nested-scroll-header",
+        relation: Relation::RendersFirst,
+        severity: Severity::Warning,
+        help: "把头部内容收进一个直接子节点（例如一个 `<view>`）",
+    },
+    Constraint {
+        child: "nested-scroll-body",
+        relation: Relation::RendersFirst,
+        severity: Severity::Warning,
+        help: "把主体内容收进一个直接子节点（例如一个 `<view>`）",
+    },
+    Constraint {
+        child: "list-builder",
+        relation: Relation::RequiresAttr {
+            name: "child-height",
+            unless: Some(("type", "dynamic")),
         },
-    }
-}
-
-/// `name=value` → (`name`, Some(`value`))；`name` → (`name`, None)。
-fn split_attr(raw: &'static str) -> (&'static str, Option<&'static str>) {
-    match raw.split_once('=') {
-        Some((name, value)) => (name.trim(), Some(value.trim())),
-        None => (raw.trim(), None),
-    }
-}
+        severity: Severity::Error,
+        help: "在 `<list-builder>` 上声明列表项高度 `child-height`（定高模式必填）",
+    },
+    Constraint {
+        child: "grid-view",
+        relation: Relation::RequiresAttr {
+            name: "cross-axis-count",
+            unless: None,
+        },
+        severity: Severity::Error,
+        help: "在 `<grid-view>` 上声明交叉轴元素数量 `cross-axis-count`",
+    },
+    Constraint {
+        child: "list-builder",
+        relation: Relation::AllowedValues {
+            name: "type",
+            values: &["static", "dynamic"],
+        },
+        severity: Severity::Error,
+        help: "`type` 只能是 `static`（定高）或 `dynamic`（不定高）",
+    },
+    Constraint {
+        child: "grid-view",
+        relation: Relation::AllowedValues {
+            name: "type",
+            values: &["aligned", "masonry"],
+        },
+        severity: Severity::Error,
+        help: "`type` 只能是 `aligned`（网格）或 `masonry`（瀑布流）",
+    },
+    Constraint {
+        child: "scroll-view",
+        relation: Relation::Within {
+            container: Target {
+                tag: "nested-scroll-body",
+                attr: None,
+            },
+            name: "associative-container",
+            value: "nested-scroll-view",
+        },
+        severity: Severity::Error,
+        help: "给 `<nested-scroll-body>` 内的 `<scroll-view>` 加上 `associative-container=\"nested-scroll-view\"`",
+    },
+    Constraint {
+        child: "scroll-view",
+        relation: Relation::Within {
+            container: Target {
+                tag: "draggable-sheet",
+                attr: None,
+            },
+            name: "associative-container",
+            value: "draggable-sheet",
+        },
+        severity: Severity::Warning,
+        help: "给 `<draggable-sheet>` 内的 `<scroll-view>` 加上 `associative-container=\"draggable-sheet\"`",
+    },
+];
 
 enum AttrCheck {
     Ok,
@@ -535,7 +627,6 @@ impl Rule for ScrollViewFamily {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let constraints = constraints();
         let mut diagnostics = Vec::new();
         for path in wxml_files(project) {
             let Some(doc) = load_doc(project, path) else {
@@ -546,7 +637,7 @@ impl Rule for ScrollViewFamily {
                 &doc,
                 &doc.nodes,
                 &mut ancestors,
-                &constraints,
+                CONSTRAINTS,
                 path,
                 &mut diagnostics,
             );
@@ -588,25 +679,30 @@ fn check_element(
 ) {
     for constraint in constraints.iter().filter(|c| c.child == element.tag) {
         let message = match &constraint.relation {
-            Relation::Direct => direct_violation(element, ancestors, &constraint.containers),
-            Relation::Ancestor => ancestor_violation(element, ancestors, &constraint.containers),
-            Relation::FirstChild => {
+            Relation::Direct(targets) => direct_violation(element, ancestors, targets),
+            Relation::Ancestor(targets) => ancestor_violation(element, ancestors, targets),
+            Relation::FirstChild(targets) => {
                 // 重复节点已由 unique 报在同一个元素上，不再叠一条。
                 let duplicate = constraints.iter().any(|other| {
-                    other.child == element.tag
-                        && matches!(other.relation, Relation::Unique)
-                        && unique_violation(element, ancestors, &other.containers).is_some()
+                    if other.child != element.tag {
+                        return false;
+                    }
+                    let Relation::Unique(targets) = &other.relation else {
+                        return false;
+                    };
+                    unique_violation(element, ancestors, targets).is_some()
                 });
                 if duplicate {
                     None
                 } else {
-                    first_child_violation(element, ancestors, &constraint.containers)
+                    first_child_violation(element, ancestors, targets)
                 }
             }
-            Relation::Unique => unique_violation(element, ancestors, &constraint.containers),
-            Relation::Before(sibling) => {
-                before_violation(element, ancestors, &constraint.containers, sibling)
-            }
+            Relation::Unique(targets) => unique_violation(element, ancestors, targets),
+            Relation::Before {
+                sibling,
+                containers,
+            } => before_violation(element, ancestors, containers, sibling),
             Relation::RendersFirst => renders_first_violation(element),
             Relation::RequiresAttr { name, unless } => {
                 requires_attr_violation(element, name, *unless)
@@ -652,30 +748,26 @@ fn check_element(
 
 #[cfg(test)]
 mod tests {
-    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
-    use super::ScrollViewFamily;
-    use super::constraints;
+    use super::{CONSTRAINTS, ScrollViewFamily};
     use crate::Severity;
+    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
 
     fn check(fixture: &Fixture) -> Vec<crate::Diagnostic> {
         check_rule(fixture, &ScrollViewFamily)
     }
 
-    // ---- 数据表 ----
+    // ---- 约束表 ----
 
     #[test]
-    fn data_table_is_well_formed() {
-        let constraints = constraints();
-        assert_eq!(constraints.len(), 17);
-        assert!(
-            constraints
-                .iter()
-                .all(|c| !c.child.is_empty() && !c.help.is_empty())
-        );
-        let list_view = constraints.iter().find(|c| c.child == "list-view").unwrap();
-        assert_eq!(list_view.containers.len(), 2);
-        assert!(list_view.containers[0].attr.is_some());
-        assert!(list_view.containers[1].attr.is_none());
+    fn constraints_have_no_duplicate_keys() {
+        let mut keys: Vec<(&str, String)> = CONSTRAINTS
+            .iter()
+            .map(|constraint| (constraint.child, format!("{:?}", constraint.relation)))
+            .collect();
+        keys.sort();
+        let count = keys.len();
+        keys.dedup();
+        assert_eq!(keys.len(), count, "同一子标签的同一条约束写了两次");
     }
 
     // ---- sticky-section ----

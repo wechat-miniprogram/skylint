@@ -4,19 +4,85 @@
 //! `pointer-events` 不在表内（同文档 :60-64）。`animation` 简写不判：其中的
 //! `animation-name` 是自定义标识符，无法与属性名区分。
 
-use std::collections::HashSet;
-use std::sync::OnceLock;
-
 use crate::input::wxss::ValueToken;
 use crate::project::Project;
-use crate::rules::data_table::{self, Columns};
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{at_value, is_dynamic};
 use super::visit;
 
-const SOURCE: &str = include_str!("../data/animatable_properties.txt");
+/// 来源：skyline-skills/skills/skyline-wxss/references/animation.md:38-58 的 `<animatable-property>` BNF
+///
+/// 文本/字体类、`visibility`、`pointer-events` 不在表内（同文档 :60-64）。
+/// 一行一个属性名（小写），按白名单匹配，名称不重复（见测试）。
+const ANIMATABLE_PROPERTIES: &[&str] = &[
+    "all",
+    "none",
+    "transform",
+    "transform-origin",
+    "opacity",
+    "width",
+    "height",
+    "min-width",
+    "max-width",
+    "min-height",
+    "max-height",
+    "margin",
+    "margin-top",
+    "margin-right",
+    "margin-bottom",
+    "margin-left",
+    "padding",
+    "padding-top",
+    "padding-right",
+    "padding-bottom",
+    "padding-left",
+    "top",
+    "right",
+    "bottom",
+    "left",
+    "flex",
+    "flex-grow",
+    "flex-shrink",
+    "flex-basis",
+    "border",
+    "border-width",
+    "border-color",
+    "border-radius",
+    "border-top-width",
+    "border-right-width",
+    "border-bottom-width",
+    "border-left-width",
+    "border-top-color",
+    "border-right-color",
+    "border-bottom-color",
+    "border-left-color",
+    "border-top-left-radius",
+    "border-top-right-radius",
+    "border-bottom-left-radius",
+    "border-bottom-right-radius",
+    "border-top",
+    "border-right",
+    "border-bottom",
+    "border-left",
+    "background-color",
+    "background-position",
+    "background-size",
+    "background",
+    "background-position-x",
+    "background-position-y",
+    "filter",
+    "backdrop-filter",
+    "box-shadow",
+    "z-index",
+    "text-decoration-color",
+    "mask",
+    "mask-size",
+    "mask-position",
+    "mask-position-x",
+    "mask-position-y",
+];
 
 const HELP: &str = "改用受支持的动画属性（transform / opacity 等），可动画属性表见 animation.md";
 
@@ -76,7 +142,6 @@ impl Rule for TransitionProperty {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let allow = data();
         visit(project, |doc, out| {
             for rule in &doc.rules {
                 for decl in &rule.declarations {
@@ -97,7 +162,7 @@ impl Rule for TransitionProperty {
                         if ident.starts_with('-') {
                             continue;
                         }
-                        if allow.contains(ident.to_ascii_lowercase().as_str()) {
+                        if ANIMATABLE_PROPERTIES.contains(&ident.to_ascii_lowercase().as_str()) {
                             continue;
                         }
                         // 全局关键字、时间函数、transition-behavior 关键字都不是属性名。
@@ -154,48 +219,14 @@ impl Rule for TransitionProperty {
     }
 }
 
-fn data() -> &'static HashSet<&'static str> {
-    static TABLE: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    TABLE.get_or_init(|| parse(SOURCE).expect("WXSS 可动画属性表格式错误"))
-}
-
-/// 解析数据文件。格式错误一律返回带行号的说明，便于同步时定位。
-fn parse(source: &'static str) -> Result<HashSet<&'static str>, String> {
-    let parsed = data_table::read(source, data_table::whole_line, |_| {
-        Columns::new(1, "一个属性名")
-    })?;
-    let mut names = HashSet::new();
-    for row in parsed.rows {
-        let line = row.fields[0];
-        if line.contains(char::is_whitespace) || line.contains(',') {
-            return Err(format!(
-                "第 {} 行：一行只能写一个属性名：{line}",
-                row.line_no
-            ));
-        }
-        if !is_lowercase(line) {
-            return Err(format!("第 {} 行：属性名必须小写：{line}", row.line_no));
-        }
-        data_table::unique(&mut names, line, row.line_no, || {
-            format!("重复的属性名 {line}")
-        })?;
-    }
-    if names.is_empty() {
-        return Err("可动画属性表为空".to_string());
-    }
-    Ok(names)
-}
-
-fn is_lowercase(text: &str) -> bool {
-    !text.bytes().any(|b| b.is_ascii_uppercase())
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+
     use crate::rules::Rule;
 
-    use crate::rules::testutil::wxss::{messages, single};
     use super::TransitionProperty;
+    use crate::rules::testutil::wxss::{messages, single};
 
     #[test]
     fn properties_outside_the_whitelist_are_reported() {
@@ -292,19 +323,21 @@ mod tests {
     }
 
     #[test]
-    fn data_file_has_no_blank_lines_or_duplicates() {
-        let names = super::parse(super::SOURCE).unwrap();
+    fn table_contains_known_properties_and_has_no_duplicates() {
+        let names = super::ANIMATABLE_PROPERTIES;
         assert_eq!(names.len(), 65);
-        assert!(names.contains("all"));
-        assert!(names.contains("none"));
-        assert!(names.contains("transform-origin"));
-        assert!(names.contains("background-position-x"));
-        assert!(names.contains("mask-position-x"));
-        assert!(names.contains("mask-position-y"));
-        assert!(!super::SOURCE.contains("\n\n"), "数据文件不能有空行");
-        assert!(!names.contains("color"));
+        assert!(names.contains(&"all"));
+        assert!(names.contains(&"none"));
+        assert!(names.contains(&"transform-origin"));
+        assert!(names.contains(&"background-position-x"));
+        assert!(names.contains(&"mask-position-x"));
+        assert!(names.contains(&"mask-position-y"));
+        assert!(!names.contains(&"color"));
 
-        let err = super::parse("all\nall\n").unwrap_err();
-        assert!(err.contains("重复"), "{err}");
+        // 白名单按首次命中返回，名称不允许重复。
+        let mut seen = HashSet::new();
+        for name in names {
+            assert!(seen.insert(*name), "重复的属性名 {name}");
+        }
     }
 }
