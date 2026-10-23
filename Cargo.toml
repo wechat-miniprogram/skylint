@@ -5,7 +5,8 @@ members = ["crates/skylint-core", "crates/skylint-cli"]
 [workspace.package]
 version = "2.0.0"
 edition = "2024"
-rust-version = "1.85"
+# oxc 0.155 的 oxc_parser / oxc_ast / oxc_allocator 声明 rust-version = 1.97。
+rust-version = "1.97"
 license = "MIT"
 repository = "https://github.com/wechat-miniprogram/skylint"
 

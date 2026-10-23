@@ -65,17 +65,17 @@ pub(crate) fn unit_wxml(project: &Project) -> Vec<(&str, Scope)> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
     for page in project.pages.iter().filter(|page| !page.opted_out) {
-        if let Some(path) = page.files.wxml.as_deref() {
-            if seen.insert(path) {
-                out.push((path, Scope::Page(page.route.clone())));
-            }
+        if let Some(path) = page.files.wxml.as_deref()
+            && seen.insert(path)
+        {
+            out.push((path, Scope::Page(page.route.clone())));
         }
     }
     for component in &project.components {
-        if let Some(path) = component.files.wxml.as_deref() {
-            if seen.insert(path) {
-                out.push((path, Scope::Component(component.path.clone())));
-            }
+        if let Some(path) = component.files.wxml.as_deref()
+            && seen.insert(path)
+        {
+            out.push((path, Scope::Component(component.path.clone())));
         }
     }
     out

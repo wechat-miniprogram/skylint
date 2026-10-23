@@ -77,15 +77,14 @@ fn check_radial(args: &[ValueToken]) -> Vec<String> {
         }) {
             problems.push("radial-gradient 仅支持 circle 形状，不支持 ellipse".to_string());
         }
-        if let Some(size) = radial_size(pre) {
-            if let Some(unit) = length_unit(size) {
-                if unit != "px" {
-                    problems.push(format!(
-                        "radial-gradient 尺寸仅支持 px，`{}` 不受支持",
-                        token_text(size)
-                    ));
-                }
-            }
+        if let Some(size) = radial_size(pre)
+            && let Some(unit) = length_unit(size)
+            && unit != "px"
+        {
+            problems.push(format!(
+                "radial-gradient 尺寸仅支持 px，`{}` 不受支持",
+                token_text(size)
+            ));
         }
     }
     let stops = if prelude.is_some() {
@@ -166,13 +165,14 @@ fn check_linear(args: &[ValueToken]) -> Vec<String> {
             let Some(token) = group.first() else {
                 continue;
             };
-            if let Some(unit) = length_unit(token) {
-                if unit != "%" && !is_fixed_length(&unit) {
-                    problems.push(format!(
-                        "linear-gradient 颜色停止位置仅支持 % 与固定长度单位，`{}` 不受支持",
-                        token_text(token)
-                    ));
-                }
+            if let Some(unit) = length_unit(token)
+                && unit != "%"
+                && !is_fixed_length(&unit)
+            {
+                problems.push(format!(
+                    "linear-gradient 颜色停止位置仅支持 % 与固定长度单位，`{}` 不受支持",
+                    token_text(token)
+                ));
             }
         }
     }
