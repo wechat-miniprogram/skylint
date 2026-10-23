@@ -4,7 +4,7 @@ use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::{element_diagnostic, load_doc, unsupported_replacement, wxml_files};
+use super::{element_diagnostic, unsupported_replacement, visit, walk};
 
 pub struct UnsupportedComponent;
 
@@ -22,30 +22,25 @@ impl Rule for UnsupportedComponent {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
-        for path in wxml_files(project) {
-            let Some(doc) = load_doc(project, path) else {
-                continue;
-            };
-            for element in doc.elements() {
+        visit(project, |doc, out| {
+            walk(doc, |element, _ancestors| {
                 let tag = element.tag.to_ascii_lowercase();
                 let Some(replacement) = unsupported_replacement(&tag) else {
-                    continue;
+                    return;
                 };
-                diagnostics.push(
+                out.push(
                     element_diagnostic(
                         Self::ID,
-                        &doc,
+                        doc,
                         element,
-                        path,
+                        doc.path(),
                         Severity::Error,
                         format!("Skyline 不支持组件 `<{}>`", element.tag),
                     )
                     .help(replacement),
                 );
-            }
-        }
-        diagnostics
+            });
+        })
     }
 }
 

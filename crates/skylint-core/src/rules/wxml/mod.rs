@@ -30,7 +30,7 @@ use std::fs;
 use glass_easel_template_compiler::parse::Position;
 
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxml::{self, WxmlDoc, WxmlElement};
+use crate::input::wxml::{self, WxmlDoc, WxmlElement, WxmlNode};
 use crate::project::Project;
 
 /// 页面与组件的 WXML + 被 import / include 的模板，按路径去重。
@@ -59,6 +59,45 @@ fn wxml_files(project: &Project) -> impl Iterator<Item = &str> {
 pub(crate) fn load_doc(project: &Project, path: &str) -> Option<WxmlDoc> {
     let source = fs::read_to_string(project.abs(path)).ok()?;
     wxml::parse(path, &source).ok()
+}
+
+/// 遍历全部待检查的 WXML 文件（页面/组件单元 + 被 import/include 的模板）。
+/// 单个文件读失败或解析失败一律跳过，不终止扫描。
+pub(crate) fn visit(
+    project: &Project,
+    mut f: impl FnMut(&WxmlDoc, &mut Vec<Diagnostic>),
+) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for path in wxml_files(project) {
+        if let Some(doc) = load_doc(project, path) {
+            f(&doc, &mut out);
+        }
+    }
+    out
+}
+
+/// 深度优先遍历全部元素，并维护从根到父节点的祖先栈。
+///
+/// 不做任何过滤（包括 `in_template`）：是否跳过由调用方决定。
+pub(crate) fn walk(doc: &WxmlDoc, mut visit: impl FnMut(&WxmlElement, &[&WxmlElement])) {
+    fn recurse<'a>(
+        nodes: &'a [WxmlNode],
+        ancestors: &mut Vec<&'a WxmlElement>,
+        visit: &mut impl FnMut(&WxmlElement, &[&WxmlElement]),
+    ) {
+        for node in nodes {
+            let WxmlNode::Element(element) = node else {
+                continue;
+            };
+            visit(element, ancestors);
+            ancestors.push(element);
+            recurse(&element.children, ancestors, visit);
+            ancestors.pop();
+        }
+    }
+
+    let mut ancestors = Vec::new();
+    recurse(&doc.nodes, &mut ancestors, &mut visit);
 }
 
 /// Skyline 组件支持表。
@@ -195,7 +234,4 @@ fn element_diagnostic(
 }
 
 #[cfg(test)]
-mod tests {
-
-
-}
+mod tests {}

@@ -13,6 +13,7 @@ use crate::input::wxss::{WxssDoc, WxssRule, WxssSelector};
 use crate::rules::{Rule, RuleMeta};
 
 use super::value_util::at_declaration;
+use super::visit_rules;
 
 pub struct FlexDirection;
 
@@ -30,40 +31,42 @@ impl Rule for FlexDirection {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let mut out = Vec::new();
-        for sheet in &project.styles {
+        visit_rules(project, |sheet, rule, out| {
             // `defaultDisplayBlock: true` 时 Skyline 的 flex-direction 默认值就是 row，
             // 与 WebView 一致，这条警告不成立。
-            if sheet.scopes.iter().all(|scope| project.renders_as_block(scope)) {
-                continue;
+            if sheet
+                .scopes
+                .iter()
+                .all(|scope| project.renders_as_block(scope))
+            {
+                return;
             }
             let doc = &sheet.doc;
-            for rule in &doc.rules {
-                // 无选择器的块是预处理器的 mixin 函数体：它只是片段，`display: flex`
-                // 和 `flex-direction` 可能分散在定义处与调用处，判不了也不该判。
-                if rule.selectors.is_empty() {
-                    continue;
-                }
-                // `flex-flow` 同时设置 flex-direction 与 flex-wrap，算已显式声明方向。
-                if rule.declaration("flex-direction").is_some()
-                    || rule.declaration("flex-flow").is_some()
-                    || declares_flex_direction_elsewhere(doc, rule)
-                {
-                    continue;
-                }
-                // 同一条规则里 display 写多次时以后面的为准；最后一条不是 flex 就不报。
-                let Some(display) = rule
-                    .declarations
-                    .iter()
-                    .rev()
-                    .find(|decl| decl.name.eq_ignore_ascii_case("display"))
-                else {
-                    continue;
-                };
-                if !is_flex_value(&display.value) {
-                    continue;
-                }
-                out.push(
+            // 无选择器的块是预处理器的 mixin 函数体：它只是片段，`display: flex`
+            // 和 `flex-direction` 可能分散在定义处与调用处，判不了也不该判。
+            if rule.selectors.is_empty() {
+                return;
+            }
+            // `flex-flow` 同时设置 flex-direction 与 flex-wrap，算已显式声明方向。
+            if rule.declaration("flex-direction").is_some()
+                || rule.declaration("flex-flow").is_some()
+                || declares_flex_direction_elsewhere(doc, rule)
+            {
+                return;
+            }
+            // 同一条规则里 display 写多次时以后面的为准；最后一条不是 flex 就不报。
+            let Some(display) = rule
+                .declarations
+                .iter()
+                .rev()
+                .find(|decl| decl.name.eq_ignore_ascii_case("display"))
+            else {
+                return;
+            };
+            if !is_flex_value(&display.value) {
+                return;
+            }
+            out.push(
                     at_declaration(
                         Self::ID,
                         doc,
@@ -73,9 +76,7 @@ impl Rule for FlexDirection {
                         "为这条规则补上 `flex-direction: row`，或按 column 重新设计布局",
                     ),
                 );
-            }
-        }
-        out
+        })
     }
 }
 
@@ -97,9 +98,7 @@ fn declares_flex_direction_elsewhere(doc: &WxssDoc, rule: &WxssRule) -> bool {
 
 fn shares_selector(selector: &WxssSelector, selectors: &[WxssSelector]) -> bool {
     let key = selector.text.trim();
-    selectors
-        .iter()
-        .any(|other| other.text.trim() == key)
+    selectors.iter().any(|other| other.text.trim() == key)
 }
 
 fn is_flex_value(value: &str) -> bool {
@@ -114,8 +113,8 @@ fn is_flex_value(value: &str) -> bool {
 mod tests {
     use crate::rules::Rule;
 
-    use crate::rules::testutil::wxss::{messages, single, Fixture};
     use super::FlexDirection;
+    use crate::rules::testutil::wxss::{Fixture, messages, single};
 
     #[test]
     fn flex_direction_reports_flex_without_direction() {

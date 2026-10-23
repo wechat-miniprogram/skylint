@@ -9,7 +9,7 @@ use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{all_calls, at_value, is_dynamic};
-use super::visit;
+use super::visit_declarations;
 
 pub struct MaskImageGradient;
 
@@ -27,35 +27,30 @@ impl Rule for MaskImageGradient {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            for rule in &doc.rules {
-                for decl in &rule.declarations {
-                    if !decl.name.eq_ignore_ascii_case("mask-image")
-                        && !decl.name.eq_ignore_ascii_case("mask")
-                    {
-                        continue;
-                    }
-                    let value = decl.value.trim();
-                    if value.is_empty() || is_dynamic(&decl.tokens) {
-                        continue;
-                    }
-                    let calls = all_calls(&decl.tokens);
-                    let Some(gradient) = calls.iter().find(|c| c.name.ends_with("-gradient"))
-                    else {
-                        continue;
-                    };
-                    out.push(at_value(
-                        Self::ID,
-                        doc,
-                        decl,
-                        format!(
-                            "`mask-image` 不支持 `{}()`，Skyline 仅支持 url() 形式",
-                            gradient.name
-                        ),
-                        "mask-image 仅支持 url()，请改用 url() 或 PNG 遮罩图",
-                    ));
-                }
+        visit_declarations(project, |doc, decl, out| {
+            if !decl.name.eq_ignore_ascii_case("mask-image")
+                && !decl.name.eq_ignore_ascii_case("mask")
+            {
+                return;
             }
+            let value = decl.value.trim();
+            if value.is_empty() || is_dynamic(&decl.tokens) {
+                return;
+            }
+            let calls = all_calls(&decl.tokens);
+            let Some(gradient) = calls.iter().find(|c| c.name.ends_with("-gradient")) else {
+                return;
+            };
+            out.push(at_value(
+                Self::ID,
+                doc,
+                decl,
+                format!(
+                    "`mask-image` 不支持 `{}()`，Skyline 仅支持 url() 形式",
+                    gradient.name
+                ),
+                "mask-image 仅支持 url()，请改用 url() 或 PNG 遮罩图",
+            ));
         })
     }
 }
@@ -64,8 +59,8 @@ impl Rule for MaskImageGradient {
 mod tests {
     use crate::rules::Rule;
 
-    use crate::rules::testutil::wxss::{messages, single};
     use super::MaskImageGradient;
+    use crate::rules::testutil::wxss::{messages, single};
 
     #[test]
     fn mask_image_gradient_reports_every_gradient_function() {

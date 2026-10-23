@@ -5,8 +5,7 @@ use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::structure;
-use super::{load_doc, span_diagnostic, wxml_files};
+use super::{span_diagnostic, visit, walk};
 
 pub const ID: &str = "skyline/no-inline-text";
 
@@ -29,16 +28,11 @@ impl Rule for NoInlineText {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
-        for path in wxml_files(project) {
-            let Some(doc) = load_doc(project, path) else {
-                continue;
-            };
-            structure::walk(&doc, |element, _ancestors| {
-                check_element(&doc, element, path, &mut diagnostics);
+        visit(project, |doc, out| {
+            walk(doc, |element, _ancestors| {
+                check_element(doc, element, doc.path(), out);
             });
-        }
-        diagnostics
+        })
     }
 }
 

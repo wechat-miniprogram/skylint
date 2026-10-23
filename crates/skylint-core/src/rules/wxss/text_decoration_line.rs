@@ -5,7 +5,7 @@ use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{at_value, is_dynamic, split_tokens};
-use super::visit;
+use super::visit_declarations;
 
 pub struct TextDecorationLine;
 
@@ -23,28 +23,24 @@ impl Rule for TextDecorationLine {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            for rule in &doc.rules {
-                for decl in &rule.declarations {
-                    if !decl.name.eq_ignore_ascii_case("text-decoration-line") {
-                        continue;
-                    }
-                    let value = decl.value.trim();
-                    if value.is_empty() || is_dynamic(&decl.tokens) {
-                        continue;
-                    }
-                    if split_tokens(&decl.tokens).len() <= 1 {
-                        continue;
-                    }
-                    out.push(at_value(
-                        Self::ID,
-                        doc,
-                        decl,
-                        format!("`text-decoration-line: {value}` 是多值组合，Skyline 只支持单值"),
-                        "只保留一个值，例如 `text-decoration-line: underline`",
-                    ));
-                }
+        visit_declarations(project, |doc, decl, out| {
+            if !decl.name.eq_ignore_ascii_case("text-decoration-line") {
+                return;
             }
+            let value = decl.value.trim();
+            if value.is_empty() || is_dynamic(&decl.tokens) {
+                return;
+            }
+            if split_tokens(&decl.tokens).len() <= 1 {
+                return;
+            }
+            out.push(at_value(
+                Self::ID,
+                doc,
+                decl,
+                format!("`text-decoration-line: {value}` 是多值组合，Skyline 只支持单值"),
+                "只保留一个值，例如 `text-decoration-line: underline`",
+            ));
         })
     }
 }
@@ -53,8 +49,8 @@ impl Rule for TextDecorationLine {
 mod tests {
     use crate::rules::Rule;
 
-    use crate::rules::testutil::wxss::{messages, single};
     use super::TextDecorationLine;
+    use crate::rules::testutil::wxss::{messages, single};
 
     #[test]
     fn text_decoration_line_reports_combinations() {

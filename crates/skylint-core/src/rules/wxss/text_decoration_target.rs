@@ -20,6 +20,7 @@ use crate::{Diagnostic, Severity};
 
 use super::selector::{Match, SimpleSelector};
 use super::value_util::at_declaration;
+use super::visit_rules;
 
 pub const ID: &str = "skyline/text-decoration-target";
 
@@ -48,62 +49,60 @@ impl crate::rules::Rule for TextDecorationTarget {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let mut out = Vec::new();
         let mut docs: HashMap<&str, Option<wxml::WxmlDoc>> = HashMap::new();
 
-        for sheet in &project.styles {
+        visit_rules(project, |sheet, rule, out| {
             let doc = &sheet.doc;
-            for rule in &doc.rules {
-                for decl in &rule.declarations {
-                    let name = decl.name.to_ascii_lowercase();
-                    if !PROPERTIES.contains(&name.as_str()) {
-                        continue;
-                    }
-                    // `text-decoration: none` 是「取消」，写在谁身上都无害。
-                    if decl.value.trim().eq_ignore_ascii_case("none") {
-                        continue;
-                    }
-                    let offenders = rule
-                        .selectors
-                        .iter()
-                        .filter_map(|selector| {
-                            let simple = SimpleSelector::parse(selector)?;
-                            // 按作用域分别判：共享样式在 A 页失效、B 页正常也要报。
-                            let mut broken = false;
-                            for scope in &sheet.scopes {
-                                let (mut matched, mut capable) = (false, false);
-                                for wxml_path in scope_wxml(project, scope) {
-                                    let Some(wxml_doc) = docs
-                                        .entry(wxml_path)
-                                        .or_insert_with(|| {
-                                            super::super::wxml::load_doc(project, wxml_path)
-                                        })
-                                        .as_ref()
-                                    else {
-                                        continue;
-                                    };
-                                    for element in wxml_doc.elements() {
-                                        match simple.matches(element) {
-                                            // 判不了就当命中、也当能承载：不漏报变误报
-                                            Match::Unknown => (matched, capable) = (true, true),
-                                            Match::Yes => {
-                                                matched = true;
-                                                capable |= can_decorate(element);
-                                            }
-                                            Match::No => {}
+            for decl in &rule.declarations {
+                let name = decl.name.to_ascii_lowercase();
+                if !PROPERTIES.contains(&name.as_str()) {
+                    continue;
+                }
+                // `text-decoration: none` 是「取消」，写在谁身上都无害。
+                if decl.value.trim().eq_ignore_ascii_case("none") {
+                    continue;
+                }
+                let offenders = rule
+                    .selectors
+                    .iter()
+                    .filter_map(|selector| {
+                        let simple = SimpleSelector::parse(selector)?;
+                        // 按作用域分别判：共享样式在 A 页失效、B 页正常也要报。
+                        let mut broken = false;
+                        for scope in &sheet.scopes {
+                            let (mut matched, mut capable) = (false, false);
+                            for wxml_path in scope_wxml(project, scope) {
+                                let Some(wxml_doc) = docs
+                                    .entry(wxml_path)
+                                    .or_insert_with(|| {
+                                        super::super::wxml::load_doc(project, wxml_path)
+                                    })
+                                    .as_ref()
+                                else {
+                                    continue;
+                                };
+                                for element in wxml_doc.elements() {
+                                    match simple.matches(element) {
+                                        // 判不了就当命中、也当能承载：不漏报变误报
+                                        Match::Unknown => (matched, capable) = (true, true),
+                                        Match::Yes => {
+                                            matched = true;
+                                            capable |= can_decorate(element);
                                         }
+                                        Match::No => {}
                                     }
                                 }
-                                broken |= matched && !capable;
                             }
-                            broken.then(|| selector.text.trim())
-                        })
-                        .collect::<Vec<_>>();
-                    if offenders.is_empty() {
-                        continue;
-                    }
-                    let selectors = offenders.join("`, `");
-                    out.push(
+                            broken |= matched && !capable;
+                        }
+                        broken.then(|| selector.text.trim())
+                    })
+                    .collect::<Vec<_>>();
+                if offenders.is_empty() {
+                    continue;
+                }
+                let selectors = offenders.join("`, `");
+                out.push(
                         at_declaration(
                             ID,
                             doc,
@@ -116,10 +115,8 @@ impl crate::rules::Rule for TextDecorationTarget {
                             "把文本包进 `<text>` 并在它上面写装饰；`<view>` 上的装饰在 Skyline 下不会绘制",
                         ),
                     );
-                }
             }
-        }
-        out
+        })
     }
 }
 
@@ -253,7 +250,10 @@ mod tests {
                 r#"{"usingComponents":{"c":"/components/c/c"}}"#,
             )
             .write("pages/index/index.wxml", r#"<c class="link"/>"#)
-            .write("pages/index/index.wxss", ".link { text-decoration: underline; }")
+            .write(
+                "pages/index/index.wxss",
+                ".link { text-decoration: underline; }",
+            )
             .write("components/c/c.json", "{}")
             .write("components/c/c.wxml", "<text>x</text>")
             .write("components/c/c.wxss", "");

@@ -5,7 +5,7 @@ use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{at_value, is_dynamic, top_level_calls};
-use super::visit;
+use super::visit_declarations;
 
 /// `visual.md:109-110` 的 `<filter-function>` BNF。
 const FUNCTIONS: [&str; 9] = [
@@ -36,56 +36,52 @@ impl Rule for FilterLimit {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            for rule in &doc.rules {
-                for decl in &rule.declarations {
-                    if !decl.name.eq_ignore_ascii_case("filter")
-                        && !decl.name.eq_ignore_ascii_case("backdrop-filter")
-                    {
-                        continue;
-                    }
-                    let value = decl.value.trim();
-                    if value.is_empty() || is_dynamic(&decl.tokens) {
-                        continue;
-                    }
-                    let calls = top_level_calls(&decl.tokens);
-                    let mut reasons = Vec::new();
-                    if calls.iter().any(|c| c.name == "url") {
-                        reasons.push("不支持 url()".to_string());
-                    }
-                    if calls.iter().any(|c| c.name == "drop-shadow") {
-                        reasons.push("不支持 drop-shadow()，可用 box-shadow 替代".to_string());
-                    }
-                    // 白名单之外的函数名（含 url / drop-shadow 以外的未知函数）。
-                    let unknown: Vec<&str> = calls
-                        .iter()
-                        .map(|c| c.name.as_str())
-                        .filter(|name| *name != "url" && *name != "drop-shadow")
-                        .filter(|name| !FUNCTIONS.contains(name))
-                        .collect();
-                    if !unknown.is_empty() {
-                        let list = unknown
-                            .iter()
-                            .map(|name| format!("`{name}()`"))
-                            .collect::<Vec<_>>()
-                            .join("、");
-                        reasons.push(format!("不支持 {list}"));
-                    }
-                    if calls.len() > 1 {
-                        reasons.push("不支持多个函数组合".to_string());
-                    }
-                    if reasons.is_empty() {
-                        continue;
-                    }
-                    out.push(at_value(
+        visit_declarations(project, |doc, decl, out| {
+            if !decl.name.eq_ignore_ascii_case("filter")
+                && !decl.name.eq_ignore_ascii_case("backdrop-filter")
+            {
+                return;
+            }
+            let value = decl.value.trim();
+            if value.is_empty() || is_dynamic(&decl.tokens) {
+                return;
+            }
+            let calls = top_level_calls(&decl.tokens);
+            let mut reasons = Vec::new();
+            if calls.iter().any(|c| c.name == "url") {
+                reasons.push("不支持 url()".to_string());
+            }
+            if calls.iter().any(|c| c.name == "drop-shadow") {
+                reasons.push("不支持 drop-shadow()，可用 box-shadow 替代".to_string());
+            }
+            // 白名单之外的函数名（含 url / drop-shadow 以外的未知函数）。
+            let unknown: Vec<&str> = calls
+                .iter()
+                .map(|c| c.name.as_str())
+                .filter(|name| *name != "url" && *name != "drop-shadow")
+                .filter(|name| !FUNCTIONS.contains(name))
+                .collect();
+            if !unknown.is_empty() {
+                let list = unknown
+                    .iter()
+                    .map(|name| format!("`{name}()`"))
+                    .collect::<Vec<_>>()
+                    .join("、");
+                reasons.push(format!("不支持 {list}"));
+            }
+            if calls.len() > 1 {
+                reasons.push("不支持多个函数组合".to_string());
+            }
+            if reasons.is_empty() {
+                return;
+            }
+            out.push(at_value(
                         Self::ID,
                         doc,
                         decl,
                         format!("`{}` 在 Skyline 下{}", decl.name, reasons.join("；")),
                         "filter / backdrop-filter 只支持单个 blur/brightness/contrast/grayscale/hue-rotate/invert/opacity/saturate/sepia 函数",
                     ));
-                }
-            }
         })
     }
 }
@@ -96,8 +92,8 @@ mod tests {
 
     use crate::rules::Rule;
 
-    use crate::rules::testutil::wxss::{Fixture, messages, single};
     use super::FilterLimit;
+    use crate::rules::testutil::wxss::{Fixture, messages, single};
 
     #[test]
     fn filter_limit_reports_url_drop_shadow_and_combinations() {

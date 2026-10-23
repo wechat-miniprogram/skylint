@@ -19,6 +19,7 @@ use crate::rules::RuleMeta;
 use crate::{Diagnostic, Severity};
 
 use super::selector::SimpleSelector;
+use super::visit_rules;
 
 pub const ID: &str = "skyline/tag-selector-isolation";
 
@@ -67,7 +68,7 @@ impl crate::rules::Rule for TagSelectorIsolation {
         let mut hits: BTreeMap<(String, usize), Hit> = BTreeMap::new();
         let mut docs: HashMap<&str, Option<WxmlDoc>> = HashMap::new();
 
-        for sheet in &project.styles {
+        visit_rules(project, |sheet, rule, _out| {
             let doc = &sheet.doc;
             for scope in &sheet.scopes {
                 let (foreign, legacy) = match scope {
@@ -97,35 +98,33 @@ impl crate::rules::Rule for TagSelectorIsolation {
                 if foreign.is_empty() {
                     continue;
                 }
-                for rule in &doc.rules {
-                    for selector in &rule.selectors {
-                        let Some(simple) = SimpleSelector::parse(selector) else {
-                            continue;
-                        };
-                        let is_tag = simple.is_tag_only();
-                        if !is_tag && !simple.is_id_only() {
-                            continue;
-                        }
-                        // legacy 放开的是标签选择器；id 选择器无论配置如何都不跨组件
-                        if is_tag && legacy {
-                            continue;
-                        }
-                        let Some((unit, foreign_tag)) =
-                            find_foreign(project, &foreign, &simple, &mut docs)
-                        else {
-                            continue;
-                        };
-                        let key = (doc.path().to_string(), selector.offset);
-                        hits.entry(key).or_insert(Hit {
-                            selector: selector.text.trim().to_string(),
-                            tag: is_tag,
-                            unit,
-                            foreign_tag,
-                        });
+                for selector in &rule.selectors {
+                    let Some(simple) = SimpleSelector::parse(selector) else {
+                        continue;
+                    };
+                    let is_tag = simple.is_tag_only();
+                    if !is_tag && !simple.is_id_only() {
+                        continue;
                     }
+                    // legacy 放开的是标签选择器；id 选择器无论配置如何都不跨组件
+                    if is_tag && legacy {
+                        continue;
+                    }
+                    let Some((unit, foreign_tag)) =
+                        find_foreign(project, &foreign, &simple, &mut docs)
+                    else {
+                        continue;
+                    };
+                    let key = (doc.path().to_string(), selector.offset);
+                    hits.entry(key).or_insert(Hit {
+                        selector: selector.text.trim().to_string(),
+                        tag: is_tag,
+                        unit,
+                        foreign_tag,
+                    });
                 }
             }
-        }
+        });
 
         hits.into_iter()
             .map(|((path, offset), hit)| {

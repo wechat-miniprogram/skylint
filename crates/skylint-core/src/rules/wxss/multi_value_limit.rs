@@ -5,7 +5,7 @@ use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{at_value, is_dynamic, split_top_level};
-use super::visit;
+use super::visit_declarations;
 
 pub struct MultiValueLimit;
 
@@ -23,40 +23,36 @@ impl Rule for MultiValueLimit {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            for rule in &doc.rules {
-                for decl in &rule.declarations {
-                    let Some(max) = value_limit(&decl.name) else {
-                        continue;
-                    };
-                    let value = decl.value.trim();
-                    if value.is_empty() || is_dynamic(&decl.tokens) {
-                        continue;
-                    }
-                    let count = split_top_level(&decl.tokens).len();
-                    if count <= max {
-                        continue;
-                    }
-                    let message = if max == 1 {
-                        format!(
-                            "`{}` 在 Skyline 下不支持多组值，当前有 {count} 组",
-                            decl.name
-                        )
-                    } else {
-                        format!(
-                            "`{}` 在 Skyline 下最多支持 {max} 个值，当前有 {count} 个",
-                            decl.name
-                        )
-                    };
-                    out.push(at_value(
-                        Self::ID,
-                        doc,
-                        decl,
-                        message,
-                        "将多值拆成多条声明，或只保留 Skyline 支持的组数",
-                    ));
-                }
+        visit_declarations(project, |doc, decl, out| {
+            let Some(max) = value_limit(&decl.name) else {
+                return;
+            };
+            let value = decl.value.trim();
+            if value.is_empty() || is_dynamic(&decl.tokens) {
+                return;
             }
+            let count = split_top_level(&decl.tokens).len();
+            if count <= max {
+                return;
+            }
+            let message = if max == 1 {
+                format!(
+                    "`{}` 在 Skyline 下不支持多组值，当前有 {count} 组",
+                    decl.name
+                )
+            } else {
+                format!(
+                    "`{}` 在 Skyline 下最多支持 {max} 个值，当前有 {count} 个",
+                    decl.name
+                )
+            };
+            out.push(at_value(
+                Self::ID,
+                doc,
+                decl,
+                message,
+                "将多值拆成多条声明，或只保留 Skyline 支持的组数",
+            ));
         })
     }
 }
@@ -73,8 +69,8 @@ fn value_limit(name: &str) -> Option<usize> {
 mod tests {
     use crate::rules::Rule;
 
-    use crate::rules::testutil::wxss::{messages, single};
     use super::MultiValueLimit;
+    use crate::rules::testutil::wxss::{messages, single};
 
     #[test]
     fn multi_value_reports_excess_values() {

@@ -44,7 +44,7 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
 use super::structure::{self, Condition, Constraint, Relation};
-use super::{load_doc, wxml_files};
+use super::{visit, walk};
 
 pub const ID: &str = "skyline/component-children";
 
@@ -131,28 +131,15 @@ impl Rule for ComponentChildren {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
-        for path in wxml_files(project) {
-            let Some(doc) = load_doc(project, path) else {
-                continue;
-            };
-            structure::walk(&doc, |element, ancestors| {
+        visit(project, |doc, out| {
+            walk(doc, |element, ancestors| {
                 // 模板定义体的真实子节点在实例化处，静态不可知。
                 if element.in_template {
                     return;
                 }
-                structure::check_element(
-                    ID,
-                    &doc,
-                    element,
-                    ancestors,
-                    ROWS,
-                    path,
-                    &mut diagnostics,
-                );
+                structure::check_element(ID, doc, element, ancestors, ROWS, doc.path(), out);
             });
-        }
-        diagnostics
+        })
     }
 }
 

@@ -5,7 +5,7 @@ use crate::input::wxml::{WxmlAttribute, WxmlElement};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::{load_doc, span_diagnostic, wxml_files};
+use super::{span_diagnostic, visit, walk};
 
 pub const HORIZONTAL_FLEX_ID: &str = "skyline/horizontal-scroll-enable-flex";
 
@@ -21,28 +21,24 @@ impl Rule for HorizontalScrollEnableFlex {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
-        for path in wxml_files(project) {
-            let Some(doc) = load_doc(project, path) else {
-                continue;
-            };
-            for element in doc.elements() {
+        visit(project, |doc, out| {
+            walk(doc, |element, _ancestors| {
                 if element.tag != "scroll-view"
                     || flag(element, "scroll-x") != Some(true)
                     || flag(element, "enable-flex") != Some(false)
                 {
-                    continue;
+                    return;
                 }
                 let Some(attr) = find_attr(element, "scroll-x") else {
-                    continue;
+                    return;
                 };
-                diagnostics.push(
+                out.push(
                     span_diagnostic(
                         HORIZONTAL_FLEX_ID,
-                        &doc,
+                        doc,
                         attr.start,
                         attr.end,
-                        path,
+                        doc.path(),
                         Severity::Warning,
                         "横向滚动的 `<scroll-view>` 未开启 `enable-flex`，WebView 下横向滚动不会生效",
                     )
@@ -50,9 +46,8 @@ impl Rule for HorizontalScrollEnableFlex {
                         "添加 `enable-flex`，并给容器写 `style=\"display: flex; flex-direction: row;\"`",
                     ),
                 );
-            }
-        }
-        diagnostics
+            });
+        })
     }
 }
 
@@ -78,9 +73,9 @@ fn find_attr<'a>(element: &'a WxmlElement, name: &str) -> Option<&'a WxmlAttribu
 
 #[cfg(test)]
 mod tests {
-    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
     use super::HorizontalScrollEnableFlex;
     use crate::Severity;
+    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
 
     fn check_flex(fixture: &Fixture) -> Vec<crate::Diagnostic> {
         check_rule(fixture, &HorizontalScrollEnableFlex)

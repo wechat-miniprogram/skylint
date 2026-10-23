@@ -17,6 +17,7 @@ use crate::rules::wxml::is_builtin;
 use crate::{Diagnostic, Severity};
 
 use super::selector::{Match, SimpleSelector};
+use super::visit_rules;
 
 pub const ID: &str = "skyline/text-overflow-ellipsis";
 
@@ -36,61 +37,59 @@ impl crate::rules::Rule for TextOverflowEllipsis {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let mut out = Vec::new();
         let mut docs: HashMap<&str, Option<wxml::WxmlDoc>> = HashMap::new();
 
-        for sheet in &project.styles {
+        visit_rules(project, |sheet, rule, out| {
             let doc = &sheet.doc;
-            for rule in &doc.rules {
-                let Some(decl) = rule.declaration("text-overflow") else {
+            let Some(decl) = rule.declaration("text-overflow") else {
+                return;
+            };
+            if !decl.value.eq_ignore_ascii_case("ellipsis") {
+                return;
+            }
+            // 逗号分隔的选择器各自独立：`.a, .b` 里只要有一条命中的节点承载不了
+            // ellipsis，这条声明对那批节点就是失效的。
+            let mut offenders: Vec<&str> = Vec::new();
+            for selector in &rule.selectors {
+                let Some(simple) = SimpleSelector::parse(selector) else {
                     continue;
                 };
-                if !decl.value.eq_ignore_ascii_case("ellipsis") {
-                    continue;
-                }
-                // 逗号分隔的选择器各自独立：`.a, .b` 里只要有一条命中的节点承载不了
-                // ellipsis，这条声明对那批节点就是失效的。
-                let mut offenders: Vec<&str> = Vec::new();
-                for selector in &rule.selectors {
-                    let Some(simple) = SimpleSelector::parse(selector) else {
-                        continue;
-                    };
-                    // 按作用域分别判：共享样式在 A 页失效、B 页正常也要报。
-                    let mut broken = false;
-                    for scope in &sheet.scopes {
-                        let (mut matched, mut hostable) = (false, false);
-                        for wxml_path in scope_wxml(project, scope) {
-                            let Some(wxml_doc) = docs
-                                .entry(wxml_path)
-                                .or_insert_with(|| super::super::wxml::load_doc(project, wxml_path))
-                                .as_ref()
-                            else {
-                                continue;
-                            };
-                            for element in wxml_doc.elements() {
-                                match simple.matches(element) {
-                                    // 判不了就当命中、也当能承载：不漏报变误报
-                                    Match::Unknown => (matched, hostable) = (true, true),
-                                    Match::Yes => {
-                                        matched = true;
-                                        hostable |= can_host_text(element);
-                                    }
-                                    Match::No => {}
+                // 按作用域分别判：共享样式在 A 页失效、B 页正常也要报。
+                let mut broken = false;
+                for scope in &sheet.scopes {
+                    let (mut matched, mut hostable) = (false, false);
+                    for wxml_path in scope_wxml(project, scope) {
+                        let Some(wxml_doc) = docs
+                            .entry(wxml_path)
+                            .or_insert_with(|| super::super::wxml::load_doc(project, wxml_path))
+                            .as_ref()
+                        else {
+                            continue;
+                        };
+                        for element in wxml_doc.elements() {
+                            match simple.matches(element) {
+                                // 判不了就当命中、也当能承载：不漏报变误报
+                                Match::Unknown => (matched, hostable) = (true, true),
+                                Match::Yes => {
+                                    matched = true;
+                                    hostable |= can_host_text(element);
                                 }
+                                Match::No => {}
                             }
                         }
-                        broken |= matched && !hostable;
                     }
-                    if broken {
-                        offenders.push(selector.text.trim());
-                    }
+                    broken |= matched && !hostable;
                 }
-                if offenders.is_empty() {
-                    continue;
+                if broken {
+                    offenders.push(selector.text.trim());
                 }
-                let selectors = offenders.join("`, `");
-                let (line, column) = doc.position(decl.offset);
-                out.push(
+            }
+            if offenders.is_empty() {
+                return;
+            }
+            let selectors = offenders.join("`, `");
+            let (line, column) = doc.position(decl.offset);
+            out.push(
                     Diagnostic::new(
                         ID,
                         Severity::Warning,
@@ -101,9 +100,7 @@ impl crate::rules::Rule for TextOverflowEllipsis {
                     )
                     .help("用 `<text>` 包裹文本（Skyline 下可配合 `overflow` / `max-lines` 截断），或删掉该声明"),
                 );
-            }
-        }
-        out
+        })
     }
 }
 

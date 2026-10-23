@@ -9,7 +9,7 @@ use super::value_util::{
     at_value, is_dynamic, is_ident, length_unit, split_tokens, split_top_level, token_text,
     top_level_calls,
 };
-use super::visit;
+use super::visit_declarations;
 
 pub struct GradientLimit;
 
@@ -27,29 +27,27 @@ impl Rule for GradientLimit {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            for rule in &doc.rules {
-                for decl in &rule.declarations {
-                    // mask-image 的渐变由 MaskImageGradient 统一处理，避免重复报。
-                    if decl.name.eq_ignore_ascii_case("mask-image") {
-                        continue;
-                    }
-                    let value = decl.value.trim();
-                    if value.is_empty() || is_dynamic(&decl.tokens) {
-                        continue;
-                    }
-                    let problems: Vec<String> = top_level_calls(&decl.tokens)
-                        .iter()
-                        .flat_map(|call| match call.name.as_str() {
-                            "radial-gradient" => check_radial(call.args),
-                            "linear-gradient" => check_linear(call.args),
-                            _ => Vec::new(),
-                        })
-                        .collect();
-                    if problems.is_empty() {
-                        continue;
-                    }
-                    out.push(at_value(
+        visit_declarations(project, |doc, decl, out| {
+            // mask-image 的渐变由 MaskImageGradient 统一处理，避免重复报。
+            if decl.name.eq_ignore_ascii_case("mask-image") {
+                return;
+            }
+            let value = decl.value.trim();
+            if value.is_empty() || is_dynamic(&decl.tokens) {
+                return;
+            }
+            let problems: Vec<String> = top_level_calls(&decl.tokens)
+                .iter()
+                .flat_map(|call| match call.name.as_str() {
+                    "radial-gradient" => check_radial(call.args),
+                    "linear-gradient" => check_linear(call.args),
+                    _ => Vec::new(),
+                })
+                .collect();
+            if problems.is_empty() {
+                return;
+            }
+            out.push(at_value(
                         Self::ID,
                         doc,
                         decl,
@@ -60,8 +58,6 @@ impl Rule for GradientLimit {
                         ),
                         "radial-gradient 仅支持 circle 形状、px 尺寸与 % 颜色停止；linear-gradient 颜色停止仅支持 % 与固定长度单位（px、rpx 等）",
                     ));
-                }
-            }
         })
     }
 }
@@ -125,7 +121,10 @@ fn radial_prelude(first: &[ValueToken]) -> Option<&[ValueToken]> {
     let is_prelude = split_tokens(first).iter().any(|group| {
         group.first().is_some_and(|token| {
             KEYWORDS.iter().any(|keyword| is_ident(token, keyword))
-                || matches!(token, ValueToken::Dimension { .. } | ValueToken::Percentage(_))
+                || matches!(
+                    token,
+                    ValueToken::Dimension { .. } | ValueToken::Percentage(_)
+                )
         })
     });
     is_prelude.then_some(first)
@@ -204,8 +203,8 @@ fn is_fixed_length(unit: &str) -> bool {
 mod tests {
     use crate::rules::Rule;
 
-    use crate::rules::testutil::wxss::{messages, single};
     use super::GradientLimit;
+    use crate::rules::testutil::wxss::{messages, single};
 
     #[test]
     fn gradient_limit_reports_shape_size_and_stop_units() {

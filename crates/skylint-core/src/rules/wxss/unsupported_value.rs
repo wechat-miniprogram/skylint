@@ -6,7 +6,7 @@ use crate::{Diagnostic, Severity};
 
 use super::dict_table::{normalize_value, table};
 use super::value_util::at_declaration;
-use super::visit;
+use super::visit_declarations;
 
 pub struct UnsupportedValue;
 
@@ -25,31 +25,25 @@ impl Rule for UnsupportedValue {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let table = table();
-        visit(project, |doc, out| {
-            for rule in &doc.rules {
-                for decl in &rule.declarations {
-                    let name = decl.name.to_ascii_lowercase();
-                    let Some(value) = normalize_value(&decl.value) else {
-                        continue;
-                    };
-                    let Some(advice) = table.value(&name, &value) else {
-                        continue;
-                    };
-                    out.push(
-                        at_declaration(
-                            Self::ID,
-                            doc,
-                            decl,
-                            Severity::Error,
-                            format!(
-                                "`{name}: {}` 在 Skyline 下不受支持，该值会被静默忽略",
-                                decl.value.trim()
-                            ),
-                            advice,
-                        ),
-                    );
-                }
-            }
+        visit_declarations(project, |doc, decl, out| {
+            let name = decl.name.to_ascii_lowercase();
+            let Some(value) = normalize_value(&decl.value) else {
+                return;
+            };
+            let Some(advice) = table.value(&name, &value) else {
+                return;
+            };
+            out.push(at_declaration(
+                Self::ID,
+                doc,
+                decl,
+                Severity::Error,
+                format!(
+                    "`{name}: {}` 在 Skyline 下不受支持，该值会被静默忽略",
+                    decl.value.trim()
+                ),
+                advice,
+            ));
         })
     }
 }
@@ -58,8 +52,8 @@ impl Rule for UnsupportedValue {
 mod tests {
     use crate::rules::Rule;
 
-    use crate::rules::testutil::wxss::{messages, single};
     use super::UnsupportedValue;
+    use crate::rules::testutil::wxss::{messages, single};
 
     #[test]
     fn value_reports_unsupported_values() {

@@ -4,7 +4,7 @@ use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::{element_diagnostic, load_doc, span_diagnostic, wxml_files};
+use super::{element_diagnostic, span_diagnostic, visit, walk};
 
 pub struct ScrollViewType;
 
@@ -30,14 +30,10 @@ impl Rule for ScrollViewType {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
-        for path in wxml_files(project) {
-            let Some(doc) = load_doc(project, path) else {
-                continue;
-            };
-            for element in doc.elements() {
+        visit(project, |doc, out| {
+            walk(doc, |element, _ancestors| {
                 if element.tag != "scroll-view" {
-                    continue;
+                    return;
                 }
                 match element
                     .attributes
@@ -45,12 +41,12 @@ impl Rule for ScrollViewType {
                     .find(|attr| attr.name.eq_ignore_ascii_case("type"))
                 {
                     None => {
-                        diagnostics.push(
+                        out.push(
                             element_diagnostic(
                                 Self::ID,
-                                &doc,
+                                doc,
                                 element,
-                                path,
+                                doc.path(),
                                 Severity::Warning,
                                 "`<scroll-view>` 缺少 type 属性，Skyline 下会退化为非按需渲染，性能下降",
                             )
@@ -64,7 +60,7 @@ impl Rule for ScrollViewType {
                     Some(attr) => {
                         let value = attr.value.as_deref().unwrap_or("").trim();
                         if SCROLL_VIEW_TYPES.contains(&value) {
-                            continue;
+                            return;
                         }
                         let (severity, message, help) = if value == DEGRADED_TYPE {
                             (
@@ -81,13 +77,13 @@ impl Rule for ScrollViewType {
                                 "合法值：list（普通长列表）、custom（list-view/grid-view/sticky 布局）、nested（嵌套滚动）",
                             )
                         };
-                        diagnostics.push(
+                        out.push(
                             span_diagnostic(
                                 Self::ID,
-                                &doc,
+                                doc,
                                 attr.start,
                                 attr.end,
-                                path,
+                                doc.path(),
                                 severity,
                                 message,
                             )
@@ -95,16 +91,15 @@ impl Rule for ScrollViewType {
                         );
                     }
                 }
-            }
-        }
-        diagnostics
+            });
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::rules::testutil::wxml::{check_rule, project};
     use super::ScrollViewType;
+    use crate::rules::testutil::wxml::{check_rule, project};
 
     #[test]
     fn scroll_view_without_type_warns_on_tag() {

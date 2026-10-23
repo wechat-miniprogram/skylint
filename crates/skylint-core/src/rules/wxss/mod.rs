@@ -1,8 +1,8 @@
 //! WXSS 语义类规则。
 //!
 //! 一条规则一个文件：手写判定的少量规则、纯数据驱动的属性/值支持表、以及
-//! 「值的个数/结构」类限制各占一个文件。它们共用同一个 [`visit`] 与
-//! [`value_util`] 的值分词工具。
+//! 「值的个数/结构」类限制各占一个文件。它们共用 [`visit_rules`] /
+//! [`visit_declarations`] 两层遍历与 [`value_util`] 的值分词工具。
 
 pub mod box_sizing;
 pub mod calc_angle;
@@ -44,10 +44,10 @@ pub use unsupported_value::UnsupportedValue;
 pub use value_degraded::ValueDegraded;
 
 use crate::Diagnostic;
-use crate::input::wxss::WxssDoc;
-use crate::project::Project;
+use crate::input::wxss::{WxssDeclaration, WxssDoc, WxssRule};
+use crate::project::{Project, StyleSheet};
 
-/// 遍历全部样式文件（页面 / 组件 / `app.wxss` / 被 `@import` 进来的）。
+/// 遍历全部样式文件的每一条规则。
 ///
 /// `.wxss` / `.less` / `.scss` 一视同仁：预处理器在 `input::wxss` 里已按同一套
 /// 语法摊平成规则（嵌套、`&`、at-rule 容器）。
@@ -56,15 +56,31 @@ use crate::project::Project;
 /// `is_skyline` 过滤：这是**迁移**检查工具，目标用户是还在 WebView 上的项目。
 /// 若只查已迁移的页面，纯 WebView 工程会一条都不报，「迁移前拿到问题清单」的用途
 /// 就落空了。
-pub(crate) fn visit(
+pub(crate) fn visit_rules(
     project: &Project,
-    mut f: impl FnMut(&WxssDoc, &mut Vec<Diagnostic>),
+    mut f: impl FnMut(&StyleSheet, &WxssRule, &mut Vec<Diagnostic>),
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for sheet in &project.styles {
-        // 单文件读失败 / 解析失败一律跳过，不终止扫描。
-        f(&sheet.doc, &mut out);
+        for rule in &sheet.doc.rules {
+            f(sheet, rule, &mut out);
+        }
     }
     out
 }
 
+/// 遍历全部样式文件的每一条声明。
+pub(crate) fn visit_declarations(
+    project: &Project,
+    mut f: impl FnMut(&WxssDoc, &WxssDeclaration, &mut Vec<Diagnostic>),
+) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for sheet in &project.styles {
+        for rule in &sheet.doc.rules {
+            for declaration in &rule.declarations {
+                f(&sheet.doc, declaration, &mut out);
+            }
+        }
+    }
+    out
+}

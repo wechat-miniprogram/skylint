@@ -17,12 +17,11 @@
 //! 只做文件内唯一性，跨文件重复留给运行期。
 
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxml::{WxmlDoc, WxmlElement};
+use crate::input::wxml::{Branch, WxmlDoc, WxmlElement};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::branch::exclusive;
-use super::{element_diagnostic, load_doc, wxml_files};
+use super::{element_diagnostic, visit, walk};
 
 pub const ID: &str = "skyline/share-element-key";
 
@@ -50,25 +49,18 @@ impl Rule for ShareElementKey {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
-        for path in wxml_files(project) {
-            let Some(doc) = load_doc(project, path) else {
-                continue;
-            };
-            check_file(&doc, path, &mut diagnostics);
-        }
-        diagnostics
+        visit(project, check_file)
     }
 }
 
-fn check_file(doc: &WxmlDoc, path: &str, out: &mut Vec<Diagnostic>) {
-    // 已出现的 (元素, key)，按文档顺序；比较时跳过互斥分支。
+fn check_file(doc: &WxmlDoc, out: &mut Vec<Diagnostic>) {
+    // 已出现的 (key, 分支栈)，按文档顺序；比较时跳过互斥分支。
     // 模板定义体里的 `share-element` 只在实例化处出现，跨定义的重复不一定是错，跳过。
-    let mut seen: Vec<(&WxmlElement, &str)> = Vec::new();
-    for element in doc
-        .elements()
-        .filter(|element| element.tag == TAG && !element.in_template)
-    {
+    let mut seen: Vec<(String, Vec<Branch>)> = Vec::new();
+    walk(doc, |element, _ancestors| {
+        if element.tag != TAG || element.in_template {
+            return;
+        }
         let key = match find_attr(element, "key") {
             None => {
                 out.push(
@@ -76,24 +68,32 @@ fn check_file(doc: &WxmlDoc, path: &str, out: &mut Vec<Diagnostic>) {
                         ID,
                         doc,
                         element,
-                        path,
+                        doc.path(),
                         Severity::Error,
                         "`<share-element>` 未声明 `key`，共享元素动画靠 key 在两个页面之间配对，缺了不会生效",
                     )
                     .help("给每个 `<share-element>` 声明页面内唯一的 `key`，通常拼上数据 id"),
                 );
-                continue;
+                return;
             }
-            Some(attr) if !attr.is_static => continue,
+            Some(attr) if !attr.is_static => return,
             Some(attr) => attr.value.as_deref().unwrap_or("").trim(),
         };
         // 空 key（`key=""` 或裸属性）无法参与配对，静态阶段不判。
         if key.is_empty() {
-            continue;
+            return;
         }
         let duplicates = seen
             .iter()
-            .filter(|(other, other_key)| *other_key == key && !exclusive(other, element))
+            .filter(|(other_key, other_branches)| {
+                other_key.as_str() == key
+                    && !other_branches.iter().any(|left| {
+                        element
+                            .branches
+                            .iter()
+                            .any(|right| left.group == right.group && left.arm != right.arm)
+                    })
+            })
             .count();
         if duplicates > 0 {
             out.push(
@@ -101,7 +101,7 @@ fn check_file(doc: &WxmlDoc, path: &str, out: &mut Vec<Diagnostic>) {
                     ID,
                     doc,
                     element,
-                    path,
+                    doc.path(),
                     Severity::Error,
                     format!(
                         "`<share-element>` 的 `key` \"{key}\" 与前面的元素重复（该 key 已出现 {duplicates} 次），共享元素靠 key 配对，重复时无法确定动画配到哪一个节点"
@@ -110,15 +110,15 @@ fn check_file(doc: &WxmlDoc, path: &str, out: &mut Vec<Diagnostic>) {
                 .help("每个 `<share-element>` 用页面内唯一的 `key`；列表里重复渲染时把数据 id 拼进 key"),
             );
         }
-        seen.push((element, key));
-    }
+        seen.push((key.to_string(), element.branches.clone()));
+    });
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
     use super::ShareElementKey;
     use crate::Severity;
+    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
 
     fn check(fixture: &Fixture) -> Vec<crate::Diagnostic> {
         check_rule(fixture, &ShareElementKey)

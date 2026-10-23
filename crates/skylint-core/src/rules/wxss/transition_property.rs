@@ -10,7 +10,7 @@ use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{at_value, is_dynamic};
-use super::visit;
+use super::visit_declarations;
 
 /// 来源：skyline-skills/skills/skyline-wxss/references/animation.md:38-58 的 `<animatable-property>` BNF
 ///
@@ -142,79 +142,75 @@ impl Rule for TransitionProperty {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            for rule in &doc.rules {
-                for decl in &rule.declarations {
-                    let name = decl.name.to_ascii_lowercase();
-                    let longhand = name == "transition-property";
-                    if !longhand && name != "transition" {
-                        continue;
-                    }
-                    if decl.value.trim().is_empty() || is_dynamic(&decl.tokens) {
-                        continue;
-                    }
-                    let mut offenders: Vec<&str> = Vec::new();
-                    for token in &decl.tokens {
-                        let ValueToken::Ident(ident) = token else {
-                            continue;
-                        };
-                        // 厂商前缀（-webkit-transform…）在 Skyline 下的处理没有证据，不报。
-                        if ident.starts_with('-') {
-                            continue;
-                        }
-                        if ANIMATABLE_PROPERTIES.contains(&ident.to_ascii_lowercase().as_str()) {
-                            continue;
-                        }
-                        // 全局关键字、时间函数、transition-behavior 关键字都不是属性名。
-                        if GLOBAL_KEYWORDS
-                            .iter()
-                            .any(|keyword| keyword.eq_ignore_ascii_case(ident))
-                            || BEHAVIOR_KEYWORDS
-                                .iter()
-                                .any(|keyword| keyword.eq_ignore_ascii_case(ident))
-                            || (!longhand
-                                && TIMING_KEYWORDS
-                                    .iter()
-                                    .any(|keyword| keyword.eq_ignore_ascii_case(ident)))
-                        {
-                            continue;
-                        }
-                        if !offenders
-                            .iter()
-                            .any(|seen| seen.eq_ignore_ascii_case(ident))
-                        {
-                            offenders.push(ident);
-                        }
-                    }
-                    if offenders.is_empty() {
-                        continue;
-                    }
-                    let list = offenders
+        visit_declarations(project, |doc, decl, out| {
+            let name = decl.name.to_ascii_lowercase();
+            let longhand = name == "transition-property";
+            if !longhand && name != "transition" {
+                return;
+            }
+            if decl.value.trim().is_empty() || is_dynamic(&decl.tokens) {
+                return;
+            }
+            let mut offenders: Vec<&str> = Vec::new();
+            for token in &decl.tokens {
+                let ValueToken::Ident(ident) = token else {
+                    continue;
+                };
+                // 厂商前缀（-webkit-transform…）在 Skyline 下的处理没有证据，不报。
+                if ident.starts_with('-') {
+                    continue;
+                }
+                if ANIMATABLE_PROPERTIES.contains(&ident.to_ascii_lowercase().as_str()) {
+                    continue;
+                }
+                // 全局关键字、时间函数、transition-behavior 关键字都不是属性名。
+                if GLOBAL_KEYWORDS
+                    .iter()
+                    .any(|keyword| keyword.eq_ignore_ascii_case(ident))
+                    || BEHAVIOR_KEYWORDS
                         .iter()
-                        .map(|ident| format!("`{ident}`"))
-                        .collect::<Vec<_>>()
-                        .join("、");
-                    let tail = if offenders.iter().any(|ident| {
-                        TEXT_FONT
+                        .any(|keyword| keyword.eq_ignore_ascii_case(ident))
+                    || (!longhand
+                        && TIMING_KEYWORDS
                             .iter()
-                            .any(|name| name.eq_ignore_ascii_case(ident))
-                    }) {
-                        TEXT_FONT_TAIL
-                    } else {
-                        OTHER_TAIL
-                    };
-                    out.push(at_value(
-                        Self::ID,
-                        doc,
-                        decl,
-                        format!(
-                            "`{name}: {}` 里的 {list} 不支持过渡（{tail}）",
-                            decl.value.trim()
-                        ),
-                        HELP,
-                    ));
+                            .any(|keyword| keyword.eq_ignore_ascii_case(ident)))
+                {
+                    continue;
+                }
+                if !offenders
+                    .iter()
+                    .any(|seen| seen.eq_ignore_ascii_case(ident))
+                {
+                    offenders.push(ident);
                 }
             }
+            if offenders.is_empty() {
+                return;
+            }
+            let list = offenders
+                .iter()
+                .map(|ident| format!("`{ident}`"))
+                .collect::<Vec<_>>()
+                .join("、");
+            let tail = if offenders.iter().any(|ident| {
+                TEXT_FONT
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(ident))
+            }) {
+                TEXT_FONT_TAIL
+            } else {
+                OTHER_TAIL
+            };
+            out.push(at_value(
+                Self::ID,
+                doc,
+                decl,
+                format!(
+                    "`{name}: {}` 里的 {list} 不支持过渡（{tail}）",
+                    decl.value.trim()
+                ),
+                HELP,
+            ));
         })
     }
 }
@@ -320,5 +316,4 @@ mod tests {
             Vec::<String>::new()
         );
     }
-
 }

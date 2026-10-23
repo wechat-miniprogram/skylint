@@ -10,7 +10,7 @@ use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{at_value, is_dynamic, token_text};
-use super::visit;
+use super::visit_declarations;
 
 const HELP: &str = "改用受支持的子属性，或从简写里去掉这一段";
 
@@ -33,12 +33,8 @@ impl Rule for ShorthandPartial {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            for rule in &doc.rules {
-                for decl in &rule.declarations {
-                    check_decl(doc, decl, out);
-                }
-            }
+        visit_declarations(project, |doc, decl, out| {
+            check_decl(doc, decl, out);
         })
     }
 }
@@ -233,5 +229,4 @@ mod tests {
         );
         assert_eq!(messages(&ShorthandPartial, &project), Vec::<String>::new());
     }
-
 }

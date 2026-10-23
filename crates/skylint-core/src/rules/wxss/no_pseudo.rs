@@ -15,7 +15,7 @@
 use crate::project::Project;
 use crate::{Diagnostic, Severity};
 
-use super::visit;
+use super::visit_rules;
 use crate::rules::{Rule, RuleMeta};
 
 pub struct NoPseudo;
@@ -37,23 +37,20 @@ impl Rule for NoPseudo {
         // 嵌套选择器会继承父选择器的伪类，同一个伪类可能在多个选择器里出现；
         // 按源文件位置去重，一条伪类只报一次。
         let mut seen = std::collections::HashSet::new();
-        visit(project, |doc, out| {
-            for rule in &doc.rules {
-                for selector in &rule.selectors {
-                    for pseudo in &selector.pseudos {
-                        if is_supported_pseudo(pseudo.element, &pseudo.name)
-                            || !seen.insert((doc.path().to_string(), pseudo.offset))
-                        {
-                            continue;
-                        }
-                        let text = format!(
-                            "{}{}",
-                            if pseudo.element { "::" } else { ":" },
-                            pseudo.name
-                        );
-                        let (line, column) = doc.position(pseudo.offset);
-                        let (end_line, end_column) = doc.position(pseudo.offset + pseudo.len);
-                        out.push(
+        visit_rules(project, |sheet, rule, out| {
+            let doc = &sheet.doc;
+            for selector in &rule.selectors {
+                for pseudo in &selector.pseudos {
+                    if is_supported_pseudo(pseudo.element, &pseudo.name)
+                        || !seen.insert((doc.path().to_string(), pseudo.offset))
+                    {
+                        continue;
+                    }
+                    let text =
+                        format!("{}{}", if pseudo.element { "::" } else { ":" }, pseudo.name);
+                    let (line, column) = doc.position(pseudo.offset);
+                    let (end_line, end_column) = doc.position(pseudo.offset + pseudo.len);
+                    out.push(
                             Diagnostic::new(
                                 Self::ID,
                                 Severity::Warning,
@@ -72,7 +69,6 @@ impl Rule for NoPseudo {
                                 "Skyline 只支持 ::before/::after 与 :not()/:first-child/:last-child/:only-child/:nth-child()/:empty/:host；请改用 class 或调整 WXML 结构",
                             ),
                         );
-                    }
                 }
             }
         })
@@ -105,8 +101,8 @@ mod tests {
 
     use crate::rules::Rule;
 
-    use crate::rules::testutil::wxss::{Fixture, messages, single};
     use super::NoPseudo;
+    use crate::rules::testutil::wxss::{Fixture, messages, single};
 
     #[test]
     fn no_pseudo_reports_unsupported_pseudos() {
@@ -148,10 +144,7 @@ mod tests {
     /// 同一个选择器上的两个不支持伪类都要报。
     #[test]
     fn reports_every_unsupported_pseudo_in_one_selector() {
-        let (_f, project) = single(
-            "no-pseudo-many",
-            ".a:hover:focus:not(.b) { color: red; }",
-        );
+        let (_f, project) = single("no-pseudo-many", ".a:hover:focus:not(.b) { color: red; }");
         let diags = NoPseudo.check(&project);
         assert_eq!(diags.len(), 2, "{diags:#?}");
         assert!(diags.iter().any(|d| d.message.contains(":hover")));

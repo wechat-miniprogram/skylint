@@ -5,7 +5,7 @@ use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{all_calls, at_value, has_angle_unit, is_dynamic};
-use super::visit;
+use super::visit_declarations;
 
 pub struct CalcAngle;
 
@@ -23,28 +23,24 @@ impl Rule for CalcAngle {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            for rule in &doc.rules {
-                for decl in &rule.declarations {
-                    let value = decl.value.trim();
-                    if value.is_empty() || is_dynamic(&decl.tokens) {
-                        continue;
-                    }
-                    if !all_calls(&decl.tokens)
-                        .iter()
-                        .any(|c| c.name == "calc" && has_angle_unit(c.args))
-                    {
-                        continue;
-                    }
-                    out.push(at_value(
-                        Self::ID,
-                        doc,
-                        decl,
-                        format!("`{}` 的 calc() 包含角度计算，Skyline 不支持", decl.name),
-                        "角度不要放进 calc()，直接写角度值，例如 `rotate(45deg)`",
-                    ));
-                }
+        visit_declarations(project, |doc, decl, out| {
+            let value = decl.value.trim();
+            if value.is_empty() || is_dynamic(&decl.tokens) {
+                return;
             }
+            if !all_calls(&decl.tokens)
+                .iter()
+                .any(|c| c.name == "calc" && has_angle_unit(c.args))
+            {
+                return;
+            }
+            out.push(at_value(
+                Self::ID,
+                doc,
+                decl,
+                format!("`{}` 的 calc() 包含角度计算，Skyline 不支持", decl.name),
+                "角度不要放进 calc()，直接写角度值，例如 `rotate(45deg)`",
+            ));
         })
     }
 }
@@ -53,8 +49,8 @@ impl Rule for CalcAngle {
 mod tests {
     use crate::rules::Rule;
 
-    use crate::rules::testutil::wxss::{messages, single};
     use super::CalcAngle;
+    use crate::rules::testutil::wxss::{messages, single};
 
     #[test]
     fn calc_angle_reports_angle_units() {

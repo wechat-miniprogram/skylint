@@ -10,7 +10,7 @@ use crate::{Diagnostic, Severity};
 
 use super::dict_table::normalize_value;
 use super::value_util::{all_calls, at_value, is_dynamic, top_level_calls};
-use super::visit;
+use super::visit_declarations;
 
 const EXACT_HELP: &str = "按实际渲染效果调整取值，或改用 Skyline 下表现一致的值";
 const ONLY_HELP: &str = "去掉不在支持范围内的值，只保留 auto 或 contents";
@@ -36,19 +36,15 @@ impl Rule for ValueDegraded {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            for rule in &doc.rules {
-                for decl in &rule.declarations {
-                    if decl.value.trim().is_empty() {
-                        continue;
-                    }
-                    check_exact(doc, decl, out);
-                    check_only(doc, decl, out);
-                    check_function(doc, decl, out);
-                    check_font_weight(doc, decl, out);
-                    check_env(doc, decl, out);
-                }
+        visit_declarations(project, |doc, decl, out| {
+            if decl.value.trim().is_empty() {
+                return;
             }
+            check_exact(doc, decl, out);
+            check_only(doc, decl, out);
+            check_function(doc, decl, out);
+            check_font_weight(doc, decl, out);
+            check_env(doc, decl, out);
         })
     }
 }
@@ -539,7 +535,6 @@ mod tests {
         assert!(diags[0].message.contains("env(keyboard-height)"));
         assert!(diags[0].message.contains("fallback"));
     }
-
 
     #[test]
     fn preprocessor_sources_are_checked_too() {

@@ -573,30 +573,6 @@ fn children_violations(
     }
 }
 
-/// 深度优先遍历全部元素，并维护从根到父节点的祖先栈。
-///
-/// 不做任何过滤（包括 `in_template`）：是否跳过由调用方决定。
-pub(crate) fn walk(doc: &WxmlDoc, mut visit: impl FnMut(&WxmlElement, &[&WxmlElement])) {
-    fn recurse<'a>(
-        nodes: &'a [WxmlNode],
-        ancestors: &mut Vec<&'a WxmlElement>,
-        visit: &mut impl FnMut(&WxmlElement, &[&WxmlElement]),
-    ) {
-        for node in nodes {
-            let WxmlNode::Element(element) = node else {
-                continue;
-            };
-            visit(element, ancestors);
-            ancestors.push(element);
-            recurse(&element.children, ancestors, visit);
-            ancestors.pop();
-        }
-    }
-
-    let mut ancestors = Vec::new();
-    recurse(&doc.nodes, &mut ancestors, &mut visit);
-}
-
 /// 对单个元素应用约束表，命中的关系直接产出诊断。
 pub(crate) fn check_element(
     id: &'static str,

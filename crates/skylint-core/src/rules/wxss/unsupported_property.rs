@@ -5,7 +5,7 @@ use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
 use super::dict_table::table;
-use super::visit;
+use super::visit_declarations;
 
 pub struct UnsupportedProperty;
 
@@ -24,29 +24,25 @@ impl Rule for UnsupportedProperty {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let table = table();
-        visit(project, |doc, out| {
-            for rule in &doc.rules {
-                for decl in &rule.declarations {
-                    let name = decl.name.to_ascii_lowercase();
-                    let Some(advice) = table.property(&name) else {
-                        continue;
-                    };
-                    let (line, column) = doc.position(decl.offset);
-                    let (end_line, end_column) = doc.position(decl.offset + decl.name.len());
-                    out.push(
-                        Diagnostic::new(
-                            Self::ID,
-                            Severity::Error,
-                            format!("`{name}` 属性在 Skyline 下不生效，该声明会被忽略"),
-                            doc.path(),
-                            line,
-                            column,
-                        )
-                        .end(end_line, end_column)
-                        .help(advice),
-                    );
-                }
-            }
+        visit_declarations(project, |doc, decl, out| {
+            let name = decl.name.to_ascii_lowercase();
+            let Some(advice) = table.property(&name) else {
+                return;
+            };
+            let (line, column) = doc.position(decl.offset);
+            let (end_line, end_column) = doc.position(decl.offset + decl.name.len());
+            out.push(
+                Diagnostic::new(
+                    Self::ID,
+                    Severity::Error,
+                    format!("`{name}` 属性在 Skyline 下不生效，该声明会被忽略"),
+                    doc.path(),
+                    line,
+                    column,
+                )
+                .end(end_line, end_column)
+                .help(advice),
+            );
         })
     }
 }
@@ -55,8 +51,8 @@ impl Rule for UnsupportedProperty {
 mod tests {
     use crate::rules::Rule;
 
-    use crate::rules::testutil::wxss::{messages, single};
     use super::UnsupportedProperty;
+    use crate::rules::testutil::wxss::{messages, single};
 
     #[test]
     fn property_reports_unsupported_properties() {

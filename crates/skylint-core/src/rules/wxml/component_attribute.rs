@@ -22,7 +22,7 @@ use crate::input::wxml::{WxmlAttribute, WxmlElement};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::{load_doc, span_diagnostic, wxml_files};
+use super::{span_diagnostic, visit, walk};
 
 #[derive(Debug, Clone, Copy)]
 enum Constraint {
@@ -459,12 +459,8 @@ impl Rule for ComponentAttribute {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let table = table();
-        let mut diagnostics = Vec::new();
-        for path in wxml_files(project) {
-            let Some(doc) = load_doc(project, path) else {
-                continue;
-            };
-            for element in doc.elements() {
+        visit(project, |doc, out| {
+            walk(doc, |element, _ancestors| {
                 for attr in &element.attributes {
                     if !attr.is_static {
                         continue;
@@ -482,13 +478,13 @@ impl Rule for ComponentAttribute {
                     }) else {
                         continue;
                     };
-                    diagnostics.push(
+                    out.push(
                         span_diagnostic(
                             Self::ID,
-                            &doc,
+                            doc,
                             attr.start,
                             attr.end,
-                            path,
+                            doc.path(),
                             Severity::Warning,
                             message(&element.tag, &name, value, &entry.constraint),
                         )
@@ -496,7 +492,7 @@ impl Rule for ComponentAttribute {
                     );
                 }
                 let Some(rules) = table.requires.get(element.tag.as_str()) else {
-                    continue;
+                    return;
                 };
                 for rule in rules {
                     let Some(attr) = find_attribute(element, rule.trigger.attr()) else {
@@ -511,13 +507,13 @@ impl Rule for ComponentAttribute {
                     let Verdict::Violated(current) = judge(element, &rule.requirement) else {
                         continue;
                     };
-                    diagnostics.push(
+                    out.push(
                         span_diagnostic(
                             Self::ID,
-                            &doc,
+                            doc,
                             attr.start,
                             attr.end,
-                            path,
+                            doc.path(),
                             Severity::Warning,
                             requires_message(&element.tag, rule, &value, current.as_deref()),
                         )
@@ -528,9 +524,8 @@ impl Rule for ComponentAttribute {
                         ),
                     );
                 }
-            }
-        }
-        diagnostics
+            });
+        })
     }
 }
 
@@ -663,7 +658,6 @@ mod tests {
     use crate::rules::testutil::wxml::{Fixture, check_rule, project};
 
     use super::ComponentAttribute;
-
 
     #[test]
     fn enum_violations_are_warnings_on_the_attribute() {

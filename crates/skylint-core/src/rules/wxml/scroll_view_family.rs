@@ -50,7 +50,7 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
 use super::structure::{self, Constraint, Relation, Target};
-use super::{element_diagnostic, is_builtin, load_doc, wxml_files};
+use super::{element_diagnostic, is_builtin, visit, walk};
 
 pub const ID: &str = "skyline/scroll-view-family";
 
@@ -214,25 +214,13 @@ impl Rule for ScrollViewFamily {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
-        for path in wxml_files(project) {
-            let Some(doc) = load_doc(project, path) else {
-                continue;
-            };
-            structure::walk(&doc, |element, ancestors| {
+        visit(project, |doc, out| {
+            walk(doc, |element, ancestors| {
                 // 模板定义体只在实例化处渲染，真实祖先链静态不可知，结构约束无法判定。
                 if element.in_template {
                     return;
                 }
-                structure::check_element(
-                    ID,
-                    &doc,
-                    element,
-                    ancestors,
-                    CONSTRAINTS,
-                    path,
-                    &mut diagnostics,
-                );
+                structure::check_element(ID, doc, element, ancestors, CONSTRAINTS, doc.path(), out);
 
                 // nested-scroll.md NEVER 1「不要在 nested-scroll-body 下面放 nested-scroll-header」。
                 if element.tag == "nested-scroll-header"
@@ -242,12 +230,12 @@ impl Rule for ScrollViewFamily {
                         .take_while(|ancestor| is_builtin(&ancestor.tag))
                         .any(|ancestor| ancestor.tag == "nested-scroll-body")
                 {
-                    diagnostics.push(
+                    out.push(
                         element_diagnostic(
                             ID,
-                            &doc,
+                            doc,
                             element,
-                            path,
+                            doc.path(),
                             Severity::Error,
                             "`<nested-scroll-header>` 不能放在 `<nested-scroll-body>` 内，头部不会随外层滚动",
                         )
@@ -255,8 +243,7 @@ impl Rule for ScrollViewFamily {
                     );
                 }
             });
-        }
-        diagnostics
+        })
     }
 }
 

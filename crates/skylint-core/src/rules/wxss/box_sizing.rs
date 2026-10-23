@@ -7,7 +7,7 @@ use crate::project::Project;
 use crate::{Diagnostic, Severity};
 
 use super::value_util::is_dynamic;
-use super::visit;
+use super::visit_declarations;
 use crate::rules::{Rule, RuleMeta};
 
 pub struct BoxSizing;
@@ -26,27 +26,25 @@ impl Rule for BoxSizing {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            for rule in &doc.rules {
-                for decl in &rule.declarations {
-                    if !decl.name.eq_ignore_ascii_case("box-sizing") {
-                        continue;
-                    }
-                    let value = decl.value.trim();
-                    if value.is_empty() {
-                        continue;
-                    }
-                    let lower = value.to_ascii_lowercase();
-                    // 变量 / 插值无法静态判定，交给运行时（$var、@var、#{} 同样算）。
-                    if is_dynamic(&decl.tokens) {
-                        continue;
-                    }
-                    if is_box_sizing_value(&lower) {
-                        continue;
-                    }
-                    let (line, column) = doc.position(decl.value_offset);
-                    let (end_line, end_column) = doc.position(decl.value_end());
-                    out.push(
+        visit_declarations(project, |doc, decl, out| {
+            if !decl.name.eq_ignore_ascii_case("box-sizing") {
+                return;
+            }
+            let value = decl.value.trim();
+            if value.is_empty() {
+                return;
+            }
+            let lower = value.to_ascii_lowercase();
+            // 变量 / 插值无法静态判定，交给运行时（$var、@var、#{} 同样算）。
+            if is_dynamic(&decl.tokens) {
+                return;
+            }
+            if is_box_sizing_value(&lower) {
+                return;
+            }
+            let (line, column) = doc.position(decl.value_offset);
+            let (end_line, end_column) = doc.position(decl.value_end());
+            out.push(
                         Diagnostic::new(
                             Self::ID,
                             Severity::Error,
@@ -60,8 +58,6 @@ impl Rule for BoxSizing {
                             "Skyline 只支持 content-box / border-box，且默认值为 border-box（WebView 为 content-box）；请显式声明并复核元素尺寸",
                         ),
                     );
-                }
-            }
         })
     }
 }
@@ -77,8 +73,8 @@ fn is_box_sizing_value(value: &str) -> bool {
 mod tests {
     use crate::rules::Rule;
 
-    use crate::rules::testutil::wxss::{messages, single};
     use super::BoxSizing;
+    use crate::rules::testutil::wxss::{messages, single};
 
     #[test]
     fn box_sizing_reports_unsupported_values() {

@@ -24,6 +24,7 @@ pub fn parse(path: &str, source: &str) -> Result<WxmlDoc, String> {
 /// 一个 WXML 文件的解析结果。
 #[derive(Debug)]
 pub struct WxmlDoc {
+    path: String,
     source: String,
     pub nodes: Vec<WxmlNode>,
     /// `<import>` / `<include>` 的 `src` 原始值（编译器已剥掉 `.wxml` 后缀）。
@@ -153,10 +154,16 @@ impl WxmlDoc {
             .filter(|name| !name.is_empty())
             .collect();
         Ok(Self {
+            path: path.to_string(),
             source: source.to_string(),
             nodes,
             template_refs,
         })
+    }
+
+    /// 本文件的项目相对路径。
+    pub fn path(&self) -> &str {
+        &self.path
     }
 
     /// `parse::Position`（0-based 行、UTF-16 列）→ 诊断位置（1-based 行、字符列）。
@@ -686,7 +693,10 @@ mod tests {
         )
         .unwrap();
         let attrs = attributes(&doc);
-        let worklet = attrs.iter().find(|a| a.name == "worklet:ongesture").unwrap();
+        let worklet = attrs
+            .iter()
+            .find(|a| a.name == "worklet:ongesture")
+            .unwrap();
         assert_eq!(worklet.value.as_deref(), Some("onPan"));
         assert!(worklet.is_static);
         assert_eq!(doc.position(worklet.value_start.unwrap()), (1, 26));
@@ -729,7 +739,8 @@ mod tests {
         )
         .unwrap();
         let branches: Vec<&Vec<Branch>> = doc.elements().map(|element| &element.branches).collect();
-        let (Some(if_branch), Some(else_branch)) = (branches[0].first(), branches[1].first()) else {
+        let (Some(if_branch), Some(else_branch)) = (branches[0].first(), branches[1].first())
+        else {
             panic!("两个分支的元素都应带 branch: {branches:?}");
         };
         assert_eq!(if_branch.group, else_branch.group);
@@ -774,7 +785,10 @@ mod tests {
             r#"<block wx:if="{{a}}"><block wx:if="{{b}}"><view/></block></block>"#,
         )
         .unwrap();
-        let element = doc.elements().find(|element| element.tag == "view").unwrap();
+        let element = doc
+            .elements()
+            .find(|element| element.tag == "view")
+            .unwrap();
         assert_eq!(element.branches.len(), 2, "{:?}", element.branches);
         assert_ne!(element.branches[0].group, element.branches[1].group);
     }
@@ -790,4 +804,3 @@ mod tests {
         assert_eq!(element.branches.first().map(|branch| branch.arm), Some(0));
     }
 }
-
