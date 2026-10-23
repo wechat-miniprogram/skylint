@@ -18,9 +18,9 @@
 use oxc_css_parser::{
     Allocator, ParserBuilder, Span, Syntax,
     ast::{
-        AtRule, Calc, ComplexSelector, ComplexSelectorChild, ComponentValue, Declaration,
-        DelimiterKind, FunctionName, InterpolableIdent, InterpolableStr, SelectorList,
-        SimpleSelector, Statement, Stylesheet, TypeSelector,
+        AtRule, Calc, ComplexSelector, ComplexSelectorChild, ComponentValue, CompoundSelector,
+        Declaration, DelimiterKind, FunctionName, InterpolableIdent, InterpolableStr,
+        PseudoClassSelectorArgKind, SelectorList, SimpleSelector, Statement, Stylesheet, TypeSelector,
     },
     token::Comment,
 };
@@ -88,15 +88,31 @@ impl WxssRule {
     }
 }
 
-/// 选择器里能静态判定的部件。`Other` 表示组合符 / 伪类 / 属性选择器 / 插值等
-/// 静态判定不了的形状。
+/// 选择器里能静态判定的部件。`Other` 表示组合符 / 属性选择器 / 插值等静态判定不了
+/// 的形状；伪类与伪元素单独建模，因为规则需要区分「不影响命中的伪类」和「会让选择器被丢弃的
+/// 伪类」（后者仍归 `Pseudo`，由规则按名字判定，见 `skyline/no-pseudo`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SelectorPart {
     Tag(String),
     Universal,
     Class(String),
     Id(String),
+    /// 伪类 / 伪元素。`name` 已转小写且不带冒号；`args` 表示带括号参数。
+    Pseudo {
+        name: String,
+        element: bool,
+        args: bool,
+    },
     Other,
+}
+
+/// 选择器里的一个伪类 / 伪元素，带源文件里的绝对字节位置（诊断落点）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WxssPseudo {
+    pub name: String,
+    pub element: bool,
+    pub offset: usize,
+    pub len: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,8 +121,10 @@ pub struct WxssSelector {
     pub text: String,
     /// 选择器在源文件中的字节偏移。
     pub offset: usize,
-    /// AST 拆出的部件；只有一个 compound 且全为标签 / `*` / class / id 时才有意义。
+    /// AST 拆出的部件；只有一个 compound 且全为标签 / `*` / class / id / 伪类时才有意义。
     pub parts: Vec<SelectorPart>,
+    /// 该选择器（含嵌套时继承的父选择器）里的全部伪类 / 伪元素。
+    pub pseudos: Vec<WxssPseudo>,
 }
 
 /// 声明值的一个词元。只建模规则会用到的形状，其余保留原文切片。
@@ -519,6 +537,7 @@ fn selectors(list: &SelectorList<'_>, source: &str, parents: &[WxssSelector]) ->
                 text,
                 offset,
                 parts: complex_parts(complex),
+                pseudos: complex_pseudos(complex),
             })
             .collect();
     }
@@ -536,10 +555,15 @@ fn selectors(list: &SelectorList<'_>, source: &str, parents: &[WxssSelector]) ->
                     vec![SelectorPart::Other],
                 )
             };
+            // 嵌套选择器继承了父选择器，父选择器上的伪类对这条规则同样生效；
+            // 两者的 span 都是源文件绝对偏移，合起来不会重复计算位置。
+            let mut pseudos = parent.pseudos.clone();
+            pseudos.extend(complex_pseudos(complex));
             out.push(WxssSelector {
                 text,
                 offset: *offset,
                 parts,
+                pseudos,
             });
         }
     }
@@ -584,6 +608,26 @@ fn complex_parts(complex: &ComplexSelector<'_>) -> Vec<SelectorPart> {
                 };
                 parts.push(SelectorPart::Id(name.to_string()));
             }
+            SimpleSelector::PseudoClass(pseudo) => {
+                let Some(name) = literal_ident(&pseudo.name) else {
+                    return vec![SelectorPart::Other];
+                };
+                parts.push(SelectorPart::Pseudo {
+                    name: name.to_ascii_lowercase(),
+                    element: false,
+                    args: pseudo.arg.is_some(),
+                });
+            }
+            SimpleSelector::PseudoElement(pseudo) => {
+                let Some(name) = literal_ident(&pseudo.name) else {
+                    return vec![SelectorPart::Other];
+                };
+                parts.push(SelectorPart::Pseudo {
+                    name: name.to_ascii_lowercase(),
+                    element: true,
+                    args: pseudo.arg.is_some(),
+                });
+            }
             _ => return vec![SelectorPart::Other],
         }
     }
@@ -592,6 +636,73 @@ fn complex_parts(complex: &ComplexSelector<'_>) -> Vec<SelectorPart> {
     } else {
         parts
     }
+}
+
+/// 选择器里的全部伪类 / 伪元素（含 `:not()` / `:nth-child()` 参数里的），带绝对位置。
+fn complex_pseudos(complex: &ComplexSelector<'_>) -> Vec<WxssPseudo> {
+    let mut out = Vec::new();
+    collect_complex_pseudos(complex, &mut out);
+    out
+}
+
+fn collect_complex_pseudos(complex: &ComplexSelector<'_>, out: &mut Vec<WxssPseudo>) {
+    for child in &complex.children {
+        let ComplexSelectorChild::CompoundSelector(compound) = child else {
+            continue;
+        };
+        collect_compound_pseudos(compound, out);
+    }
+}
+
+fn collect_compound_pseudos(compound: &CompoundSelector<'_>, out: &mut Vec<WxssPseudo>) {
+    for simple in compound.children.iter() {
+        match simple {
+            SimpleSelector::PseudoClass(pseudo) => {
+                push_pseudo(out, &pseudo.name, pseudo.span, false);
+                let Some(arg) = &pseudo.arg else { continue };
+                match &arg.kind {
+                    PseudoClassSelectorArgKind::CompoundSelectorList(list) => {
+                        for compound in list.selectors.iter() {
+                            collect_compound_pseudos(compound, out);
+                        }
+                    }
+                    PseudoClassSelectorArgKind::SelectorList(list) => {
+                        for complex in list.selectors.iter() {
+                            collect_complex_pseudos(complex, out);
+                        }
+                    }
+                    PseudoClassSelectorArgKind::RelativeSelectorList(list) => {
+                        for relative in list.selectors.iter() {
+                            collect_complex_pseudos(&relative.complex_selector, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            SimpleSelector::PseudoElement(pseudo) => {
+                push_pseudo(out, &pseudo.name, pseudo.span, true);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 动态伪类名（`:#{$x}`）没有确定名字，不登记——宁可漏报。
+fn push_pseudo(
+    out: &mut Vec<WxssPseudo>,
+    name: &InterpolableIdent<'_>,
+    span: Span,
+    element: bool,
+) {
+    let Some(name) = literal_ident(name) else {
+        return;
+    };
+    out.push(WxssPseudo {
+        name: name.to_ascii_lowercase(),
+        element,
+        offset: span.start,
+        len: span.end - span.start,
+    });
 }
 
 /// 嵌套选择器 `&…` 的部件：父选择器部件 + `&` 后缀。
@@ -1260,15 +1371,66 @@ mod tests {
     }
 
     #[test]
-    fn selector_parts_reject_combinators_pseudos_attributes_and_nesting() {
+    fn selector_parts_reject_combinators_attributes_and_nesting() {
         for source in [
             "view .foo { color: red; }",
             "view > .foo { color: red; }",
-            "a:hover { color: red; }",
             "[data-x] { color: red; }",
             "&:hover { color: red; }",
         ] {
             assert_eq!(parts(source), vec![SelectorPart::Other], "{source}");
         }
+    }
+
+    #[test]
+    fn selector_parts_include_pseudos() {
+        assert_eq!(
+            parts("a:hover { color: red; }"),
+            vec![
+                SelectorPart::Tag("a".to_string()),
+                SelectorPart::Pseudo {
+                    name: "hover".to_string(),
+                    element: false,
+                    args: false,
+                },
+            ]
+        );
+        assert_eq!(
+            parts("a:nth-child(2) { color: red; }"),
+            vec![
+                SelectorPart::Tag("a".to_string()),
+                SelectorPart::Pseudo {
+                    name: "nth-child".to_string(),
+                    element: false,
+                    args: true,
+                },
+            ]
+        );
+        assert_eq!(
+            parts("a::before { color: red; }"),
+            vec![
+                SelectorPart::Tag("a".to_string()),
+                SelectorPart::Pseudo {
+                    name: "before".to_string(),
+                    element: true,
+                    args: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn selector_pseudos_carry_the_source_span() {
+        //            0123456789012345678
+        let source = ".a:hover, .b::after { color: red; }";
+        let doc = parse("a.scss", source).unwrap();
+        let pseudos: Vec<(&str, bool, usize, usize)> = doc.rules[0]
+            .selectors
+            .iter()
+            .flat_map(|s| s.pseudos.iter())
+            .map(|p| (p.name.as_str(), p.element, p.offset, p.len))
+            .collect();
+        assert_eq!(pseudos, vec![("hover", false, 2, 6), ("after", true, 12, 7)]);
+        assert_eq!(doc.position(2), (1, 3));
     }
 }

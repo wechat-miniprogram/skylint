@@ -34,115 +34,49 @@ impl Rule for NoPseudo {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
+        // 嵌套选择器会继承父选择器的伪类，同一个伪类可能在多个选择器里出现；
+        // 按源文件位置去重，一条伪类只报一次。
+        let mut seen = std::collections::HashSet::new();
         visit(project, |doc, out| {
             for rule in &doc.rules {
                 for selector in &rule.selectors {
-                    let Some(hit) = first_unsupported_pseudo(&selector.text) else {
-                        continue;
-                    };
-                    let start = selector.offset + hit.offset;
-                    let (line, column) = doc.position(start);
-                    let (end_line, end_column) = doc.position(start + hit.text.len());
-                    out.push(
-                        Diagnostic::new(
-                            Self::ID,
-                            Severity::Warning,
-                            format!(
-                                "选择器 `{}` 中的伪{} `{}` 在 Skyline 下不受支持",
-                                selector.text,
-                                if hit.element { "元素" } else { "类" },
-                                hit.text
+                    for pseudo in &selector.pseudos {
+                        if is_supported_pseudo(pseudo.element, &pseudo.name)
+                            || !seen.insert((doc.path().to_string(), pseudo.offset))
+                        {
+                            continue;
+                        }
+                        let text = format!(
+                            "{}{}",
+                            if pseudo.element { "::" } else { ":" },
+                            pseudo.name
+                        );
+                        let (line, column) = doc.position(pseudo.offset);
+                        let (end_line, end_column) = doc.position(pseudo.offset + pseudo.len);
+                        out.push(
+                            Diagnostic::new(
+                                Self::ID,
+                                Severity::Warning,
+                                format!(
+                                    "选择器 `{}` 中的伪{} `{}` 在 Skyline 下不受支持",
+                                    selector.text,
+                                    if pseudo.element { "元素" } else { "类" },
+                                    text
+                                ),
+                                doc.path(),
+                                line,
+                                column,
+                            )
+                            .end(end_line, end_column)
+                            .help(
+                                "Skyline 只支持 ::before/::after 与 :not()/:first-child/:last-child/:only-child/:nth-child()/:empty/:host；请改用 class 或调整 WXML 结构",
                             ),
-                            doc.path(),
-                            line,
-                            column,
-                        )
-                        .end(end_line, end_column)
-                        .help(
-                            "Skyline 只支持 ::before/::after 与 :not()/:only-child()/:empty()/:host 等有限伪类；请改用 class 或调整 WXML 结构",
-                        ),
-                    );
+                        );
+                    }
                 }
             }
         })
     }
-}
-
-struct PseudoHit {
-    /// 相对选择器文本的字节偏移。
-    offset: usize,
-    /// 含前导冒号的伪类/伪元素原文，如 `::before`。
-    text: String,
-    element: bool,
-}
-
-/// 找出选择器中第一个不受支持的伪类/伪元素。字符串与属性选择器内的冒号不算。
-fn first_unsupported_pseudo(selector: &str) -> Option<PseudoHit> {
-    let chars: Vec<(usize, char)> = selector.char_indices().collect();
-    let mut i = 0;
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-    let mut brackets = 0i32;
-
-    while i < chars.len() {
-        let (offset, ch) = chars[i];
-        if let Some(q) = quote {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == q {
-                quote = None;
-            }
-            i += 1;
-            continue;
-        }
-        match ch {
-            // 转义的下一个字符不是语法：`.hover\:bg-red` 里的冒号是 class 名的一部分。
-            '\\' => i += 2,
-            '"' | '\'' => {
-                quote = Some(ch);
-                i += 1;
-            }
-            '[' => {
-                brackets += 1;
-                i += 1;
-            }
-            ']' => {
-                brackets -= 1;
-                i += 1;
-            }
-            ':' if brackets <= 0 => {
-                let element = chars.get(i + 1).is_some_and(|(_, c)| *c == ':');
-                let name_start = i + if element { 2 } else { 1 };
-                let mut j = name_start;
-                while j < chars.len() {
-                    let c = chars[j].1;
-                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                        j += 1;
-                    } else {
-                        break;
-                    }
-                }
-                if j == name_start {
-                    i += 1;
-                    continue;
-                }
-                let name: String = chars[name_start..j].iter().map(|(_, c)| *c).collect();
-                let text = format!("{}{}", if element { "::" } else { ":" }, name);
-                if !is_supported_pseudo(element, &name.to_ascii_lowercase()) {
-                    return Some(PseudoHit {
-                        offset,
-                        text,
-                        element,
-                    });
-                }
-                i = j;
-            }
-            _ => i += 1,
-        }
-    }
-    None
 }
 
 fn is_supported_pseudo(element: bool, name: &str) -> bool {
@@ -199,6 +133,31 @@ mod tests {
     /// 引擎实现了 7 个伪类：`css_parser_impl.h:271-329` 的映射 + `selector_matcher.cc:168-232`。
     /// 它们不能报——旧白名单漏了三个，会把正常写法判成不支持。
     /// 单冒号的 `:before` / `:after` 是旧写法：引擎解析成伪元素并生效，不能报。
+    /// 嵌套选择器的伪类落在自己那一行的真实位置（旧实现按合成文本算，会错到下一行）。
+    #[test]
+    fn nested_pseudo_points_at_its_own_line() {
+        let (_f, project) = single(
+            "no-pseudo-nested-position",
+            ".a {\n  &:active { color: red; }\n}\n",
+        );
+        let diags = NoPseudo.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert_eq!((diags[0].line, diags[0].column), (2, 4));
+    }
+
+    /// 同一个选择器上的两个不支持伪类都要报。
+    #[test]
+    fn reports_every_unsupported_pseudo_in_one_selector() {
+        let (_f, project) = single(
+            "no-pseudo-many",
+            ".a:hover:focus:not(.b) { color: red; }",
+        );
+        let diags = NoPseudo.check(&project);
+        assert_eq!(diags.len(), 2, "{diags:#?}");
+        assert!(diags.iter().any(|d| d.message.contains(":hover")));
+        assert!(diags.iter().any(|d| d.message.contains(":focus")));
+    }
+
     #[test]
     fn single_colon_pseudo_elements_are_accepted() {
         let (_f, project) = single(

@@ -397,14 +397,19 @@ A 页失效、B 页正常时要报）、`no_pseudo` 的转义冒号（`.hover\:b
 （25 处手写 `Diagnostic::new` 替掉 13 处，剩 7 处因 `end` 缺失、级别不同或 help 类型不同而
 保留——字段不等价的替换会把重构变成改行为）。
 
+**解析层：伪类进了 AST 视图**（`SelectorPart::Pseudo { name, element, args }` +
+`WxssSelector.pseudos` 带绝对 span）。`no_pseudo` 的 241 行引号/转义/属性选择器状态机整块删除；
+报错位置从「选择器 offset + 合成文本内偏移」改成 oxc 的绝对 span，嵌套选择器（`&:active`）的
+错行错列（`describe.scss:15:5`）修正到真实位置（`:14:10`，businessview 共 14 条位置修正）。
+同一选择器上有多个不受支持的伪类时现在逐个报（businessview +2 条，`:focus` 与
+`:not(:placeholder-shown)` 各一条）。风险更高的副作用是 `text-overflow` / `tag-selector` 不再因
+`:first-child` 这类无参伪类退化成 Unknown——四个工程实测无新增，因为没有这类写法。
+
 **明确不做（附理由）**：
 - 简写展开（`border: 1px double red` 这类）：子属性的失效是否导致整条声明被丢弃，取决于引擎
   对各简写的分解实现，没有证据前报出来就是猜；`unsupported-value` 数据表头已写明边界。
 - `scroll-context-ref` 的文件级启发：改成「同一函数内要有 `.ref`」会在「onReady 里取 ref、
   手势里 scrollTo」这种常见写法上误报，静态数据流不在工具边界内。
-- `SelectorPart::Pseudo { name, element, args }`：能同时干掉 `no_pseudo` 的 241 行状态机和
-  选择器规则遇 `:hover` 整体退化成 Unknown 的问题，但需要给 parts 加 span（诊断要落在伪类上），
-  影响面比这轮其余改动大，单独评估。
 - 数据表加载器的 8 份 `parse` 重复：只抽「读行骨架」（分区 / 注释 / 列数 / 去重 / 行号报错），
   各表的行语义留在原处，不为统一扭曲数据文件格式。
 

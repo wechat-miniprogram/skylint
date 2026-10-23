@@ -1,8 +1,10 @@
 //! 简单选择器：只解析能静态判定的形状（标签 / `.class` / `#id` 及其组合）。
 //!
 //! 跨文件规则要回答「这条声明会落到哪些 WXML 节点上」。组合符（空格、`>`、`+`、`~`）、
-//! 伪类、属性选择器一律放弃——静态判定不了就当作「没看见」，宁可漏报。
-//! 动态属性（`class="a {{x}}"`）返回 [`Match::Unknown`]，同样是为了不漏报变误报。
+//! 属性选择器、带参数的伪类（`:not()` / `:nth-child()`）一律放弃——静态判定不了就当作
+//! 「没看见」，宁可漏报。不带参数、不影响「命中哪个节点」的伪类（`:first-child` 等与
+//! `::before` / `::after`）直接忽略；不受支持的伪类（`:hover` 等）引擎会丢弃整条规则，
+//! 同样归为未知。动态属性（`class="a {{x}}"`）返回 [`Match::Unknown`]。
 
 use crate::input::wxml::WxmlElement;
 use crate::input::wxss::{SelectorPart, WxssSelector};
@@ -24,8 +26,24 @@ pub enum Match {
     Unknown,
 }
 
+/// 不影响「命中哪个节点」的伪类 / 伪元素：引擎支持它、且不改变节点集合。
+///
+/// 依据：`css/css_parser_impl.h:271-329` 支持的 7 个伪类里，`:not()` / `:nth-child()`
+/// 带参数会缩小命中集合，其余五个不影响节点本身；伪元素 `::before` / `::after`
+/// 只是在该节点上生成一个子节点。
+fn is_transparent_pseudo(element: bool, name: &str) -> bool {
+    match name {
+        "before" | "after" => true,
+        _ if element => false,
+        _ => matches!(
+            name,
+            "empty" | "host" | "only-child" | "first-child" | "last-child"
+        ),
+    }
+}
+
 impl SimpleSelector {
-    /// 解析失败返回 `None`（含组合符 / 伪类 / 属性选择器 / 空串）。
+    /// 解析失败返回 `None`（含组合符 / 属性选择器 / 带参数或不受支持的伪类 / 空串）。
     pub fn parse(selector: &WxssSelector) -> Option<Self> {
         if selector.parts.is_empty() {
             return None;
@@ -42,6 +60,15 @@ impl SimpleSelector {
                 SelectorPart::Universal => parsed.universal = true,
                 SelectorPart::Class(name) => parsed.classes.push(name.clone()),
                 SelectorPart::Id(name) => parsed.id = Some(name.clone()),
+                SelectorPart::Pseudo {
+                    name,
+                    element,
+                    args,
+                } => {
+                    if *args || !is_transparent_pseudo(*element, name) {
+                        return None;
+                    }
+                }
                 SelectorPart::Other => return None,
             }
         }
@@ -145,14 +172,31 @@ mod tests {
         for text in [
             ".a .b",
             ".a > .b",
-            "view::after",
             "[data-x]",
             "a:hover",
+            "a:not(.b)",
+            "a:nth-child(2)",
+            "a::placeholder",
             "",
             ".",
             " ",
         ] {
             assert!(selector(text).is_none(), "{text}");
+        }
+    }
+
+    #[test]
+    fn ignores_pseudos_that_do_not_change_the_matched_node() {
+        assert_eq!(selector("view::after").unwrap().tag.as_deref(), Some("view"));
+        for text in [
+            "view:first-child",
+            "view:last-child",
+            "view:only-child",
+            "view:empty",
+            "view:host",
+            "view:before",
+        ] {
+            assert!(selector(text).is_some(), "{text}");
         }
     }
 
