@@ -35,21 +35,30 @@ enum Kind {
     Text,
 }
 
-const KNOWN: &[(&str, Kind)] = &[
-    ("defaultDisplayBlock", Kind::Bool),
-    ("defaultContentBox", Kind::Bool),
-    ("enableScrollViewAutoSize", Kind::Bool),
-    ("enableImagePreload", Kind::Bool),
-    ("convertRpxToVw", Kind::Bool),
-    ("disableABTest", Kind::Bool),
-    ("tagNameStyleIsolation", Kind::Isolation),
-    ("keyframeStyleIsolation", Kind::Isolation),
-    ("sdkVersionBegin", Kind::Text),
-    ("sdkVersionEnd", Kind::Text),
-    ("iosVersionBegin", Kind::Text),
-    ("iosVersionEnd", Kind::Text),
-    ("androidVersionBegin", Kind::Text),
-    ("androidVersionEnd", Kind::Text),
+/// 该配置项在哪里生效。页面级只读 `_getFeatureFlagsFromRendererOptions`
+/// （`wxapplib/src/skyline/src/runtime/index.ts:424-449`）里那 6 个键；其余键写在页面
+/// json 里没有任何读者。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Where {
+    Both,
+    AppOnly,
+}
+
+const KNOWN: &[(&str, Kind, Where)] = &[
+    ("defaultDisplayBlock", Kind::Bool, Where::Both),
+    ("defaultContentBox", Kind::Bool, Where::Both),
+    ("enableScrollViewAutoSize", Kind::Bool, Where::Both),
+    ("enableImagePreload", Kind::Bool, Where::Both),
+    ("tagNameStyleIsolation", Kind::Isolation, Where::Both),
+    ("keyframeStyleIsolation", Kind::Isolation, Where::Both),
+    ("convertRpxToVw", Kind::Bool, Where::AppOnly),
+    ("disableABTest", Kind::Bool, Where::AppOnly),
+    ("sdkVersionBegin", Kind::Text, Where::AppOnly),
+    ("sdkVersionEnd", Kind::Text, Where::AppOnly),
+    ("iosVersionBegin", Kind::Text, Where::AppOnly),
+    ("iosVersionEnd", Kind::Text, Where::AppOnly),
+    ("androidVersionBegin", Kind::Text, Where::AppOnly),
+    ("androidVersionEnd", Kind::Text, Where::AppOnly),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -118,7 +127,7 @@ fn check_file(
 
     match options.get("skyline") {
         None => {}
-        Some(Value::Object(skyline)) => check_skyline(path, &positions, skyline, out),
+        Some(Value::Object(skyline)) => check_skyline(path, &positions, skyline, level, out),
         Some(_) => warn(
             out,
             path,
@@ -153,10 +162,11 @@ fn check_skyline(
     path: &str,
     positions: &JsonPositions,
     skyline: &Map<String, Value>,
+    level: Level,
     out: &mut Vec<Diagnostic>,
 ) {
     for (key, value) in skyline {
-        let Some(kind) = kind_of(key) else {
+        let Some((kind, scope)) = kind_of(key) else {
             warn(
                 out,
                 path,
@@ -166,6 +176,17 @@ fn check_skyline(
             );
             continue;
         };
+        // 页面级只读运行时那 6 个键；其它键写在页面 json 里是死配置。
+        if level == Level::Page && scope == Where::AppOnly {
+            warn(
+                out,
+                path,
+                positions.key(key),
+                format!("`{key}` 只在 app.json 生效，页面级 rendererOptions 不读取它"),
+                "把该配置移到 app.json 的 rendererOptions.skyline 下",
+            );
+            continue;
+        }
         check_value(path, positions, key, value, kind, out);
     }
 }
@@ -224,11 +245,11 @@ fn check_value(
     warn(out, path, positions.key(key), message, help);
 }
 
-fn kind_of(key: &str) -> Option<Kind> {
+fn kind_of(key: &str) -> Option<(Kind, Where)> {
     KNOWN
         .iter()
-        .find(|(name, _)| *name == key)
-        .map(|(_, kind)| *kind)
+        .find(|(name, _, _)| *name == key)
+        .map(|(_, kind, scope)| (*kind, *scope))
 }
 
 fn warn(
@@ -353,6 +374,21 @@ mod tests {
         assert_eq!(diags[0].path, "pages/index/index.json");
         assert!(diags[0].message.contains("rendererOptions.skyline"));
         assert!(diags[0].message.contains("defaultDisplayBlock"));
+    }
+
+    /// 页面级只读运行时那 6 个键，其余写在页面 json 里是死配置。
+    #[test]
+    fn reports_app_only_keys_written_on_a_page() {
+        let (_f, project) = project(
+            "renderer-options-page-app-only",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            r#"{"rendererOptions":{"skyline":{"disableABTest":true,"defaultDisplayBlock":true}}}"#,
+        );
+        let diags = RendererOptions.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].path, "pages/index/index.json");
+        assert!(diags[0].message.contains("disableABTest"));
+        assert!(diags[0].message.contains("只在 app.json 生效"));
     }
 
     #[test]

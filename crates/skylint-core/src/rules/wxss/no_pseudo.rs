@@ -90,6 +90,8 @@ fn first_unsupported_pseudo(selector: &str) -> Option<PseudoHit> {
             continue;
         }
         match ch {
+            // 转义的下一个字符不是语法：`.hover\:bg-red` 里的冒号是 class 名的一部分。
+            '\\' => i += 2,
             '"' | '\'' => {
                 quote = Some(ch);
                 i += 1;
@@ -190,6 +192,23 @@ mod tests {
             "#,
         );
         assert_eq!(messages(&NoPseudo, &project), Vec::<String>::new());
+    }
+
+    /// Tailwind 风格转义冒号：`.hover\:bg-red` 里的冒号是类名的一部分，不是伪类。
+    #[test]
+    fn escaped_colon_in_a_class_name_is_not_a_pseudo() {
+        let (_f, project) = single(
+            "no-pseudo-escaped",
+            r#"
+            .hover\:bg-red { color: red; }
+            .md\:flex { display: flex; }
+            .hover\:bg-red:hover { color: blue; }
+            "#,
+        );
+        let messages = messages(&NoPseudo, &project);
+        // 只有第三条的真实 `:hover` 命中。
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(messages[0].contains(":hover"));
     }
 
     #[test]

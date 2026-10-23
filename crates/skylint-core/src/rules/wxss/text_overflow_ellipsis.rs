@@ -55,8 +55,10 @@ impl crate::rules::Rule for TextOverflowEllipsis {
                     let Some(simple) = SimpleSelector::parse(selector) else {
                         continue;
                     };
-                    let (mut matched, mut hostable) = (false, false);
+                    // 按作用域分别判：共享样式在 A 页失效、B 页正常也要报。
+                    let mut broken = false;
                     for scope in &sheet.scopes {
+                        let (mut matched, mut hostable) = (false, false);
                         for wxml_path in scope_wxml(project, scope) {
                             let Some(wxml_doc) = docs
                                 .entry(wxml_path)
@@ -77,8 +79,9 @@ impl crate::rules::Rule for TextOverflowEllipsis {
                                 }
                             }
                         }
+                        broken |= matched && !hostable;
                     }
-                    if matched && !hostable {
+                    if broken {
                         offenders.push(selector.text.trim());
                     }
                 }
@@ -91,7 +94,7 @@ impl crate::rules::Rule for TextOverflowEllipsis {
                     Diagnostic::new(
                         ID,
                         Severity::Warning,
-                        format!("`text-overflow: ellipsis` 在 Skyline 下只作用于 `<text>`；选择器 `{selectors}` 命中的节点及其后代都没有 `<text>`，声明不会生效"),
+                        format!("`text-overflow: ellipsis` 在 Skyline 下只作用于 `<text>`；选择器 `{selectors}` 在某处命中的节点及其后代都没有 `<text>`，声明不会生效"),
                         doc.path(),
                         line,
                         column,
@@ -195,6 +198,37 @@ mod tests {
             ".title { text-overflow: ellipsis; }",
         );
         assert_eq!(diagnostics.len(), 1);
+    }
+
+    /// 共享样式在页面里失效、在组件里正常（反过来也一样）也要报：按作用域分别判。
+    #[test]
+    fn shared_style_broken_in_one_scope_is_reported() {
+        let fixture = Fixture::new("shared-scope");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"c":"/components/c/c"}}"#,
+            )
+            .write(
+                "pages/index/index.wxml",
+                r#"<view class="title">页面上的标题</view><c/>"#,
+            )
+            .write("pages/index/index.wxss", "@import \"/styles/shared.wxss\";")
+            .write("components/c/c.json", "{}")
+            .write(
+                "components/c/c.wxml",
+                r#"<text class="title">组件里的标题</text>"#,
+            )
+            .write("components/c/c.wxss", "@import \"/styles/shared.wxss\";")
+            .write("styles/shared.wxss", ".title { text-overflow: ellipsis; }");
+        let diagnostics = TextOverflowEllipsis.check(&fixture.project());
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].path, "styles/shared.wxss");
     }
 
     // ---- negative ----

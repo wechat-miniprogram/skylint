@@ -67,8 +67,10 @@ impl crate::rules::Rule for TextDecorationTarget {
                         .iter()
                         .filter_map(|selector| {
                             let simple = SimpleSelector::parse(selector)?;
-                            let (mut matched, mut capable) = (false, false);
+                            // 按作用域分别判：共享样式在 A 页失效、B 页正常也要报。
+                            let mut broken = false;
                             for scope in &sheet.scopes {
+                                let (mut matched, mut capable) = (false, false);
                                 for wxml_path in scope_wxml(project, scope) {
                                     let Some(wxml_doc) = docs
                                         .entry(wxml_path)
@@ -91,8 +93,9 @@ impl crate::rules::Rule for TextDecorationTarget {
                                         }
                                     }
                                 }
+                                broken |= matched && !capable;
                             }
-                            (matched && !capable).then(|| selector.text.trim())
+                            broken.then(|| selector.text.trim())
                         })
                         .collect::<Vec<_>>();
                     if offenders.is_empty() {
@@ -105,7 +108,7 @@ impl crate::rules::Rule for TextDecorationTarget {
                             ID,
                             Severity::Warning,
                             format!(
-                                "`{}` 在 Skyline 下只作用于 `<text>` / `<span>` / `<input>`；选择器 `{selectors}` 命中的节点都不是文本节点，装饰不会显示",
+                                "`{}` 在 Skyline 下只作用于 `<text>` / `<span>` / `<input>`；选择器 `{selectors}` 在某处命中的节点都不是文本节点，装饰不会显示",
                                 decl.name
                             ),
                             doc.path(),

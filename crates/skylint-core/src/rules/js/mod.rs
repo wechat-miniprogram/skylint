@@ -4,6 +4,7 @@
 //! [`crate::input::js::JsDoc`]：规则侧不再读盘、不再做语法分析。每条规则的证据
 //! 都写在文件头，数据驱动的部分（不可用 API 表）放在 `rules/data/` 下。
 
+pub mod callee;
 pub mod draggable_sheet_scroll_to;
 pub mod route_type;
 pub mod scroll_context_ref;
@@ -13,6 +14,7 @@ pub mod worklet_data_freeze;
 pub mod worklet_directive;
 pub mod worklet_es5;
 
+pub(crate) use callee::Callee;
 pub use draggable_sheet_scroll_to::DraggableSheetScrollTo;
 pub use route_type::RouteType;
 pub use scroll_context_ref::ScrollContextRef;

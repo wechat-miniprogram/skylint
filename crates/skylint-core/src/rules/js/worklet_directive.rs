@@ -34,10 +34,10 @@ use crate::rules::wxml::load_doc;
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
-use super::{at_span, scope_script, unit_wxml};
+use super::{Callee, at_span, scope_script, unit_wxml};
 
-const APPLY_ANIMATED_STYLE: &str = "applyAnimatedStyle";
-const ADD_ROUTE_BUILDER: &str = "addRouteBuilder";
+const APPLY_ANIMATED_STYLE: Callee = Callee::Qualified("applyAnimatedStyle");
+const ADD_ROUTE_BUILDER: Callee = Callee::Qualified("addRouteBuilder");
 const WORKLET_PREFIX: &str = "worklet:";
 
 pub struct WorkletDirective;
@@ -60,7 +60,7 @@ impl Rule for WorkletDirective {
         wxml_bindings(project, &mut out);
         for file in &project.scripts {
             for call in file.doc.calls() {
-                if call.callee.ends_with(APPLY_ANIMATED_STYLE) {
+                if APPLY_ANIMATED_STYLE.matches(&call.callee) {
                     out.extend(updater_diagnostic(file, call));
                 }
             }
@@ -169,7 +169,7 @@ fn route_animation_diagnostics(file: &JsFile) -> Vec<Diagnostic> {
 fn route_builder_spans(file: &JsFile) -> Vec<(u32, u32)> {
     let mut spans = Vec::new();
     for call in file.doc.calls() {
-        if !call.callee.ends_with(ADD_ROUTE_BUILDER) {
+        if !ADD_ROUTE_BUILDER.matches(&call.callee) {
             continue;
         }
         let Some(arg) = call.args.get(1) else {

@@ -12,9 +12,9 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::Severity;
 
-use super::at_span;
+use super::{Callee, at_span};
 
-const SCROLL_TO: &str = ".scrollTo";
+const SCROLL_TO: Callee = Callee::Qualified("scrollTo");
 
 pub struct DraggableSheetScrollTo;
 
@@ -35,7 +35,7 @@ impl Rule for DraggableSheetScrollTo {
         let mut out = Vec::new();
         for file in &project.scripts {
             for call in file.doc.calls() {
-                if !call.callee.ends_with(SCROLL_TO) {
+                if !SCROLL_TO.matches(&call.callee) {
                     continue;
                 }
                 let conflicting = call.args.iter().any(|arg| {

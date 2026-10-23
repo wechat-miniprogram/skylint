@@ -21,17 +21,11 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::Severity;
 
-use super::{at_span, is_plugin};
+use super::{Callee, at_span, is_plugin};
 
-/// callee 的链尾两段必须正好是 `scrollViewContext` / `scrollTo`：
-/// `worklet.scrollViewContext.scrollTo` 算，`myscrollViewContext.scrollTo` 不算。
-fn is_scroll_view_scroll_to(callee: &str) -> bool {
-    let mut segments = callee.rsplit('.');
-    matches!(
-        (segments.next(), segments.next()),
-        (Some("scrollTo"), Some("scrollViewContext"))
-    )
-}
+/// 只在 UI 线程（worklet）可用的方法。按段匹配：`worklet.scrollViewContext.scrollTo`
+/// 算，`myscrollViewContext.scrollTo` 不算。
+const SCROLL_TO: Callee = Callee::Suffix("scrollViewContext.scrollTo");
 
 pub struct WorkletApiScope;
 
@@ -53,7 +47,7 @@ impl Rule for WorkletApiScope {
         let mut out = Vec::new();
         for file in &project.scripts {
             for call in file.doc.calls() {
-                let scroll_to = is_scroll_view_scroll_to(&call.callee);
+                let scroll_to = SCROLL_TO.matches(&call.callee);
                 if !scroll_to && call.worklet_scope && call.callee.starts_with("wx.") {
                     out.push(at_span(
                         Self::ID,

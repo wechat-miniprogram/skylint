@@ -5,10 +5,22 @@ use crate::{Diagnostic, Severity};
 
 /// 值里含变量 / 插值时运行时才能确定，一律跳过。
 ///
-/// 口径与旧的字符串实现保持一致：`var(` / `env(` / `{{` / `$` / `#{` 在任意位置
-/// （包括函数参数和字符串里）都算，`@` 只算值开头。
+/// 口径：`var(` / `env(` / `{{` / `$` / `#{` 在任意位置（包括函数参数和字符串里）
+/// 都算，`@` 只算值开头（Less 变量）。没有词元可用的地方（数据表归一化）用
+/// [`text_is_dynamic`]，避免再维护第二套口径。
 pub(crate) fn is_dynamic(tokens: &[ValueToken]) -> bool {
     tokens.iter().any(token_is_dynamic) || starts_with_at(tokens)
+}
+
+/// 纯文本层面的同一判定。
+pub(crate) fn text_is_dynamic(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("var(")
+        || lower.contains("env(")
+        || text.contains("{{")
+        || text.contains('$')
+        || text.contains("#{")
+        || text.trim_start().starts_with('@')
 }
 
 fn token_is_dynamic(token: &ValueToken) -> bool {
@@ -28,15 +40,6 @@ fn token_is_dynamic(token: &ValueToken) -> bool {
         | ValueToken::Other(text) => text_is_dynamic(text),
         ValueToken::Comma => false,
     }
-}
-
-fn text_is_dynamic(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    lower.contains("var(")
-        || lower.contains("env(")
-        || text.contains("{{")
-        || text.contains('$')
-        || text.contains("#{")
 }
 
 fn starts_with_at(tokens: &[ValueToken]) -> bool {

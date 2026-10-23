@@ -12,10 +12,10 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::Severity;
 
-use super::at_span;
+use super::{Callee, at_span};
 
-const SCROLL_TO: &str = "scrollViewContext.scrollTo";
-const REF: &str = ".ref";
+const SCROLL_TO: Callee = Callee::Suffix("scrollViewContext.scrollTo");
+const REF: Callee = Callee::Qualified("ref");
 const MESSAGE: &str = "用 `scrollViewContext.scrollTo` 前必须先用 `createSelectorQuery().select(..).ref(cb)` 拿到引用，否则 ref 是 undefined";
 
 pub struct ScrollContextRef;
@@ -37,10 +37,13 @@ impl Rule for ScrollContextRef {
         let mut out = Vec::new();
         for file in &project.scripts {
             let calls = file.doc.calls();
-            let Some(first) = calls.iter().find(|call| call.callee.ends_with(SCROLL_TO)) else {
+            let Some(first) = calls
+                .iter()
+                .find(|call| SCROLL_TO.matches(&call.callee))
+            else {
                 continue;
             };
-            if calls.iter().any(|call| call.callee.ends_with(REF)) {
+            if calls.iter().any(|call| REF.matches(&call.callee)) {
                 continue;
             }
             out.push(at_span(

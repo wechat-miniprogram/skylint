@@ -21,11 +21,16 @@ use crate::input::js::{ArgInfo, JsDoc};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::at_span;
+use super::{Callee, at_span};
 
 const ROUTE_TYPE: &str = "routeType";
 const PRESET_PREFIX: &str = "wx://";
-const REGISTER: &str = "addRouteBuilder";
+const REGISTER: Callee = Callee::Qualified("addRouteBuilder");
+const NAVIGATION: [Callee; 3] = [
+    Callee::Method("navigateTo"),
+    Callee::Method("redirectTo"),
+    Callee::Method("reLaunch"),
+];
 
 pub struct RouteType;
 
@@ -33,18 +38,10 @@ impl RouteType {
     pub const ID: &'static str = "skyline/route-type";
 }
 
-/// callee 的链尾是否是这个方法：`navigateTo`、`wx.navigateTo`、
-/// `this.pageRouter.navigateTo` 都算，`notNavigateTo` 不算。
-fn callee_calls(callee: &str, method: &str) -> bool {
-    callee
-        .strip_suffix(method)
-        .is_some_and(|prefix| prefix.is_empty() || prefix.ends_with('.'))
-}
-
 /// 跳转调用的接收者必须是已知的对象：`navigateTo` 裸调用、`wx.*`、`*.pageRouter`。
 /// 其它接收者（`myRouter.navigateTo`、类实例方法）不看，语义无法静态确认。
-fn navigation_callee(callee: &str, method: &str) -> bool {
-    if !callee_calls(callee, method) {
+fn navigation_callee(callee: &str) -> bool {
+    if !NAVIGATION.iter().any(|pattern| pattern.matches(callee)) {
         return false;
     }
     match callee.rsplit_once('.') {
@@ -95,7 +92,7 @@ impl Rule for RouteType {
         let mut registered: HashSet<&str> = HashSet::new();
         for doc in project.scripts.iter().map(|file| &file.doc) {
             for call in doc.calls() {
-                if !callee_calls(&call.callee, REGISTER) {
+                if !REGISTER.matches(&call.callee) {
                     continue;
                 }
                 match call.args.first().and_then(|arg| string_literal(doc, arg)) {
@@ -113,10 +110,7 @@ impl Rule for RouteType {
         let mut out = Vec::new();
         for file in &project.scripts {
             for call in file.doc.calls() {
-                if !["navigateTo", "redirectTo", "reLaunch"]
-                    .iter()
-                    .any(|method| navigation_callee(&call.callee, method))
-                {
+                if !navigation_callee(&call.callee) {
                     continue;
                 }
                 for arg in &call.args {

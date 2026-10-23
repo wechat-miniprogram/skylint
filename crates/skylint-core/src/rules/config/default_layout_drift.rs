@@ -35,12 +35,17 @@ impl Rule for DefaultLayoutDrift {
         if !project.pages.iter().any(|page| page.is_skyline) {
             return Vec::new();
         }
-        // rendererOptions 整块写成非对象时静默：那是 `skyline/renderer-options` 的职责，
-        // 本规则不重复报同一份写坏的配置。
+        // `rendererOptions` 或它下面 `skyline` 写成非对象时静默：那是
+        // `skyline/renderer-options` 的职责，本规则不重复报同一份写坏的配置。
         if project
             .app_json
             .get("rendererOptions")
-            .is_some_and(|options| !options.is_object())
+            .is_some_and(|options| {
+                !options.is_object()
+                    || options
+                        .get("skyline")
+                        .is_some_and(|skyline| !skyline.is_object())
+            })
         {
             return Vec::new();
         }
@@ -193,6 +198,17 @@ mod tests {
         let (_f, project) = project(
             "drift-not-object",
             r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":"on"}"#,
+            "{}",
+        );
+        assert!(DefaultLayoutDrift.check(&project).is_empty());
+    }
+
+    #[test]
+    fn ignores_a_non_object_skyline_layer() {
+        // `rendererOptions.skyline` 写坏同样由 skyline/renderer-options 报，这里不重复。
+        let (_f, project) = project(
+            "drift-skyline-not-object",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":"on"}}"#,
             "{}",
         );
         assert!(DefaultLayoutDrift.check(&project).is_empty());

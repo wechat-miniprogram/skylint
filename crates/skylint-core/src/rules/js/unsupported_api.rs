@@ -20,7 +20,7 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::Severity;
 
-use super::{at_span, is_plugin};
+use super::{Callee, at_span, is_plugin};
 
 const SOURCE: &str = include_str!("../data/unsupported_js_api.txt");
 
@@ -67,9 +67,11 @@ impl Rule for UnsupportedApi {
             for call in file.doc.calls() {
                 for entry in entries {
                     let span = match entry.kind {
-                        Kind::Call => (call.callee == entry.target)
+                        Kind::Call => Callee::Exact(entry.target)
+                            .matches(&call.callee)
                             .then_some((call.start, call.end)),
-                        Kind::PluginCall => (plugin && matches_namespace(&call.callee, entry.target))
+                        Kind::PluginCall => (plugin
+                            && Callee::Namespace(entry.target).matches(&call.callee))
                             .then_some((call.start, call.end)),
                         Kind::PageOption => {
                             if call.callee != PAGE {
@@ -99,14 +101,6 @@ impl Rule for UnsupportedApi {
 fn data() -> &'static [Entry] {
     static TABLE: OnceLock<Vec<Entry>> = OnceLock::new();
     TABLE.get_or_init(|| parse(SOURCE).expect("JS 不支持 API 表格式错误"))
-}
-
-/// `wx.router` 命中 `wx.router` 本身与它下面的一切方法。
-fn matches_namespace(callee: &str, prefix: &str) -> bool {
-    callee == prefix
-        || callee
-            .strip_prefix(prefix)
-            .is_some_and(|rest| rest.starts_with('.'))
 }
 
 /// 解析数据文件。格式错误一律返回带行号的说明，便于同步时定位。

@@ -106,21 +106,14 @@ fn is_lowercase(text: &str) -> bool {
     !text.bytes().any(|b| b.is_ascii_uppercase())
 }
 
-/// 值归一化：`trim` + 小写；含运行时变量/插值时返回 `None`（无法静态判定）。
+/// 值归一化：`trim` + 小写；含运行时变量/插值时返回 `None`（无法静态判定，口径同
+/// [`super::value_util::text_is_dynamic`]）。
 pub(crate) fn normalize_value(value: &str) -> Option<String> {
-    let lower = value.trim().to_ascii_lowercase();
-    if lower.is_empty()
-        || lower.contains("var(")
-        || lower.contains("env(")
-        || lower.contains("{{")
-        // 预处理器变量 / 插值：静态求值不了
-        || value.contains('$')
-        || value.contains("#{")
-        || value.trim_start().starts_with('@')
-    {
+    let text = value.trim();
+    if text.is_empty() || super::value_util::text_is_dynamic(text) {
         return None;
     }
-    Some(lower)
+    Some(text.to_ascii_lowercase())
 }
 
 #[cfg(test)]

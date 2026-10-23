@@ -106,7 +106,7 @@ fn shares_selector(selector: &WxssSelector, selectors: &[WxssSelector]) -> bool 
 
 fn is_flex_value(value: &str) -> bool {
     let lower = value.trim().to_ascii_lowercase();
-    if lower.contains("var(") || lower.contains("env(") || lower.contains("{{") {
+    if super::value_util::text_is_dynamic(&lower) {
         return false;
     }
     matches!(lower.as_str(), "flex" | "inline-flex")
