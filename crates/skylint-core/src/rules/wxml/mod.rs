@@ -12,6 +12,7 @@ pub mod no_inline_text;
 pub mod scroll_view_family;
 pub mod scroll_view_type;
 pub mod share_element_key;
+pub(crate) mod structure;
 pub mod unsupported_component;
 
 pub use component_attribute::ComponentAttribute;

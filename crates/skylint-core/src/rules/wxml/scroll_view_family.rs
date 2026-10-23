@@ -3,28 +3,6 @@
 //!
 //! 表格表达不了的否定约束（nested-scroll-header 不能在 body 内）留在代码里。
 //!
-//! # 关系语义
-//!
-//! - `Direct`：直接父节点必须是目标之一（渲染树，block/wx:if/wx:for 已摊平）
-//! - `Ancestor`：最近的同名祖先必须是目标，并满足目标上的属性要求
-//! - `FirstChild`：父节点是目标容器时，子标签必须是它的第一个元素子节点
-//! - `Unique`：最近的目标容器内，子标签最多出现一次（多余的不会生效）
-//! - `Before { sibling, .. }`：目标容器内，子标签必须排在同级 `<sibling>` 之前
-//! - `RendersFirst`：子标签只渲染第一个直接子元素，多写的会被静默丢弃
-//! - `RequiresAttr { name, unless }`：子标签必须显式声明 `name`；`unless` 为
-//!   `(attr, v)` 时，自身 `<attr>=<v>` 不再要求（典型：list-builder 的 child-height
-//!   只在定高模式必填）
-//! - `AllowedValues`：子标签该属性只能取这些静态值；未声明不报
-//! - `Within`：最近的该容器祖先下，子标签必须声明 `name=value`
-//! - 目标写法：`Target { tag, attr }`，多个目标直接列成数组
-//!
-//! # 条件分支
-//!
-//! 同一个 `wx:if` 节点的不同分支互斥（运行时只会渲染其中一个），因此
-//!   first-child / unique / before 比较兄弟时会跳过与当前节点互斥的候选：不同分支不算
-//!   「排在前面」、不算重复、不算顺序违规。两个独立的 `wx:if` 之间不互斥，仍按原样判定；
-//!   无条件元素与条件分支元素也不互斥（两者可能同时渲染）。
-//!
 //! # 依据（每条都能指到原句）
 //!
 //! - sticky-section：scroll/sticky.md「它们必须在 <scroll-view type="custom"> 模式下使用」，
@@ -68,64 +46,13 @@
 //! 或互相矛盾就不报」的原则，不对 sticky-header 的挂载位置做任何约束。
 
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::branch::{element_children, exclusive, max_rendered_children};
+use super::structure::{self, Constraint, Relation, Target};
 use super::{element_diagnostic, is_builtin, load_doc, wxml_files};
 
 pub const ID: &str = "skyline/scroll-view-family";
-
-/// 一个允许的父/祖先节点，`attr` 是该节点必须满足的属性。
-#[derive(Debug, Clone, Copy)]
-struct Target {
-    tag: &'static str,
-    attr: Option<(&'static str, &'static str)>,
-}
-
-/// 子标签与目标之间的关系，目标容器直接内联在变体里。
-#[derive(Debug)]
-enum Relation {
-    /// 直接父节点必须是目标之一。
-    Direct(&'static [Target]),
-    /// 最近的同名祖先必须是目标，并满足目标上的属性要求。
-    Ancestor(&'static [Target]),
-    /// 父节点是目标容器时，子节点必须是它的第一个元素子节点。
-    FirstChild(&'static [Target]),
-    /// 最近的目标容器内，子节点最多出现一次。
-    Unique(&'static [Target]),
-    /// 目标容器内，子节点必须排在同级 `<sibling>` 之前。
-    Before {
-        sibling: &'static str,
-        containers: &'static [Target],
-    },
-    /// 子节点只渲染第一个直接子元素。
-    RendersFirst,
-    /// 子节点自身必须声明该属性；`unless` 里的属性取该值时不再要求。
-    RequiresAttr {
-        name: &'static str,
-        unless: Option<(&'static str, &'static str)>,
-    },
-    /// 子节点自身的该属性只能取这些静态值。
-    AllowedValues {
-        name: &'static str,
-        values: &'static [&'static str],
-    },
-    /// 最近的该容器祖先下，子节点必须声明 `name="value"`。
-    Within {
-        container: Target,
-        name: &'static str,
-        value: &'static str,
-    },
-}
-
-struct Constraint {
-    child: &'static str,
-    relation: Relation,
-    severity: Severity,
-    help: &'static str,
-}
 
 const CUSTOM_SCROLL: Target = Target {
     tag: "scroll-view",
@@ -143,55 +70,55 @@ const STICKY_SECTION: Target = Target {
 /// scroll-view 家族结构约束表。
 const CONSTRAINTS: &[Constraint] = &[
     Constraint {
-        child: "sticky-section",
+        tag: "sticky-section",
         relation: Relation::Ancestor(&[CUSTOM_SCROLL]),
         severity: Severity::Error,
         help: "把 `<sticky-section>` 放进 `<scroll-view type=\"custom\">`，type 不能是 list/nested",
     },
     Constraint {
-        child: "list-view",
+        tag: "list-view",
         relation: Relation::Direct(&[CUSTOM_SCROLL, STICKY_SECTION]),
         severity: Severity::Error,
         help: "把 `<list-view>` 移为 `<scroll-view type=\"custom\">` 或 `<sticky-section>` 的直接子节点",
     },
     Constraint {
-        child: "grid-view",
+        tag: "grid-view",
         relation: Relation::Direct(&[CUSTOM_SCROLL, STICKY_SECTION]),
         severity: Severity::Error,
         help: "把 `<grid-view>` 移为 `<scroll-view type=\"custom\">` 或 `<sticky-section>` 的直接子节点",
     },
     Constraint {
-        child: "nested-scroll-header",
+        tag: "nested-scroll-header",
         relation: Relation::Ancestor(&[NESTED_SCROLL]),
         severity: Severity::Error,
         help: "把 `<nested-scroll-header>` 放在外层 `<scroll-view type=\"nested\">` 内",
     },
     Constraint {
-        child: "nested-scroll-body",
+        tag: "nested-scroll-body",
         relation: Relation::Ancestor(&[NESTED_SCROLL]),
         severity: Severity::Error,
         help: "把 `<nested-scroll-body>` 放在外层 `<scroll-view type=\"nested\">` 内",
     },
     Constraint {
-        child: "sticky-header",
+        tag: "sticky-header",
         relation: Relation::FirstChild(&[STICKY_SECTION]),
         severity: Severity::Error,
         help: "把 `<sticky-header>` 移到 `<sticky-section>` 的第一个元素子节点位置",
     },
     Constraint {
-        child: "sticky-header",
+        tag: "sticky-header",
         relation: Relation::Unique(&[STICKY_SECTION]),
         severity: Severity::Error,
         help: "一个 `<sticky-section>` 只保留一个 `<sticky-header>`",
     },
     Constraint {
-        child: "nested-scroll-body",
+        tag: "nested-scroll-body",
         relation: Relation::Unique(&[NESTED_SCROLL]),
         severity: Severity::Error,
         help: "外层 `<scroll-view type=\"nested\">` 只保留一个 `<nested-scroll-body>`",
     },
     Constraint {
-        child: "nested-scroll-header",
+        tag: "nested-scroll-header",
         relation: Relation::Before {
             sibling: "nested-scroll-body",
             containers: &[NESTED_SCROLL],
@@ -200,19 +127,19 @@ const CONSTRAINTS: &[Constraint] = &[
         help: "把 `<nested-scroll-header>` 移到 `<nested-scroll-body>` 之前",
     },
     Constraint {
-        child: "nested-scroll-header",
+        tag: "nested-scroll-header",
         relation: Relation::RendersFirst,
         severity: Severity::Warning,
         help: "把头部内容收进一个直接子节点（例如一个 `<view>`）",
     },
     Constraint {
-        child: "nested-scroll-body",
+        tag: "nested-scroll-body",
         relation: Relation::RendersFirst,
         severity: Severity::Warning,
         help: "把主体内容收进一个直接子节点（例如一个 `<view>`）",
     },
     Constraint {
-        child: "list-builder",
+        tag: "list-builder",
         relation: Relation::RequiresAttr {
             name: "child-height",
             unless: Some(("type", "dynamic")),
@@ -221,7 +148,7 @@ const CONSTRAINTS: &[Constraint] = &[
         help: "在 `<list-builder>` 上声明列表项高度 `child-height`（定高模式必填）",
     },
     Constraint {
-        child: "grid-view",
+        tag: "grid-view",
         relation: Relation::RequiresAttr {
             name: "cross-axis-count",
             unless: None,
@@ -230,7 +157,7 @@ const CONSTRAINTS: &[Constraint] = &[
         help: "在 `<grid-view>` 上声明交叉轴元素数量 `cross-axis-count`",
     },
     Constraint {
-        child: "list-builder",
+        tag: "list-builder",
         relation: Relation::AllowedValues {
             name: "type",
             values: &["static", "dynamic"],
@@ -239,7 +166,7 @@ const CONSTRAINTS: &[Constraint] = &[
         help: "`type` 只能是 `static`（定高）或 `dynamic`（不定高）",
     },
     Constraint {
-        child: "grid-view",
+        tag: "grid-view",
         relation: Relation::AllowedValues {
             name: "type",
             values: &["aligned", "masonry"],
@@ -248,7 +175,7 @@ const CONSTRAINTS: &[Constraint] = &[
         help: "`type` 只能是 `aligned`（网格）或 `masonry`（瀑布流）",
     },
     Constraint {
-        child: "scroll-view",
+        tag: "scroll-view",
         relation: Relation::Within {
             container: Target {
                 tag: "nested-scroll-body",
@@ -261,7 +188,7 @@ const CONSTRAINTS: &[Constraint] = &[
         help: "给 `<nested-scroll-body>` 内的 `<scroll-view>` 加上 `associative-container=\"nested-scroll-view\"`",
     },
     Constraint {
-        child: "scroll-view",
+        tag: "scroll-view",
         relation: Relation::Within {
             container: Target {
                 tag: "draggable-sheet",
@@ -274,346 +201,6 @@ const CONSTRAINTS: &[Constraint] = &[
         help: "给 `<draggable-sheet>` 内的 `<scroll-view>` 加上 `associative-container=\"draggable-sheet\"`",
     },
 ];
-
-enum AttrCheck {
-    Ok,
-    Violation,
-    /// 动态绑定，静态阶段无法判定。
-    Unknown,
-}
-
-fn check_attr(element: &WxmlElement, name: &str, expected: &str) -> AttrCheck {
-    match find_attr(element, name) {
-        None => AttrCheck::Violation,
-        Some(attr) if !attr.is_static => AttrCheck::Unknown,
-        Some(attr) => match attr.value.as_deref() {
-            Some(value) if value.trim().eq_ignore_ascii_case(expected) => AttrCheck::Ok,
-            _ => AttrCheck::Violation,
-        },
-    }
-}
-
-fn find_attr<'a>(
-    element: &'a WxmlElement,
-    name: &str,
-) -> Option<&'a crate::input::wxml::WxmlAttribute> {
-    element
-        .attributes
-        .iter()
-        .find(|attr| attr.name.eq_ignore_ascii_case(name))
-}
-
-/// 把约束目标渲染成文档里的写法，用于诊断文案。
-fn render_targets(targets: &[Target]) -> String {
-    targets
-        .iter()
-        .map(|target| match target.attr {
-            Some((name, value)) => format!("<{} {}=\"{}\">", target.tag, name, value),
-            None => format!("<{}>", target.tag),
-        })
-        .collect::<Vec<_>>()
-        .join(" 或 ")
-}
-
-/// 带上实际属性值的节点写法，说明「当前挂在哪」。
-fn describe(element: &WxmlElement, name: &str) -> String {
-    match find_attr(element, name).and_then(|attr| attr.value.as_deref()) {
-        Some(value) => format!("<{} {}=\"{}\">", element.tag, name, value),
-        None => format!("<{}>", element.tag),
-    }
-}
-
-/// 父节点是否属于目标容器（属性不符不算，动态绑定不阻断）。
-fn is_container(element: &WxmlElement, containers: &[Target]) -> bool {
-    containers.iter().any(|target| match target.attr {
-        None => target.tag == element.tag,
-        Some((name, value)) => {
-            target.tag == element.tag
-                && !matches!(check_attr(element, name, value), AttrCheck::Violation)
-        }
-    })
-}
-
-/// 最近的同名容器祖先；遇到自定义组件（渲染树未知）或属性不符就停。
-fn nearest_container<'a>(
-    ancestors: &[&'a WxmlElement],
-    containers: &[Target],
-) -> Option<&'a WxmlElement> {
-    for ancestor in ancestors.iter().rev() {
-        if !is_builtin(&ancestor.tag) {
-            return None;
-        }
-        if let Some(target) = containers.iter().find(|target| target.tag == ancestor.tag) {
-            return match target.attr {
-                None => Some(ancestor),
-                Some((name, value)) => match check_attr(ancestor, name, value) {
-                    AttrCheck::Ok => Some(ancestor),
-                    AttrCheck::Violation | AttrCheck::Unknown => None,
-                },
-            };
-        }
-    }
-    None
-}
-
-fn direct_violation(
-    element: &WxmlElement,
-    ancestors: &[&WxmlElement],
-    targets: &[Target],
-) -> Option<String> {
-    let expected = render_targets(targets);
-    let Some(parent) = ancestors.last() else {
-        return Some(format!(
-            "`<{}>` 位于文件顶层，必须直接放在 {} 内",
-            element.tag, expected
-        ));
-    };
-    // 自定义组件的渲染树未知，不越过它判定。
-    if !is_builtin(&parent.tag) {
-        return None;
-    }
-    let Some(target) = targets.iter().find(|target| target.tag == parent.tag) else {
-        return Some(format!(
-            "`<{}>` 必须直接放在 {} 内，当前父节点是 `<{}>`",
-            element.tag, expected, parent.tag
-        ));
-    };
-    match target.attr {
-        None => None,
-        Some((name, value)) => match check_attr(parent, name, value) {
-            AttrCheck::Violation => Some(format!(
-                "`<{}>` 必须直接放在 {} 内，父节点是 {}",
-                element.tag,
-                expected,
-                describe(parent, name)
-            )),
-            _ => None,
-        },
-    }
-}
-
-fn ancestor_violation(
-    element: &WxmlElement,
-    ancestors: &[&WxmlElement],
-    targets: &[Target],
-) -> Option<String> {
-    let expected = render_targets(targets);
-    for ancestor in ancestors.iter().rev() {
-        // 自定义组件的渲染树未知，不越过它判定。
-        if !is_builtin(&ancestor.tag) {
-            return None;
-        }
-        let Some(target) = targets.iter().find(|target| target.tag == ancestor.tag) else {
-            continue;
-        };
-        return match target.attr {
-            None => None,
-            Some((name, value)) => match check_attr(ancestor, name, value) {
-                AttrCheck::Violation => Some(format!(
-                    "`<{}>` 必须放在 {} 内，最近的 `<{}>` 是 {}",
-                    element.tag,
-                    expected,
-                    ancestor.tag,
-                    describe(ancestor, name)
-                )),
-                _ => None,
-            },
-        };
-    }
-    Some(format!(
-        "`<{}>` 必须放在 {} 内，当前不在该容器中",
-        element.tag, expected
-    ))
-}
-
-fn first_child_violation(
-    element: &WxmlElement,
-    ancestors: &[&WxmlElement],
-    containers: &[Target],
-) -> Option<String> {
-    let parent = ancestors.last()?;
-    // 容器祖先存在但中间隔着内置节点：它仍不是容器的直接子元素。
-    // （`<block wx:if>` 已被摊平，不会走到这里。）
-    if !is_container(parent, containers) {
-        let container = nearest_container(ancestors, containers)?;
-        if !is_builtin(&parent.tag) {
-            return None;
-        }
-        return Some(format!(
-            "`<{}>` 必须直接放在 `<{}>` 下，当前位于 `<{}>` 内",
-            element.tag, container.tag, parent.tag
-        ));
-    }
-    let mut first = None;
-    for sibling in element_children(parent) {
-        if std::ptr::eq(sibling, element) {
-            break;
-        }
-        // 互斥分支的兄弟不会与它同时渲染，不算排在它前面。
-        if exclusive(sibling, element) {
-            continue;
-        }
-        // 同标签的重复节点交给 unique，避免同一位置两条诊断。
-        if sibling.tag == element.tag {
-            return None;
-        }
-        first.get_or_insert(sibling);
-    }
-    let first = first?;
-    Some(format!(
-        "`<{}>` 必须是 `<{}>` 的第一个元素子节点，当前前面还有 `<{}>`",
-        element.tag, parent.tag, first.tag
-    ))
-}
-
-fn unique_violation(
-    element: &WxmlElement,
-    ancestors: &[&WxmlElement],
-    containers: &[Target],
-) -> Option<String> {
-    let container = nearest_container(ancestors, containers)?;
-    // 互斥分支里的同标签节点不会与它同时渲染，不计入重复；嵌套在内部节点里的
-    // 同名节点同样是容器下的重复项。
-    let siblings: Vec<&WxmlElement> = descendants(container)
-        .into_iter()
-        .filter(|sibling| sibling.tag == element.tag && !exclusive(sibling, element))
-        .collect();
-    if siblings.len() < 2 {
-        return None;
-    }
-    let index = siblings
-        .iter()
-        .position(|sibling| std::ptr::eq(*sibling, element))?;
-    if index == 0 {
-        return None;
-    }
-    Some(format!(
-        "`{}` 内有 {} 个 `<{}>`，只有第一个会生效",
-        describe(container, "type"),
-        siblings.len(),
-        element.tag
-    ))
-}
-
-/// 容器下的全部后代元素（文档顺序，含容器的直接子节点）。
-fn descendants(element: &WxmlElement) -> Vec<&WxmlElement> {
-    let mut out = Vec::new();
-    let mut stack: Vec<&WxmlNode> = element.children.iter().rev().collect();
-    while let Some(node) = stack.pop() {
-        if let WxmlNode::Element(child) = node {
-            out.push(child);
-            stack.extend(child.children.iter().rev());
-        }
-    }
-    out
-}
-
-fn before_violation(
-    element: &WxmlElement,
-    ancestors: &[&WxmlElement],
-    containers: &[Target],
-    sibling_tag: &str,
-) -> Option<String> {
-    let container = nearest_container(ancestors, containers)?;
-    let siblings: Vec<&WxmlElement> = element_children(container).collect();
-    let this = siblings
-        .iter()
-        .position(|sibling| std::ptr::eq(*sibling, element))?;
-    // 互斥分支里的 `<tag>` 与它不会同时渲染，不构成顺序违规。
-    let other = siblings
-        .iter()
-        .position(|sibling| sibling.tag == sibling_tag && !exclusive(sibling, element))?;
-    if other > this {
-        return None;
-    }
-    Some(format!(
-        "`<{}>` 排在 `<{}>` 之后，必须放在同级 `<{}>` 之前",
-        element.tag, sibling_tag, sibling_tag
-    ))
-}
-
-fn renders_first_violation(element: &WxmlElement) -> Option<String> {
-    let count = max_rendered_children(element);
-    if count < 2 {
-        return None;
-    }
-    Some(format!(
-        "`<{}>` 有 {count} 个直接子元素，只渲染第一个，其余会被静默丢弃",
-        element.tag
-    ))
-}
-
-fn requires_attr_violation(
-    element: &WxmlElement,
-    name: &str,
-    unless: Option<(&str, &str)>,
-) -> Option<String> {
-    if let Some((attribute, value)) = unless
-        && !matches!(check_attr(element, attribute, value), AttrCheck::Violation)
-    {
-        return None;
-    }
-    if find_attr(element, name).is_some() {
-        return None;
-    }
-    Some(format!(
-        "`<{}>` 未声明 `{name}` 属性，该属性是必须的",
-        element.tag
-    ))
-}
-
-fn allowed_values_violation(element: &WxmlElement, name: &str, values: &[&str]) -> Option<String> {
-    let attr = find_attr(element, name)?;
-    if !attr.is_static {
-        return None;
-    }
-    let actual = attr.value.as_deref().unwrap_or("").trim();
-    if values
-        .iter()
-        .any(|value| value.eq_ignore_ascii_case(actual))
-    {
-        return None;
-    }
-    let allowed = values
-        .iter()
-        .map(|value| format!("`{value}`"))
-        .collect::<Vec<_>>()
-        .join(" 或 ");
-    Some(format!(
-        "`<{} {}=\"{}\">` 的 `{}` 只能是 {allowed}，当前值不生效",
-        element.tag, name, actual, name
-    ))
-}
-
-fn within_violation(
-    element: &WxmlElement,
-    ancestors: &[&WxmlElement],
-    container: &Target,
-    name: &str,
-    value: &str,
-) -> Option<String> {
-    // 只在该容器祖先下才要求关联属性。
-    nearest_container(ancestors, std::slice::from_ref(container))?;
-    let requirement = format!("{name}=\"{value}\"");
-    let inside = describe(element, "type");
-    match find_attr(element, name) {
-        None => Some(format!(
-            "`{inside}` 位于 `<{}>` 内，必须设置 `{requirement}`",
-            container.tag
-        )),
-        Some(attr) if !attr.is_static => None,
-        Some(attr) => {
-            let actual = attr.value.as_deref().unwrap_or("").trim();
-            if actual.eq_ignore_ascii_case(value) {
-                return None;
-            }
-            Some(format!(
-                "`{inside}` 位于 `<{}>` 内，当前是 `{name}=\"{actual}\"`，必须设置为 `{requirement}`",
-                container.tag
-            ))
-        }
-    }
-}
 
 pub struct ScrollViewFamily;
 
@@ -632,117 +219,44 @@ impl Rule for ScrollViewFamily {
             let Some(doc) = load_doc(project, path) else {
                 continue;
             };
-            let mut ancestors = Vec::new();
-            collect(
-                &doc,
-                &doc.nodes,
-                &mut ancestors,
-                CONSTRAINTS,
-                path,
-                &mut diagnostics,
-            );
+            structure::walk(&doc, |element, ancestors| {
+                // 模板定义体只在实例化处渲染，真实祖先链静态不可知，结构约束无法判定。
+                if element.in_template {
+                    return;
+                }
+                structure::check_element(
+                    ID,
+                    &doc,
+                    element,
+                    ancestors,
+                    CONSTRAINTS,
+                    path,
+                    &mut diagnostics,
+                );
+
+                // nested-scroll.md NEVER 1「不要在 nested-scroll-body 下面放 nested-scroll-header」。
+                if element.tag == "nested-scroll-header"
+                    && ancestors
+                        .iter()
+                        .rev()
+                        .take_while(|ancestor| is_builtin(&ancestor.tag))
+                        .any(|ancestor| ancestor.tag == "nested-scroll-body")
+                {
+                    diagnostics.push(
+                        element_diagnostic(
+                            ID,
+                            &doc,
+                            element,
+                            path,
+                            Severity::Error,
+                            "`<nested-scroll-header>` 不能放在 `<nested-scroll-body>` 内，头部不会随外层滚动",
+                        )
+                        .help("把 `<nested-scroll-header>` 移到 `<nested-scroll-body>` 之前，与它平级"),
+                    );
+                }
+            });
         }
         diagnostics
-    }
-}
-
-fn collect<'a>(
-    doc: &WxmlDoc,
-    nodes: &'a [WxmlNode],
-    ancestors: &mut Vec<&'a WxmlElement>,
-    constraints: &[Constraint],
-    path: &str,
-    out: &mut Vec<Diagnostic>,
-) {
-    for node in nodes {
-        let WxmlNode::Element(element) = node else {
-            continue;
-        };
-        // 模板定义体只在实例化处渲染，真实祖先链静态不可知，结构约束无法判定。
-        if element.in_template {
-            continue;
-        }
-        check_element(doc, element, ancestors, constraints, path, out);
-        ancestors.push(element);
-        collect(doc, &element.children, ancestors, constraints, path, out);
-        ancestors.pop();
-    }
-}
-
-fn check_element(
-    doc: &WxmlDoc,
-    element: &WxmlElement,
-    ancestors: &[&WxmlElement],
-    constraints: &[Constraint],
-    path: &str,
-    out: &mut Vec<Diagnostic>,
-) {
-    for constraint in constraints.iter().filter(|c| c.child == element.tag) {
-        let message = match &constraint.relation {
-            Relation::Direct(targets) => direct_violation(element, ancestors, targets),
-            Relation::Ancestor(targets) => ancestor_violation(element, ancestors, targets),
-            Relation::FirstChild(targets) => {
-                // 重复节点已由 unique 报在同一个元素上，不再叠一条。
-                let duplicate = constraints.iter().any(|other| {
-                    if other.child != element.tag {
-                        return false;
-                    }
-                    let Relation::Unique(targets) = &other.relation else {
-                        return false;
-                    };
-                    unique_violation(element, ancestors, targets).is_some()
-                });
-                if duplicate {
-                    None
-                } else {
-                    first_child_violation(element, ancestors, targets)
-                }
-            }
-            Relation::Unique(targets) => unique_violation(element, ancestors, targets),
-            Relation::Before {
-                sibling,
-                containers,
-            } => before_violation(element, ancestors, containers, sibling),
-            Relation::RendersFirst => renders_first_violation(element),
-            Relation::RequiresAttr { name, unless } => {
-                requires_attr_violation(element, name, *unless)
-            }
-            Relation::AllowedValues { name, values } => {
-                allowed_values_violation(element, name, values)
-            }
-            Relation::Within {
-                container,
-                name,
-                value,
-            } => within_violation(element, ancestors, container, name, value),
-        };
-        if let Some(message) = message {
-            out.push(
-                element_diagnostic(ID, doc, element, path, constraint.severity, message)
-                    .help(constraint.help),
-            );
-        }
-    }
-
-    // nested-scroll.md NEVER 1「不要在 nested-scroll-body 下面放 nested-scroll-header」。
-    if element.tag == "nested-scroll-header"
-        && ancestors
-            .iter()
-            .rev()
-            .take_while(|ancestor| is_builtin(&ancestor.tag))
-            .any(|ancestor| ancestor.tag == "nested-scroll-body")
-    {
-        out.push(
-            element_diagnostic(
-                ID,
-                doc,
-                element,
-                path,
-                Severity::Error,
-                "`<nested-scroll-header>` 不能放在 `<nested-scroll-body>` 内，头部不会随外层滚动",
-            )
-            .help("把 `<nested-scroll-header>` 移到 `<nested-scroll-body>` 之前，与它平级"),
-        );
     }
 }
 
@@ -757,7 +271,6 @@ mod tests {
     }
 
     // ---- 约束表 ----
-
 
     // ---- sticky-section ----
 
