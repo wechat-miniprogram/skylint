@@ -72,7 +72,7 @@ skyline/unsupported-component
 | `skyline/text-decoration-line` | warning | text-decoration-line 只支持单值，多值组合不生效 |
 | `skyline/text-decoration-target` | warning | text-decoration 在 Skyline 下只对 <text>/<span>/<input> 生效 |
 | `skyline/calc-angle` | warning | calc() 不支持角度计算，表达式中的角度单位不生效 |
-| `skyline/mask-image-gradient` | warning | mask-image 不支持 linear-gradient / radial-gradient，仅 url() 可用 |
+| `skyline/mask-image-gradient` | warning | mask-image 不支持渐变（linear / radial / conic / repeating-*），仅 url() 可用 |
 | `skyline/unsupported-api` | warning | Skyline 不支持的 JS API / 页面配置（如 this.animate、Page.onPageScroll） |
 | `skyline/worklet-api-scope` | error | scrollViewContext.scrollTo 必须在 worklet 内调用，worklet 内不能调用 wx.* |
 | `skyline/worklet-directive` | error | worklet: 绑定、applyAnimatedStyle 与路由动画处理函数缺少 'worklet' 指令 |

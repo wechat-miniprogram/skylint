@@ -351,6 +351,53 @@ builder **返回对象**里的 `handlePrimaryAnimation` / `handleSecondaryAnimat
 `worklet-directive` 按名字查不到 → 不报。方向是漏报，但要覆盖需要「变量名 → 初始化表达式内唯一
 函数」的绑定分析。
 
+### P5 全量审计与修复
+
+`[x]` 37 条规则逐条审计（WXSS / WXML / JS+配置 三条并行线 + 共用层扫描），结论与修复记录如下。
+
+**架构是对的，问题在同一条判断被复制多份、每份只修一部分**：9 条 P0 缺陷里有 6 条是这个原因
+（文件集有 4 份拷贝、互斥判定有 3 份、「值是不是动态的」有 3 套口径、`ends_with` 有 5 处）。
+修复分四个提交（`c54643d` / `bdfb041` / `6ff4600` / `b102fbc`）：
+
+P0（会误报或系统性漏报）：
+- `scroll-view` 的 `type="default"` 是引擎合法值（`scroll_view_shadow_node.cc:20-23` → `kFlex`），
+  从 error 降为 warning（没有按需渲染），并把枚举收进数据表；
+- `box-sizing` 对 `$var` / `@var` / `#{}` 误报 error —— 改用共用的 `is_dynamic`；
+- `<text space/>` 这种**无值属性**在 `[unsupported]` 下零诊断（`value==None` 直接 continue）；
+- `refresher-default-style="none"` 少了 `refresher-enabled` 前置（默认 false，根本没有刷新区）；
+- `exactly:1` 按摊平结果计数，`wx:if`/`wx:else` 分支子节点数不等时误报 —— 改成「能同时渲染
+  的子元素最大数」；
+- `no-inline-text` 自己拼文件列表，漏掉页面级 `renderer: "webview"` 的 opt-out；
+- `worklet-directive` 的路由判定是文件级闸门（文件里任意对象上的同名键都判）→ 改为只认
+  `addRouteBuilder` 的 builder 函数体里的对象；
+- 内联 `<template name>` 的定义体在 `globals.sub_templates` 里，8 条 WXML 规则全看不见 → 输入层
+  摊平并打 `in_template` 标记，依赖祖先/子节点计数的规则对这类元素跳过；
+- `tag-selector-isolation` 只对比「组件 ↔ 用到它的页面」，组件 ↔ 同一页面的兄弟组件整类漏报。
+
+P1（口径不一致 / 边界错位）：跨 scope 的 `text-overflow` / `text-decoration` 判定（共享样式在
+A 页失效、B 页正常时要报）、`no_pseudo` 的转义冒号（`.hover\:bg-red`）、`transition-behavior`
+关键字、简写里的初始值（`background: scroll`、`mask: border-box`）、`filter`/`mask-image` 的函数
+白名单与渐变异形、`radial-gradient` 的长度型前言、`flex-flow` 与「最后一条 display 生效」、
+`route-type` 的动态注册（注册表不可知时整体不判）与接收者白名单、`worklet-api-scope` 的链尾
+边界与插件重复报、`project.private.config.json` 参与配置判定、页面级 `rendererOptions` 只读
+运行时那 6 个键。
+
+共用层收敛（这轮做了什么）：`rules/wxml/branch.rs`（互斥 / 同时渲染计数）、
+`rules/js/callee.rs`（`Exact`/`Suffix`/`Qualified`/`Namespace`/`Method` 五种形态，替掉 5 处
+无边界 `ends_with`）、`value_util::text_is_dynamic`（单一动态值口径）、`Project::setting`
+（private 覆盖 public）。
+
+**明确不做（附理由）**：
+- 简写展开（`border: 1px double red` 这类）：子属性的失效是否导致整条声明被丢弃，取决于引擎
+  对各简写的分解实现，没有证据前报出来就是猜；`unsupported-value` 数据表头已写明边界。
+- `scroll-context-ref` 的文件级启发：改成「同一函数内要有 `.ref`」会在「onReady 里取 ref、
+  手势里 scrollTo」这种常见写法上误报，静态数据流不在工具边界内。
+- `SelectorPart::Pseudo { name, element, args }`：能同时干掉 `no_pseudo` 的 241 行状态机和
+  选择器规则遇 `:hover` 整体退化成 Unknown 的问题，但需要给 parts 加 span（诊断要落在伪类上），
+  影响面比这轮其余改动大，单独评估。
+- 数据表加载器的 8 份 `parse` 重复：只抽「读行骨架」（分区 / 注释 / 列数 / 去重 / 行号报错），
+  各表的行语义留在原处，不为统一扭曲数据文件格式。
+
 ### 不做
 
 autofix；14 条只能运行时判定的条目；`app.json` 自动改写。

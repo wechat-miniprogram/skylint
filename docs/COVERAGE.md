@@ -1,8 +1,8 @@
 # 知识库约束覆盖台账
 
-分母：173 条（口径：给定输入文件即可静态判定真假；其中 #172/#173 是实现期补入的审计漏项）。
+分母：175 条（口径：给定输入文件即可静态判定真假；其中 #172-#175 是实现期补入的审计漏项）。
 
-统计：已实现 143 条 / 待实现 0 条 / 不实现 30 条。
+统计：已实现 145 条 / 待实现 0 条 / 不实现 30 条。
 
 | # | 分组 | 约束（一句话） | 证据 | 状态 | 规则 / 理由 |
 |---|------|----------------|------|------|-------------|
@@ -179,14 +179,23 @@
 | 171 | 1E JS/worklet | 小程序插件内不能使用 worklet.scrollViewContext.scrollTo | skyline-skills/skills/skyline-scroll-api/SKILL.md:110 | 已实现 | `skyline/worklet-api-scope`（compileType=plugin） |
 | 172 | 1C 组件契约 | 暂不支持的组件（web-view / movable-area / movable-view / editor / progress 等） | skyline-skills/skills/skyline-overview/references/introduction/component-support.md:54-61 | 已实现 | `skyline/unsupported-component` |
 | 173 | 1C 组件契约 | 内联文本只能放在 `<text>` 里，不能与元素混排 | skyline-skills/skills/skyline-components/references/media/text.md:5、component-support.md:111 | 已实现 | `skyline/no-inline-text`（只报「文本 + 元素混排」，纯文本节点不报） |
+| 174 | 1D 配置 | app.json 的 rendererOptions 需基础库 ≥ 2.31.1 | skyline-skills/skills/skyline-config/references/project-config.md:66 | 已实现 | `skyline/lib-version`（`rendererOptions` 存在时阈值取 2.31.1；页面级更高阈值覆盖它） |
+| 175 | 1D 配置 | convertRpxToVw 需基础库 ≥ 3.3.0 | skyline-skills/skills/skyline-config/references/project-config.md:68 | 已实现 | `skyline/lib-version`（rendererOptions 子树出现 convertRpxToVw 时阈值取 3.3.0） |
 
 ## 收口说明
 
-171 条审计项全部落账：**141 条已实现、30 条有意不实现、0 条待实现**。
+171 条审计项全部落账，加上实现期补入的四条审计漏项，台账共 **175 行：145 条已实现、
+30 条有意不实现、0 条待实现**。
 
-实现过程中补了两行审计漏掉的约束（#172 暂不支持的组件、#173 内联文本必须用 `<text>`）——
-它们的规则早在 P0/P1 就写了，但审计的枚举没有收进去，属于分母自身的不完整，不是新增判断。
-所以台账实际是 173 行。
+补入的四行都是分母自身的不完整，不是新增判断：#172（暂不支持的组件）、#173（内联文本必须用
+`<text>`）的规则早在 P0/P1 就写了；#174/#175 是 `project-config.md:64-75` 里 rendererOptions
+（2.31.1）与 convertRpxToVw（3.3.0）两档阈值——`skyline/lib-version` 一直按它们判，但枚举时
+只收了 2.30.4 与 3.1.0 两档。
+
+**规则行为在后续全量审计（PLAN 的 P5）里修过一轮**：9 条 P0 缺陷（`scroll-view type=default`
+误报 error、无值属性漏报、`wx:if` 分支计数、页面 opt-out、内联 `<template>` 定义体不可见、
+组件间标签隔离等）与一批口径统一。那些修复改变的是「怎么判」，不改变本台账「某条约束是否
+有规则负责」的状态，所以行数与结论不变。
 
 另有两条**已实现但不在知识库条目里**的规则，来源是引擎源码而非文档，故未计入分母：
 
