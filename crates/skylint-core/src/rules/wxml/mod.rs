@@ -29,12 +29,12 @@ use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{self, WxmlDoc, WxmlElement};
 use crate::project::Project;
 
-/// 页面与组件的 WXML，按路径去重（同一文件可能被多次引用）。
+/// 页面与组件的 WXML + 被 import / include 的模板，按路径去重。
 ///
 /// 页面 json 显式声明 `"renderer": "webview"` 的整页跳过：那是「这页不迁
 /// Skyline」的明确决定（典型是含 `<web-view>` 的页面），对它讲 Skyline 的
 /// 限制只是误报。app 级 webview / 页面未表态不跳——那只是还没迁，正是要检查的。
-/// 组件的 wxml 没有 renderer 可言，一律检查。
+/// 组件的 wxml 没有 renderer 可言，一律检查；模板不属于任何单元，也一律检查。
 fn wxml_files(project: &Project) -> impl Iterator<Item = &str> {
     let mut seen = HashSet::new();
     project
@@ -48,6 +48,7 @@ fn wxml_files(project: &Project) -> impl Iterator<Item = &str> {
                 .iter()
                 .filter_map(|component| component.files.wxml.as_deref()),
         )
+        .chain(project.template_files.iter().map(String::as_str))
         .filter(move |path| seen.insert(*path))
 }
 

@@ -191,6 +191,49 @@ fn unparsable_stylesheet_is_reported_not_silently_skipped() {
     );
 }
 
+/// 脚本图是全域的：单元脚本 + 磁盘上其余 `.js` / `.ts`（`.d.ts`、`miniprogram_npm` 除外）。
+#[test]
+fn scripts_cover_every_source_file_on_disk() {
+    let f = Fixture::new("script-domain");
+    f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+        .write(
+            "app.json",
+            r#"{"pages":["pages/a/a","pages/b/b","pages/c/c"]}"#,
+        );
+    for page in ["a", "b", "c"] {
+        f.write(&format!("pages/{page}/{page}.json"), "{}")
+            .write(&format!("pages/{page}/{page}.wxml"), "<view/>")
+            .write(&format!("pages/{page}/{page}.js"), "Page({});");
+    }
+    f.write("utils/one.js", "export const one = 1;")
+        .write("utils/two.ts", "export const two = 2;")
+        .write("utils/types.d.ts", "export declare const x: number;");
+
+    let project = Project::load(f.path()).unwrap();
+    let paths: Vec<&str> = project
+        .scripts
+        .iter()
+        .map(|script| script.path.as_str())
+        .collect();
+    assert_eq!(
+        paths,
+        [
+            "pages/a/a.js",
+            "pages/b/b.js",
+            "pages/c/c.js",
+            "utils/one.js",
+            "utils/two.ts",
+        ]
+    );
+    let loose: Vec<&str> = project
+        .scripts
+        .iter()
+        .filter(|script| matches!(script.scope, skylint_core::project::Scope::Loose(_)))
+        .map(|script| script.path.as_str())
+        .collect();
+    assert_eq!(loose, ["utils/one.js", "utils/two.ts"]);
+}
+
 fn fixture_root(name: &str) -> std::path::PathBuf {
     let thread = std::thread::current();
     let test = thread.name().unwrap_or("shared").replace("::", "-");

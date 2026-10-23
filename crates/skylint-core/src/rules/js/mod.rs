@@ -46,7 +46,12 @@ pub(crate) fn is_plugin(project: &Project) -> bool {
 }
 
 /// 单元对应的脚本。`Project.scripts` 里一个文件只归一个单元，所以按 scope 查即可。
+///
+/// [`Scope::Loose`] 不是单元：显式返回 `None`，避免把 `utils/` 里的文件当成页面脚本。
 pub(crate) fn scope_script<'a>(project: &'a Project, scope: &Scope) -> Option<&'a JsFile> {
+    if matches!(scope, Scope::Loose(_)) {
+        return None;
+    }
     project.scripts.iter().find(|file| &file.scope == scope)
 }
 

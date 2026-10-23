@@ -81,6 +81,8 @@ impl crate::rules::Rule for TagSelectorIsolation {
                         // 组件样式漏到页面上：WebView 能命中，Skyline 不跨作用域
                         (project.component_pages(path), Self::legacy(project, None))
                     }
+                    // 样式图不会产生 Loose。
+                    Scope::Loose(_) => continue,
                 };
                 if foreign.is_empty() {
                     continue;

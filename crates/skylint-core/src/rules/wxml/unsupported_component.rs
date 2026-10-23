@@ -239,4 +239,70 @@ mod tests {
         );
         assert!(diagnostics.is_empty());
     }
+
+    /// `<import>` 引入的模板不属于任何单元，但结构规则仍要检查它。
+    #[test]
+    fn imported_template_is_scanned() {
+        let fixture = Fixture::new("imported-template");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<import src="../../templates/pagination" /><view/>"#,
+            )
+            .write(
+                "templates/pagination.wxml",
+                r#"<web-view src="https://x"/>"#,
+            );
+        let diagnostics = check_rule(&fixture, &UnsupportedComponent);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].path, "templates/pagination.wxml");
+    }
+
+    /// `<include>` 同样覆盖；模板 import 模板（A→B→C）要递归到最里层。
+    #[test]
+    fn included_templates_are_scanned_recursively() {
+        let fixture = Fixture::new("included-template");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<include src="../../templates/a"/>"#,
+            )
+            .write("templates/a.wxml", r#"<include src="b"/>"#)
+            .write("templates/b.wxml", r#"<import src="./c.wxml"/>"#)
+            .write("templates/c.wxml", r#"<web-view src="https://x"/>"#);
+        let diagnostics = check_rule(&fixture, &UnsupportedComponent);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].path, "templates/c.wxml");
+    }
+
+    /// 同一模板被多个页面引用时只扫一次。
+    #[test]
+    fn template_shared_by_two_pages_is_scanned_once() {
+        let fixture = Fixture::new("shared-template");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/a/a","pages/b/b"],"renderer":"skyline"}"#,
+            )
+            .write("pages/a/a.json", "{}")
+            .write("pages/a/a.wxml", r#"<import src="../../tpl/x"/>"#)
+            .write("pages/b/b.json", "{}")
+            .write("pages/b/b.wxml", r#"<import src="../../tpl/x"/>"#)
+            .write("tpl/x.wxml", r#"<web-view src="https://x"/>"#);
+        let diagnostics = check_rule(&fixture, &UnsupportedComponent);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    }
 }

@@ -19,6 +19,7 @@ use serde_json::{Map, Value};
 
 use crate::diag::from_compiler_diag;
 use crate::input::js::JsDoc;
+use crate::input::wxml;
 use crate::input::wxss::{self, ParseError, WxssDoc};
 use crate::{Diagnostic, Severity};
 
@@ -38,6 +39,10 @@ pub enum Scope {
     Global,
     Page(String),
     Component(String),
+    /// 不属于任何页面 / 组件的脚本（`utils/`、`monitor` 等），承载其项目相对路径。
+    ///
+    /// 只出现在 [`Project::scripts`] 里，样式图永远不会产生它。
+    Loose(String),
 }
 
 /// 一份样式文件，以及它被哪些单元引入（含 `@import` 传递闭包）。
@@ -110,17 +115,16 @@ pub struct Project {
     pub styles: Vec<StyleSheet>,
     /// 脚本文件 → 所属单元（`app.js` 记为 [`Scope::Global`]），按路径排序。
     ///
-    /// 页面 / 组件的 js 来自 `UnitFiles.js`（已按 typescript 插件解析到 `.ts` 源），
-    /// 同一文件被多个页面引用时只留一份。解析失败静默跳过：JS 语法错误由 `minidev
-    /// build` 拦截，linter 不另造诊断。
+    /// 覆盖面是**整个工程**：页面 / 组件的 js 来自 `UnitFiles.js`（已按 typescript
+    /// 插件解析到 `.ts` 源），同一文件被多个页面引用时只留一份；其余 `.js` / `.ts`
+    /// 源文件一律记为 [`Scope::Loose`]。因此 `utils/` 里的实现也会被 JS 规则看到。
+    /// 解析失败静默跳过：JS 语法错误由 `minidev build` 拦截，linter 不另造诊断。
     pub scripts: Vec<JsFile>,
-    /// 单元闭包之外的脚本：仅在文件里出现 `addRouteBuilder(` 时才解析。
+    /// 被 `<import>` / `<include>` 引入的模板（项目相对，去重排序）。
     ///
-    /// 路由注册常被放进 `utils/router.js` 这类被 `require` 的工具模块，它们不属于任何
-    /// 页面 / 组件，因此不在 [`Self::scripts`] 里。工程级规则（如 `skyline/route-type`
-    /// 判断「routeType 有没有注册过」）必须看得见这些注册，否则会把整个工程判成没注册。
-    /// 只解析「文本里出现 `addRouteBuilder(`」的文件，避免为了一个集合去解析上千个源文件。
-    pub loose_scripts: Vec<JsDoc>,
+    /// 模板不属于任何单元：它的样式作用域不可知，但单文件结构规则（不支持组件、
+    /// 内联文本等）仍应检查它。
+    pub template_files: Vec<String>,
     /// 建图过程中发现的非阻断问题（如页面声明了但 wxml 缺失）。
     pub warnings: Vec<Diagnostic>,
 }
@@ -200,8 +204,8 @@ impl Project {
             .collect();
 
         let styles = collect_styles(&root, &miniprogram_root, &pages, &components, &mut warnings);
-        let scripts = collect_scripts(&root, &miniprogram_root, &resolver, &pages, &components);
-        let loose_scripts = collect_loose_scripts(&root, &miniprogram_root, &scripts);
+        let scripts = collect_scripts(&fs, &miniprogram_root, &resolver, &pages, &components);
+        let template_files = collect_template_files(&fs, &miniprogram_root, &pages, &components);
         let app_json_source = fs
             .read_file(&miniprogram_root, "app.json")
             .unwrap_or_default();
@@ -223,7 +227,7 @@ impl Project {
             page_json_source,
             styles,
             scripts,
-            loose_scripts,
+            template_files,
             warnings,
         })
     }
@@ -285,6 +289,8 @@ impl Project {
                 .iter()
                 .find(|component| &component.path == path)
                 .and_then(|component| component.files.wxml.as_deref()),
+            // 非单元脚本没有对应的 WXML。
+            Scope::Loose(_) => None,
         }
     }
 
@@ -312,6 +318,8 @@ impl Project {
                         .iter()
                         .all(|route| self.page_display_block(route).unwrap_or(app))
             }
+            // 非单元脚本不会走到这里；保守地按 app 级配置回答。
+            Scope::Loose(_) => app,
         }
     }
 
@@ -567,13 +575,15 @@ fn collect_styles(
         .collect()
 }
 
-/// 脚本图：`app.js` + 每个页面 / 组件的 js。
+/// 脚本图：`app.js` + 每个页面 / 组件的 js + 其余全部 `.js` / `.ts` 源文件。
 ///
-/// 路径来自 resolver 的解析结果（因此 typescript 插件的 `.ts` 源会命中），不在这里
-/// 重新拼后缀。同一文件被多个页面的组件闭包重复引用时按 path 去重；解析失败（语法
-/// 错误 / 空文件）静默跳过——JS 语法由构建阶段拦，linter 不另造诊断。
+/// 单元脚本的路径来自 resolver 的解析结果（因此 typescript 插件的 `.ts` 源会命中），
+/// 不在这里重新拼后缀；同一文件被多个页面的组件闭包重复引用时按 path 去重。
+/// 其余文件由 [`ProjectFs::list_files`] 全域枚举（已剪掉 `node_modules` 与点目录），
+/// 排除 `.d.ts` 与 `miniprogram_npm` 编译产物后记为 [`Scope::Loose`]。
+/// 解析失败（语法错误 / 空文件）静默跳过——JS 语法由构建阶段拦，linter 不另造诊断。
 fn collect_scripts(
-    root: &Path,
+    fs: &dyn ProjectFs,
     miniprogram_root: &str,
     resolver: &Resolver,
     pages: &[PageUnit],
@@ -598,61 +608,104 @@ fn collect_scripts(
         }
     }
 
+    // `list_files` 的返回值带 miniprogramRoot 前缀，脚本路径不带。
+    let prefix = if miniprogram_root.is_empty() {
+        String::new()
+    } else {
+        format!("{miniprogram_root}/")
+    };
+    for path in fs.list_files(miniprogram_root) {
+        let rel = path.strip_prefix(&prefix).unwrap_or(&path);
+        if !is_source_script(rel) {
+            continue;
+        }
+        entries
+            .entry(rel.to_string())
+            .or_insert_with(|| Scope::Loose(rel.to_string()));
+    }
+
     entries
         .into_iter()
         .filter_map(|(path, scope)| {
-            let source = std::fs::read_to_string(root.join(miniprogram_root).join(&path)).ok()?;
+            let source = fs.read_file(miniprogram_root, &path)?;
             let doc = JsDoc::parse(&path, &source).ok()?;
             Some(JsFile { path, scope, doc })
         })
         .collect()
 }
 
-/// 单元闭包之外的脚本，只收「文本里出现 `addRouteBuilder(`」的文件。
-fn collect_loose_scripts(root: &Path, miniprogram_root: &str, scripts: &[JsFile]) -> Vec<JsDoc> {
-    const NEEDLE: &str = "addRouteBuilder(";
-    let base = root.join(miniprogram_root);
-    let known: std::collections::BTreeSet<&str> = scripts.iter().map(|f| f.path.as_str()).collect();
+/// 可以进入脚本图的源文件：`.js` / `.ts`，去掉类型声明与 npm 编译产物。
+fn is_source_script(path: &str) -> bool {
+    let ext = path.rsplit_once('.').map(|(_, ext)| ext);
+    matches!(ext, Some("js" | "ts"))
+        && !path.ends_with(".d.ts")
+        && !path.split('/').any(|segment| segment == "miniprogram_npm")
+}
+
+/// 模板闭包：从所有单元的 WXML 出发，沿 `<import>` / `<include>` 递归收集。
+///
+/// 只保留 `fs.exists` 校验通过的路径；`src` 由编译器剥掉了 `.wxml` 后缀，这里按
+/// 「无扩展名就补 `.wxml`」还原。模板可以再引用模板，闭包按 visited 去重。
+fn collect_template_files(
+    fs: &dyn ProjectFs,
+    miniprogram_root: &str,
+    pages: &[PageUnit],
+    components: &[ComponentUnit],
+) -> Vec<String> {
+    let mut queue: Vec<String> = pages
+        .iter()
+        .filter_map(|page| page.files.wxml.clone())
+        .chain(
+            components
+                .iter()
+                .filter_map(|component| component.files.wxml.clone()),
+        )
+        .collect();
+    let mut seen: HashSet<String> = queue.iter().cloned().collect();
     let mut out = Vec::new();
 
-    fn walk(dir: &Path, base: &Path, known: &std::collections::BTreeSet<&str>, out: &mut Vec<JsDoc>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
+    while let Some(path) = queue.pop() {
+        let source = fs.read_file(miniprogram_root, &path).unwrap_or_default();
+        let Ok(doc) = wxml::parse(&path, &source) else {
+            continue;
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, base, known, out);
-                continue;
-            }
-            if !matches!(
-                path.extension().and_then(|e| e.to_str()),
-                Some("js" | "ts")
-            ) {
-                continue;
-            }
-            let rel = path
-                .strip_prefix(base)
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_default();
-            if rel.is_empty() || known.contains(rel.as_str()) {
-                continue;
-            }
-            let Ok(source) = std::fs::read_to_string(&path) else {
+        for src in doc.template_refs() {
+            let Some(target) = resolve_template_ref(fs, miniprogram_root, &path, src) else {
                 continue;
             };
-            if !source.contains(NEEDLE) {
-                continue;
-            }
-            if let Ok(doc) = JsDoc::parse(&rel, &source) {
-                out.push(doc);
+            if seen.insert(target.clone()) {
+                out.push(target.clone());
+                queue.push(target);
             }
         }
     }
 
-    walk(&base, &base, &known, &mut out);
-    out.sort_by(|a, b| a.path().cmp(b.path()));
+    out.sort();
     out
+}
+
+/// `<import src>` / `<include src>` 的值 → 项目相对路径（必须是真实存在的文件）。
+fn resolve_template_ref(
+    fs: &dyn ProjectFs,
+    miniprogram_root: &str,
+    from: &str,
+    src: &str,
+) -> Option<String> {
+    let src = src.trim();
+    if src.is_empty() {
+        return None;
+    }
+    let joined = match src.strip_prefix('/') {
+        Some(rooted) => posix_join("", rooted),
+        None => posix_join(&posix_dirname(from), src),
+    };
+    let name = joined.rsplit('/').next().unwrap_or(&joined);
+    let candidate = if name.contains('.') {
+        joined
+    } else {
+        format!("{joined}.wxml")
+    };
+    fs.exists(miniprogram_root, &candidate).then_some(candidate)
 }
 
 /// `@import` 目标 → 项目相对路径（必须是真实存在的文件）。

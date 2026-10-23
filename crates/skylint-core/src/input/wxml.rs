@@ -26,6 +26,8 @@ pub fn parse(path: &str, source: &str) -> Result<WxmlDoc, String> {
 pub struct WxmlDoc {
     source: String,
     pub nodes: Vec<WxmlNode>,
+    /// `<import>` / `<include>` 的 `src` 原始值（编译器已剥掉 `.wxml` 后缀）。
+    template_refs: Vec<String>,
 }
 
 /// 摊平后的节点。`Comment` 不携带内容：规则不需要，保留它是为了不把注释误当元素。
@@ -117,15 +119,38 @@ impl WxmlDoc {
             ));
         }
         let mut next_group = 0;
+        let template_refs = template
+            .globals
+            .imports
+            .iter()
+            .map(|element| element.src.name.to_string())
+            .chain(
+                template
+                    .globals
+                    .includes
+                    .iter()
+                    .map(|element| element.src.name.to_string()),
+            )
+            // 动态 `src="{{x}}"` 解析成空串，不是可解析的模板引用。
+            .filter(|name| !name.is_empty())
+            .collect();
         Ok(Self {
             source: source.to_string(),
             nodes: flatten(&template.content, source, &mut next_group, &[]),
+            template_refs,
         })
     }
 
     /// `parse::Position`（0-based 行、UTF-16 列）→ 诊断位置（1-based 行、字符列）。
     pub fn position(&self, pos: Position) -> (u32, u32) {
         (pos.line + 1, column_at(&self.source, pos))
+    }
+
+    /// 本文件通过 `<import>` / `<include>` 引用的模板路径（原始 `src` 值，未解析）。
+    ///
+    /// 编译器在解析时已剥掉 `.wxml` 后缀，所以这里拿到的通常是不带后缀的路径。
+    pub fn template_refs(&self) -> &[String] {
+        &self.template_refs
     }
 
     /// 深度优先遍历全部元素节点。
@@ -679,6 +704,20 @@ mod tests {
         };
         assert_eq!(if_branch.group, else_branch.group);
         assert_ne!(if_branch.arm, else_branch.arm);
+    }
+
+    #[test]
+    fn template_refs_expose_the_parsed_src_without_the_wxml_suffix() {
+        let doc = WxmlDoc::parse(
+            "t.wxml",
+            r#"<import src="../../templates/pagination" /><include src="../shared/cell.wxml"/>"#,
+        )
+        .unwrap();
+        // 实测：`src="x.wxml"` 会被编译器剥掉后缀，`src="x"` 原样保留。
+        assert_eq!(
+            doc.template_refs(),
+            ["../../templates/pagination", "../shared/cell"]
+        );
     }
 
     #[test]

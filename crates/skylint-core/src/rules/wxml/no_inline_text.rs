@@ -38,7 +38,9 @@ impl Rule for NoInlineText {
                     .components
                     .iter()
                     .filter_map(|component| component.files.wxml.as_deref()),
-            );
+            )
+            // 模板不属于任何单元，但同样可能把文字与元素混排。
+            .chain(project.template_files.iter().map(String::as_str));
 
         let mut seen = HashSet::new();
         let mut diagnostics = Vec::new();

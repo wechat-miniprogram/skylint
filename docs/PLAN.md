@@ -366,8 +366,26 @@ autofix；14 条只能运行时判定的条目；`app.json` 自动改写。
 | JsonView | 原始 JSON + offset 索引 | 配置类 |
 | JsView | `oxc_parser` 0.155（与 CSS 前端共用 `oxc_allocator` 版本线） | worklet / API 禁令 |
 
-`JsView` 是 owned 模型：`Project.scripts` 持有 app.js + 每个页面 + 每个可达组件的源码与
-`JsDoc`，按 path 去重。聚合统计（如「工程里有没有 worklet」）用一次过滤算出来，不做增量缓存。
+`JsView` 是 owned 模型：`Project.scripts` 持有**整个工程**的 `.js` / `.ts` 源文件与 `JsDoc`，
+按 path 去重。单元脚本带 `Scope::Global` / `Page` / `Component`；其余（`utils/`、`monitor`、
+`components-for-playlet/` 这类不在 app.json 闭包里的源码）记 `Scope::Loose`。文件枚举走
+`ProjectFs::list_files`——那是 minidev 已有的事实接口，它自己剪掉 `node_modules` 与点目录；
+我们在其上排除 `.d.ts` 与 `miniprogram_npm`（编译产物）。聚合统计（如「工程里有没有
+worklet」）用一次过滤算出来，不做增量缓存。
+
+`WxmlView` 的覆盖面同样是全域：单元 WXML 之外，`<import>` / `<include>` 引入的模板
+（`Project.template_files`）也进图，走递归闭包、按路径去重。两处取舍要记住：
+
+- 模板不属于任何单元，所以它没有 `Scope`，也因此**不受** `renderer: webview` 的页面级
+  opt-out 保护——目前从所有单元 WXML 出发收集，被 webview 页面独占引用的模板仍会被检查。
+  要收紧就得记录「模板 ← 哪些单元」的来源信息，眼下不值得。
+- 编译器在解析时就把 `src` 的 `.wxml` 后缀剥掉了（`tag.rs:1391-1408`），所以还原路径要靠
+  「无扩展名补 `.wxml`」，不能直接拿 `src` 拼。
+
+这两处补盲区的动机是实测出来的：短剧工程 39 个 `.ts` 里只有 27 个属于单元，`utils/` 完全
+不可见；`templates/pagination.wxml` 被 3 个页面 import 却不在任何单元里。补齐前后四个真实
+工程的诊断**一条没变**（21 / 630 / 21 / 5），所以这是「消除未来工程的漏报源」，不是修现有
+误报。
 
 值支持类只读 `WxssSemantics`，语义/结构类只读 `WxssStructure`——两族不共享判定，
 所以不会出现「同一行一条说解析失败、一条说不支持」，也不需要关联两遍解析结果。

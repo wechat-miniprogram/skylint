@@ -156,8 +156,56 @@ fn parse(source: &'static str) -> Result<Vec<Entry>, String> {
 mod tests {
     use crate::rules::Rule;
 
-    use super::super::testutil::{messages, plugin, single, single_with_app};
+    use super::super::testutil::{Fixture, messages, plugin, single, single_with_app};
     use super::{Kind, UnsupportedApi, parse};
+
+    /// 单页工程 + 一个额外的脚本文件（用于验证全域扫描的边界）。
+    fn with_script(name: &str, rel: &str, js: &str) -> (Fixture, crate::project::Project) {
+        let f = Fixture::new(name);
+        f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", "<view/>")
+            .write("pages/index/index.js", "Page({});")
+            .write(rel, js);
+        let project = f.project();
+        (f, project)
+    }
+
+    #[test]
+    fn utility_scripts_outside_units_are_scanned() {
+        let (_f, project) = with_script(
+            "unsupported-loose-util",
+            "utils/helper.ts",
+            "export const jump = () => this.animate('.x', [], 100);",
+        );
+        let diagnostics = UnsupportedApi.check(&project);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].path, "utils/helper.ts");
+    }
+
+    #[test]
+    fn type_declarations_are_not_scanned() {
+        let (_f, project) = with_script(
+            "unsupported-dts",
+            "utils/types.d.ts",
+            "export declare const jump: () => this.animate('.x', [], 100);\n",
+        );
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn npm_build_output_is_not_scanned() {
+        let (_f, project) = with_script(
+            "unsupported-npm",
+            "miniprogram_npm/foo/index.js",
+            "this.animate('.x', [], 100);",
+        );
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
 
     #[test]
     fn unsupported_calls_and_page_options_are_reported() {

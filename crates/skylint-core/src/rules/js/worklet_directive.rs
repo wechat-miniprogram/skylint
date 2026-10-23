@@ -285,6 +285,33 @@ mod tests {
         assert_eq!(messages(&WorkletDirective, &project), Vec::<String>::new());
     }
 
+    /// 全域扫描后 `utils/helper.ts` 也在脚本图里，但 WXML 绑定只能查该单元自己的脚本：
+    /// 同名的 util 函数不是这条绑定的处理器。
+    #[test]
+    fn gesture_binding_does_not_match_a_function_in_a_loose_script() {
+        let f = Fixture::new("directive-gesture-loose");
+        f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<pan-gesture-handler worklet:ongesture="onPan"/>"#,
+            )
+            .write("pages/index/index.js", "Page({});")
+            .write("utils/helper.ts", PAN_WITHOUT);
+        let project = f.project();
+        assert!(
+            project
+                .scripts
+                .iter()
+                .any(|file| file.path == "utils/helper.ts")
+        );
+        assert_eq!(messages(&WorkletDirective, &project), Vec::<String>::new());
+    }
+
     #[test]
     fn plain_bindings_and_dynamic_values_are_ignored() {
         let (_f, project) = project(

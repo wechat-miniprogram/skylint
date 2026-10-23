@@ -108,6 +108,8 @@ impl crate::rules::Rule for TextOverflowEllipsis {
 fn scope_wxml<'a>(project: &'a Project, scope: &Scope) -> Vec<&'a str> {
     match scope {
         Scope::Global => project.global_wxml().collect(),
+        // 样式图不会产生 Loose。
+        Scope::Loose(_) => Vec::new(),
         _ => project.scope_wxml(scope).into_iter().collect(),
     }
 }

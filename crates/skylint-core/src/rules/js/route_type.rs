@@ -76,14 +76,12 @@ impl Rule for RouteType {
     }
 
     fn check(&self, project: &Project) -> Vec<crate::Diagnostic> {
-        // 注册点要连「单元闭包之外的脚本」一起看：路由常注册在 `utils/router.js` 这类
-        // 被 require 的工具模块里，那些文件不在 `Project.scripts`。漏掉它们会把整个工程
-        // 判成「没注册」——这是本规则最容易产生系统性误报的地方。
+        // `Project.scripts` 已覆盖全域（含 `utils/router.js` 这类被 require 的工具模块），
+        // 注册点不会漏——这是本规则最容易产生系统性误报的地方。
         let registered: HashSet<&str> = project
             .scripts
             .iter()
             .map(|file| &file.doc)
-            .chain(project.loose_scripts.iter())
             .flat_map(|doc| {
                 doc.calls()
                     .iter()
@@ -207,8 +205,11 @@ mod tests {
                 "export const register = () => wx.router.addRouteBuilder('slide', () => ({}));",
             );
         let project = f.project();
-        assert_eq!(project.scripts.len(), 1, "utils 不属于任何单元");
-        assert_eq!(project.loose_scripts.len(), 1);
+        assert_eq!(project.scripts.len(), 2, "页面 + utils 都在脚本图里");
+        assert!(matches!(
+            project.scripts[1].scope,
+            crate::project::Scope::Loose(_)
+        ));
         assert_eq!(messages(&RouteType, &project), Vec::<String>::new());
     }
 
