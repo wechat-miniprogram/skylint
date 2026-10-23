@@ -17,6 +17,7 @@
 use std::sync::OnceLock;
 
 use crate::project::Project;
+use crate::rules::data_table::{self, Columns};
 use crate::rules::{Rule, RuleMeta};
 use crate::Severity;
 
@@ -105,17 +106,12 @@ fn data() -> &'static [Entry] {
 
 /// 解析数据文件。格式错误一律返回带行号的说明，便于同步时定位。
 fn parse(source: &'static str) -> Result<Vec<Entry>, String> {
+    let parsed = data_table::read(source, data_table::split_on('|'), |_| {
+        Columns::new(2, "`模式 | 说明` 两列")
+    })?;
     let mut entries = Vec::new();
-    for (index, raw) in source.lines().enumerate() {
-        let line_no = index + 1;
-        let line = raw.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Some((pattern, message)) = line.split_once('|') else {
-            return Err(format!("第 {line_no} 行：缺少 `模式 | 说明` 分隔符：{line}"));
-        };
-        let pattern = pattern.trim();
+    for row in parsed.rows {
+        let (pattern, message) = (row.fields[0], row.fields[1]);
         let (kind, target) = if let Some(target) = pattern.strip_prefix("call:") {
             (Kind::Call, target.trim())
         } else if let Some(target) = pattern.strip_prefix("plugin-call:") {
@@ -124,15 +120,15 @@ fn parse(source: &'static str) -> Result<Vec<Entry>, String> {
             (Kind::PageOption, target.trim())
         } else {
             return Err(format!(
-                "第 {line_no} 行：模式必须以 `call:`、`plugin-call:` 或 `page-option:` 开头：{pattern}"
+                "第 {} 行：模式必须以 `call:`、`plugin-call:` 或 `page-option:` 开头：{pattern}",
+                row.line_no
             ));
         };
         if target.is_empty() {
-            return Err(format!("第 {line_no} 行：模式缺少目标：{pattern}"));
+            return Err(format!("第 {} 行：模式缺少目标：{pattern}", row.line_no));
         }
-        let message = message.trim();
         if message.is_empty() {
-            return Err(format!("第 {line_no} 行：说明为空"));
+            return Err(format!("第 {} 行：说明为空", row.line_no));
         }
         entries.push(Entry {
             kind,
@@ -272,7 +268,7 @@ mod tests {
         );
 
         let err = parse("call:foo\n").unwrap_err();
-        assert!(err.contains("分隔符"), "{err}");
+        assert!(err.contains("两列"), "{err}");
         let err = parse("foo:bar | baz\n").unwrap_err();
         assert!(err.contains("call:"), "{err}");
         let err = parse("call: | baz\n").unwrap_err();

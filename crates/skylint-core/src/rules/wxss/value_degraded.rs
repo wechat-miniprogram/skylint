@@ -3,13 +3,15 @@
 //! 与 [`super::unsupported_value`] 的分界：这里是「值有效但行为不同」（warning），
 //! 那里是「值根本无效，声明被静默忽略」（error）。数据在 `data/value_degraded.txt`。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use crate::input::wxss::{ValueToken, WxssDeclaration, WxssDoc};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
+
+use crate::rules::data_table::{self, Columns};
 
 use super::dict_table::normalize_value;
 use super::value_util::{all_calls, at_value, is_dynamic, top_level_calls};
@@ -283,75 +285,78 @@ enum Section {
     Env,
 }
 
+/// `[env]` 分区每行只有一个逗号分隔的变量列表，其余分区按 `|` 切三列。
+fn split<'a>(section: Option<&'a str>, line: &'a str) -> Vec<&'a str> {
+    if section == Some("env") {
+        vec![line]
+    } else {
+        line.split('|').map(str::trim).collect()
+    }
+}
+
+fn columns(section: Option<&str>) -> Columns {
+    if section == Some("env") {
+        Columns::new(1, "一个逗号分隔的 env 变量列表")
+    } else {
+        Columns::new(3, "`键 | 值 | 说明` 三列")
+    }
+}
+
 /// 解析数据文件。格式错误一律返回带行号的说明，便于同步时定位。
 fn parse(source: &'static str) -> Result<Data, String> {
-    let mut data = Data::default();
-    let mut section = None;
+    let parsed = data_table::read(source, split, columns)?;
+    for (line_no, name) in &parsed.sections {
+        if !matches!(*name, "exact" | "only" | "function" | "env") {
+            return Err(format!("第 {line_no} 行：未知分区 [{name}]"));
+        }
+    }
 
-    for (index, raw) in source.lines().enumerate() {
-        let line_no = index + 1;
-        let line = raw.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(name) = line
-            .strip_prefix('[')
-            .and_then(|rest| rest.strip_suffix(']'))
-        {
-            section = Some(match name.trim() {
-                "exact" => Section::Exact,
-                "only" => Section::Only,
-                "function" => Section::Function,
-                "env" => Section::Env,
-                other => return Err(format!("第 {line_no} 行：未知分区 [{other}]")),
-            });
-            continue;
-        }
-        let section = section.ok_or_else(|| format!("第 {line_no} 行：数据出现在分区之前"))?;
+    let mut data = Data::default();
+    let mut seen = HashSet::new();
+    for row in parsed.rows {
+        let section = match row.section {
+            Some("exact") => Section::Exact,
+            Some("only") => Section::Only,
+            Some("function") => Section::Function,
+            Some("env") => Section::Env,
+            Some(other) => return Err(format!("第 {} 行：未知分区 [{other}]", row.line_no)),
+            None => return Err(format!("第 {} 行：数据出现在分区之前", row.line_no)),
+        };
         if matches!(section, Section::Env) {
-            let names: Vec<&'static str> = line.split(',').map(str::trim).collect();
+            let names: Vec<&str> = row.fields[0].split(',').map(str::trim).collect();
             for name in names {
                 if name.is_empty() || !is_lowercase(name) {
-                    return Err(format!("第 {line_no} 行：env 变量名非法：{name}"));
+                    return Err(format!("第 {} 行：env 变量名非法：{name}", row.line_no));
                 }
-                if data.env.contains(&name) {
-                    return Err(format!("第 {line_no} 行：重复的 env 变量 {name}"));
-                }
+                data_table::unique(&mut seen, ("env", name, ""), row.line_no, || {
+                    format!("重复的 env 变量 {name}")
+                })?;
                 data.env.push(name);
             }
             continue;
         }
 
-        let fields: Vec<&'static str> = line.split('|').map(str::trim).collect();
-        if fields.len() != 3 {
-            return Err(format!(
-                "第 {line_no} 行：需要 `键 | 值 | 说明` 三列，实际 {} 列",
-                fields.len()
-            ));
-        }
-        let (key, value, note) = (fields[0], fields[1], fields[2]);
+        let (key, value, note) = (row.fields[0], row.fields[1], row.fields[2]);
         if key.is_empty() || value.is_empty() || note.is_empty() {
-            return Err(format!("第 {line_no} 行：键、值与说明都不能为空"));
+            return Err(format!("第 {} 行：键、值与说明都不能为空", row.line_no));
         }
         if !is_lowercase(key) || !is_lowercase(value) {
-            return Err(format!("第 {line_no} 行：键与值必须小写：{key} | {value}"));
+            return Err(format!(
+                "第 {} 行：键与值必须小写：{key} | {value}",
+                row.line_no
+            ));
         }
         match section {
             Section::Exact => {
                 for name in key.split(',') {
                     let name = name.trim();
                     if name.is_empty() {
-                        return Err(format!("第 {line_no} 行：属性名非法：{key}"));
+                        return Err(format!("第 {} 行：属性名非法：{key}", row.line_no));
                     }
-                    if data
-                        .exact
-                        .entry(name)
-                        .or_default()
-                        .insert(value, note)
-                        .is_some()
-                    {
-                        return Err(format!("第 {line_no} 行：重复的条目 {name}: {value}"));
-                    }
+                    data_table::unique(&mut seen, ("exact", name, value), row.line_no, || {
+                        format!("重复的条目 {name}: {value}")
+                    })?;
+                    data.exact.entry(name).or_default().insert(value, note);
                 }
             }
             Section::Only => {
@@ -360,20 +365,16 @@ fn parse(source: &'static str) -> Result<Data, String> {
                     .map(str::trim)
                     .filter(|name| !name.is_empty())
                     .collect();
-                if data.only.insert(key, Only { allowed, note }).is_some() {
-                    return Err(format!("第 {line_no} 行：重复的属性 {key}"));
-                }
+                data_table::unique(&mut seen, ("only", key, ""), row.line_no, || {
+                    format!("重复的属性 {key}")
+                })?;
+                data.only.insert(key, Only { allowed, note });
             }
             Section::Function => {
-                if data
-                    .functions
-                    .entry(key)
-                    .or_default()
-                    .insert(value, note)
-                    .is_some()
-                {
-                    return Err(format!("第 {line_no} 行：重复的条目 {key}: {value}"));
-                }
+                data_table::unique(&mut seen, ("function", key, value), row.line_no, || {
+                    format!("重复的条目 {key}: {value}")
+                })?;
+                data.functions.entry(key).or_default().insert(value, note);
             }
             Section::Env => unreachable!("[env] 分区已在上面处理"),
         }

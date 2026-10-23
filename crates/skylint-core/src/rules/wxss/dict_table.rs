@@ -2,8 +2,10 @@
 //!
 //! 数据文件是唯一依据，Rust 侧只做查表。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
+
+use crate::rules::data_table::{self, Columns};
 
 const SUPPORT_DATA: &str = include_str!("../data/wxss_support.txt");
 
@@ -37,63 +39,54 @@ enum Section {
 
 /// 解析数据文件。格式错误一律返回带行号的说明，便于同步时定位。
 fn parse(source: &'static str) -> Result<Table, String> {
-    let mut table = Table::default();
-    let mut section = None;
+    let parsed = data_table::read(source, data_table::split_on('|'), |_| {
+        Columns::new(3, "`键 | 值 | 建议` 三列")
+    })?;
+    for (line_no, name) in &parsed.sections {
+        if !matches!(*name, "unsupported-property" | "unsupported-value") {
+            return Err(format!("第 {line_no} 行：未知分区 [{name}]"));
+        }
+    }
 
-    for (index, raw) in source.lines().enumerate() {
-        let line_no = index + 1;
-        let line = raw.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(name) = line
-            .strip_prefix('[')
-            .and_then(|rest| rest.strip_suffix(']'))
-        {
-            section = Some(match name.trim() {
-                "unsupported-property" => Section::Property,
-                "unsupported-value" => Section::Value,
-                other => return Err(format!("第 {line_no} 行：未知分区 [{other}]")),
-            });
-            continue;
-        }
-        let section = section.ok_or_else(|| format!("第 {line_no} 行：数据出现在分区之前"))?;
-        let fields: Vec<&'static str> = line.split('|').map(str::trim).collect();
-        if fields.len() != 3 {
-            return Err(format!(
-                "第 {line_no} 行：需要 `键 | 值 | 建议` 三列，实际 {} 列",
-                fields.len()
-            ));
-        }
-        let (key, value, advice) = (fields[0], fields[1], fields[2]);
+    let mut table = Table::default();
+    let mut seen = HashSet::new();
+    for row in parsed.rows {
+        let section = match row.section {
+            Some("unsupported-property") => Section::Property,
+            Some("unsupported-value") => Section::Value,
+            Some(other) => return Err(format!("第 {} 行：未知分区 [{other}]", row.line_no)),
+            None => return Err(format!("第 {} 行：数据出现在分区之前", row.line_no)),
+        };
+        let (key, value, advice) = (row.fields[0], row.fields[1], row.fields[2]);
         if key.is_empty() || advice.is_empty() {
-            return Err(format!("第 {line_no} 行：键与建议不能为空"));
+            return Err(format!("第 {} 行：键与建议不能为空", row.line_no));
         }
         if !is_lowercase(key) {
-            return Err(format!("第 {line_no} 行：键必须小写：{key}"));
+            return Err(format!("第 {} 行：键必须小写：{key}", row.line_no));
         }
         match section {
             Section::Property => {
                 if value != "-" {
-                    return Err(format!("第 {line_no} 行：属性分区的值列固定为 `-`"));
+                    return Err(format!("第 {} 行：属性分区的值列固定为 `-`", row.line_no));
                 }
-                if table.properties.insert(key, advice).is_some() {
-                    return Err(format!("第 {line_no} 行：重复的属性 {key}"));
-                }
+                data_table::unique(&mut seen, ("property", key, ""), row.line_no, || {
+                    format!("重复的属性 {key}")
+                })?;
+                table.properties.insert(key, advice);
             }
             Section::Value => {
                 if value.is_empty() || !is_lowercase(value) {
-                    return Err(format!("第 {line_no} 行：值必须非空且小写：{value}"));
+                    return Err(format!("第 {} 行：值必须非空且小写：{value}", row.line_no));
                 }
                 for name in key.split(',') {
                     let name = name.trim();
                     if name.is_empty() || !is_lowercase(name) {
-                        return Err(format!("第 {line_no} 行：属性名非法：{name}"));
+                        return Err(format!("第 {} 行：属性名非法：{name}", row.line_no));
                     }
-                    let by_value = table.values.entry(name).or_default();
-                    if by_value.insert(value, advice).is_some() {
-                        return Err(format!("第 {line_no} 行：重复的条目 {name}: {value}"));
-                    }
+                    data_table::unique(&mut seen, ("value", name, value), row.line_no, || {
+                        format!("重复的条目 {name}: {value}")
+                    })?;
+                    table.values.entry(name).or_default().insert(value, advice);
                 }
             }
         }

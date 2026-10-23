@@ -15,6 +15,7 @@
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlDoc, WxmlElement};
 use crate::project::Project;
+use crate::rules::data_table::{self, Columns};
 use crate::rules::{Rule, RuleMeta};
 
 use super::{element_diagnostic, load_doc, wxml_files};
@@ -56,23 +57,24 @@ struct Row {
 }
 
 fn rows() -> Vec<Row> {
-    CONSTRAINTS_DATA.lines().filter_map(parse_row).collect()
+    data_table::read(CONSTRAINTS_DATA, data_table::split_on('\t'), |_| {
+        Columns::new(4, "`组件 | 约束 | 级别 | 说明` 四列")
+    })
+    .expect("组件子节点约束表格式错误")
+    .rows
+    .into_iter()
+    .filter_map(parse_row)
+    .collect()
 }
 
-fn parse_row(line: &'static str) -> Option<Row> {
-    if line.trim().is_empty() || line.starts_with('#') {
-        return None;
-    }
-    let mut fields = line.split('\t').map(str::trim);
-    let tag = fields.next()?;
-    let raw = fields.next()?;
-    let severity = match fields.next()? {
+fn parse_row(row: data_table::Row<'static>) -> Option<Row> {
+    let (tag, raw, severity, help) = (row.fields[0], row.fields[1], row.fields[2], row.fields[3]);
+    let severity = match severity {
         "error" => Severity::Error,
         "warning" => Severity::Warning,
         "info" => Severity::Info,
         _ => return None,
     };
-    let help = fields.next()?;
     Some(Row {
         tag,
         constraint: parse_constraint(raw)?,

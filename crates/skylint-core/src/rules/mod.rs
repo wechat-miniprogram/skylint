@@ -9,6 +9,7 @@
 //! - 自动修复（旧实现的 patch 层同起点 insert 顺序未定义，没有原文校验）。
 
 pub mod config;
+pub(crate) mod data_table;
 pub mod js;
 pub mod wxml;
 pub mod wxss;

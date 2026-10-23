@@ -11,6 +11,7 @@ use std::sync::OnceLock;
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlAttribute, WxmlElement};
 use crate::project::Project;
+use crate::rules::data_table::{self, Columns};
 use crate::rules::{Rule, RuleMeta};
 
 use super::{load_doc, wxml_files};
@@ -147,85 +148,89 @@ impl Section {
 
 /// 解析数据文件。格式错误一律返回带行号的说明，便于同步时定位。
 fn parse(source: &'static str) -> Result<Table, String> {
+    let parsed = data_table::read(source, split_fields, |_| {
+        Columns::new(4, "`组件 | 属性 | 约束 | 说明` 四列")
+    })?;
+    for (line_no, name) in &parsed.sections {
+        if !matches!(
+            *name,
+            "webview-only" | "enum" | "unsupported" | "number" | "requires"
+        ) {
+            return Err(format!("第 {line_no} 行：未知分区 [{name}]"));
+        }
+    }
+
     let mut table = Table::default();
     let mut seen = HashSet::new();
-    let mut section = None;
-
-    for (index, raw) in source.lines().enumerate() {
-        let line_no = index + 1;
-        let line = raw.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(name) = line
-            .strip_prefix('[')
-            .and_then(|rest| rest.strip_suffix(']'))
-        {
-            section = Some(match name.trim() {
-                "webview-only" => Section::WebviewOnly,
-                "enum" => Section::Enum,
-                "unsupported" => Section::Unsupported,
-                "number" => Section::Number,
-                "requires" => Section::Requires,
-                other => return Err(format!("第 {line_no} 行：未知分区 [{other}]")),
-            });
-            continue;
-        }
-        let section = section.ok_or_else(|| format!("第 {line_no} 行：数据出现在分区之前"))?;
-        let fields = split_fields(line);
-        if fields.len() != 4 {
-            return Err(format!(
-                "第 {line_no} 行：需要 `组件 | 属性 | 约束 | 说明` 四列，实际 {} 列",
-                fields.len()
-            ));
-        }
-        let (tags, attrs, constraint, help) = (fields[0], fields[1], fields[2], fields[3]);
+    for row in parsed.rows {
+        let section = match row.section {
+            Some("webview-only") => Section::WebviewOnly,
+            Some("enum") => Section::Enum,
+            Some("unsupported") => Section::Unsupported,
+            Some("number") => Section::Number,
+            Some("requires") => Section::Requires,
+            Some(other) => return Err(format!("第 {} 行：未知分区 [{other}]", row.line_no)),
+            None => return Err(format!("第 {} 行：数据出现在分区之前", row.line_no)),
+        };
+        let (tags, attrs, constraint, help) =
+            (row.fields[0], row.fields[1], row.fields[2], row.fields[3]);
         if tags.is_empty() || !is_lowercase(tags) {
-            return Err(format!("第 {line_no} 行：组件名必须非空且小写：{tags}"));
+            return Err(format!(
+                "第 {} 行：组件名必须非空且小写：{tags}",
+                row.line_no
+            ));
         }
         let help = (help != "-").then_some(help);
         if matches!(section, Section::Requires) {
             if tags.contains(',') {
-                return Err(format!("第 {line_no} 行：[requires] 每行只能写一个组件"));
-            }
-            if !seen.insert((tags, attrs, section.name())) {
                 return Err(format!(
-                    "第 {line_no} 行：[requires] 重复的条目 {tags} {attrs}"
+                    "第 {} 行：[requires] 每行只能写一个组件",
+                    row.line_no
                 ));
             }
-            table
-                .requires
-                .entry(tags)
-                .or_default()
-                .push(parse_requires(attrs, constraint, help, line_no)?);
+            data_table::unique(
+                &mut seen,
+                (tags, attrs, section.name()),
+                row.line_no,
+                || format!("[requires] 重复的条目 {tags} {attrs}"),
+            )?;
+            table.requires.entry(tags).or_default().push(parse_requires(
+                attrs,
+                constraint,
+                help,
+                row.line_no,
+            )?);
             continue;
         }
         let constraint = match section {
-            Section::WebviewOnly => Constraint::WebviewOnly(parse_values(constraint, line_no)?),
-            Section::Enum => Constraint::OneOf(parse_values(constraint, line_no)?),
+            Section::WebviewOnly => Constraint::WebviewOnly(parse_values(constraint, row.line_no)?),
+            Section::Enum => Constraint::OneOf(parse_values(constraint, row.line_no)?),
             Section::Unsupported => {
                 if constraint != "-" {
-                    return Err(format!("第 {line_no} 行：[unsupported] 的约束列固定为 `-`"));
+                    return Err(format!(
+                        "第 {} 行：[unsupported] 的约束列固定为 `-`",
+                        row.line_no
+                    ));
                 }
                 Constraint::Unsupported
             }
-            Section::Number => parse_number(constraint, line_no)?,
+            Section::Number => parse_number(constraint, row.line_no)?,
             Section::Requires => unreachable!("[requires] 已在前面处理"),
         };
         for tag in tags.split(',').map(str::trim) {
             if tag.is_empty() {
-                return Err(format!("第 {line_no} 行：组件名不能为空"));
+                return Err(format!("第 {} 行：组件名不能为空", row.line_no));
             }
             for attr in attrs.split(',').map(str::trim) {
                 if attr.is_empty() || !is_lowercase(attr) {
-                    return Err(format!("第 {line_no} 行：属性名必须非空且小写：{attr}"));
-                }
-                if !seen.insert((tag, attr, section.name())) {
                     return Err(format!(
-                        "第 {line_no} 行：[{}] 重复的条目 {tag} {attr}",
-                        section.name()
+                        "第 {} 行：属性名必须非空且小写：{attr}",
+                        row.line_no
                     ));
                 }
+                data_table::unique(&mut seen, (tag, attr, section.name()), row.line_no, || {
+                    format!("[{}] 重复的条目 {tag} {attr}", section.name())
+                })?;
                 table
                     .entries
                     .entry(tag)
@@ -244,7 +249,7 @@ fn parse(source: &'static str) -> Result<Table, String> {
 }
 
 /// 按 `|` 分列，但括弧内的 `|` 属于 `!(a|b)`，不能当分隔符。
-fn split_fields(line: &'static str) -> Vec<&'static str> {
+fn split_fields<'a>(_: Option<&'a str>, line: &'a str) -> Vec<&'a str> {
     let mut fields = Vec::new();
     let mut depth = 0_u32;
     let mut start = 0;

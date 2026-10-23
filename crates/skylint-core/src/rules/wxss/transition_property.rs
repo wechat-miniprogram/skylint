@@ -9,6 +9,7 @@ use std::sync::OnceLock;
 
 use crate::input::wxss::ValueToken;
 use crate::project::Project;
+use crate::rules::data_table::{self, Columns};
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
@@ -160,22 +161,24 @@ fn data() -> &'static HashSet<&'static str> {
 
 /// 解析数据文件。格式错误一律返回带行号的说明，便于同步时定位。
 fn parse(source: &'static str) -> Result<HashSet<&'static str>, String> {
+    let parsed = data_table::read(source, data_table::whole_line, |_| {
+        Columns::new(1, "一个属性名")
+    })?;
     let mut names = HashSet::new();
-    for (index, raw) in source.lines().enumerate() {
-        let line_no = index + 1;
-        let line = raw.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
+    for row in parsed.rows {
+        let line = row.fields[0];
         if line.contains(char::is_whitespace) || line.contains(',') {
-            return Err(format!("第 {line_no} 行：一行只能写一个属性名：{line}"));
+            return Err(format!(
+                "第 {} 行：一行只能写一个属性名：{line}",
+                row.line_no
+            ));
         }
         if !is_lowercase(line) {
-            return Err(format!("第 {line_no} 行：属性名必须小写：{line}"));
+            return Err(format!("第 {} 行：属性名必须小写：{line}", row.line_no));
         }
-        if !names.insert(line) {
-            return Err(format!("第 {line_no} 行：重复的属性名 {line}"));
-        }
+        data_table::unique(&mut names, line, row.line_no, || {
+            format!("重复的属性名 {line}")
+        })?;
     }
     if names.is_empty() {
         return Err("可动画属性表为空".to_string());

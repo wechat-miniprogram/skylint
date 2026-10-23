@@ -4,11 +4,12 @@
 //! 是 error），这里按**简写值里的 token** 判（`background: … fixed` 只是 warning，其余子属性照常）。
 //! 数据在 `data/shorthand_partial.txt`。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use crate::input::wxss::{ValueToken, WxssDeclaration, WxssDoc};
 use crate::project::Project;
+use crate::rules::data_table::{self, Columns};
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
@@ -126,28 +127,22 @@ fn data() -> &'static Table {
 
 /// 解析数据文件。格式错误一律返回带行号的说明，便于同步时定位。
 fn parse(source: &'static str) -> Result<Table, String> {
-    let mut table: Table = HashMap::new();
+    let parsed = data_table::read(source, data_table::split_on('|'), |_| {
+        Columns::new(4, "`简写属性 | 触发的 token | 被丢弃的子属性 | 说明` 四列")
+    })?;
 
-    for (index, raw) in source.lines().enumerate() {
-        let line_no = index + 1;
-        let line = raw.split('#').next().unwrap_or("").trim();
-        if line.is_empty() {
-            continue;
-        }
-        let fields: Vec<&'static str> = line.split('|').map(str::trim).collect();
-        if fields.len() != 4 {
-            return Err(format!(
-                "第 {line_no} 行：需要 `简写属性 | 触发的 token | 被丢弃的子属性 | 说明` 四列，实际 {} 列",
-                fields.len()
-            ));
-        }
-        let (property, triggers, dropped, note) = (fields[0], fields[1], fields[2], fields[3]);
+    let mut table: Table = HashMap::new();
+    let mut seen = HashSet::new();
+    for row in parsed.rows {
+        let (property, triggers, dropped, note) =
+            (row.fields[0], row.fields[1], row.fields[2], row.fields[3]);
         if property.is_empty() || triggers.is_empty() || dropped.is_empty() || note.is_empty() {
-            return Err(format!("第 {line_no} 行：四列都不能为空"));
+            return Err(format!("第 {} 行：四列都不能为空", row.line_no));
         }
         if !is_lowercase(property) || !is_lowercase(triggers) {
             return Err(format!(
-                "第 {line_no} 行：属性与 token 必须小写：{property} | {triggers}"
+                "第 {} 行：属性与 token 必须小写：{property} | {triggers}",
+                row.line_no
             ));
         }
         let triggers: Vec<&'static str> = triggers
@@ -155,20 +150,15 @@ fn parse(source: &'static str) -> Result<Table, String> {
             .map(str::trim)
             .filter(|trigger| !trigger.is_empty())
             .collect();
-        let rows = table.entry(property).or_default();
         for trigger in &triggers {
-            let clash = rows.iter().any(|row| {
-                row.triggers
-                    .iter()
-                    .any(|seen| seen.eq_ignore_ascii_case(trigger))
-            });
-            if clash {
-                return Err(format!(
-                    "第 {line_no} 行：重复的 token {property} | {trigger}"
-                ));
-            }
+            data_table::unique(
+                &mut seen,
+                (property, trigger.to_ascii_lowercase()),
+                row.line_no,
+                || format!("重复的 token {property} | {trigger}"),
+            )?;
         }
-        rows.push(Row {
+        table.entry(property).or_default().push(Row {
             triggers,
             dropped,
             note,

@@ -6,6 +6,7 @@
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::project::Project;
+use crate::rules::data_table::{self, Columns};
 use crate::rules::{Rule, RuleMeta};
 
 use super::branch::{element_children, exclusive, max_rendered_children};
@@ -64,27 +65,30 @@ struct Constraint {
 }
 
 fn constraints() -> Vec<Constraint> {
-    CONSTRAINTS_DATA
-        .lines()
-        .filter_map(parse_constraint)
-        .collect()
+    data_table::read(CONSTRAINTS_DATA, data_table::split_on('\t'), |_| {
+        Columns::new(5, "`子标签 | 关系 | 目标 | 级别 | help` 五列")
+    })
+    .expect("scroll-view 家族约束表格式错误")
+    .rows
+    .into_iter()
+    .filter_map(parse_constraint)
+    .collect()
 }
 
-fn parse_constraint(line: &'static str) -> Option<Constraint> {
-    if line.trim().is_empty() || line.starts_with('#') {
-        return None;
-    }
-    let mut fields = line.split('\t').map(str::trim);
-    let child = fields.next()?;
-    let raw_relation = fields.next()?;
-    let target = fields.next()?;
-    let severity = match fields.next()? {
+fn parse_constraint(row: data_table::Row<'static>) -> Option<Constraint> {
+    let (child, raw_relation, target, severity, help) = (
+        row.fields[0],
+        row.fields[1],
+        row.fields[2],
+        row.fields[3],
+        row.fields[4],
+    );
+    let severity = match severity {
         "error" => Severity::Error,
         "warning" => Severity::Warning,
         "info" => Severity::Info,
         _ => return None,
     };
-    let help = fields.next()?;
     let (relation, containers) = parse_relation(raw_relation, target)?;
     Some(Constraint {
         child,
@@ -336,8 +340,17 @@ fn first_child_violation(
     containers: &[Target],
 ) -> Option<String> {
     let parent = ancestors.last()?;
-    if !is_builtin(&parent.tag) || !is_container(parent, containers) {
-        return None;
+    // 容器祖先存在但中间隔着内置节点：它仍不是容器的直接子元素。
+    // （`<block wx:if>` 已被摊平，不会走到这里。）
+    if !is_container(parent, containers) {
+        let container = nearest_container(ancestors, containers)?;
+        if !is_builtin(&parent.tag) {
+            return None;
+        }
+        return Some(format!(
+            "`<{}>` 必须直接放在 `<{}>` 下，当前位于 `<{}>` 内",
+            element.tag, container.tag, parent.tag
+        ));
     }
     let mut first = None;
     for sibling in element_children(parent) {
@@ -367,8 +380,10 @@ fn unique_violation(
     containers: &[Target],
 ) -> Option<String> {
     let container = nearest_container(ancestors, containers)?;
-    // 互斥分支里的同标签节点不会与它同时渲染，不计入重复。
-    let siblings: Vec<&WxmlElement> = element_children(container)
+    // 互斥分支里的同标签节点不会与它同时渲染，不计入重复；嵌套在内部节点里的
+    // 同名节点同样是容器下的重复项。
+    let siblings: Vec<&WxmlElement> = descendants(container)
+        .into_iter()
         .filter(|sibling| sibling.tag == element.tag && !exclusive(sibling, element))
         .collect();
     if siblings.len() < 2 {
@@ -386,6 +401,19 @@ fn unique_violation(
         siblings.len(),
         element.tag
     ))
+}
+
+/// 容器下的全部后代元素（文档顺序，含容器的直接子节点）。
+fn descendants(element: &WxmlElement) -> Vec<&WxmlElement> {
+    let mut out = Vec::new();
+    let mut stack: Vec<&WxmlNode> = element.children.iter().rev().collect();
+    while let Some(node) = stack.pop() {
+        if let WxmlNode::Element(child) = node {
+            out.push(child);
+            stack.extend(child.children.iter().rev());
+        }
+    }
+    out
 }
 
 fn before_violation(
@@ -563,7 +591,17 @@ fn check_element(
             Relation::Direct => direct_violation(element, ancestors, &constraint.containers),
             Relation::Ancestor => ancestor_violation(element, ancestors, &constraint.containers),
             Relation::FirstChild => {
-                first_child_violation(element, ancestors, &constraint.containers)
+                // 重复节点已由 unique 报在同一个元素上，不再叠一条。
+                let duplicate = constraints.iter().any(|other| {
+                    other.child == element.tag
+                        && matches!(other.relation, Relation::Unique)
+                        && unique_violation(element, ancestors, &other.containers).is_some()
+                });
+                if duplicate {
+                    None
+                } else {
+                    first_child_violation(element, ancestors, &constraint.containers)
+                }
             }
             Relation::Unique => unique_violation(element, ancestors, &constraint.containers),
             Relation::Before(sibling) => {
@@ -1635,6 +1673,37 @@ mod tests {
         ));
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(diagnostics[0].message.contains("<view>"));
+    }
+
+    /// 嵌套在内置节点里的 sticky-header 不是容器的直接子节点。
+    #[test]
+    fn sticky_header_nested_inside_a_view_is_reported() {
+        let diagnostics = check(&project(
+            "sticky-nested",
+            concat!(
+                r#"<scroll-view type="custom"><sticky-section>"#,
+                r#"<view><sticky-header>标题</sticky-header></view>"#,
+                r#"</sticky-section></scroll-view>"#,
+            ),
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("直接放在"));
+    }
+
+    /// 唯一性按容器下的全部后代算：嵌套的那一个同样是重复项。
+    #[test]
+    fn sticky_header_count_includes_nested_ones() {
+        let diagnostics = check(&project(
+            "sticky-unique-nested",
+            concat!(
+                r#"<scroll-view type="custom"><sticky-section>"#,
+                r#"<sticky-header>第一个</sticky-header>"#,
+                r#"<view><sticky-header>第二个</sticky-header></view>"#,
+                r#"</sticky-section></scroll-view>"#,
+            ),
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("2 个"));
     }
 
     // ---- renders-first：按能同时渲染的子节点数判 ----

@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
+use crate::rules::data_table::{self, Columns};
 use crate::rules::{Rule, RuleMeta};
 
 use super::{COMPONENTS_DATA, load_doc, wxml_files};
@@ -15,33 +16,21 @@ struct ComponentTable {
 
 impl ComponentTable {
     fn load() -> Self {
+        let parsed = data_table::read(COMPONENTS_DATA, split, |section| match section {
+            Some("unsupported") => Columns::new(2, "`标签 | 替代方案` 两列"),
+            _ => Columns::new(1, "一个标签"),
+        })
+        .expect("组件支持表格式错误");
+
         let mut supported = HashSet::new();
         let mut unsupported = HashMap::new();
-        let mut section = "";
-        for line in COMPONENTS_DATA.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            match line {
-                "[supported]" => {
-                    section = "supported";
-                    continue;
+        for row in parsed.rows {
+            match row.section {
+                Some("supported") => {
+                    supported.insert(row.fields[0]);
                 }
-                "[unsupported]" => {
-                    section = "unsupported";
-                    continue;
-                }
-                _ => {}
-            }
-            match section {
-                "supported" => {
-                    supported.insert(line);
-                }
-                "unsupported" => {
-                    if let Some((name, replacement)) = line.split_once('|') {
-                        unsupported.insert(name.trim(), replacement.trim());
-                    }
+                Some("unsupported") => {
+                    unsupported.insert(row.fields[0], row.fields[1]);
                 }
                 _ => {}
             }
@@ -58,6 +47,14 @@ impl ComponentTable {
             return None;
         }
         self.unsupported.get(tag).copied()
+    }
+}
+
+/// `[supported]` 一行一个标签；`[unsupported]` 按 `|` 切 `标签 | 替代方案`。
+fn split<'a>(section: Option<&'a str>, line: &'a str) -> Vec<&'a str> {
+    match section {
+        Some("unsupported") => line.split('|').map(str::trim).collect(),
+        _ => vec![line],
     }
 }
 
