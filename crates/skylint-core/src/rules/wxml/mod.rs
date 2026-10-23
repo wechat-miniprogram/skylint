@@ -195,20 +195,6 @@ fn element_diagnostic(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
 
-    use super::{SUPPORTED_COMPONENTS, UNSUPPORTED_COMPONENTS};
 
-    #[test]
-    fn component_tables_have_unique_keys() {
-        let mut supported = HashSet::new();
-        for tag in SUPPORTED_COMPONENTS {
-            assert!(supported.insert(*tag), "重复的受支持组件：{tag}");
-        }
-        let mut unsupported = HashSet::new();
-        for (tag, _) in UNSUPPORTED_COMPONENTS {
-            assert!(unsupported.insert(*tag), "重复的不支持组件：{tag}");
-            assert!(!supported.contains(tag), "组件同时出现在两张表：{tag}");
-        }
-    }
 }

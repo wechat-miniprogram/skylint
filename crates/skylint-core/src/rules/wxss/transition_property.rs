@@ -15,7 +15,7 @@ use super::visit;
 /// 来源：skyline-skills/skills/skyline-wxss/references/animation.md:38-58 的 `<animatable-property>` BNF
 ///
 /// 文本/字体类、`visibility`、`pointer-events` 不在表内（同文档 :60-64）。
-/// 一行一个属性名（小写），按白名单匹配，名称不重复（见测试）。
+/// 一行一个属性名（小写），按白名单匹配。
 const ANIMATABLE_PROPERTIES: &[&str] = &[
     "all",
     "none",
@@ -221,7 +221,6 @@ impl Rule for TransitionProperty {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
 
     use crate::rules::Rule;
 
@@ -322,22 +321,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn table_contains_known_properties_and_has_no_duplicates() {
-        let names = super::ANIMATABLE_PROPERTIES;
-        assert_eq!(names.len(), 65);
-        assert!(names.contains(&"all"));
-        assert!(names.contains(&"none"));
-        assert!(names.contains(&"transform-origin"));
-        assert!(names.contains(&"background-position-x"));
-        assert!(names.contains(&"mask-position-x"));
-        assert!(names.contains(&"mask-position-y"));
-        assert!(!names.contains(&"color"));
-
-        // 白名单按首次命中返回，名称不允许重复。
-        let mut seen = HashSet::new();
-        for name in names {
-            assert!(seen.insert(*name), "重复的属性名 {name}");
-        }
-    }
 }

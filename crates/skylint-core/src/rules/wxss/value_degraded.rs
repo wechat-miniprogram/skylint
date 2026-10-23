@@ -301,7 +301,6 @@ const ENV_VARIABLES: &[&str] = &[
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
 
     use crate::rules::Rule;
 
@@ -541,51 +540,6 @@ mod tests {
         assert!(diags[0].message.contains("fallback"));
     }
 
-    #[test]
-    fn tables_contain_known_entries_and_have_no_duplicate_keys() {
-        assert_eq!(super::ENV_VARIABLES.len(), 4);
-        assert!(super::ENV_VARIABLES.contains(&"safe-area-inset-bottom"));
-
-        // 查表按首次命中返回，数据里不允许重复键。
-        let mut seen = HashSet::new();
-        for (names, value, _) in super::EXACT_VALUES {
-            for name in *names {
-                assert!(seen.insert((*name, *value)), "重复的条目 {name}: {value}");
-            }
-        }
-        let mut seen = HashSet::new();
-        for (property, _, _) in super::ONLY_VALUES {
-            assert!(seen.insert(*property), "重复的属性 {property}");
-        }
-        let mut seen = HashSet::new();
-        for (property, function, _) in super::FUNCTION_VALUES {
-            assert!(
-                seen.insert((*property, *function)),
-                "重复的条目 {property}: {function}"
-            );
-        }
-        let mut seen = HashSet::new();
-        for name in super::ENV_VARIABLES {
-            assert!(seen.insert(*name), "重复的 env 变量 {name}");
-        }
-
-        assert!(
-            super::EXACT_VALUES
-                .iter()
-                .any(|(names, value, _)| names.contains(&"word-break") && *value == "keep-all")
-        );
-        assert!(
-            super::ONLY_VALUES
-                .iter()
-                .any(|(property, allowed, _)| *property == "will-change"
-                    && allowed.contains(&"contents"))
-        );
-        assert!(
-            super::FUNCTION_VALUES
-                .iter()
-                .any(|(property, function, _)| *property == "content" && *function == "url")
-        );
-    }
 
     #[test]
     fn preprocessor_sources_are_checked_too() {

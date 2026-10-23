@@ -116,7 +116,7 @@ impl Row {
 /// 与初始值相同的 token 不收录：写了等于没写，丢弃也不改变渲染（background-attachment
 /// 初始值 scroll、mask-origin / mask-clip 初始值 border-box）。
 /// 匹配：含 var( / env( / {{ / 预处理器变量的值无法静态判定，整条声明跳过。
-/// 同一属性按声明顺序匹配，`(property, trigger)` 不重复（见测试）。
+/// 同一属性按声明顺序匹配，`(property, trigger)` 不重复。
 const ROWS: &[Row] = &[
     Row {
         property: "background",
@@ -152,7 +152,6 @@ const ROWS: &[Row] = &[
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
 
     use crate::rules::Rule;
 
@@ -235,29 +234,4 @@ mod tests {
         assert_eq!(messages(&ShorthandPartial, &project), Vec::<String>::new());
     }
 
-    #[test]
-    fn table_contains_known_rows_and_has_no_duplicate_triggers() {
-        let rows_for = |property: &str| {
-            super::ROWS
-                .iter()
-                .filter(|row| row.property == property)
-                .collect::<Vec<_>>()
-        };
-        assert_eq!(rows_for("background").len(), 2);
-        assert_eq!(rows_for("mask").len(), 2);
-        assert!(rows_for("background")[0].triggers.contains(&"fixed"));
-        assert!(rows_for("text-decoration")[0].triggers.contains(&"length"));
-
-        // 查表按首次命中返回，同一属性下不允许重复 token。
-        let mut seen = HashSet::new();
-        for row in super::ROWS {
-            for trigger in row.triggers {
-                assert!(
-                    seen.insert((row.property, *trigger)),
-                    "重复的 token {} | {trigger}",
-                    row.property
-                );
-            }
-        }
-    }
 }

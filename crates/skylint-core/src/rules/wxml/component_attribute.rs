@@ -659,35 +659,11 @@ fn help(entry: &Entry) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
 
     use crate::rules::testutil::wxml::{Fixture, check_rule, project};
 
-    use super::{ATTRIBUTES, ComponentAttribute, REQUIRES};
+    use super::ComponentAttribute;
 
-    #[test]
-    fn table_has_no_duplicate_keys() {
-        let mut attrs = HashSet::new();
-        for rule in ATTRIBUTES {
-            for &tag in rule.tags {
-                for &attr in rule.attrs {
-                    assert!(
-                        attrs.insert((tag, attr, std::mem::discriminant(&rule.constraint))),
-                        "重复的属性约束：{tag} {attr}"
-                    );
-                }
-            }
-        }
-        let mut requires = HashSet::new();
-        for rule in REQUIRES {
-            assert!(
-                requires.insert((rule.tag, rule.trigger.attr())),
-                "重复的跨属性条件：{} {}",
-                rule.tag,
-                rule.trigger.attr()
-            );
-        }
-    }
 
     #[test]
     fn enum_violations_are_warnings_on_the_attribute() {

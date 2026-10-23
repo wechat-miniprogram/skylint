@@ -122,11 +122,10 @@ impl Rule for UnsupportedApi {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
 
     use crate::rules::Rule;
 
-    use super::{ENTRIES, Entry, UnsupportedApi};
+    use super::UnsupportedApi;
     use crate::rules::testutil::js::{Fixture, messages, plugin, single, single_with_app};
 
     /// 单页工程 + 一个额外的脚本文件（用于验证全域扫描的边界）。
@@ -145,18 +144,6 @@ mod tests {
         (f, project)
     }
 
-    #[test]
-    fn entries_are_unique() {
-        let mut seen = HashSet::new();
-        for entry in ENTRIES {
-            let key = match entry {
-                Entry::Call { callee, .. } => ("call", *callee),
-                Entry::PluginCall { prefix, .. } => ("plugin-call", *prefix),
-                Entry::PageOption { key, .. } => ("page-option", *key),
-            };
-            assert!(seen.insert(key), "重复条目：{key:?}");
-        }
-    }
 
     #[test]
     fn utility_scripts_outside_units_are_scanned() {

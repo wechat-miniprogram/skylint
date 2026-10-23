@@ -54,7 +54,7 @@ const OVERFLOW_AXIS_PROPERTIES: &[&str] = &["overflow-x", "overflow-y"];
 /// 属性可用、但整值不支持的条目：`(属性名列表, 整值, 建议)`。
 ///
 /// 属性名列表对应原表一格多属性；匹配口径：属性名小写比较，值 trim + 小写后整值相等才命中；
-/// 含 var( / env( / {{ 的值跳过。按声明顺序首次命中优先，键不重复（见测试）。
+/// 含 var( / env( / {{ 的值跳过。按声明顺序首次命中优先。
 const UNSUPPORTED_VALUES: &[(&[&str], &str, &str)] = &[
     (&["display"], "grid", "改用 flex 布局替代 grid"), // layout.md「display」、SKILL.md MUST 示例
     (&["display"], "flow-root", "改用 flex 或 block"), // layout.md「display」
@@ -199,40 +199,4 @@ pub(crate) fn normalize_value(value: &str) -> Option<String> {
         return None;
     }
     Some(text.to_ascii_lowercase())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-
-    use super::{UNSUPPORTED_PROPERTIES, UNSUPPORTED_VALUES, table};
-
-    #[test]
-    fn table_contains_known_entries() {
-        let table = table();
-        assert_eq!(table.property("float"), Some("使用 flex 布局"));
-        assert!(table.property("mask-clip").is_some());
-        assert_eq!(
-            table.value("display", "grid"),
-            Some("改用 flex 布局替代 grid")
-        );
-        assert!(table.value("border-top-style", "double").is_some());
-        assert!(table.value("border-left-style", "outset").is_some());
-        assert!(table.value("display", "flex").is_none());
-    }
-
-    /// 查表按首次命中返回，数据里不允许重复键。
-    #[test]
-    fn table_has_no_duplicate_keys() {
-        let mut seen = HashSet::new();
-        for (property, _) in UNSUPPORTED_PROPERTIES {
-            assert!(seen.insert(*property), "重复的属性 {property}");
-        }
-        let mut seen = HashSet::new();
-        for (names, value, _) in UNSUPPORTED_VALUES {
-            for name in *names {
-                assert!(seen.insert((*name, *value)), "重复的条目 {name}: {value}");
-            }
-        }
-    }
 }

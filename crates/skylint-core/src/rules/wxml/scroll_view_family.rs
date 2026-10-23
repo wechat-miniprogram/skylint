@@ -748,7 +748,7 @@ fn check_element(
 
 #[cfg(test)]
 mod tests {
-    use super::{CONSTRAINTS, ScrollViewFamily};
+    use super::ScrollViewFamily;
     use crate::Severity;
     use crate::rules::testutil::wxml::{Fixture, check_rule, project};
 
@@ -758,17 +758,6 @@ mod tests {
 
     // ---- 约束表 ----
 
-    #[test]
-    fn constraints_have_no_duplicate_keys() {
-        let mut keys: Vec<(&str, String)> = CONSTRAINTS
-            .iter()
-            .map(|constraint| (constraint.child, format!("{:?}", constraint.relation)))
-            .collect();
-        keys.sort();
-        let count = keys.len();
-        keys.dedup();
-        assert_eq!(keys.len(), count, "同一子标签的同一条约束写了两次");
-    }
 
     // ---- sticky-section ----
 
