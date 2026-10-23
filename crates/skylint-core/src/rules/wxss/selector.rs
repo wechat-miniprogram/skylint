@@ -187,7 +187,10 @@ mod tests {
 
     #[test]
     fn ignores_pseudos_that_do_not_change_the_matched_node() {
-        assert_eq!(selector("view::after").unwrap().tag.as_deref(), Some("view"));
+        assert_eq!(
+            selector("view::after").unwrap().tag.as_deref(),
+            Some("view")
+        );
         for text in [
             "view:first-child",
             "view:last-child",

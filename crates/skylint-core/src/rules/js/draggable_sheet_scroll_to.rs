@@ -8,9 +8,9 @@
 //! 证据：`skyline-scroll-api/references/api/draggable-sheet-context.md:32`
 //! （「`size` 和 `pixels` 同时传入时，仅 size 生效」）。
 
+use crate::Severity;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
-use crate::Severity;
 
 use super::{Callee, at_span};
 
@@ -62,8 +62,8 @@ impl Rule for DraggableSheetScrollTo {
 mod tests {
     use crate::rules::Rule;
 
-    use crate::rules::testutil::js::{messages, single};
     use super::DraggableSheetScrollTo;
+    use crate::rules::testutil::js::{messages, single};
 
     #[test]
     fn size_and_pixels_together_are_reported() {

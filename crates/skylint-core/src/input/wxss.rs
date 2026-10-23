@@ -20,7 +20,8 @@ use oxc_css_parser::{
     ast::{
         AtRule, Calc, ComplexSelector, ComplexSelectorChild, ComponentValue, CompoundSelector,
         Declaration, DelimiterKind, FunctionName, InterpolableIdent, InterpolableStr,
-        PseudoClassSelectorArgKind, SelectorList, SimpleSelector, Statement, Stylesheet, TypeSelector,
+        PseudoClassSelectorArgKind, SelectorList, SimpleSelector, Statement, Stylesheet,
+        TypeSelector,
     },
     token::Comment,
 };
@@ -688,12 +689,7 @@ fn collect_compound_pseudos(compound: &CompoundSelector<'_>, out: &mut Vec<WxssP
 }
 
 /// 动态伪类名（`:#{$x}`）没有确定名字，不登记——宁可漏报。
-fn push_pseudo(
-    out: &mut Vec<WxssPseudo>,
-    name: &InterpolableIdent<'_>,
-    span: Span,
-    element: bool,
-) {
+fn push_pseudo(out: &mut Vec<WxssPseudo>, name: &InterpolableIdent<'_>, span: Span, element: bool) {
     let Some(name) = literal_ident(name) else {
         return;
     };
@@ -1430,7 +1426,10 @@ mod tests {
             .flat_map(|s| s.pseudos.iter())
             .map(|p| (p.name.as_str(), p.element, p.offset, p.len))
             .collect();
-        assert_eq!(pseudos, vec![("hover", false, 2, 6), ("after", true, 12, 7)]);
+        assert_eq!(
+            pseudos,
+            vec![("hover", false, 2, 6), ("after", true, 12, 7)]
+        );
         assert_eq!(doc.position(2), (1, 3));
     }
 }

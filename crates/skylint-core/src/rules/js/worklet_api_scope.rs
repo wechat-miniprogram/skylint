@@ -17,9 +17,9 @@
 //! - 插件限制：`skyline-scroll-api/references/api/worklet-scroll-context.md:3`
 //!   （「小程序插件：**不支持**」）、`:96`，`skyline-scroll-api/SKILL.md:110`。
 
+use crate::Severity;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
-use crate::Severity;
 
 use super::{Callee, at_span, is_plugin};
 
@@ -94,8 +94,8 @@ impl Rule for WorkletApiScope {
 mod tests {
     use crate::rules::Rule;
 
-    use crate::rules::testutil::js::{messages, plugin, single};
     use super::WorkletApiScope;
+    use crate::rules::testutil::js::{messages, plugin, single};
 
     const SCROLL_TO_OUTSIDE: &str =
         "function scroll() { scrollViewContext.scrollTo(this.ref.value, { top: 10 }); }";
@@ -218,7 +218,9 @@ mod tests {
         let (_normal, normal) = single("scope-normal", SCROLL_TO_OUTSIDE);
         assert_eq!(
             messages(&WorkletApiScope, &normal),
-            ["`scrollViewContext.scrollTo` 只能在 worklet 函数内调用，当前在普通 JS 线程调用不会生效"]
+            [
+                "`scrollViewContext.scrollTo` 只能在 worklet 函数内调用，当前在普通 JS 线程调用不会生效"
+            ]
         );
     }
 

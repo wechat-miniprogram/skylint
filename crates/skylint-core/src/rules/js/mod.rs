@@ -130,7 +130,10 @@ mod tests {
             scripts,
             [
                 ("app.js", &Scope::Global),
-                ("components/c/c.js", &Scope::Component("components/c/c".into())),
+                (
+                    "components/c/c.js",
+                    &Scope::Component("components/c/c".into())
+                ),
                 ("pages/a/a.js", &Scope::Page("pages/a/a".into())),
                 ("pages/b/b.js", &Scope::Page("pages/b/b".into())),
             ]

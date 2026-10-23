@@ -446,7 +446,9 @@ fn callee_name(expr: &Expression) -> Option<String> {
     match expr {
         Expression::Identifier(id) => Some(id.name.as_str().to_string()),
         Expression::ThisExpression(_) => Some("this".to_string()),
-        Expression::StaticMemberExpression(member) => member_name(&member.object, &member.property.name),
+        Expression::StaticMemberExpression(member) => {
+            member_name(&member.object, &member.property.name)
+        }
         // `a?.b()` 整条链包在 `ChainExpression` 里；`a?.b` 作为 callee 时同理。
         Expression::ChainExpression(chain) => match &chain.expression {
             ChainElement::StaticMemberExpression(member) => {
@@ -671,7 +673,8 @@ mod tests {
     #[test]
     fn parenthesized_arguments_are_transparent() {
         // `Page(({...}))` / `wx.navigateTo(({...}))` 与不加括号的写法必须同构。
-        let doc = parse_js("Page(({ onPageScroll() {} })); wx.navigateTo(({ routeType: 'slide' }));");
+        let doc =
+            parse_js("Page(({ onPageScroll() {} })); wx.navigateTo(({ routeType: 'slide' }));");
         let calls = doc.calls();
         assert_eq!(calls[0].callee, "Page");
         assert_eq!(calls[0].args[0].object_keys, ["onPageScroll"]);
@@ -879,17 +882,12 @@ mod tests {
         let args = &doc.calls()[0].args;
         assert_eq!(
             args.iter().map(|arg| arg.fn_worklet).collect::<Vec<_>>(),
-            [
-                Some(true),
-                Some(false),
-                Some(true),
-                Some(false),
-                None,
-                None
-            ]
+            [Some(true), Some(false), Some(true), Some(false), None, None]
         );
         assert_eq!(
-            args.iter().map(|arg| arg.ident.as_deref()).collect::<Vec<_>>(),
+            args.iter()
+                .map(|arg| arg.ident.as_deref())
+                .collect::<Vec<_>>(),
             [None, None, None, None, Some("method"), None]
         );
     }

@@ -23,7 +23,8 @@ use crate::{Diagnostic, Severity};
 
 use super::unit_wxml;
 
-const MESSAGE: &str = "工程使用了 worklet，但没有开启 setting.es6（将 JS 编译成 ES5），worklet 代码不会被正确编译";
+const MESSAGE: &str =
+    "工程使用了 worklet，但没有开启 setting.es6（将 JS 编译成 ES5），worklet 代码不会被正确编译";
 const HELP: &str = "在开发者工具 详情 > 本地设置 勾选「将 JS 编译成 ES5」，或把 project.config.json（或 project.private.config.json）的 setting.es6 设为 true";
 
 pub struct WorkletEs5;
@@ -66,9 +67,7 @@ impl Rule for WorkletEs5 {
             .key("es6")
             .or_else(|| positions.key("setting"))
             .unwrap_or((1, 1));
-        vec![
-            Diagnostic::new(Self::ID, Severity::Warning, MESSAGE, path, line, column).help(HELP),
-        ]
+        vec![Diagnostic::new(Self::ID, Severity::Warning, MESSAGE, path, line, column).help(HELP)]
     }
 }
 

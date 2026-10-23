@@ -141,8 +141,8 @@ mod tests {
     use crate::project::Project;
     use crate::rules::Rule;
 
-    use crate::rules::testutil::js::{Fixture, messages, single};
     use super::RouteType;
+    use crate::rules::testutil::js::{Fixture, messages, single};
 
     /// 两个页面：注册可以写在另一个页面的 js 里。
     fn two_pages(name: &str, index_js: &str, other_js: &str) -> (Fixture, Project) {

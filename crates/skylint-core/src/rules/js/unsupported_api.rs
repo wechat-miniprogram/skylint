@@ -144,7 +144,6 @@ mod tests {
         (f, project)
     }
 
-
     #[test]
     fn utility_scripts_outside_units_are_scanned() {
         let (_f, project) = with_script(

@@ -8,9 +8,9 @@
 //! 证据：`skyline-worklet/references/base/scroll-view-context.md:47-52`（要点第一条
 //! 「需要先通过 createSelectorQuery().select().ref() 获取 scroll-view 的引用」）。
 
+use crate::Severity;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
-use crate::Severity;
 
 use super::{Callee, at_span};
 
@@ -37,10 +37,7 @@ impl Rule for ScrollContextRef {
         let mut out = Vec::new();
         for file in &project.scripts {
             let calls = file.doc.calls();
-            let Some(first) = calls
-                .iter()
-                .find(|call| SCROLL_TO.matches(&call.callee))
-            else {
+            let Some(first) = calls.iter().find(|call| SCROLL_TO.matches(&call.callee)) else {
                 continue;
             };
             if calls.iter().any(|call| REF.matches(&call.callee)) {
@@ -63,10 +60,11 @@ impl Rule for ScrollContextRef {
 mod tests {
     use crate::rules::Rule;
 
-    use crate::rules::testutil::js::{messages, single};
     use super::ScrollContextRef;
+    use crate::rules::testutil::js::{messages, single};
 
-    const SCROLL_TO: &str = "function scroll() { 'worklet'; scrollViewContext.scrollTo(this.ref.value, { top: 1 }); }";
+    const SCROLL_TO: &str =
+        "function scroll() { 'worklet'; scrollViewContext.scrollTo(this.ref.value, { top: 1 }); }";
 
     #[test]
     fn missing_ref_is_reported() {
@@ -105,10 +103,7 @@ mod tests {
             }
             "#,
         );
-        assert_eq!(
-            messages(&ScrollContextRef, &project),
-            Vec::<String>::new()
-        );
+        assert_eq!(messages(&ScrollContextRef, &project), Vec::<String>::new());
     }
 
     #[test]
@@ -117,10 +112,7 @@ mod tests {
             "ref-named",
             "query.select('.x').ref(cb); scrollViewContext.scrollTo(ref, { top: 1 });",
         );
-        assert_eq!(
-            messages(&ScrollContextRef, &project),
-            Vec::<String>::new()
-        );
+        assert_eq!(messages(&ScrollContextRef, &project), Vec::<String>::new());
     }
 
     #[test]
@@ -129,10 +121,7 @@ mod tests {
             "ref-negative",
             "const query = wx.createSelectorQuery(); query.select('.x').exec();",
         );
-        assert_eq!(
-            messages(&ScrollContextRef, &project),
-            Vec::<String>::new()
-        );
+        assert_eq!(messages(&ScrollContextRef, &project), Vec::<String>::new());
     }
 
     #[test]
@@ -141,16 +130,13 @@ mod tests {
             "ref-other-file",
             "scrollViewContext.scrollTo(this.ref.value, { top: 1 });",
         );
-        f.write(
-            "pages/other/other.js",
-            "query.select('.x').ref(cb);",
-        )
-        .write("pages/other/other.json", "{}")
-        .write("pages/other/other.wxml", "<view/>")
-        .write(
-            "app.json",
-            r#"{"pages":["pages/index/index","pages/other/other"],"renderer":"skyline"}"#,
-        );
+        f.write("pages/other/other.js", "query.select('.x').ref(cb);")
+            .write("pages/other/other.json", "{}")
+            .write("pages/other/other.wxml", "<view/>")
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index","pages/other/other"],"renderer":"skyline"}"#,
+            );
         let project = f.project();
         let diagnostics = ScrollContextRef.check(&project);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");

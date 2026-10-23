@@ -216,9 +216,7 @@ fn check_value(
             "写成 JSON 布尔值 true / false，不要加引号或写数字",
         ),
         Kind::Text => (
-            format!(
-                "rendererOptions.skyline.{key} 期望版本号字符串，实际是 {value}"
-            ),
+            format!("rendererOptions.skyline.{key} 期望版本号字符串，实际是 {value}"),
             "写成字符串，例如 \"3.0.0\"",
         ),
         Kind::Isolation => match value.as_str() {
