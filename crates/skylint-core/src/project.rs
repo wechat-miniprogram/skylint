@@ -96,6 +96,10 @@ pub struct Project {
     pub project_config: Map<String, Value>,
     /// project.config.json 原文，定位 `libVersion` 这类值时用；读不到时为空串。
     pub project_config_source: String,
+    /// project.private.config.json 原始对象（开发者工具写入的个人配置，常被 gitignore）。
+    pub project_private_config: Map<String, Value>,
+    /// project.private.config.json 原文，定位时用；读不到时为空串。
+    pub project_private_config_source: String,
     pub pages: Vec<PageUnit>,
     pub components: Vec<ComponentUnit>,
     /// 单元 → 它**直接**引用的组件。页面用 route 作 key，组件用自身路径。
@@ -133,7 +137,9 @@ impl Project {
     /// `root` 是项目根（含 `project.config.json` 的目录）。
     pub fn load(root: impl Into<PathBuf>) -> anyhow::Result<Self> {
         let root = root.into();
-        let (config, config_source) = read_project_config(&root);
+        let (config, config_source) = read_config(&root, "project.config.json");
+        let (private_config, private_config_source) =
+            read_config(&root, "project.private.config.json");
         let miniprogram_root = config
             .get("miniprogramRoot")
             .and_then(Value::as_str)
@@ -217,6 +223,8 @@ impl Project {
             app_json_source,
             project_config: config.as_object().cloned().unwrap_or_default(),
             project_config_source: config_source,
+            project_private_config: private_config.as_object().cloned().unwrap_or_default(),
+            project_private_config_source: private_config_source,
             pages,
             components,
             deps,
@@ -252,6 +260,19 @@ impl Project {
             .filter(|page| self.page_components(&page.route).contains(&path))
             .map(|page| page.route.as_str())
             .collect()
+    }
+
+    /// 生效的 `setting.<key>`：`project.private.config.json` 覆盖
+    /// `project.config.json`（开发者工具按这个顺序合并），两处都没有时 `None`。
+    pub fn setting(&self, key: &str) -> Option<&Value> {
+        self.project_private_config
+            .get("setting")
+            .and_then(|setting| setting.get(key))
+            .or_else(|| {
+                self.project_config
+                    .get("setting")
+                    .and_then(|setting| setting.get(key))
+            })
     }
 
     /// 从若干单元出发，沿组件边可达的单元（不含起点本身）。
@@ -302,13 +323,12 @@ impl Project {
     pub fn renders_as_block(&self, scope: &Scope) -> bool {
         let app = self.app_display_block();
         match scope {
-            // 全局样式表对所有页面生效：只有每一页都开着才成立。
-            Scope::Global => {
-                app && self
-                    .pages
-                    .iter()
-                    .all(|page| self.page_display_block(&page.route).is_none())
-            }
+            // 全局样式表对所有页面生效：每一页的有效值都是 block 才成立。
+            // 页面显式开 / 关优先于 app 级，所以不能用「页面没表态」来判断。
+            Scope::Global => self
+                .pages
+                .iter()
+                .all(|page| self.page_display_block(&page.route).unwrap_or(app)),
             Scope::Page(route) => self.page_display_block(route).unwrap_or(app),
             // 组件没有自己的页面配置，按「用到它的页面」判断；没人用时按 app 级。
             Scope::Component(path) => {
@@ -822,10 +842,10 @@ fn ext_conf(config: &Value) -> ResolveExtConf {
     conf
 }
 
-/// project.config.json 的原文与解析结果。文件缺失 / 不是合法 JSON 时给空串与
+/// project 根目录下的配置文件原文与解析结果。文件缺失 / 不是合法 JSON 时给空串与
 /// `Null`——与页面 json 的宽容策略一致，缺文件不该升级成 linter 自己的错误。
-fn read_project_config(root: &Path) -> (Value, String) {
-    let source = std::fs::read_to_string(root.join("project.config.json")).unwrap_or_default();
+fn read_config(root: &Path, name: &str) -> (Value, String) {
+    let source = std::fs::read_to_string(root.join(name)).unwrap_or_default();
     let value = serde_json::from_str(&source).unwrap_or(Value::Null);
     (value, source)
 }

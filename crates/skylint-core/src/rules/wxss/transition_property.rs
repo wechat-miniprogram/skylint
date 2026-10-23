@@ -35,6 +35,9 @@ const TIMING_KEYWORDS: [&str; 8] = [
     "infinite",
 ];
 
+/// CSS Transitions Level 2 的行为关键字（`transition-behavior`），也不是属性名。
+const BEHAVIOR_KEYWORDS: [&str; 2] = ["allow-discrete", "normal"];
+
 /// 文档明确列出「不支持 transition/animation」的文本与字体相关属性。
 const TEXT_FONT: [&str; 14] = [
     "text-align",
@@ -96,10 +99,13 @@ impl Rule for TransitionProperty {
                         if allow.contains(ident.to_ascii_lowercase().as_str()) {
                             continue;
                         }
-                        // 全局关键字与时间函数都不是属性名。
+                        // 全局关键字、时间函数、transition-behavior 关键字都不是属性名。
                         if GLOBAL_KEYWORDS
                             .iter()
                             .any(|keyword| keyword.eq_ignore_ascii_case(ident))
+                            || BEHAVIOR_KEYWORDS
+                                .iter()
+                                .any(|keyword| keyword.eq_ignore_ascii_case(ident))
                             || (!longhand
                                 && TIMING_KEYWORDS
                                     .iter()
@@ -242,6 +248,23 @@ mod tests {
             .d { transition-property: revert; }
             .e { transition: REVERT-LAYER; }
             .f { transition: all .3s; }
+            "#,
+        );
+        assert_eq!(
+            messages(&TransitionProperty, &project),
+            Vec::<String>::new()
+        );
+    }
+
+    /// `transition-behavior` 的关键字不是属性名（CSS Transitions Level 2）。
+    #[test]
+    fn behavior_keywords_are_not_property_names() {
+        let (_f, project) = single(
+            "transition-behavior-keywords",
+            r#"
+            .a { transition: transform 1s allow-discrete; }
+            .b { transition: opacity .2s normal; }
+            .c { transition-property: transform, allow-discrete; }
             "#,
         );
         assert_eq!(

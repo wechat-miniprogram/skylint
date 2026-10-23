@@ -41,6 +41,18 @@ fn callee_calls(callee: &str, method: &str) -> bool {
         .is_some_and(|prefix| prefix.is_empty() || prefix.ends_with('.'))
 }
 
+/// 跳转调用的接收者必须是已知的对象：`navigateTo` 裸调用、`wx.*`、`*.pageRouter`。
+/// 其它接收者（`myRouter.navigateTo`、类实例方法）不看，语义无法静态确认。
+fn navigation_callee(callee: &str, method: &str) -> bool {
+    if !callee_calls(callee, method) {
+        return false;
+    }
+    match callee.rsplit_once('.') {
+        None => true,
+        Some((receiver, _)) => receiver == "wx" || receiver.ends_with("pageRouter"),
+    }
+}
+
 /// `'slide'` / `"slide"` 字面量的内容。注册名不做转义解码，带反斜杠的跳过。
 fn string_literal<'a>(doc: &'a JsDoc, arg: &ArgInfo) -> Option<&'a str> {
     let text = doc.source().get(arg.start as usize..arg.end as usize)?;
@@ -78,27 +90,32 @@ impl Rule for RouteType {
     fn check(&self, project: &Project) -> Vec<crate::Diagnostic> {
         // `Project.scripts` 已覆盖全域（含 `utils/router.js` 这类被 require 的工具模块），
         // 注册点不会漏——这是本规则最容易产生系统性误报的地方。
-        let registered: HashSet<&str> = project
-            .scripts
-            .iter()
-            .map(|file| &file.doc)
-            .flat_map(|doc| {
-                doc.calls()
-                    .iter()
-                    .filter(|call| callee_calls(&call.callee, REGISTER))
-                    .filter_map(|call| {
-                        let arg = call.args.first()?;
-                        string_literal(doc, arg)
-                    })
-            })
-            .collect();
+        // 注册名不是字面量时整个注册表不可知，此时不做「未注册」判定。
+        let mut dynamic_registration = false;
+        let mut registered: HashSet<&str> = HashSet::new();
+        for doc in project.scripts.iter().map(|file| &file.doc) {
+            for call in doc.calls() {
+                if !callee_calls(&call.callee, REGISTER) {
+                    continue;
+                }
+                match call.args.first().and_then(|arg| string_literal(doc, arg)) {
+                    Some(name) => {
+                        registered.insert(name);
+                    }
+                    None => dynamic_registration = true,
+                }
+            }
+        }
+        if dynamic_registration {
+            return Vec::new();
+        }
 
         let mut out = Vec::new();
         for file in &project.scripts {
             for call in file.doc.calls() {
                 if !["navigateTo", "redirectTo", "reLaunch"]
                     .iter()
-                    .any(|method| callee_calls(&call.callee, method))
+                    .any(|method| navigation_callee(&call.callee, method))
                 {
                     continue;
                 }
@@ -311,6 +328,38 @@ mod tests {
         let (_f, project) = single(
             "route-type-empty-registry",
             "wx.navigateTo({ url: 'a', routeType: 'slide' });",
+        );
+        assert_eq!(messages(&RouteType, &project).len(), 1);
+    }
+
+    /// 注册名是变量时整个注册表不可知：任何字面量都可能已注册，全部不报。
+    #[test]
+    fn dynamic_registration_disables_the_check() {
+        let (_f, project) = single(
+            "route-type-dynamic-register",
+            r#"
+            wx.router.addRouteBuilder(name, builder);
+            wx.navigateTo({ url: 'a', routeType: 'slide' });
+            "#,
+        );
+        assert_eq!(messages(&RouteType, &project), Vec::<String>::new());
+    }
+
+    /// 未知接收者的 `.navigateTo` 不是小程序跳转 API，不看。
+    #[test]
+    fn unknown_receiver_is_not_checked() {
+        let (_f, project) = single(
+            "route-type-receiver",
+            "myRouter.navigateTo({ url: 'a', routeType: 'slide' });",
+        );
+        assert_eq!(messages(&RouteType, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn page_router_calls_are_checked() {
+        let (_f, project) = single(
+            "route-type-page-router",
+            "this.pageRouter.navigateTo({ url: 'a', routeType: 'slide' });",
         );
         assert_eq!(messages(&RouteType, &project).len(), 1);
     }

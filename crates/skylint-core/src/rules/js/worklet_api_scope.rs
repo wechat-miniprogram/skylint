@@ -23,8 +23,15 @@ use crate::Severity;
 
 use super::{at_span, is_plugin};
 
-/// 只在 UI 线程（worklet）可用的方法。
-const SCROLL_TO: &str = "scrollViewContext.scrollTo";
+/// callee 的链尾两段必须正好是 `scrollViewContext` / `scrollTo`：
+/// `worklet.scrollViewContext.scrollTo` 算，`myscrollViewContext.scrollTo` 不算。
+fn is_scroll_view_scroll_to(callee: &str) -> bool {
+    let mut segments = callee.rsplit('.');
+    matches!(
+        (segments.next(), segments.next()),
+        (Some("scrollTo"), Some("scrollViewContext"))
+    )
+}
 
 pub struct WorkletApiScope;
 
@@ -46,28 +53,8 @@ impl Rule for WorkletApiScope {
         let mut out = Vec::new();
         for file in &project.scripts {
             for call in file.doc.calls() {
-                let scroll_to = call.callee.ends_with(SCROLL_TO);
-                if scroll_to && !call.worklet_scope {
-                    out.push(at_span(
-                        Self::ID,
-                        Severity::Error,
-                        file,
-                        call.start,
-                        call.end,
-                        "`scrollViewContext.scrollTo` 只能在 worklet 函数内调用，当前在普通 JS 线程调用不会生效",
-                    ));
-                }
-                if plugin && scroll_to {
-                    out.push(at_span(
-                        Self::ID,
-                        Severity::Error,
-                        file,
-                        call.start,
-                        call.end,
-                        "插件内不支持 worklet.scrollViewContext.scrollTo",
-                    ));
-                }
-                if call.worklet_scope && call.callee.starts_with("wx.") {
+                let scroll_to = is_scroll_view_scroll_to(&call.callee);
+                if !scroll_to && call.worklet_scope && call.callee.starts_with("wx.") {
                     out.push(at_span(
                         Self::ID,
                         Severity::Error,
@@ -78,6 +65,29 @@ impl Rule for WorkletApiScope {
                             "worklet 函数运行在 UI 线程，不能调用 `wx.*`（此时是 {}）",
                             call.callee
                         ),
+                    ));
+                }
+                if !scroll_to {
+                    continue;
+                }
+                // 插件里这个 API 整体不可用，比「不在 worklet 内」更根本，只报一条。
+                if plugin {
+                    out.push(at_span(
+                        Self::ID,
+                        Severity::Error,
+                        file,
+                        call.start,
+                        call.end,
+                        "插件内不支持 worklet.scrollViewContext.scrollTo",
+                    ));
+                } else if !call.worklet_scope {
+                    out.push(at_span(
+                        Self::ID,
+                        Severity::Error,
+                        file,
+                        call.start,
+                        call.end,
+                        "`scrollViewContext.scrollTo` 只能在 worklet 函数内调用，当前在普通 JS 线程调用不会生效",
                     ));
                 }
             }
@@ -181,6 +191,23 @@ mod tests {
         assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
         assert_eq!(diagnostics[0].line, 3);
         assert_eq!(diagnostics[1].line, 8);
+    }
+
+    /// 链尾两段分别精确匹配：同名前缀不得误命中。
+    #[test]
+    fn similarly_named_receiver_is_not_matched() {
+        let (_f, project) = single(
+            "scope-similar",
+            "function scroll() { myscrollViewContext.scrollTo(ref, { top: 1 }); }",
+        );
+        assert_eq!(messages(&WorkletApiScope, &project), Vec::<String>::new());
+    }
+
+    /// 插件里这个 API 整体不可用：同一处只报一条。
+    #[test]
+    fn plugin_reports_one_diagnostic_per_call() {
+        let (_f, project) = plugin("scope-plugin-one", SCROLL_TO_OUTSIDE);
+        assert_eq!(messages(&WorkletApiScope, &project).len(), 1);
     }
 
     #[test]

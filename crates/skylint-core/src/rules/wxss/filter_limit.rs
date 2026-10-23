@@ -7,6 +7,19 @@ use crate::{Diagnostic, Severity};
 use super::value_util::{at_value, is_dynamic, top_level_calls};
 use super::visit;
 
+/// `visual.md:109-110` 的 `<filter-function>` BNF。
+const FUNCTIONS: [&str; 9] = [
+    "blur",
+    "brightness",
+    "contrast",
+    "grayscale",
+    "hue-rotate",
+    "invert",
+    "opacity",
+    "saturate",
+    "sepia",
+];
+
 pub struct FilterLimit;
 
 impl FilterLimit {
@@ -38,13 +51,28 @@ impl Rule for FilterLimit {
                     let calls = top_level_calls(&decl.tokens);
                     let mut reasons = Vec::new();
                     if calls.iter().any(|c| c.name == "url") {
-                        reasons.push("不支持 url()");
+                        reasons.push("不支持 url()".to_string());
                     }
                     if calls.iter().any(|c| c.name == "drop-shadow") {
-                        reasons.push("不支持 drop-shadow()，可用 box-shadow 替代");
+                        reasons.push("不支持 drop-shadow()，可用 box-shadow 替代".to_string());
+                    }
+                    // 白名单之外的函数名（含 url / drop-shadow 以外的未知函数）。
+                    let unknown: Vec<&str> = calls
+                        .iter()
+                        .map(|c| c.name.as_str())
+                        .filter(|name| *name != "url" && *name != "drop-shadow")
+                        .filter(|name| !FUNCTIONS.contains(name))
+                        .collect();
+                    if !unknown.is_empty() {
+                        let list = unknown
+                            .iter()
+                            .map(|name| format!("`{name}()`"))
+                            .collect::<Vec<_>>()
+                            .join("、");
+                        reasons.push(format!("不支持 {list}"));
                     }
                     if calls.len() > 1 {
-                        reasons.push("不支持多个函数组合");
+                        reasons.push("不支持多个函数组合".to_string());
                     }
                     if reasons.is_empty() {
                         continue;
@@ -53,11 +81,7 @@ impl Rule for FilterLimit {
                         Self::ID,
                         doc,
                         decl,
-                        format!(
-                            "`{}` 在 Skyline 下{}",
-                            decl.name,
-                            reasons.join("；")
-                        ),
+                        format!("`{}` 在 Skyline 下{}", decl.name, reasons.join("；")),
                         "filter / backdrop-filter 只支持单个 blur/brightness/contrast/grayscale/hue-rotate/invert/opacity/saturate/sepia 函数",
                     ));
                 }
@@ -103,9 +127,26 @@ mod tests {
             .c { filter: none; }
             .d { filter: var(--f); }
             .e { filter: sepia(0.5); }
+            .f { filter: hue-rotate(90deg); }
             "#,
         );
         assert_eq!(messages(&FilterLimit, &project), Vec::<String>::new());
+    }
+
+    /// 白名单之外的函数名要报（BNF 只列了 9 个）。
+    #[test]
+    fn filter_limit_reports_unknown_functions() {
+        let (_f, project) = single(
+            "filter-unknown",
+            r#"
+            .a { filter: custom(2px); }
+            .b { backdrop-filter: blur(2px) opacity(0.5) nobody(1); }
+            "#,
+        );
+        let diags = FilterLimit.check(&project);
+        assert_eq!(diags.len(), 2, "{diags:#?}");
+        assert!(diags[0].message.contains("`custom()`"));
+        assert!(diags[1].message.contains("`nobody()`"));
     }
 
     #[test]

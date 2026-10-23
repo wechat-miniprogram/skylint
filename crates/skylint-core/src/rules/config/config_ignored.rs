@@ -59,28 +59,41 @@ fn check_app_window(project: &Project, out: &mut Vec<Diagnostic>) {
 }
 
 /// `setting` 里的开关由开发者工具按真值读取，类型不符比缺失更危险。
+/// 开发者工具把个人配置写在 project.private.config.json（常被 gitignore），两份都要查。
 fn check_project_setting(project: &Project, out: &mut Vec<Diagnostic>) {
-    let Some(value) = project
-        .project_config
-        .get("setting")
-        .and_then(Value::as_object)
-        .and_then(|setting| setting.get("skylineRenderEnable"))
-    else {
-        return;
-    };
-    if value.is_boolean() {
-        return;
-    }
-    warn(
-        out,
-        "project.config.json",
-        JsonPositions::new(&project.project_config_source).key("skylineRenderEnable"),
-        format!(
-            "`setting.skylineRenderEnable` 应为布尔值，当前是{}；开发者工具按真值判断，字符串 \"false\" 反而会开启",
-            type_name(value)
+    for (path, config, source) in [
+        (
+            "project.config.json",
+            &project.project_config,
+            &project.project_config_source,
         ),
-        "写成 JSON 布尔值 true / false，不要加引号或写数字",
-    );
+        (
+            "project.private.config.json",
+            &project.project_private_config,
+            &project.project_private_config_source,
+        ),
+    ] {
+        let Some(value) = config
+            .get("setting")
+            .and_then(Value::as_object)
+            .and_then(|setting| setting.get("skylineRenderEnable"))
+        else {
+            continue;
+        };
+        if value.is_boolean() {
+            continue;
+        }
+        warn(
+            out,
+            path,
+            JsonPositions::new(source).key("skylineRenderEnable"),
+            format!(
+                "`setting.skylineRenderEnable` 应为布尔值，当前是{}；开发者工具按真值判断，字符串 \"false\" 反而会开启",
+                type_name(value)
+            ),
+            "写成 JSON 布尔值 true / false，不要加引号或写数字",
+        );
+    }
 }
 
 fn type_name(value: &Value) -> &'static str {
@@ -261,6 +274,26 @@ mod tests {
         let diags = ConfigIgnored.check(&project);
         assert_eq!(diags.len(), 1);
         assert_eq!((diags[0].line, diags[0].column), (4, 5), "应指向键本身");
+    }
+
+    /// 开发者工具把个人设置写在 project.private.config.json（常被 gitignore），
+    /// 只查 project.config.json 会漏掉真实生效的那份。
+    #[test]
+    fn reports_non_boolean_value_in_private_config() {
+        let (fixture, _) = project(
+            "config-ignored-private",
+            r#"{"pages":["pages/index/index"]}"#,
+            r#"{"miniprogramRoot":""}"#,
+        );
+        fixture.write(
+            "project.private.config.json",
+            "{\n  \"setting\": {\n    \"skylineRenderEnable\": \"yes\"\n  }\n}",
+        );
+        let project = fixture.project();
+        let diags = ConfigIgnored.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert_eq!(diags[0].path, "project.private.config.json");
+        assert_eq!((diags[0].line, diags[0].column), (3, 5), "应指向键本身");
     }
 
     #[test]

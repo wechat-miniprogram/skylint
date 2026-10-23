@@ -1,4 +1,8 @@
-//! `mask-image` 不支持渐变，只支持 `url()`。
+//! `mask-image`（含 `mask` 简写）不支持渐变，只支持 `url()`。
+//!
+//! 证据：`skyline-wxss/references/visual.md:122` 的 BNF
+//! `<mask-image-value> = none | <url>  /* ⚠️ 渐变不支持，仅 url() 可用 */`。
+//! 任何渐变函数（linear / radial / conic / repeating-*）都在此列，不是只限两种。
 
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
@@ -18,7 +22,7 @@ impl Rule for MaskImageGradient {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Warning,
-            description: "mask-image 不支持 linear-gradient / radial-gradient，仅 url() 可用",
+            description: "mask-image 不支持渐变（linear / radial / conic / repeating-*），仅 url() 可用",
         }
     }
 
@@ -26,7 +30,9 @@ impl Rule for MaskImageGradient {
         visit(project, |doc, out| {
             for rule in &doc.rules {
                 for decl in &rule.declarations {
-                    if !decl.name.eq_ignore_ascii_case("mask-image") {
+                    if !decl.name.eq_ignore_ascii_case("mask-image")
+                        && !decl.name.eq_ignore_ascii_case("mask")
+                    {
                         continue;
                     }
                     let value = decl.value.trim();
@@ -34,9 +40,7 @@ impl Rule for MaskImageGradient {
                         continue;
                     }
                     let calls = all_calls(&decl.tokens);
-                    let Some(gradient) = calls
-                        .iter()
-                        .find(|c| c.name == "linear-gradient" || c.name == "radial-gradient")
+                    let Some(gradient) = calls.iter().find(|c| c.name.ends_with("-gradient"))
                     else {
                         continue;
                     };
@@ -64,20 +68,28 @@ mod tests {
     use super::MaskImageGradient;
 
     #[test]
-    fn mask_image_gradient_reports_gradients() {
+    fn mask_image_gradient_reports_every_gradient_function() {
         let (_f, project) = single(
             "mask-positive",
             r#"
             .a { mask-image: linear-gradient(red, blue); }
             .b { mask-image: radial-gradient(circle, red 0%, blue 100%); }
             .c { mask-image: url(a.png), linear-gradient(red, blue); }
+            .d { mask-image: conic-gradient(red, blue); }
+            .e { mask: repeating-linear-gradient(red 0 10px, blue 10px 20px); }
             "#,
         );
         let diags = MaskImageGradient.check(&project);
-        assert_eq!(diags.len(), 3);
+        assert_eq!(diags.len(), 5);
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
         assert!(diags.iter().any(|d| d.message.contains("linear-gradient")));
         assert!(diags.iter().any(|d| d.message.contains("radial-gradient")));
+        assert!(diags.iter().any(|d| d.message.contains("conic-gradient")));
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("repeating-linear-gradient"))
+        );
     }
 
     #[test]
@@ -88,7 +100,8 @@ mod tests {
             .a { mask-image: url(a.png); }
             .b { mask-image: none; }
             .c { mask-image: var(--mask); }
-            .d { mask-image: conic-gradient(red, blue); }
+            .d { mask-image: linear-gradient(var(--from), blue); }
+            .e { mask: url(a.png) center / cover no-repeat; }
             "#,
         );
         assert_eq!(messages(&MaskImageGradient, &project), Vec::<String>::new());

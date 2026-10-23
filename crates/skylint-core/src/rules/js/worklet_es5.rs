@@ -23,8 +23,8 @@ use crate::{Diagnostic, Severity};
 
 use super::unit_wxml;
 
-const MESSAGE: &str = "工程使用了 worklet，但 project.config.json 没有开启 setting.es6（将 JS 编译成 ES5），worklet 代码不会被正确编译";
-const HELP: &str = "在开发者工具 详情 > 本地设置 勾选「将 JS 编译成 ES5」，或把 project.config.json 的 setting.es6 设为 true";
+const MESSAGE: &str = "工程使用了 worklet，但没有开启 setting.es6（将 JS 编译成 ES5），worklet 代码不会被正确编译";
+const HELP: &str = "在开发者工具 详情 > 本地设置 勾选「将 JS 编译成 ES5」，或把 project.config.json（或 project.private.config.json）的 setting.es6 设为 true";
 
 pub struct WorkletEs5;
 
@@ -42,39 +42,38 @@ impl Rule for WorkletEs5 {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        // 没有 project.config.json 时不判：那是「缺文件」，不是「开关关着」。
-        if project.project_config_source.is_empty() {
+        // 两份配置都不存在时不判：那是「缺文件」，不是「开关关着」。
+        if project.project_config_source.is_empty()
+            && project.project_private_config_source.is_empty()
+        {
             return Vec::new();
         }
         if !uses_worklet(project) || es6_enabled(project) {
             return Vec::new();
         }
-        let positions = JsonPositions::new(&project.project_config_source);
+        // 诊断落在实际写了 `setting` 的那份文件上；private 优先（同 `Project::setting`）。
+        let in_private = project.project_private_config.contains_key("setting");
+        let (path, source) = if in_private {
+            (
+                "project.private.config.json",
+                &project.project_private_config_source,
+            )
+        } else {
+            ("project.config.json", &project.project_config_source)
+        };
+        let positions = JsonPositions::new(source);
         let (line, column) = positions
             .key("es6")
             .or_else(|| positions.key("setting"))
             .unwrap_or((1, 1));
         vec![
-            Diagnostic::new(
-                Self::ID,
-                Severity::Warning,
-                MESSAGE,
-                "project.config.json",
-                line,
-                column,
-            )
-            .help(HELP),
+            Diagnostic::new(Self::ID, Severity::Warning, MESSAGE, path, line, column).help(HELP),
         ]
     }
 }
 
 fn es6_enabled(project: &Project) -> bool {
-    project
-        .project_config
-        .get("setting")
-        .and_then(|setting| setting.get("es6"))
-        .and_then(Value::as_bool)
-        == Some(true)
+    project.setting("es6").and_then(Value::as_bool) == Some(true)
 }
 
 /// 工程里是否出现 worklet：脚本里的 `'worklet'` 指令，或 WXML 上的 `worklet:` 属性。
@@ -136,6 +135,27 @@ mod tests {
         assert_eq!(diagnostics[0].path, "project.config.json");
         assert_eq!((diagnostics[0].line, diagnostics[0].column), (4, 5));
         assert!(diagnostics[0].message.contains("setting.es6"));
+    }
+
+    /// private 配置覆盖 project.config.json（开发者工具的合并顺序）：
+    /// public 写着 true、private 写着 false 时实际是关着的。
+    #[test]
+    fn private_config_overrides_public() {
+        let (f, _) = project(
+            "es5-private-override",
+            r#"{"miniprogramRoot":"","setting":{"es6":true}}"#,
+            "<view/>",
+            WORKLET_JS,
+        );
+        f.write(
+            "project.private.config.json",
+            "{\n  \"setting\": {\n    \"es6\": false\n  }\n}",
+        );
+        let project = f.project();
+        let diagnostics = WorkletEs5.check(&project);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].path, "project.private.config.json");
+        assert_eq!((diagnostics[0].line, diagnostics[0].column), (3, 5));
     }
 
     #[test]

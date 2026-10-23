@@ -224,15 +224,28 @@ mod tests {
         let (_f, project) = single(
             "shorthand-merge",
             r#"
-            .a { background: url(a) fixed scroll; }
+            .a { background: url(a) local fixed; }
             .b { background: url(a) fixed border-box; }
             "#,
         );
         let diags = ShorthandPartial.check(&project);
         // `.a` 只命中 attachment 一行（两个 token 合并成一条）；`.b` 命中两行。
         assert_eq!(diags.len(), 3);
-        assert!(diags[0].message.contains("`fixed`、`scroll`"));
+        assert!(diags[0].message.contains("`local`、`fixed`"));
         assert_eq!(diags[0].message.matches("background-attachment").count(), 1);
+    }
+
+    /// 与初始值相同的 token 不报：`background: scroll` / `mask: border-box` 写了等于没写。
+    #[test]
+    fn initial_values_are_not_reported() {
+        let (_f, project) = single(
+            "shorthand-initial",
+            r#"
+            .a { background: url(a) scroll; }
+            .b { mask: url(a) border-box; }
+            "#,
+        );
+        assert!(ShorthandPartial.check(&project).is_empty());
     }
 
     #[test]

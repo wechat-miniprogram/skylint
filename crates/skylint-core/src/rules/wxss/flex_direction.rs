@@ -42,16 +42,25 @@ impl Rule for FlexDirection {
                 if rule.selectors.is_empty() {
                     continue;
                 }
+                // `flex-flow` 同时设置 flex-direction 与 flex-wrap，算已显式声明方向。
                 if rule.declaration("flex-direction").is_some()
+                    || rule.declaration("flex-flow").is_some()
                     || declares_flex_direction_elsewhere(doc, rule)
                 {
                     continue;
                 }
-                let Some(display) = rule.declarations.iter().find(|decl| {
-                    decl.name.eq_ignore_ascii_case("display") && is_flex_value(&decl.value)
-                }) else {
+                // 同一条规则里 display 写多次时以后面的为准；最后一条不是 flex 就不报。
+                let Some(display) = rule
+                    .declarations
+                    .iter()
+                    .rev()
+                    .find(|decl| decl.name.eq_ignore_ascii_case("display"))
+                else {
                     continue;
                 };
+                if !is_flex_value(&display.value) {
+                    continue;
+                }
                 let (line, column) = doc.position(display.offset);
                 let (end_line, end_column) = doc.position(display.value_end());
                 out.push(
@@ -72,14 +81,15 @@ impl Rule for FlexDirection {
     }
 }
 
-/// 同一份样式表里是否有**同名选择器**的另一条规则声明了 `flex-direction`。
+/// 同一份样式表里是否有**同名选择器**的另一条规则声明了方向（`flex-direction` 或 `flex-flow`）。
 ///
 /// 只看选择器原文，不解析 at-rule 上下文：`@media` 里声明的 `flex-direction` 未必
 /// 在所有条件下生效，但漏报好过误报。
 fn declares_flex_direction_elsewhere(doc: &WxssDoc, rule: &WxssRule) -> bool {
     doc.rules.iter().any(|other| {
         !std::ptr::eq(other, rule)
-            && other.declaration("flex-direction").is_some()
+            && (other.declaration("flex-direction").is_some()
+                || other.declaration("flex-flow").is_some())
             && other
                 .selectors
                 .iter()
@@ -140,6 +150,34 @@ mod tests {
             "#,
         );
         assert!(messages(&FlexDirection, &project).is_empty());
+    }
+
+    #[test]
+    fn flex_flow_counts_as_direction() {
+        let (_f, project) = single(
+            "flex-flow",
+            r#"
+            .a { display: flex; flex-flow: row wrap; }
+            .b { display: flex; }
+            .b { flex-flow: column; }
+            "#,
+        );
+        assert!(messages(&FlexDirection, &project).is_empty());
+    }
+
+    /// 同一条规则里 display 写两次时，后一条生效。
+    #[test]
+    fn the_last_display_declaration_wins() {
+        let (_f, project) = single(
+            "flex-last-display",
+            r#"
+            .a { display: flex; display: block; }
+            .b { display: block; display: flex; }
+            "#,
+        );
+        let diags = FlexDirection.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert_eq!(diags[0].line, 3);
     }
 
     #[test]

@@ -109,6 +109,9 @@ fn check_radial(args: &[ValueToken]) -> Vec<String> {
 }
 
 /// 第一段是否是形状 / 尺寸 / 位置前言，而不是第一个颜色停止。
+///
+/// 颜色停止必须以颜色开头，所以「第一个 token 是长度 / 百分比」的段一定是尺寸
+/// （`radial-gradient(10em, red, blue)`），归入前言——否则会被当成停止位置误判。
 fn radial_prelude(first: &[ValueToken]) -> Option<&[ValueToken]> {
     const KEYWORDS: [&str; 7] = [
         "circle",
@@ -120,9 +123,10 @@ fn radial_prelude(first: &[ValueToken]) -> Option<&[ValueToken]> {
         "farthest-corner",
     ];
     let is_prelude = split_tokens(first).iter().any(|group| {
-        group
-            .first()
-            .is_some_and(|token| KEYWORDS.iter().any(|keyword| is_ident(token, keyword)))
+        group.first().is_some_and(|token| {
+            KEYWORDS.iter().any(|keyword| is_ident(token, keyword))
+                || matches!(token, ValueToken::Dimension { .. } | ValueToken::Percentage(_))
+        })
     });
     is_prelude.then_some(first)
 }
@@ -220,6 +224,23 @@ mod tests {
         assert!(diags.iter().any(|d| d.message.contains("ellipse")));
         assert!(diags.iter().any(|d| d.message.contains("10em")));
         assert!(diags.iter().any(|d| d.message.contains("10px")));
+    }
+
+    /// 长度型前言（没有形状关键字）不能被当成颜色停止。
+    #[test]
+    fn radial_gradient_with_length_only_prelude_is_a_size_not_a_stop() {
+        let (_f, project) = single(
+            "gradient-length-prelude",
+            r#"
+            .a { background-image: radial-gradient(10em, red 0%, blue 100%); }
+            .b { background-image: radial-gradient(10px 20px, red 0%, blue 100%); }
+            "#,
+        );
+        let diags = GradientLimit.check(&project);
+        // `10px 20px` 是合法尺寸；只有 `10em` 被报，且归在「尺寸」而不是「颜色停止」。
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert!(diags[0].message.contains("尺寸仅支持 px"));
+        assert!(!diags[0].message.contains("颜色停止位置"));
     }
 
     #[test]
