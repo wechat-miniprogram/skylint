@@ -141,7 +141,7 @@ mod tests {
     use crate::project::Project;
     use crate::rules::Rule;
 
-    use super::super::testutil::{Fixture, messages, single};
+    use crate::rules::testutil::js::{Fixture, messages, single};
     use super::RouteType;
 
     /// 两个页面：注册可以写在另一个页面的 js 里。

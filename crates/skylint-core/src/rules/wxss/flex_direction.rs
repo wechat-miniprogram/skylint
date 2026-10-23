@@ -12,6 +12,8 @@ use crate::{Diagnostic, Severity};
 use crate::input::wxss::{WxssDoc, WxssRule, WxssSelector};
 use crate::rules::{Rule, RuleMeta};
 
+use super::value_util::at_declaration;
+
 pub struct FlexDirection;
 
 impl FlexDirection {
@@ -61,19 +63,15 @@ impl Rule for FlexDirection {
                 if !is_flex_value(&display.value) {
                     continue;
                 }
-                let (line, column) = doc.position(display.offset);
-                let (end_line, end_column) = doc.position(display.value_end());
                 out.push(
-                    Diagnostic::new(
+                    at_declaration(
                         Self::ID,
+                        doc,
+                        display,
                         Severity::Warning,
                         "display: flex 未显式声明 flex-direction；Skyline 默认 column，WebView 默认 row，迁移后布局方向会翻转",
-                        doc.path(),
-                        line,
-                        column,
-                    )
-                    .end(end_line, end_column)
-                    .help("为这条规则补上 `flex-direction: row`，或按 column 重新设计布局"),
+                        "为这条规则补上 `flex-direction: row`，或按 column 重新设计布局",
+                    ),
                 );
             }
         }
@@ -116,7 +114,7 @@ fn is_flex_value(value: &str) -> bool {
 mod tests {
     use crate::rules::Rule;
 
-    use super::super::testutil::{messages, single, Fixture};
+    use crate::rules::testutil::wxss::{messages, single, Fixture};
     use super::FlexDirection;
 
     #[test]

@@ -5,7 +5,7 @@ use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::{load_doc, wxml_files};
+use super::{load_doc, span_diagnostic, wxml_files};
 
 pub const ID: &str = "skyline/no-inline-text";
 
@@ -66,21 +66,19 @@ fn check_element(doc: &WxmlDoc, element: &WxmlElement, path: &str, out: &mut Vec
         WxmlNode::Text(text) if text.is_meaningful() => Some(text),
         _ => None,
     }) {
-        let (line, column) = doc.position(text.start);
-        let (end_line, end_column) = doc.position(text.end);
         out.push(
-            Diagnostic::new(
+            span_diagnostic(
                 ID,
+                doc,
+                text.start,
+                text.end,
+                path,
                 Severity::Warning,
                 format!(
                     "`<{}>` 内文本与元素混排，Skyline 会把文本当成独立 flex item，导致错位",
                     element.tag
                 ),
-                path,
-                line,
-                column,
             )
-            .end(end_line, end_column)
             .help("把文本包进 `<text>`，或把整段文字移入独立的 `<text>` 子节点"),
         );
     }
@@ -88,7 +86,7 @@ fn check_element(doc: &WxmlDoc, element: &WxmlElement, path: &str, out: &mut Vec
 
 #[cfg(test)]
 mod tests {
-    use super::super::testutil::{Fixture, check_rule, project};
+    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
     use super::NoInlineText;
 
     fn check(fixture: &Fixture) -> Vec<crate::Diagnostic> {

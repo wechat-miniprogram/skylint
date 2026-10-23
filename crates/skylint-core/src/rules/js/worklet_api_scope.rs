@@ -94,7 +94,7 @@ impl Rule for WorkletApiScope {
 mod tests {
     use crate::rules::Rule;
 
-    use super::super::testutil::{messages, plugin, single};
+    use crate::rules::testutil::js::{messages, plugin, single};
     use super::WorkletApiScope;
 
     const SCROLL_TO_OUTSIDE: &str =

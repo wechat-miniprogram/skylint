@@ -153,7 +153,7 @@ mod tests {
     use crate::Severity;
     use crate::project::Project;
     use crate::rules::Rule;
-    use crate::rules::wxss::testutil::Fixture;
+    use crate::rules::testutil::Fixture;
 
     use super::LibVersion;
 

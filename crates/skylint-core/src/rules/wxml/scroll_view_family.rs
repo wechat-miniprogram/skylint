@@ -652,7 +652,7 @@ fn check_element(
 
 #[cfg(test)]
 mod tests {
-    use super::super::testutil::{Fixture, check_rule, project};
+    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
     use super::ScrollViewFamily;
     use super::constraints;
     use crate::Severity;

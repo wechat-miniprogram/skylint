@@ -101,7 +101,7 @@ fn uses_worklet(project: &Project) -> bool {
 mod tests {
     use crate::project::Project;
     use crate::rules::Rule;
-    use crate::rules::js::testutil::{Fixture, messages, single};
+    use crate::rules::testutil::js::{Fixture, messages, single};
 
     use super::WorkletEs5;
 

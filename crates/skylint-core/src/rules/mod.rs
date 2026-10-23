@@ -11,6 +11,8 @@
 pub mod config;
 pub(crate) mod data_table;
 pub mod js;
+#[cfg(test)]
+pub(crate) mod testutil;
 pub mod wxml;
 pub mod wxss;
 

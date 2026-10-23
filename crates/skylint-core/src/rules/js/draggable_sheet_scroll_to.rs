@@ -62,7 +62,7 @@ impl Rule for DraggableSheetScrollTo {
 mod tests {
     use crate::rules::Rule;
 
-    use super::super::testutil::{messages, single};
+    use crate::rules::testutil::js::{messages, single};
     use super::DraggableSheetScrollTo;
 
     #[test]

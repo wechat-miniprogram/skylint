@@ -26,6 +26,8 @@ pub use unsupported_component::UnsupportedComponent;
 use std::collections::HashSet;
 use std::fs;
 
+use glass_easel_template_compiler::parse::Position;
+
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{self, WxmlDoc, WxmlElement};
 use crate::project::Project;
@@ -72,6 +74,21 @@ pub(crate) fn is_builtin(tag: &str) -> bool {
         .any(|line| !line.is_empty() && !line.starts_with('#') && line == tag)
 }
 
+/// 定位在 WXML 源文本任意一段区间上的诊断。
+pub(crate) fn span_diagnostic(
+    id: &'static str,
+    doc: &WxmlDoc,
+    start: Position,
+    end: Position,
+    path: &str,
+    severity: Severity,
+    message: impl Into<String>,
+) -> Diagnostic {
+    let (line, column) = doc.position(start);
+    let (end_line, end_column) = doc.position(end);
+    Diagnostic::new(id, severity, message, path, line, column).end(end_line, end_column)
+}
+
 /// 定位在元素标签起止位置上的诊断。
 fn element_diagnostic(
     id: &'static str,
@@ -81,66 +98,14 @@ fn element_diagnostic(
     severity: Severity,
     message: impl Into<String>,
 ) -> Diagnostic {
-    let (line, column) = doc.position(element.tag_start);
-    let (end_line, end_column) = doc.position(element.tag_end);
-    Diagnostic::new(id, severity, message, path, line, column).end(end_line, end_column)
+    span_diagnostic(
+        id,
+        doc,
+        element.tag_start,
+        element.tag_end,
+        path,
+        severity,
+        message,
+    )
 }
 
-#[cfg(test)]
-pub(crate) mod testutil {
-    use std::fs;
-    use std::path::{Path, PathBuf};
-
-    use crate::fixture_root;
-    use crate::project::Project;
-    use crate::rules::Rule;
-
-    pub(crate) struct Fixture {
-        root: PathBuf,
-    }
-
-    impl Fixture {
-        pub(crate) fn new(name: &str) -> Self {
-            let root = fixture_root("skylint-wxml", name);
-            let _ = fs::remove_dir_all(&root);
-            fs::create_dir_all(&root).unwrap();
-            Self { root }
-        }
-
-        pub(crate) fn write(&self, rel: &str, content: &str) -> &Self {
-            let path = self.root.join(rel);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, content).unwrap();
-            self
-        }
-
-        pub(crate) fn path(&self) -> &Path {
-            &self.root
-        }
-    }
-
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.root);
-        }
-    }
-
-    /// 单页 Skyline 工程。
-    pub(crate) fn project(name: &str, wxml: &str) -> Fixture {
-        let fixture = Fixture::new(name);
-        fixture
-            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
-            .write(
-                "app.json",
-                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
-            )
-            .write("pages/index/index.json", "{}")
-            .write("pages/index/index.wxml", wxml);
-        fixture
-    }
-
-    pub(crate) fn check_rule(fixture: &Fixture, rule: &dyn Rule) -> Vec<crate::Diagnostic> {
-        let project = Project::load(fixture.path()).unwrap();
-        rule.check(&project)
-    }
-}

@@ -132,7 +132,7 @@ fn can_host_text(element: &WxmlElement) -> bool {
 mod tests {
     use super::*;
     use crate::rules::Rule;
-    use crate::rules::wxss::testutil::Fixture;
+    use crate::rules::testutil::wxss::Fixture;
 
     fn check(name: &str, wxml: &str, wxss: &str) -> Vec<Diagnostic> {
         let fixture = Fixture::new(name);

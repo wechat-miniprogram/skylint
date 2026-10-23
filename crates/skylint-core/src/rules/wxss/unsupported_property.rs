@@ -55,7 +55,7 @@ impl Rule for UnsupportedProperty {
 mod tests {
     use crate::rules::Rule;
 
-    use super::super::testutil::{messages, single};
+    use crate::rules::testutil::wxss::{messages, single};
     use super::UnsupportedProperty;
 
     #[test]

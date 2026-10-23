@@ -14,7 +14,7 @@ use crate::project::Project;
 use crate::rules::data_table::{self, Columns};
 use crate::rules::{Rule, RuleMeta};
 
-use super::{load_doc, wxml_files};
+use super::{load_doc, span_diagnostic, wxml_files};
 
 const DATA: &str = include_str!("../data/component_attributes.txt");
 
@@ -418,18 +418,16 @@ impl Rule for ComponentAttribute {
                     }) else {
                         continue;
                     };
-                    let (line, column) = doc.position(attr.start);
-                    let (end_line, end_column) = doc.position(attr.end);
                     diagnostics.push(
-                        Diagnostic::new(
+                        span_diagnostic(
                             Self::ID,
+                            &doc,
+                            attr.start,
+                            attr.end,
+                            path,
                             Severity::Warning,
                             message(&element.tag, &name, value, &entry.constraint),
-                            path,
-                            line,
-                            column,
                         )
-                        .end(end_line, end_column)
                         .help(help(entry)),
                     );
                 }
@@ -449,18 +447,16 @@ impl Rule for ComponentAttribute {
                     let Verdict::Violated(current) = judge(element, &rule.requirement) else {
                         continue;
                     };
-                    let (line, column) = doc.position(attr.start);
-                    let (end_line, end_column) = doc.position(attr.end);
                     diagnostics.push(
-                        Diagnostic::new(
+                        span_diagnostic(
                             Self::ID,
+                            &doc,
+                            attr.start,
+                            attr.end,
+                            path,
                             Severity::Warning,
                             requires_message(&element.tag, rule, &value, current.as_deref()),
-                            path,
-                            line,
-                            column,
                         )
-                        .end(end_line, end_column)
                         .help(
                             rule.help
                                 .unwrap_or("调整这两个属性的取值，避免组合被忽略")
@@ -597,7 +593,7 @@ fn help(entry: &Entry) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testutil::{Fixture, check_rule, project};
+    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
     use super::{ComponentAttribute, Constraint, DATA, Requirement, Trigger, parse};
 
     #[test]

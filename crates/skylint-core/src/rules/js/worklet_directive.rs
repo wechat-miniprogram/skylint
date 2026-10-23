@@ -30,7 +30,7 @@
 
 use crate::input::js::CallInfo;
 use crate::project::{JsFile, Project};
-use crate::rules::wxml::load_doc;
+use crate::rules::wxml::{load_doc, span_diagnostic};
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
@@ -226,20 +226,18 @@ fn wxml_bindings(project: &Project, out: &mut Vec<Diagnostic>) {
                     continue;
                 }
                 let start = attr.value_start.unwrap_or(attr.start);
-                let (line, column) = doc.position(start);
-                let (end_line, end_column) = doc.position(attr.end);
                 out.push(
-                    Diagnostic::new(
+                    span_diagnostic(
                         WorkletDirective::ID,
+                        &doc,
+                        start,
+                        attr.end,
+                        path,
                         Severity::Error,
                         format!(
                             "`worklet:{event}` 绑定到 `{name}`，但 `{name}` 没有声明 `'worklet'` 指令，手势回调会退回 JS 线程"
                         ),
-                        path,
-                        line,
-                        column,
                     )
-                    .end(end_line, end_column)
                     .help(format!(
                         "在 `{name}` 的函数体第一行加 `'worklet'`，或改用 `bind:{event}` 的普通绑定"
                     )),
@@ -262,7 +260,7 @@ fn is_identifier(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::rules::Rule;
-    use crate::rules::js::testutil::{Fixture, messages, single};
+    use crate::rules::testutil::js::{Fixture, messages, single};
 
     use super::WorkletDirective;
 

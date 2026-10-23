@@ -286,7 +286,7 @@ impl Rule for ComponentChildren {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testutil::{Fixture, check_rule, project};
+    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
     use super::ComponentChildren;
     use super::rows;
     use crate::Severity;

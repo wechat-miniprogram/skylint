@@ -66,7 +66,7 @@ fn diagnostic(file: &JsFile, item: &ThisDataDestructure) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use crate::rules::Rule;
-    use crate::rules::js::testutil::{messages, single};
+    use crate::rules::testutil::js::{messages, single};
 
     use super::WorkletDataFreeze;
 

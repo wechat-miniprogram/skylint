@@ -116,7 +116,7 @@ fn check_file(doc: &WxmlDoc, path: &str, out: &mut Vec<Diagnostic>) {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testutil::{Fixture, check_rule, project};
+    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
     use super::ShareElementKey;
     use crate::Severity;
 

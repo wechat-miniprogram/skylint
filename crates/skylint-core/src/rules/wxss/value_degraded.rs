@@ -391,7 +391,7 @@ fn is_lowercase(text: &str) -> bool {
 mod tests {
     use crate::rules::Rule;
 
-    use super::super::testutil::{Fixture, messages, single};
+    use crate::rules::testutil::wxss::{Fixture, messages, single};
     use super::ValueDegraded;
 
     #[test]

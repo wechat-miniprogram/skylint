@@ -5,7 +5,7 @@ use crate::input::wxml::{WxmlAttribute, WxmlElement};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::{load_doc, wxml_files};
+use super::{load_doc, span_diagnostic, wxml_files};
 
 pub const HORIZONTAL_FLEX_ID: &str = "skyline/horizontal-scroll-enable-flex";
 
@@ -36,18 +36,16 @@ impl Rule for HorizontalScrollEnableFlex {
                 let Some(attr) = find_attr(element, "scroll-x") else {
                     continue;
                 };
-                let (line, column) = doc.position(attr.start);
-                let (end_line, end_column) = doc.position(attr.end);
                 diagnostics.push(
-                    Diagnostic::new(
+                    span_diagnostic(
                         HORIZONTAL_FLEX_ID,
+                        &doc,
+                        attr.start,
+                        attr.end,
+                        path,
                         Severity::Warning,
                         "横向滚动的 `<scroll-view>` 未开启 `enable-flex`，WebView 下横向滚动不会生效",
-                        path,
-                        line,
-                        column,
                     )
-                    .end(end_line, end_column)
                     .help(
                         "添加 `enable-flex`，并给容器写 `style=\"display: flex; flex-direction: row;\"`",
                     ),
@@ -80,7 +78,7 @@ fn find_attr<'a>(element: &'a WxmlElement, name: &str) -> Option<&'a WxmlAttribu
 
 #[cfg(test)]
 mod tests {
-    use super::super::testutil::{Fixture, check_rule, project};
+    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
     use super::HorizontalScrollEnableFlex;
     use crate::Severity;
 

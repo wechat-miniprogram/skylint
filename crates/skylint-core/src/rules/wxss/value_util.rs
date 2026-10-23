@@ -253,6 +253,22 @@ pub(crate) fn at_value(
         .help(help)
 }
 
+/// 定位在整条声明（属性名起点到值结尾）上的诊断。
+pub(crate) fn at_declaration(
+    id: &'static str,
+    doc: &WxssDoc,
+    decl: &WxssDeclaration,
+    severity: Severity,
+    message: impl Into<String>,
+    help: impl Into<String>,
+) -> Diagnostic {
+    let (line, column) = doc.position(decl.offset);
+    let (end_line, end_column) = doc.position(decl.value_end());
+    Diagnostic::new(id, severity, message, doc.path(), line, column)
+        .end(end_line, end_column)
+        .help(help)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

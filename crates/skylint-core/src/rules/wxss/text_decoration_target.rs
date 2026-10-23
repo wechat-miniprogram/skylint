@@ -19,6 +19,7 @@ use crate::rules::wxml::is_builtin;
 use crate::{Diagnostic, Severity};
 
 use super::selector::{Match, SimpleSelector};
+use super::value_util::at_declaration;
 
 pub const ID: &str = "skyline/text-decoration-target";
 
@@ -102,21 +103,18 @@ impl crate::rules::Rule for TextDecorationTarget {
                         continue;
                     }
                     let selectors = offenders.join("`, `");
-                    let (line, column) = doc.position(decl.offset);
                     out.push(
-                        Diagnostic::new(
+                        at_declaration(
                             ID,
+                            doc,
+                            decl,
                             Severity::Warning,
                             format!(
                                 "`{}` 在 Skyline 下只作用于 `<text>` / `<span>` / `<input>`；选择器 `{selectors}` 在某处命中的节点都不是文本节点，装饰不会显示",
                                 decl.name
                             ),
-                            doc.path(),
-                            line,
-                            column,
-                        )
-                        .end(doc.position(decl.value_end()).0, doc.position(decl.value_end()).1)
-                        .help("把文本包进 `<text>` 并在它上面写装饰；`<view>` 上的装饰在 Skyline 下不会绘制"),
+                            "把文本包进 `<text>` 并在它上面写装饰；`<view>` 上的装饰在 Skyline 下不会绘制",
+                        ),
                     );
                 }
             }
@@ -147,7 +145,7 @@ fn can_decorate(element: &WxmlElement) -> bool {
 mod tests {
     use super::*;
     use crate::rules::Rule;
-    use crate::rules::wxss::testutil::Fixture;
+    use crate::rules::testutil::wxss::Fixture;
 
     fn check(name: &str, wxml: &str, wxss: &str) -> Vec<Diagnostic> {
         let fixture = Fixture::new(name);

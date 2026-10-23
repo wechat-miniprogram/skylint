@@ -4,7 +4,7 @@ use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::{load_doc, wxml_files};
+use super::{element_diagnostic, load_doc, span_diagnostic, wxml_files};
 
 pub struct ScrollViewType;
 
@@ -45,18 +45,15 @@ impl Rule for ScrollViewType {
                     .find(|attr| attr.name.eq_ignore_ascii_case("type"))
                 {
                     None => {
-                        let (line, column) = doc.position(element.tag_start);
-                        let (end_line, end_column) = doc.position(element.tag_end);
                         diagnostics.push(
-                            Diagnostic::new(
+                            element_diagnostic(
                                 Self::ID,
+                                &doc,
+                                element,
+                                path,
                                 Severity::Warning,
                                 "`<scroll-view>` 缺少 type 属性，Skyline 下会退化为非按需渲染，性能下降",
-                                path,
-                                line,
-                                column,
                             )
-                            .end(end_line, end_column)
                             .help(
                                 "显式指定 type：list（普通长列表）、custom（list-view/grid-view/sticky 布局）、nested（嵌套滚动）",
                             ),
@@ -69,8 +66,6 @@ impl Rule for ScrollViewType {
                         if SCROLL_VIEW_TYPES.contains(&value) {
                             continue;
                         }
-                        let (line, column) = doc.position(attr.start);
-                        let (end_line, end_column) = doc.position(attr.end);
                         let (severity, message, help) = if value == DEGRADED_TYPE {
                             (
                                 Severity::Warning,
@@ -80,20 +75,22 @@ impl Rule for ScrollViewType {
                         } else {
                             (
                                 Severity::Error,
-                                format!("`<scroll-view type=\"{value}\">` 不是 Skyline 支持的滚动模式"),
+                                format!(
+                                    "`<scroll-view type=\"{value}\">` 不是 Skyline 支持的滚动模式"
+                                ),
                                 "合法值：list（普通长列表）、custom（list-view/grid-view/sticky 布局）、nested（嵌套滚动）",
                             )
                         };
                         diagnostics.push(
-                            Diagnostic::new(
+                            span_diagnostic(
                                 Self::ID,
+                                &doc,
+                                attr.start,
+                                attr.end,
+                                path,
                                 severity,
                                 message,
-                                path,
-                                line,
-                                column,
                             )
-                            .end(end_line, end_column)
                             .help(help),
                         );
                     }
@@ -106,7 +103,7 @@ impl Rule for ScrollViewType {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testutil::{check_rule, project};
+    use crate::rules::testutil::wxml::{check_rule, project};
     use super::ScrollViewType;
 
     #[test]

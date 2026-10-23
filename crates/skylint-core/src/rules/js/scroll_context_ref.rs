@@ -63,7 +63,7 @@ impl Rule for ScrollContextRef {
 mod tests {
     use crate::rules::Rule;
 
-    use super::super::testutil::{messages, single};
+    use crate::rules::testutil::js::{messages, single};
     use super::ScrollContextRef;
 
     const SCROLL_TO: &str = "function scroll() { 'worklet'; scrollViewContext.scrollTo(this.ref.value, { top: 1 }); }";

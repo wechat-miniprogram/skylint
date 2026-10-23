@@ -146,7 +146,7 @@ fn parse(source: &'static str) -> Result<Vec<Entry>, String> {
 mod tests {
     use crate::rules::Rule;
 
-    use super::super::testutil::{Fixture, messages, plugin, single, single_with_app};
+    use crate::rules::testutil::js::{Fixture, messages, plugin, single, single_with_app};
     use super::{Kind, UnsupportedApi, parse};
 
     /// 单页工程 + 一个额外的脚本文件（用于验证全域扫描的边界）。

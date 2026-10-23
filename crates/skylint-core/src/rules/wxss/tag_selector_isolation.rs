@@ -202,7 +202,7 @@ fn find_foreign<'a>(
 mod tests {
     use super::*;
     use crate::rules::Rule;
-    use crate::rules::wxss::testutil::Fixture;
+    use crate::rules::testutil::wxss::Fixture;
 
     /// 页面 + 一个被它引用的组件（组件内部有 `<view>`）。
     fn fixture(name: &str, page_wxss: &str) -> Fixture {

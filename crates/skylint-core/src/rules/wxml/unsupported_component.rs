@@ -7,7 +7,7 @@ use crate::project::Project;
 use crate::rules::data_table::{self, Columns};
 use crate::rules::{Rule, RuleMeta};
 
-use super::{COMPONENTS_DATA, load_doc, wxml_files};
+use super::{COMPONENTS_DATA, element_diagnostic, load_doc, wxml_files};
 
 struct ComponentTable {
     supported: HashSet<&'static str>,
@@ -85,18 +85,15 @@ impl Rule for UnsupportedComponent {
                 let Some(replacement) = table.replacement(&tag) else {
                     continue;
                 };
-                let (line, column) = doc.position(element.tag_start);
-                let (end_line, end_column) = doc.position(element.tag_end);
                 diagnostics.push(
-                    Diagnostic::new(
+                    element_diagnostic(
                         Self::ID,
+                        &doc,
+                        element,
+                        path,
                         Severity::Error,
                         format!("Skyline 不支持组件 `<{}>`", element.tag),
-                        path,
-                        line,
-                        column,
                     )
-                    .end(end_line, end_column)
                     .help(replacement),
                 );
             }
@@ -107,7 +104,7 @@ impl Rule for UnsupportedComponent {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testutil::{Fixture, check_rule, project};
+    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
     use super::UnsupportedComponent;
 
     /// 页面 json 显式 `"renderer": "webview"`：这页不迁 Skyline，整页跳过。

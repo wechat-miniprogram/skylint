@@ -61,37 +61,43 @@ impl Rule for DefaultLayoutDrift {
         // 复杂化。因此口径固定为「app 级未开启就报」，消息里也写「app 级未开启」——命中本身
         // 意味着这个工程还没做整体决定。
         if !project.app_display_block() {
-            out.push(
-                Diagnostic::new(
-                    Self::ID,
-                    Severity::Info,
-                    "app 级未开启 defaultDisplayBlock：Skyline 下 display 默认 flex、flex-direction 默认 column、align-items 默认 stretch，与 WebView 的 block 布局不同，子元素都按 flex item 计算（垂直外边距不再折叠，宽高与对齐语义都变）；position 默认 relative、text-align 默认 start，这两项没有开关能对齐",
-                    "app.json",
-                    line,
-                    column,
-                )
-                .help(
-                    "在 app.json 的 rendererOptions.skyline 里开启 defaultDisplayBlock: true 可让这三项对齐 WebView",
-                ),
-            );
+            out.push(info(
+                "app.json",
+                line,
+                column,
+                "app 级未开启 defaultDisplayBlock：Skyline 下 display 默认 flex、flex-direction 默认 column、align-items 默认 stretch，与 WebView 的 block 布局不同，子元素都按 flex item 计算（垂直外边距不再折叠，宽高与对齐语义都变）；position 默认 relative、text-align 默认 start，这两项没有开关能对齐",
+                "在 app.json 的 rendererOptions.skyline 里开启 defaultDisplayBlock: true 可让这三项对齐 WebView",
+            ));
         }
         if !project.app_content_box() {
-            out.push(
-                Diagnostic::new(
-                    Self::ID,
-                    Severity::Info,
-                    "app 级未开启 defaultContentBox：Skyline 下 box-sizing 默认 border-box（WebView 默认 content-box），显式声明 width 的元素实际内容盒会比 WebView 中小（少掉 padding 与 border）",
-                    "app.json",
-                    line,
-                    column,
-                )
-                .help(
-                    "开启 rendererOptions.skyline.defaultContentBox: true 对齐 WebView，或显式写 box-sizing: content-box",
-                ),
-            );
+            out.push(info(
+                "app.json",
+                line,
+                column,
+                "app 级未开启 defaultContentBox：Skyline 下 box-sizing 默认 border-box（WebView 默认 content-box），显式声明 width 的元素实际内容盒会比 WebView 中小（少掉 padding 与 border）",
+                "开启 rendererOptions.skyline.defaultContentBox: true 对齐 WebView，或显式写 box-sizing: content-box",
+            ));
         }
         out
     }
+}
+
+fn info(
+    path: &str,
+    line: u32,
+    column: u32,
+    message: impl Into<String>,
+    help: impl Into<String>,
+) -> Diagnostic {
+    Diagnostic::new(
+        DefaultLayoutDrift::ID,
+        Severity::Info,
+        message,
+        path,
+        line,
+        column,
+    )
+    .help(help)
 }
 
 #[cfg(test)]
@@ -99,7 +105,7 @@ mod tests {
     use crate::Severity;
     use crate::project::Project;
     use crate::rules::Rule;
-    use crate::rules::wxss::testutil::Fixture;
+    use crate::rules::testutil::Fixture;
 
     use super::DefaultLayoutDrift;
 

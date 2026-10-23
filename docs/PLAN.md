@@ -391,7 +391,11 @@ A 页失效、B 页正常时要报）、`no_pseudo` 的转义冒号（`.hover\:b
 共用层收敛（这轮做了什么）：`rules/wxml/branch.rs`（互斥 / 同时渲染计数）、
 `rules/js/callee.rs`（`Exact`/`Suffix`/`Qualified`/`Namespace`/`Method` 五种形态，替掉 5 处
 无边界 `ends_with`）、`value_util::text_is_dynamic`（单一动态值口径）、`Project::setting`
-（private 覆盖 public）。
+（private 覆盖 public）、`rules/data_table.rs`（数据表读行骨架，9 个解析器迁移）、
+`rules/testutil.rs`（三份 Fixture 合并，38 个测试文件改 import）、诊断构造收敛成
+`span_diagnostic` / `element_diagnostic` / `at_value` / `at_declaration` / config `warn` 五族
+（25 处手写 `Diagnostic::new` 替掉 13 处，剩 7 处因 `end` 缺失、级别不同或 help 类型不同而
+保留——字段不等价的替换会把重构变成改行为）。
 
 **明确不做（附理由）**：
 - 简写展开（`border: 1px double red` 这类）：子属性的失效是否导致整条声明被丢弃，取决于引擎

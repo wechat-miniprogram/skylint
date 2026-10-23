@@ -5,6 +5,7 @@ use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
 use super::dict_table::{normalize_value, table};
+use super::value_util::at_declaration;
 use super::visit;
 
 pub struct UnsupportedValue;
@@ -34,22 +35,18 @@ impl Rule for UnsupportedValue {
                     let Some(advice) = table.value(&name, &value) else {
                         continue;
                     };
-                    let (line, column) = doc.position(decl.offset);
-                    let (end_line, end_column) = doc.position(decl.value_end());
                     out.push(
-                        Diagnostic::new(
+                        at_declaration(
                             Self::ID,
+                            doc,
+                            decl,
                             Severity::Error,
                             format!(
                                 "`{name}: {}` 在 Skyline 下不受支持，该值会被静默忽略",
                                 decl.value.trim()
                             ),
-                            doc.path(),
-                            line,
-                            column,
-                        )
-                        .end(end_line, end_column)
-                        .help(advice),
+                            advice,
+                        ),
                     );
                 }
             }
@@ -61,7 +58,7 @@ impl Rule for UnsupportedValue {
 mod tests {
     use crate::rules::Rule;
 
-    use super::super::testutil::{messages, single};
+    use crate::rules::testutil::wxss::{messages, single};
     use super::UnsupportedValue;
 
     #[test]
