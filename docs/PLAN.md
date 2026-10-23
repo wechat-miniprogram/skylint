@@ -374,7 +374,13 @@ P0（会误报或系统性漏报）：
   摊平并打 `in_template` 标记，依赖祖先/子节点计数的规则对这类元素跳过；
 - `tag-selector-isolation` 只对比「组件 ↔ 用到它的页面」，组件 ↔ 同一页面的兄弟组件整类漏报。
 
-P1（口径不一致 / 边界错位）：跨 scope 的 `text-overflow` / `text-decoration` 判定（共享样式在
+P1（口径不一致 / 边界错位）：`no_pseudo` 的伪类白名单按引擎纠正——原来只白名单
+`:not`/`:only-child`/`:empty`/`:host`，而 `fp::PseudoClassesType` 与
+`css_parser_impl.h:271-329` 实际支持 `:first-child`/`:last-child`/`:nth-child()`，单冒号的
+`:before`/`:after` 也被解析成伪元素并生效（`selector.rs:345-375`）。修正后四工程
+21/630/21/5 → **16/302/10/4**，去掉的 328 条 businessview 命中全是 `:first-child` 一类误报；
+仍报的 `:active`/`:nth-last-child`/`:checked`/`:hover` 等确实不在引擎的映射表里。
+其他：跨 scope 的 `text-overflow` / `text-decoration` 判定（共享样式在
 A 页失效、B 页正常时要报）、`no_pseudo` 的转义冒号（`.hover\:bg-red`）、`transition-behavior`
 关键字、简写里的初始值（`background: scroll`、`mask: border-box`）、`filter`/`mask-image` 的函数
 白名单与渐变异形、`radial-gradient` 的长度型前言、`flex-flow` 与「最后一条 display 生效」、

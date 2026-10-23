@@ -1,8 +1,16 @@
 //! Skyline 不支持的伪类 / 伪元素。
 //!
-//! 知识库明确列出 Skyline 支持 `::before` / `::after`（changelog 1.0.0）、
-//! `:not()` / `:only-child()` / `:empty()`（1.3.0）、`:host`（1.4.13），因此这里
-//! 用「白名单」而不是「一刀切」。其余伪类/伪元素按不支持处理。
+//! 白名单依据不是文档而是引擎：`css/css_parser_impl.h:271-329` 只把
+//! `fp::PseudoClassesType` 的 7 个值映射成 `PseudoClassType`（`empty` / `host` /
+//! `only-child` / `first-child` / `last-child` / `not()` / `nth-child()`），其余值走
+//! `default` 分支报 `unsupported pseudo-class type`；`selector_matcher.cc:168-232`
+//! 逐个实现匹配。伪元素只实现了 `::before` / `::after`（changelog 1.0.0）。
+//! 所以 `:hover` / `:active` / `:focus` 这类确实是负例，而 `:first-child` 等必须放过。
+//!
+//! 两处特殊：`fp` 把单冒号的 `:before` / `:after` 解析成伪元素并给一条
+//! `InvalidPseudoElement` 警告但不拒绝（`selector.rs:345-375`），样式仍然生效；
+//! `:nth-of-type()` 能被 `fp` 解析，但 `PseudoClassesType::Tag` 里没有它，
+//! 落到 `default` 分支报错——所以它是不支持的，而 `:nth-last-child()` 在 `fp` 层就拒了。
 
 use crate::project::Project;
 use crate::{Diagnostic, Severity};
@@ -141,7 +149,19 @@ fn is_supported_pseudo(element: bool, name: &str) -> bool {
     if element {
         matches!(name, "before" | "after")
     } else {
-        matches!(name, "not" | "only-child" | "empty" | "host")
+        matches!(
+            name,
+            // 单冒号的 `:before` / `:after` 是伪元素的旧写法，引擎接受并生效。
+            "before"
+                | "after"
+                | "empty"
+                | "host"
+                | "only-child"
+                | "first-child"
+                | "last-child"
+                | "not"
+                | "nth-child"
+        )
     }
 }
 
@@ -161,7 +181,7 @@ mod tests {
             r#"
             .a:hover { color: red; }
             .b::placeholder { color: red; }
-            .c:nth-child(2) { color: red; }
+            .c:nth-of-type(2) { color: red; }
             .d, .e:focus { color: red; }
             "#,
         );
@@ -170,10 +190,40 @@ mod tests {
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
         assert!(diags.iter().any(|d| d.message.contains(":hover")));
         assert!(diags.iter().any(|d| d.message.contains("::placeholder")));
-        assert!(diags.iter().any(|d| d.message.contains(":nth-child")));
+        assert!(diags.iter().any(|d| d.message.contains(":nth-of-type")));
         // 多选择器规则只报带伪类的那个。
         assert!(diags.iter().any(|d| d.message.contains(".e")));
         assert!(!diags.iter().any(|d| d.message.contains(".d")));
+    }
+
+    /// 引擎实现了 7 个伪类：`css_parser_impl.h:271-329` 的映射 + `selector_matcher.cc:168-232`。
+    /// 它们不能报——旧白名单漏了三个，会把正常写法判成不支持。
+    /// 单冒号的 `:before` / `:after` 是旧写法：引擎解析成伪元素并生效，不能报。
+    #[test]
+    fn single_colon_pseudo_elements_are_accepted() {
+        let (_f, project) = single(
+            "no-pseudo-legacy-elements",
+            r#"
+            .a:before { content: "x"; }
+            .b:after { content: "x"; }
+            .c::before { content: "x"; }
+            "#,
+        );
+        assert_eq!(messages(&NoPseudo, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn child_position_pseudos_are_supported() {
+        let (_f, project) = single(
+            "no-pseudo-child",
+            r#"
+            .a:first-child { color: red; }
+            .b:last-child { color: red; }
+            .c:nth-child(2n+1) { color: red; }
+            .d:nth-child(3) { color: red; }
+            "#,
+        );
+        assert_eq!(messages(&NoPseudo, &project), Vec::<String>::new());
     }
 
     #[test]
