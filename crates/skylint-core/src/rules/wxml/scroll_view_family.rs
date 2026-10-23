@@ -8,6 +8,7 @@ use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
+use super::branch::{element_children, exclusive, max_rendered_children};
 use super::{element_diagnostic, is_builtin, load_doc, wxml_files};
 
 pub const ID: &str = "skyline/scroll-view-family";
@@ -226,25 +227,6 @@ fn describe(element: &WxmlElement, name: &str) -> String {
     }
 }
 
-fn element_children(element: &WxmlElement) -> impl Iterator<Item = &WxmlElement> {
-    element.children.iter().filter_map(|node| match node {
-        WxmlNode::Element(element) => Some(element),
-        _ => None,
-    })
-}
-
-/// 两个元素是否分属同一个 `wx:if` 的不同分支：互斥，运行时不会同时渲染。
-/// 无条件元素与任何条件分支元素都不互斥（两者可能同时渲染）。
-fn exclusive(a: &WxmlElement, b: &WxmlElement) -> bool {
-    // 只要有一层 `wx:if` 把两者分到不同分支，它们就不可能同时渲染；嵌套时靠分支栈
-    // 逐层比对，任一层互斥即互斥。
-    a.branches.iter().any(|left| {
-        b.branches
-            .iter()
-            .any(|right| left.group == right.group && left.arm != right.arm)
-    })
-}
-
 /// 父节点是否属于目标容器（属性不符不算，动态绑定不阻断）。
 fn is_container(element: &WxmlElement, containers: &[Target]) -> bool {
     containers.iter().any(|target| match target.attr {
@@ -431,7 +413,7 @@ fn before_violation(
 }
 
 fn renders_first_violation(element: &WxmlElement) -> Option<String> {
-    let count = element_children(element).count();
+    let count = max_rendered_children(element);
     if count < 2 {
         return None;
     }
@@ -1653,5 +1635,42 @@ mod tests {
         ));
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(diagnostics[0].message.contains("<view>"));
+    }
+
+    // ---- renders-first：按能同时渲染的子节点数判 ----
+
+    /// `wx:if` / `wx:else` 各一个子节点：运行期只渲染一个，不能报。
+    #[test]
+    fn renders_first_ignores_exclusive_branches() {
+        let diagnostics = check(&project(
+            "renders-first-branches",
+            concat!(
+                r#"<scroll-view type="nested">"#,
+                r#"<nested-scroll-header>"#,
+                r#"<view wx:if="{{a}}"/><view wx:else/>"#,
+                r#"</nested-scroll-header>"#,
+                r#"<nested-scroll-body/>"#,
+                r#"</scroll-view>"#,
+            ),
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 分支子节点数不相等时取最多的一支：else 里两个子节点就是 2。
+    #[test]
+    fn renders_first_counts_the_largest_branch() {
+        let diagnostics = check(&project(
+            "renders-first-largest",
+            concat!(
+                r#"<scroll-view type="nested">"#,
+                r#"<nested-scroll-header>"#,
+                r#"<view wx:if="{{a}}"/><block wx:else><view/><view/></block>"#,
+                r#"</nested-scroll-header>"#,
+                r#"<nested-scroll-body/>"#,
+                r#"</scroll-view>"#,
+            ),
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("2 个直接子元素"));
     }
 }

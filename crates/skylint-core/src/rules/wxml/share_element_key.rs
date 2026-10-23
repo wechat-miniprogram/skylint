@@ -21,6 +21,7 @@ use crate::input::wxml::{WxmlDoc, WxmlElement};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
+use super::branch::exclusive;
 use super::{element_diagnostic, load_doc, wxml_files};
 
 pub const ID: &str = "skyline/share-element-key";
@@ -35,16 +36,6 @@ fn find_attr<'a>(
         .attributes
         .iter()
         .find(|attr| attr.name.eq_ignore_ascii_case(name))
-}
-
-/// 两个元素是否分属同一个 `wx:if` 的不同分支：互斥，运行时不会同时渲染。
-/// 与 `scroll_view_family` 的 `unique` 口径一致。
-fn exclusive(a: &WxmlElement, b: &WxmlElement) -> bool {
-    a.branches.iter().any(|left| {
-        b.branches
-            .iter()
-            .any(|right| left.group == right.group && left.arm != right.arm)
-    })
 }
 
 pub struct ShareElementKey;

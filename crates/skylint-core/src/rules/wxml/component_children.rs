@@ -13,11 +13,12 @@
 //! 按摊平结果直接计数会把它误报成 2 个子节点。
 
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
+use crate::input::wxml::{WxmlDoc, WxmlElement};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
 use super::{element_diagnostic, load_doc, wxml_files};
+use super::branch::{element_children, max_rendered_children};
 
 pub const ID: &str = "skyline/component-children";
 
@@ -137,13 +138,6 @@ fn check_attr(element: &WxmlElement, name: &str, expected: &str) -> AttrCheck {
     }
 }
 
-fn element_children(element: &WxmlElement) -> impl Iterator<Item = &WxmlElement> {
-    element.children.iter().filter_map(|node| match node {
-        WxmlNode::Element(element) => Some(element),
-        _ => None,
-    })
-}
-
 /// 属性是否被明确关掉：缺失，或静态假值（`false` / `0`）。
 /// 动态值（`{{...}}`，包括 `{{true}}`）无法区分，按「可能开启」处理。
 fn attr_is_off(element: &WxmlElement, name: &str) -> bool {
@@ -175,44 +169,6 @@ fn render_allowed(allowed: &[&str]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" 或 ")
-}
-
-/// 能同时渲染的直接子元素数量的**最大值**。
-///
-/// 同一个 `wx:if` 的不同分支互斥，取各分支里最多的那一支；不同分支组之间可以同时
-/// 渲染，直接相加。因此 `if` 一个子节点 + `else` 两个子节点算 2，而不是贪心保留的 1。
-fn max_rendered_children(element: &WxmlElement) -> usize {
-    count_rendered(&element_children(element).collect::<Vec<_>>(), 0)
-}
-
-fn count_rendered(children: &[&WxmlElement], depth: usize) -> usize {
-    let mut total = 0;
-    let mut groups: Vec<(u32, Vec<&WxmlElement>)> = Vec::new();
-    for &child in children {
-        match child.branches.get(depth) {
-            None => total += 1,
-            Some(branch) => match groups.iter_mut().find(|(group, _)| *group == branch.group) {
-                Some((_, bucket)) => bucket.push(child),
-                None => groups.push((branch.group, vec![child])),
-            },
-        }
-    }
-    for (_, bucket) in groups {
-        let mut arms: Vec<(u32, Vec<&WxmlElement>)> = Vec::new();
-        for child in bucket {
-            let arm = child.branches[depth].arm;
-            match arms.iter_mut().find(|(value, _)| *value == arm) {
-                Some((_, list)) => list.push(child),
-                None => arms.push((arm, vec![child])),
-            }
-        }
-        total += arms
-            .into_iter()
-            .map(|(_, list)| count_rendered(&list, depth + 1))
-            .max()
-            .unwrap_or(0);
-    }
-    total
 }
 
 fn violations(doc: &WxmlDoc, element: &WxmlElement, row: &Row, path: &str) -> Vec<Diagnostic> {

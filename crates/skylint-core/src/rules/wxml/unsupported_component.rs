@@ -230,6 +230,18 @@ mod tests {
         assert!(movable_view.help.as_deref().unwrap().contains("worklet"));
     }
 
+    /// 知识库把组件名拼成 `keyboard-accessary`；官方名是 keyboard-accessory，
+    /// 按错拼收录等于这条永远命中不了。
+    #[test]
+    fn keyboard_accessory_is_reported_under_its_official_name() {
+        let diagnostics = check_rule(
+            &project("keyboard", r#"<keyboard-accessory/>"#),
+            &UnsupportedComponent,
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].message.contains("keyboard-accessory"));
+    }
+
     #[test]
     fn every_unsupported_occurrence_is_reported() {
         let diagnostics = check_rule(

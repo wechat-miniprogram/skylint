@@ -66,6 +66,9 @@ movable-view | 手势 + worklet 动画方案
 editor | 该组件在 Skyline 下不可用
 progress | 该组件在 Skyline 下不可用
 match-media | 该组件在 Skyline 下不可用
-keyboard-accessary | input 的 worklet:onkeyboardheightchange 回调
+# 知识库 component-support.md:63 把该组件拼成 `keyboard-accessary`（官方名为
+# keyboard-accessory，developers.weixin.qq.com/miniprogram/dev/component/keyboard-accessory.html），
+# 我们按官方名收录，否则真实使用永远命中不了。
+keyboard-accessory | input 的 worklet:onkeyboardheightchange 回调
 navigation-bar | Skyline 只能用自定义导航
 xr-frame | 该组件在 Skyline 下不可用

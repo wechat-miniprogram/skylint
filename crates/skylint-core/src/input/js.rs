@@ -22,7 +22,7 @@ use oxc_ast::ast::{
     ObjectProperty, ObjectPropertyKind, PropertyDefinition, PropertyKey, VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
-use oxc_parser::Parser;
+use oxc_parser::{ParseOptions, Parser};
 use oxc_span::{GetSpan, SourceType, Span};
 use oxc_syntax::scope::ScopeFlags;
 
@@ -70,7 +70,15 @@ impl JsDoc {
 
         let owned = source.to_string();
         let allocator = Allocator::default();
-        let ret = Parser::new(&allocator, &owned, source_type).parse();
+        let ret = Parser::new(&allocator, &owned, source_type)
+            // 括号不保留成 `ParenthesizedExpression`：`Page(({ onPageScroll() {} }))`、
+            // `wx.navigateTo(({ routeType: 'x' }))` 与不加括号的写法必须得到同一棵树，
+            // 否则实参/callee 判定会静默丢失一层。
+            .with_options(ParseOptions {
+                preserve_parens: false,
+                ..ParseOptions::default()
+            })
+            .parse();
         // 只有 error 级诊断才否定整份文件；warning 不影响结构。
         if let Some(error) = ret.diagnostics.errors().next() {
             return Err(ParseError::Syntax(error.to_string()));
@@ -224,8 +232,9 @@ pub struct ThisDataDestructure {
 pub struct ObjectFn {
     /// 静态键名；计算键不收录。
     pub key: String,
-    /// 键的位置，诊断落点。
+    /// 键的位置，诊断落点（字符串键含引号）。
     pub key_start: u32,
+    pub key_end: u32,
     /// 值是内联函数时，该函数是否声明了 `'worklet'`。
     pub fn_worklet: Option<bool>,
     /// 值是裸标识符时的名字，指向同文件里的函数。
@@ -419,6 +428,7 @@ fn object_fn(property: &ObjectProperty) -> Option<ObjectFn> {
     };
     Some(ObjectFn {
         key_start: property.key.span().start,
+        key_end: property.key.span().end,
         key,
         fn_worklet,
         ident,
@@ -656,6 +666,17 @@ mod tests {
             ["'.box'", "[]", "1000"]
         );
         assert!(!calls[0].worklet_scope);
+    }
+
+    #[test]
+    fn parenthesized_arguments_are_transparent() {
+        // `Page(({...}))` / `wx.navigateTo(({...}))` 与不加括号的写法必须同构。
+        let doc = parse_js("Page(({ onPageScroll() {} })); wx.navigateTo(({ routeType: 'slide' }));");
+        let calls = doc.calls();
+        assert_eq!(calls[0].callee, "Page");
+        assert_eq!(calls[0].args[0].object_keys, ["onPageScroll"]);
+        assert_eq!(calls[1].callee, "wx.navigateTo");
+        assert_eq!(calls[1].args[0].object_keys, ["routeType"]);
     }
 
     #[test]

@@ -153,7 +153,7 @@ fn route_animation_diagnostics(file: &JsFile) -> Vec<Diagnostic> {
                     Severity::Error,
                     file,
                     item.key_start,
-                    item.key_start + key.len() as u32,
+                    item.key_end,
                     format!("路由动画的 {subject}没有 `'worklet'` 指令，动画不会在 UI 线程执行"),
                 )
                 .help(help),
