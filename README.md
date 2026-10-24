@@ -1,6 +1,6 @@
 # skylint
 
-Skyline 小程序迁移检查工具。适合 Webview 小程序使用 Agent 一轮迁移到 Skyline 渲染、或存量 Skyline 小程序反向适配 PC 端等不支持 Skyline 的小程序的 Webview 环境。
+Skyline 小程序迁移检查工具。适合 Webview 小程序使用 Agent 一轮迁移到 Skyline 渲染、或存量 Skyline 小程序反向适配 PC 端等不支持 Skyline 的环境到 Webview 渲染。
 
 > [!NOTE]
 > 本工具已完全重写。极大程度增加了规则条目数量；同时通过引入小程序源码工程图解析、glass-easel 模板编译器和 CSS Parser 提高了规则的准确性。
@@ -8,15 +8,14 @@ Skyline 小程序迁移检查工具。适合 Webview 小程序使用 Agent 一�
 ## 构建
 
 ```bash
-cargo build --release        # 产物在 target/release/skylint
-# 或
-cargo install --path .
+cargo build --release       
 ```
 
-没有任何内网依赖：工程加载器、模板解析、样式解析都在本仓库里，`cargo build` 拿到的就是你
-跑起来的那份二进制。需要 Rust 1.97+（oxc 前端的下限）。
+## 安装
 
-也可以直接装预编译二进制，见 Release 页。
+```bash
+mise use -g github:wechat-miniprogram/skylint
+```
 
 ## 使用
 
@@ -27,7 +26,7 @@ skylint
 # 指定项目根
 skylint ../my-miniapp
 
-# 只检查一个文件（不要求工程结构；跨文件规则不出结果）
+# 只检查一个文件
 skylint page.wxml
 skylint app.wxss
 
@@ -38,7 +37,7 @@ skylint --json
 skylint --ignore skyline/no-pseudo --ignore skyline/flex-direction
 ```
 
-全部规则见 [docs/RULES.md](docs/RULES.md)（由代码生成，不手工维护）。
+从代码中导出的全部规则见 [docs/RULES.md](docs/RULES.md)。
 
 ### 抑制单行
 
