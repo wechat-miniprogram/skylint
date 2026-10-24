@@ -22,6 +22,7 @@ use crate::input::wxml::{WxmlAttribute, WxmlElement};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
+use super::structure::find_attr;
 use super::{span_diagnostic, visit, walk};
 
 #[derive(Debug, Clone, Copy)]
@@ -490,7 +491,7 @@ impl Rule for ComponentAttribute {
                     return;
                 };
                 for rule in rules {
-                    let Some(attr) = find_attribute(element, rule.trigger.attr()) else {
+                    let Some(attr) = find_attr(element, rule.trigger.attr()) else {
                         continue;
                     };
                     if !attr.is_static {
@@ -524,13 +525,6 @@ impl Rule for ComponentAttribute {
     }
 }
 
-fn find_attribute<'a>(element: &'a WxmlElement, name: &str) -> Option<&'a WxmlAttribute> {
-    element
-        .attributes
-        .iter()
-        .find(|attr| attr.name.eq_ignore_ascii_case(name))
-}
-
 /// 触发条件命中时返回用于展示的取值，无值属性返回空串。
 fn trigger_value(attr: &WxmlAttribute, trigger: &Trigger) -> Option<String> {
     let value = attr.value.as_deref().map(str::trim).unwrap_or_default();
@@ -553,7 +547,7 @@ enum Verdict {
 fn judge(element: &WxmlElement, requirement: &Requirement) -> Verdict {
     match requirement {
         Requirement::Equals(name, expected) => {
-            let Some(attr) = find_attribute(element, name) else {
+            let Some(attr) = find_attr(element, name) else {
                 // 缺失即走默认值，按「不存在」处理：要求 `=v` 不成立。
                 return Verdict::Violated(None);
             };
@@ -568,7 +562,7 @@ fn judge(element: &WxmlElement, requirement: &Requirement) -> Verdict {
             }
         }
         Requirement::NotAny(name, banned) => {
-            let Some(attr) = find_attribute(element, name) else {
+            let Some(attr) = find_attr(element, name) else {
                 // 缺失同样按「不存在」处理：不等于任一被禁值（如 layout-type 缺省 normal），
                 // 所以不报。
                 return Verdict::Ok;

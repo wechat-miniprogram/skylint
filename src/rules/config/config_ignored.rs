@@ -18,6 +18,8 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
+use super::warn;
+
 pub struct ConfigIgnored;
 
 impl ConfigIgnored {
@@ -27,7 +29,7 @@ impl ConfigIgnored {
 impl Rule for ConfigIgnored {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
-            id: Self::ID,
+            id: ConfigIgnored::ID,
             severity: Severity::Warning,
             description: "配置写在不被读取的位置或类型上，静默无效",
         }
@@ -51,6 +53,7 @@ fn check_app_window(project: &Project, out: &mut Vec<Diagnostic>) {
     }
     warn(
         out,
+        ConfigIgnored::ID,
         "app.json",
         JsonPositions::new(&project.app_json_source).key("disableScroll"),
         "app.json 的 `window.disableScroll` 不生效，`disableScroll` 只能写在页面 json".to_string(),
@@ -85,6 +88,7 @@ fn check_project_setting(project: &Project, out: &mut Vec<Diagnostic>) {
         }
         warn(
             out,
+            ConfigIgnored::ID,
             path,
             JsonPositions::new(source).key("skylineRenderEnable"),
             format!(
@@ -105,27 +109,6 @@ fn type_name(value: &Value) -> &'static str {
         Value::Array(_) => "数组",
         Value::Object(_) => "对象",
     }
-}
-
-fn warn(
-    out: &mut Vec<Diagnostic>,
-    path: &str,
-    at: Option<(u32, u32)>,
-    message: String,
-    help: &str,
-) {
-    let (line, column) = at.unwrap_or((1, 1));
-    out.push(
-        Diagnostic::new(
-            ConfigIgnored::ID,
-            Severity::Warning,
-            message,
-            path,
-            line,
-            column,
-        )
-        .help(help),
-    );
 }
 
 #[cfg(test)]

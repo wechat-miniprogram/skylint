@@ -57,16 +57,16 @@ impl crate::rules::Rule for TextOverflowEllipsis {
             let selectors = offenders.join("`, `");
             let (line, column) = doc.position(decl.offset);
             out.push(
-                    Diagnostic::new(
-                        ID,
-                        Severity::Warning,
-                        format!("`text-overflow: ellipsis` 在 Skyline 下只作用于 `<text>`；选择器 `{selectors}` 在某处命中的节点不是 `<text>`，声明不会生效"),
-                        doc.path(),
-                        line,
-                        column,
-                    )
-                    .help("用 `<text>` 包裹文本（Skyline 下可配合 `overflow` / `max-lines` 截断），或删掉该声明"),
-                );
+                Diagnostic::new(
+                    ID,
+                    Severity::Warning,
+                    format!("`text-overflow: ellipsis` 在 Skyline 下只作用于 `<text>`；选择器 `{selectors}` 在某处命中的节点不是 `<text>`，声明不会生效"),
+                    doc.path(),
+                    line,
+                    column,
+                )
+                .help("用 `<text>` 包裹文本（Skyline 下可配合 `overflow` / `max-lines` 截断），或删掉该声明"),
+            );
         })
     }
 }

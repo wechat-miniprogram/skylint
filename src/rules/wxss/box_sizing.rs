@@ -6,7 +6,7 @@
 use crate::project::Project;
 use crate::{Diagnostic, Severity};
 
-use super::value_util::is_dynamic;
+use super::value_util::{at_value_with, is_dynamic};
 use super::visit_declarations;
 use crate::rules::{Rule, RuleMeta};
 
@@ -43,39 +43,25 @@ impl Rule for BoxSizing {
                 // `initial` / `unset` / `revert` 落到 ApplyInitial：只有开启
                 // defaultContentBox 才是 content-box（`box_sizing.cc:33-41`）。
                 if is_global_value(&lower) && !project.app_content_box() {
-                    let (line, column) = doc.position(decl.value_offset);
-                    let (end_line, end_column) = doc.position(decl.value_end());
-                    out.push(
-                        Diagnostic::new(
-                            Self::ID,
-                            Severity::Warning,
-                            format!("`box-sizing: {value}` 在 Skyline 下会解析成 border-box（WebView 是 content-box）"),
-                            doc.path(),
-                            line,
-                            column,
-                        )
-                        .end(end_line, end_column)
-                        .help("显式写 content-box 或 border-box：未开启 defaultContentBox 时 Skyline 的初始值是 border-box"),
-                    );
+                    out.push(at_value_with(
+                        Self::ID,
+                        doc,
+                        decl,
+                        Severity::Warning,
+                        format!("`box-sizing: {value}` 在 Skyline 下会解析成 border-box（WebView 是 content-box）"),
+                        "显式写 content-box 或 border-box：未开启 defaultContentBox 时 Skyline 的初始值是 border-box",
+                    ));
                 }
                 return;
             }
-            let (line, column) = doc.position(decl.value_offset);
-            let (end_line, end_column) = doc.position(decl.value_end());
-            out.push(
-                        Diagnostic::new(
-                            Self::ID,
-                            Severity::Error,
-                            format!("`box-sizing: {value}` 在 Skyline 下不受支持，该声明会被忽略"),
-                            doc.path(),
-                            line,
-                            column,
-                        )
-                        .end(end_line, end_column)
-                        .help(
-                            "Skyline 只支持 content-box / border-box，且默认值为 border-box（WebView 为 content-box）；请显式声明并复核元素尺寸",
-                        ),
-                    );
+            out.push(at_value_with(
+                Self::ID,
+                doc,
+                decl,
+                Severity::Error,
+                format!("`box-sizing: {value}` 在 Skyline 下不受支持，该声明会被忽略"),
+                "Skyline 只支持 content-box / border-box，且默认值为 border-box（WebView 为 content-box）；请显式声明并复核元素尺寸",
+            ));
         })
     }
 }

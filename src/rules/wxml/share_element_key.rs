@@ -17,25 +17,16 @@
 //! 只做文件内唯一性，跨文件重复留给运行期。
 
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxml::{Branch, WxmlDoc, WxmlElement};
+use crate::input::wxml::{Branch, WxmlDoc};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
+use super::structure::find_attr;
 use super::{element_diagnostic, visit, walk};
 
 pub const ID: &str = "skyline/share-element-key";
 
 const TAG: &str = "share-element";
-
-fn find_attr<'a>(
-    element: &'a WxmlElement,
-    name: &str,
-) -> Option<&'a crate::input::wxml::WxmlAttribute> {
-    element
-        .attributes
-        .iter()
-        .find(|attr| attr.name.eq_ignore_ascii_case(name))
-}
 
 pub struct ShareElementKey;
 

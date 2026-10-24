@@ -246,9 +246,21 @@ pub(crate) fn at_value(
     message: String,
     help: impl Into<String>,
 ) -> Diagnostic {
+    at_value_with(id, doc, decl, Severity::Warning, message, help)
+}
+
+/// 与 [`at_value`] 相同，但由调用方决定严重级别。
+pub(crate) fn at_value_with(
+    id: &'static str,
+    doc: &WxssDoc,
+    decl: &WxssDeclaration,
+    severity: Severity,
+    message: String,
+    help: impl Into<String>,
+) -> Diagnostic {
     let (line, column) = doc.position(decl.value_offset);
     let (end_line, end_column) = doc.position(decl.value_end());
-    Diagnostic::new(id, Severity::Warning, message, doc.path(), line, column)
+    Diagnostic::new(id, severity, message, doc.path(), line, column)
         .end(end_line, end_column)
         .help(help)
 }

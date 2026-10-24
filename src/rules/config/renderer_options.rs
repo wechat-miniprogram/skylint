@@ -20,6 +20,8 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
+use super::warn;
+
 pub struct RendererOptions;
 
 impl RendererOptions {
@@ -83,7 +85,7 @@ enum Level {
 impl Rule for RendererOptions {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
-            id: Self::ID,
+            id: RendererOptions::ID,
             severity: Severity::Warning,
             description: "rendererOptions 的写法或类型不会被运行时读取，配置静默失效",
         }
@@ -131,6 +133,7 @@ fn check_file(
     {
         warn(
             out,
+            RendererOptions::ID,
             path,
             positions.key("convertRpxToVw"),
             format!(
@@ -146,6 +149,7 @@ fn check_file(
     let Some(options) = options.as_object() else {
         warn(
             out,
+            RendererOptions::ID,
             path,
             positions.key("rendererOptions"),
             "rendererOptions 不是对象，整块配置不生效".to_string(),
@@ -162,6 +166,7 @@ fn check_file(
         Some(Value::Object(skyline)) => check_skyline(path, &positions, skyline, level, out),
         Some(_) => warn(
             out,
+            RendererOptions::ID,
             path,
             positions.key("skyline"),
             "rendererOptions.skyline 不是对象，整块配置不生效".to_string(),
@@ -181,6 +186,7 @@ fn check_file(
             }
             warn(
                 out,
+                RendererOptions::ID,
                 path,
                 positions.key(key),
                 format!(
@@ -193,6 +199,7 @@ fn check_file(
         } else if SKYLINE_ONLY_TOP.contains(&key.as_str()) {
             warn(
                 out,
+                RendererOptions::ID,
                 path,
                 positions.key(key),
                 format!(
@@ -214,6 +221,7 @@ fn check_convert_rpx_to_vw(
     if options.contains_key("convertRpxToVw") {
         warn(
             out,
+            RendererOptions::ID,
             path,
             positions.key("convertRpxToVw"),
             "`convertRpxToVw` 写在 rendererOptions 里不会生效，运行时只读 app.json 顶层"
@@ -257,6 +265,7 @@ fn check_skyline(
         let Some((kind, scope)) = kind_of(key) else {
             warn(
                 out,
+                RendererOptions::ID,
                 path,
                 positions.key(key),
                 format!("rendererOptions.skyline 下的 `{key}` 不是已知配置项，运行时不会读取"),
@@ -268,6 +277,7 @@ fn check_skyline(
         if level == Level::Page && scope == Where::AppOnly {
             warn(
                 out,
+                RendererOptions::ID,
                 path,
                 positions.key(key),
                 format!("`{key}` 只在 app.json 生效，页面级 rendererOptions 不读取它"),
@@ -328,7 +338,14 @@ fn check_value(
             ),
         },
     };
-    warn(out, path, positions.key(key), message, help);
+    warn(
+        out,
+        RendererOptions::ID,
+        path,
+        positions.key(key),
+        message,
+        help,
+    );
 }
 
 fn kind_of(key: &str) -> Option<(Kind, Where)> {
@@ -336,27 +353,6 @@ fn kind_of(key: &str) -> Option<(Kind, Where)> {
         .iter()
         .find(|(name, _, _)| *name == key)
         .map(|(_, kind, scope)| (*kind, *scope))
-}
-
-fn warn(
-    out: &mut Vec<Diagnostic>,
-    path: &str,
-    at: Option<(u32, u32)>,
-    message: String,
-    help: &str,
-) {
-    let (line, column) = at.unwrap_or((1, 1));
-    out.push(
-        Diagnostic::new(
-            RendererOptions::ID,
-            Severity::Warning,
-            message,
-            path,
-            line,
-            column,
-        )
-        .help(help),
-    );
 }
 
 #[cfg(test)]

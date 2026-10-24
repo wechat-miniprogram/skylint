@@ -4,6 +4,7 @@ use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
+use super::structure::find_attr;
 use super::{element_diagnostic, span_diagnostic, visit, walk};
 
 pub struct ScrollViewType;
@@ -35,11 +36,7 @@ impl Rule for ScrollViewType {
                 if element.tag != "scroll-view" {
                     return;
                 }
-                match element
-                    .attributes
-                    .iter()
-                    .find(|attr| attr.name.eq_ignore_ascii_case("type"))
-                {
+                match find_attr(element, "type") {
                     None => {
                         out.push(
                             element_diagnostic(

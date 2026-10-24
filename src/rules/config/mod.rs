@@ -20,3 +20,18 @@ pub use config_ignored::ConfigIgnored;
 pub use default_layout_drift::DefaultLayoutDrift;
 pub use lib_version::LibVersion;
 pub use renderer_options::RendererOptions;
+
+use crate::diag::{Diagnostic, Severity};
+
+/// 配置类诊断：给出 `at` 就落在该位置，否则落在文件首字符。
+pub(crate) fn warn(
+    out: &mut Vec<Diagnostic>,
+    id: &'static str,
+    path: &str,
+    at: Option<(u32, u32)>,
+    message: String,
+    help: &str,
+) {
+    let (line, column) = at.unwrap_or((1, 1));
+    out.push(Diagnostic::new(id, Severity::Warning, message, path, line, column).help(help));
+}
