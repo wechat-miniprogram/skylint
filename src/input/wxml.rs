@@ -29,6 +29,9 @@ pub struct WxmlDoc {
     pub nodes: Vec<WxmlNode>,
     /// `<import>` / `<include>` 的 `src` 原始值（编译器已剥掉 `.wxml` 后缀）。
     template_refs: Vec<String>,
+    /// 这份文件不是单元本身，而是被 `<import>` / `<include>` 引用的片段：
+    /// 它的根节点在实例化处的父节点静态不可知。
+    pub fragment: bool,
 }
 
 /// 摊平后的节点。`Comment` 不携带内容：规则不需要，保留它是为了不把注释误当元素。
@@ -163,6 +166,8 @@ impl WxmlDoc {
             source: source.to_string(),
             nodes,
             template_refs,
+            // 由调用方（`load_doc`）按工程视图补上。
+            fragment: false,
         })
     }
 

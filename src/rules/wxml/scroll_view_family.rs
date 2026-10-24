@@ -255,6 +255,36 @@ mod tests {
         check_rule(fixture, &ScrollViewFamily)
     }
 
+    /// 被 `<include>` 的片段：根节点插到哪由实例化处决定，不能报「位于文件顶层」。
+    #[test]
+    fn included_fragment_root_is_not_judged_for_position() {
+        let fixture = project(
+            "include-fragment",
+            r#"<scroll-view type="custom"><include src="./row"/></scroll-view>"#,
+        );
+        fixture.write("pages/index/row.wxml", "<list-view/>");
+        let loaded = fixture.project();
+        assert!(
+            loaded
+                .template_files
+                .iter()
+                .any(|path| path.ends_with("row.wxml")),
+            "片段应当进入模板闭包：{:?}",
+            loaded.template_files
+        );
+        let diagnostics = check(&fixture);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+        // 同样的节点写进页面本体就是真错。
+        let page = project(
+            "include-page",
+            r#"<scroll-view type="custom"><list-view/></scroll-view><list-view/>"#,
+        );
+        let diagnostics = check(&page);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].message.contains("位于文件顶层"));
+    }
+
     // ---- 约束表 ----
 
     // ---- sticky-section ----

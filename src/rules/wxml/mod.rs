@@ -58,7 +58,9 @@ fn wxml_files(project: &Project) -> impl Iterator<Item = &str> {
 
 pub(crate) fn load_doc(project: &Project, path: &str) -> Option<WxmlDoc> {
     let source = fs::read_to_string(project.abs(path)).ok()?;
-    wxml::parse(path, &source).ok()
+    let mut doc = wxml::parse(path, &source).ok()?;
+    doc.fragment = project.template_files.iter().any(|file| file == path);
+    Some(doc)
 }
 
 /// 遍历全部待检查的 WXML 文件（页面/组件单元 + 被 import/include 的模板）。

@@ -593,7 +593,20 @@ pub(crate) fn check_element(
     path: &str,
     out: &mut Vec<Diagnostic>,
 ) {
+    // 被 import/include 的片段：根节点插到哪由实例化处决定，位置类约束无从判定。
+    let fragment_root = doc.fragment && ancestors.is_empty();
     for constraint in constraints.iter().filter(|c| c.tag == element.tag) {
+        if fragment_root
+            && matches!(
+                &constraint.relation,
+                Relation::Direct(_)
+                    | Relation::Ancestor(_)
+                    | Relation::FirstChild(_)
+                    | Relation::Unique(_)
+            )
+        {
+            continue;
+        }
         match &constraint.relation {
             Relation::ChildrenOnly(_)
             | Relation::Exactly(_)

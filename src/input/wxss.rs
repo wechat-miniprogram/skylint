@@ -352,6 +352,15 @@ const RULE_CONTAINERS: [&str; 7] = [
 ///
 /// 顶层 `@mixin` 的函数体没有选择器，于是产出一条无选择器的规则——属性/值类规则
 /// 照样能检查到 mixin 里的声明。
+/// 关键帧 at-rule：块内是「关键帧选择器 + 声明」，声明要检查、选择器不匹配元素。
+const KEYFRAMES: [&str; 5] = [
+    "keyframes",
+    "-webkit-keyframes",
+    "-moz-keyframes",
+    "-o-keyframes",
+    "-ms-keyframes",
+];
+
 const TRANSPARENT: [&str; 10] = [
     "mixin", "function", "if", "else", "each", "for", "while", "include", "use", "forward",
 ];
@@ -445,6 +454,30 @@ fn walk<'a>(
                     walk(out, &block.statements, source, parents, at, true, depth + 1);
                 }
             }
+            // 关键帧块（`@keyframes` 里的 `from { … }`）：声明在动画期间会作用到元素上，
+            // 必须检查；关键帧选择器匹配不到任何元素，依赖元素匹配的规则自然静默。
+            Statement::KeyframeBlock(keyframe) => {
+                let text = source
+                    .get(keyframe.span.start..keyframe.block.span.start)
+                    .map(|raw| raw.trim().to_string())
+                    .unwrap_or_default();
+                let selectors = [WxssSelector {
+                    text,
+                    offset: keyframe.span.start,
+                    // 关键帧选择器不是元素选择器：留空让元素匹配直接放弃。
+                    parts: Vec::new(),
+                    pseudos: Vec::new(),
+                }];
+                walk(
+                    out,
+                    &keyframe.block.statements,
+                    source,
+                    &selectors,
+                    at,
+                    true,
+                    depth + 1,
+                );
+            }
             Statement::AtRule(rule) => at_rule(out, rule, source, parents, at, depth),
             // 变量、混入调用、extend、错误恢复节点等：不是样式规则，忽略。
             _ => {}
@@ -499,8 +532,13 @@ fn at_rule(
         );
     } else if TRANSPARENT.contains(&name.as_str()) {
         walk(out, &block.statements, source, parents, at, true, depth + 1);
+    } else if KEYFRAMES.contains(&name.as_str()) {
+        // 关键帧里的声明会在动画期间作用到元素上，声明级规则必须看（`filter`、
+        // `unsupported-property` 等）。关键帧选择器（`from` / `0%`）匹配不到任何
+        // 元素，依赖元素匹配的规则自然静默。
+        walk(out, &block.statements, source, parents, at, true, depth + 1);
     }
-    // `@keyframes` / `@font-face` / `@page` 的块内容不是元素样式，整块跳过。
+    // `@font-face` / `@page` 的块内容不是元素样式，整块跳过。
 }
 
 /// at-rule 的 prelude 原文（已 trim）与起点偏移；没有 prelude 时返回 `None`。
@@ -1143,15 +1181,21 @@ mod tests {
         assert_eq!(a.declarations[0].value, "@brand");
     }
 
+    /// 关键帧里的声明保留（声明级规则要看），关键帧选择器本身不进 `.a` 这类匹配。
     #[test]
-    fn keyframes_block_is_skipped() {
+    fn keyframes_declarations_are_kept() {
         let doc = parse(
             "a.wxss",
             "@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(1turn); } }\n.a { color: red; }",
         )
         .unwrap();
-        assert_eq!(doc.rules.len(), 1);
-        assert_eq!(doc.rules[0].selectors[0].text, ".a");
+        let selectors: Vec<&str> = doc
+            .rules
+            .iter()
+            .map(|rule| rule.selectors[0].text.as_str())
+            .collect();
+        assert_eq!(selectors, ["from", "to", ".a"]);
+        assert_eq!(doc.rules[0].declarations[0].name, "transform");
     }
 
     #[test]
