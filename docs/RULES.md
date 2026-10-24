@@ -1,7 +1,7 @@
 # 规则一览
 
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
-> 改了规则的 id / 级别 / 说明后，跑 `UPDATE_DOCS=1 cargo test -p skylint-core rules_doc` 重写。
+> 改了规则的 id / 级别 / 说明后，跑 `cargo run -p skylint-core --example rules_doc` 重写。
 
 共 39 条：error 11 条、warning 27 条、info 1 条。
 

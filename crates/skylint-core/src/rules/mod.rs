@@ -96,14 +96,14 @@ impl Registry {
 
     /// 规则文档的唯一来源：`docs/RULES.md` 由它生成，不手写。
     ///
-    /// 刷新方式：`UPDATE_DOCS=1 cargo test -p skylint-core rules_doc`。
+    /// 刷新方式：`cargo run -p skylint-core --example rules_doc`。
     pub fn rules_document(&self) -> String {
         let metas = self.metas();
         let count = |severity: Severity| metas.iter().filter(|m| m.severity == severity).count();
         let mut out = String::from(
             "# 规则一览\n\n\
              > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。\n\
-             > 改了规则的 id / 级别 / 说明后，跑 `UPDATE_DOCS=1 cargo test -p skylint-core rules_doc` 重写。\n\n",
+             > 改了规则的 id / 级别 / 说明后，跑 `cargo run -p skylint-core --example rules_doc` 重写。\n\n",
         );
         out.push_str(&format!(
             "共 {} 条：error {} 条、warning {} 条、info {} 条。\n\n| 规则 | 级别 | 说明 |\n|---|---|---|\n",
