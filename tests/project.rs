@@ -323,6 +323,42 @@ fn unparsable_stylesheet_is_reported_not_silently_skipped() {
     );
 }
 
+#[test]
+fn unparsable_wxml_is_reported_not_silently_skipped() {
+    let f = standard_project("unparsed-template");
+    f.write("miniprogram/pages/index/index.wxml", "<view>{{ a</view>");
+    let project = Project::load(f.path()).unwrap();
+    let reported: Vec<_> = project
+        .warnings
+        .iter()
+        .filter(|w| w.rule == "skylint/unparsed-template")
+        .collect();
+    assert_eq!(reported.len(), 1, "{:?}", project.warnings);
+    assert_eq!(reported[0].path, "pages/index/index.wxml");
+}
+
+/// BOM 是合法字节但不是合法 JSON / CSS 前缀，读入时要去掉。
+#[test]
+fn utf8_bom_is_stripped_for_config_and_styles() {
+    let f = standard_project("bom");
+    f.write(
+        "project.config.json",
+        "\u{feff}{\"miniprogramRoot\":\"miniprogram\"}",
+    );
+    f.write(
+        "miniprogram/pages/index/index.wxss",
+        "\u{feff}.a { float: left; }",
+    );
+    let project = Project::load(f.path()).unwrap();
+    assert!(project.project_config.contains_key("miniprogramRoot"));
+    let sheet = project
+        .styles
+        .iter()
+        .find(|sheet| sheet.doc.path().ends_with("index.wxss"))
+        .expect("样式文件应当进入样式图");
+    assert!(!sheet.doc.source().starts_with('\u{feff}'));
+}
+
 /// 脚本图是全域的：单元脚本 + 磁盘上其余 `.js` / `.ts`（`.d.ts`、`miniprogram_npm` 除外）。
 #[test]
 fn scripts_cover_every_source_file_on_disk() {

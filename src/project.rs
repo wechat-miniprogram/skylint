@@ -162,7 +162,8 @@ impl Project {
             .read_file(&miniprogram_root, "app.json")
             .ok_or_else(|| anyhow::anyhow!("Couldn't found the 'app.json' file"))?;
         let app_value: Map<String, Value> =
-            serde_json::from_str(&app_source).map_err(|err| anyhow::anyhow!("app.json: {err}"))?;
+            serde_json::from_str(crate::input::strip_bom(&app_source))
+                .map_err(|err| anyhow::anyhow!("app.json: {err}"))?;
         let exts = Exts::from_config(&config);
         let app_json = Value::Object(app_value.clone());
         let app_routes: AppRoutes = serde_json::from_value(app_json.clone())
@@ -263,6 +264,16 @@ impl Project {
         );
         let scripts = collect_scripts(&fs, &miniprogram_root, &exts, &pages, &components);
         let template_files = collect_template_files(&fs, &miniprogram_root, &pages, &components);
+        record_unparsed_templates(
+            &fs,
+            &miniprogram_root,
+            pages.iter().filter_map(|page| page.files.wxml.as_deref()),
+            components
+                .iter()
+                .filter_map(|component| component.files.wxml.as_deref()),
+            &template_files,
+            &mut warnings,
+        );
 
         Ok(Self {
             root,
@@ -1044,6 +1055,43 @@ fn resolve_style_import(
     })
 }
 
+/// 解析不了的 WXML 不会进入任何规则，必须显式说出来——否则整份文件（页面/组件/模板）
+/// 是「零诊断」而不是「没问题」。
+fn record_unparsed_templates<'a>(
+    fs: &LocalFs,
+    miniprogram_root: &str,
+    pages: impl Iterator<Item = &'a str>,
+    components: impl Iterator<Item = &'a str>,
+    templates: &'a [String],
+    warnings: &mut Vec<Diagnostic>,
+) {
+    let mut seen = HashSet::new();
+    for path in pages
+        .chain(components)
+        .chain(templates.iter().map(String::as_str))
+    {
+        if !seen.insert(path) {
+            continue;
+        }
+        let Some(source) = fs.read_file(miniprogram_root, path) else {
+            continue;
+        };
+        if let Err(detail) = wxml::parse(path, &source) {
+            warnings.push(
+                Diagnostic::new(
+                    "skylint/unparsed-template",
+                    Severity::Warning,
+                    format!("WXML 无法解析，其中的结构未做任何检查：{detail}"),
+                    path,
+                    1,
+                    1,
+                )
+                .help("修正语法错误后重新运行；这份文件不会进入任何 WXML 规则"),
+            );
+        }
+    }
+}
+
 /// 读页面/组件的原始 json。文件不存在返回 `None`（页面 json 本来就是可选的），
 /// 解析失败记一条 warning 并返回 `None`。
 fn read_unit_json(
@@ -1054,7 +1102,7 @@ fn read_unit_json(
 ) -> Option<Map<String, Value>> {
     let rel = format!("{unit}.json");
     let raw = fs.read_file(miniprogram_root, &rel)?;
-    match serde_json::from_str::<Value>(&raw) {
+    match serde_json::from_str::<Value>(crate::input::strip_bom(&raw)) {
         Ok(Value::Object(map)) => Some(map),
         Ok(_) => {
             warnings.push(
@@ -1088,7 +1136,7 @@ fn read_unit_json(
 /// `Null`——与页面 json 的宽容策略一致，缺文件不该升级成 linter 自己的错误。
 fn read_config(root: &Path, name: &str) -> (Value, String) {
     let source = std::fs::read_to_string(root.join(name)).unwrap_or_default();
-    let value = serde_json::from_str(&source).unwrap_or(Value::Null);
+    let value = serde_json::from_str(crate::input::strip_bom(&source)).unwrap_or(Value::Null);
     (value, source)
 }
 

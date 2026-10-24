@@ -115,6 +115,7 @@ impl WxmlText {
 impl WxmlDoc {
     /// `path` 只用于错误消息，不需要是磁盘上的真实路径。
     pub fn parse(path: &str, source: &str) -> Result<Self, String> {
+        let source = crate::input::strip_bom(source);
         let (template, state) = parse::parse(path, source);
         if let Some(err) = state
             .warnings()

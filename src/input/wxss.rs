@@ -222,6 +222,7 @@ impl std::fmt::Display for ParseError {
 
 /// 解析样式表。`path` 决定语法与 `//` 行注释的判定（仅预处理器）。
 pub fn parse(path: &str, source: &str) -> Result<WxssDoc, ParseError> {
+    let source = crate::input::strip_bom(source);
     let depth = nesting_depth(source);
     if depth > MAX_DEPTH {
         return Err(ParseError::Syntax(format!(
