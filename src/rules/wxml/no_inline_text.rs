@@ -1,7 +1,7 @@
 //! 文本与元素混排时 Skyline 会把文本当成独立 flex item，需用 `<text>` 包裹。
 
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
+use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode, WxmlText};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
@@ -11,10 +11,9 @@ pub const ID: &str = "skyline/no-inline-text";
 
 /// 文本与元素混排时唯一允许直接承载文本的标签。
 ///
-/// 依据：`skyline-components` 的 MUST 规则「内联文本必须用 text 组件」与
-/// 「text 组件内只能嵌套 text」；`span` 只是图文混排的内联容器，其中的文字
-/// 示例仍然用 `<text>` 包裹，因此不在白名单内。
-const TEXT_TAG: &str = "text";
+/// `text` / `span` / `navigator` 都是 `TextShadowNode`
+/// （`shadow/node_factory.cc:309-314`），裸文本在它们内部是 TextSpan，不是 flex item。
+const TEXT_TAGS: [&str; 3] = ["text", "span", "navigator"];
 
 pub struct NoInlineText;
 
@@ -37,22 +36,30 @@ impl Rule for NoInlineText {
 }
 
 /// 只有「文本与元素混排」在 Skyline 下会静默错位：纯文本子节点仍按 inline 流渲染。
-/// `<text>` 内部允许文本与 `<text>` 子节点混排，整棵子树豁免。
+/// 文本根组件内部允许文本与子节点混排，整棵子树豁免。
 fn check_element(doc: &WxmlDoc, element: &WxmlElement, path: &str, out: &mut Vec<Diagnostic>) {
-    if element.tag == TEXT_TAG {
+    if TEXT_TAGS.contains(&element.tag.as_str()) {
         return;
     }
-    let has_element = element
+    let elements: Vec<&WxmlElement> = element
         .children
         .iter()
-        .any(|child| matches!(child, WxmlNode::Element(_)));
-    if !has_element {
+        .filter_map(|child| match child {
+            WxmlNode::Element(element) => Some(element),
+            _ => None,
+        })
+        .collect();
+    if elements.is_empty() {
         return;
     }
     for text in element.children.iter().filter_map(|child| match child {
         WxmlNode::Text(text) if text.is_meaningful() => Some(text),
         _ => None,
     }) {
+        // 互斥分支里的文本与元素永远不会同时渲染。
+        if elements.iter().all(|element| exclusive_text(text, element)) {
+            continue;
+        }
         out.push(
             span_diagnostic(
                 ID,
@@ -69,6 +76,16 @@ fn check_element(doc: &WxmlDoc, element: &WxmlElement, path: &str, out: &mut Vec
             .help("把文本包进 `<text>`，或把整段文字移入独立的 `<text>` 子节点"),
         );
     }
+}
+
+/// 这段文本与这个元素是否分属同一个 `wx:if` 的不同分支。
+fn exclusive_text(text: &WxmlText, element: &WxmlElement) -> bool {
+    text.branches.iter().any(|left| {
+        element
+            .branches
+            .iter()
+            .any(|right| left.group == right.group && left.arm != right.arm)
+    })
 }
 
 #[cfg(test)]
@@ -239,6 +256,34 @@ mod tests {
     fn span_still_requires_text() {
         let diagnostics = check(&project("span", "<span><text>a</text><image/></span>"));
         assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn span_and_navigator_host_text_like_text() {
+        // span/navigator 都是 TextShadowNode（node_factory.cc:309-314），裸文本不是 flex item。
+        let diagnostics = check(&project(
+            "text-root",
+            "<span>\u{4f60}\u{597d}<image/></span>\n<navigator url=\"/x\">\u{8df3}\u{8f6c}<image/></navigator>",
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn mutually_exclusive_branches_are_not_mixed() {
+        let diagnostics = check(&project(
+            "exclusive",
+            "<view><block wx:if=\"{{ok}}\">yes</block><block wx:else><image/></block></view>",
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn same_branch_still_reported() {
+        let diagnostics = check(&project(
+            "same-arm",
+            "<view><block wx:if=\"{{ok}}\">yes<image/></block><block wx:else><view/></block></view>",
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     }
 
     #[test]

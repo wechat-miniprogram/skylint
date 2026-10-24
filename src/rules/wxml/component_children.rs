@@ -133,10 +133,6 @@ impl Rule for ComponentChildren {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
             walk(doc, |element, ancestors| {
-                // 模板定义体的真实子节点在实例化处，静态不可知。
-                if element.in_template {
-                    return;
-                }
                 structure::check_element(ID, doc, element, ancestors, ROWS, doc.path(), out);
             });
         })
@@ -389,6 +385,27 @@ mod tests {
             r#"<template name="t"><horizontal-drag-gesture-handler><template is="row"/></horizontal-drag-gesture-handler></template>"#,
         ));
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 纯文本也是可响应的子节点，没有元素不算错。
+    #[test]
+    fn gesture_handler_with_text_child_is_allowed() {
+        let diagnostics = check(&project(
+            "gesture-text",
+            r#"<tap-gesture-handler>点我</tap-gesture-handler>"#,
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 模板体内不依赖外部祖先的约束照常判（实例化不影响子节点结构）。
+    #[test]
+    fn template_body_local_constraint_is_still_judged() {
+        let diagnostics = check(&project(
+            "template-local",
+            r#"<template name="t"><navigator><view/></navigator></template><template is="t"/>"#,
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("只能嵌套"));
     }
 
     /// 两个不同的 `wx:if` 组各自只留一个子节点，但两组可以同时渲染 → 2。

@@ -70,26 +70,32 @@ const STICKY_SECTION: Target = Target {
     tag: "sticky-section",
     attr: None,
 };
+/// 嵌套滚动的头部槽也是 sliver 列表（`skyline_scroll_view.dart:1551-1556` 交给
+/// `NestedScrollView.headerSliverBuilder`），放 `list-view` / `sticky-section` 合法。
+const NESTED_HEADER: Target = Target {
+    tag: "nested-scroll-header",
+    attr: None,
+};
 
 /// scroll-view 家族结构约束表。
 const CONSTRAINTS: &[Constraint] = &[
     Constraint {
         tag: "sticky-section",
-        relation: Relation::Ancestor(&[CUSTOM_SCROLL]),
+        relation: Relation::Ancestor(&[CUSTOM_SCROLL, NESTED_HEADER]),
         severity: Severity::Error,
-        help: "把 `<sticky-section>` 放进 `<scroll-view type=\"custom\">`，type 不能是 list/nested",
+        help: "把 `<sticky-section>` 放进 `<scroll-view type=\"custom\">` 或 `<nested-scroll-header>`，type 不能是 list/nested",
     },
     Constraint {
         tag: "list-view",
-        relation: Relation::Direct(&[CUSTOM_SCROLL, STICKY_SECTION]),
+        relation: Relation::Direct(&[CUSTOM_SCROLL, STICKY_SECTION, NESTED_HEADER]),
         severity: Severity::Error,
-        help: "把 `<list-view>` 移为 `<scroll-view type=\"custom\">` 或 `<sticky-section>` 的直接子节点",
+        help: "把 `<list-view>` 移为 `<scroll-view type=\"custom\">`、`<sticky-section>` 或 `<nested-scroll-header>` 的直接子节点",
     },
     Constraint {
         tag: "grid-view",
-        relation: Relation::Direct(&[CUSTOM_SCROLL, STICKY_SECTION]),
+        relation: Relation::Direct(&[CUSTOM_SCROLL, STICKY_SECTION, NESTED_HEADER]),
         severity: Severity::Error,
-        help: "把 `<grid-view>` 移为 `<scroll-view type=\"custom\">` 或 `<sticky-section>` 的直接子节点",
+        help: "把 `<grid-view>` 移为 `<scroll-view type=\"custom\">`、`<sticky-section>` 或 `<nested-scroll-header>` 的直接子节点",
     },
     Constraint {
         tag: "nested-scroll-header",
@@ -211,14 +217,11 @@ impl Rule for ScrollViewFamily {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
             walk(doc, |element, ancestors| {
-                // 模板定义体只在实例化处渲染，真实祖先链静态不可知，结构约束无法判定。
-                if element.in_template {
-                    return;
-                }
                 structure::check_element(ID, doc, element, ancestors, CONSTRAINTS, doc.path(), out);
 
                 // nested-scroll.md NEVER 1「不要在 nested-scroll-body 下面放 nested-scroll-header」。
-                if element.tag == "nested-scroll-header"
+                if !element.in_template
+                    && element.tag == "nested-scroll-header"
                     && ancestors
                         .iter()
                         .rev()
@@ -677,6 +680,25 @@ mod tests {
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
+    /// 嵌套滚动的头部槽也是 sliver 列表，list-view / sticky-section 放这里合法。
+    #[test]
+    fn slivers_are_allowed_inside_nested_scroll_header() {
+        let diagnostics = check(&project(
+            "nested-header-slivers",
+            concat!(
+                r#"<scroll-view type="nested">"#,
+                r#"<nested-scroll-header><list-view/></nested-scroll-header>"#,
+                r#"<nested-scroll-body><view/></nested-scroll-body>"#,
+                r#"</scroll-view>"#,
+                r#"<scroll-view type="nested">"#,
+                r#"<nested-scroll-header><sticky-section><sticky-header>x</sticky-header></sticky-section></nested-scroll-header>"#,
+                r#"<nested-scroll-body><view/></nested-scroll-body>"#,
+                r#"</scroll-view>"#,
+            ),
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
     // ---- 唯一性：每个 sticky-section 最多一个 sticky-header ----
 
     #[test]
@@ -688,7 +710,7 @@ mod tests {
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert_eq!(diagnostics[0].severity, Severity::Error);
         assert!(diagnostics[0].message.contains("2 个 `<sticky-header>`"));
-        assert!(diagnostics[0].message.contains("只有第一个会生效"));
+        assert!(diagnostics[0].message.contains("只能有一个"));
     }
 
     #[test]
@@ -1292,9 +1314,9 @@ mod tests {
         assert!(diagnostics[0].message.contains("直接放在"));
     }
 
-    /// 唯一性按容器下的全部后代算：嵌套的那一个同样是重复项。
+    /// 唯一性只看容器的直接子节点：嵌套在 `<view>` 里的那个由「必须是直接子节点」报。
     #[test]
-    fn sticky_header_count_includes_nested_ones() {
+    fn sticky_header_count_ignores_nested_ones() {
         let diagnostics = check(&project(
             "sticky-unique-nested",
             concat!(
@@ -1305,7 +1327,7 @@ mod tests {
             ),
         ));
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-        assert!(diagnostics[0].message.contains("2 个"));
+        assert!(diagnostics[0].message.contains("直接放在"));
     }
 
     // ---- renders-first：按能同时渲染的子节点数判 ----

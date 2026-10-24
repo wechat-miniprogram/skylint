@@ -62,6 +62,23 @@ impl Rule for ScrollViewType {
                         if SCROLL_VIEW_TYPES.contains(&value) {
                             return;
                         }
+                        // `type=""` 与不写 type 走到同一条 kNone 路径（`scroll_view_shadow_node.cc:20-29`）。
+                        if value.is_empty() {
+                            out.push(
+                                element_diagnostic(
+                                    Self::ID,
+                                    doc,
+                                    element,
+                                    doc.path(),
+                                    Severity::Warning,
+                                    "`<scroll-view>` 没有指定 type，Skyline 下会退化为非按需渲染，性能下降",
+                                )
+                                .help(
+                                    "显式指定 type：list（普通长列表）、custom（list-view/grid-view/sticky 布局）、nested（嵌套滚动）",
+                                ),
+                            );
+                            return;
+                        }
                         let (severity, message, help) = if value == DEGRADED_TYPE {
                             (
                                 Severity::Warning,
@@ -152,5 +169,17 @@ mod tests {
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].severity, crate::Severity::Warning);
         assert!(diagnostics[0].message.contains("按需渲染"));
+    }
+
+    /// `type=""` 与不写 type 在引擎里是同一条 kNone 路径，不能报 error。
+    #[test]
+    fn empty_type_is_treated_as_missing() {
+        let diagnostics = check_rule(
+            &project("scroll-empty", r#"<scroll-view type=""></scroll-view>"#),
+            &ScrollViewType,
+        );
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].severity, crate::Severity::Warning);
+        assert!(diagnostics[0].message.contains("没有指定 type"));
     }
 }

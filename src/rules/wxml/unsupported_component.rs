@@ -23,8 +23,13 @@ impl Rule for UnsupportedComponent {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
+            let declared = project.declared_components(doc.path());
             walk(doc, |element, _ancestors| {
                 let tag = element.tag.to_ascii_lowercase();
+                // `usingComponents` 里声明了同名标签时用的是自定义组件，不是同名内置组件。
+                if declared.contains(&tag) {
+                    return;
+                }
                 let Some(replacement) = unsupported_replacement(&tag) else {
                     return;
                 };
@@ -48,6 +53,27 @@ impl Rule for UnsupportedComponent {
 mod tests {
     use super::UnsupportedComponent;
     use crate::rules::testutil::wxml::{Fixture, check_rule, project};
+
+    /// 页面 json 显式 `"renderer": "webview"`：这页不迁 Skyline，整页跳过。
+    #[test]
+    fn declared_custom_component_shadows_the_builtin() {
+        let fixture = Fixture::new("declared-shadow");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"navigation-bar":"/components/nav/nav"}}"#,
+            )
+            .write("pages/index/index.wxml", r#"<navigation-bar/>"#)
+            .write("components/nav/nav.json", "{}")
+            .write("components/nav/nav.wxml", r#"<view/>"#);
+        let diagnostics = check_rule(&fixture, &UnsupportedComponent);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
 
     /// 页面 json 显式 `"renderer": "webview"`：这页不迁 Skyline，整页跳过。
     #[test]

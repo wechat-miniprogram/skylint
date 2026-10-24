@@ -62,6 +62,8 @@ pub struct WxmlElement {
     /// 静态不可知：标签与属性类规则照常检查，依赖祖先或子节点计数的结构规则
     /// （scroll-view 家族、组件子节点、key 唯一性）必须跳过。
     pub in_template: bool,
+    /// 子节点里有被摊平掉的 `<template is>` / `<include>`：展开后的内容静态不可知。
+    pub unknown_children: bool,
 }
 
 /// 一个条件分支的标识：同一个 `wx:if` 节点的所有分支共享 `group`，`arm` 是分支序号
@@ -99,6 +101,8 @@ pub struct WxmlText {
     pub text: String,
     pub start: Position,
     pub end: Position,
+    /// 文本所处的条件分支栈（`<block wx:if>` 摊平后仍保留）。
+    pub branches: Vec<Branch>,
 }
 
 impl WxmlText {
@@ -227,24 +231,23 @@ fn byte_offset(source: &str, pos: Position) -> Option<usize> {
     None
 }
 
-fn text_node(value: &Value, source: &str) -> WxmlText {
+fn text_node(value: &Value, source: &str, branches: &[Branch]) -> WxmlText {
     let range = value.location();
-    if let Value::Static { value: raw, .. } = value {
+    let (text, start, end) = if let Value::Static { value: raw, .. } = value {
         // 解析器把文本前的空白也包进了 Value，这里裁掉并把起点前移，
         // 让诊断落在真正的第一个字符上。
         let trimmed = raw.trim();
         let lead = &raw[..raw.len() - raw.trim_start().len()];
         let start = advance(range.start, lead);
-        return WxmlText {
-            text: trimmed.to_string(),
-            start,
-            end: advance(start, trimmed),
-        };
-    }
+        (trimmed.to_string(), start, advance(start, trimmed))
+    } else {
+        (slice(source, range.clone()), range.start, range.end)
+    };
     WxmlText {
-        text: slice(source, range.clone()),
-        start: range.start,
-        end: range.end,
+        text,
+        start,
+        end,
+        branches: branches.to_vec(),
     }
 }
 
@@ -295,7 +298,7 @@ fn node_nodes(
     in_template: bool,
 ) -> Vec<WxmlNode> {
     match node {
-        Node::Text(value) => vec![WxmlNode::Text(text_node(value, source))],
+        Node::Text(value) => vec![WxmlNode::Text(text_node(value, source, branches))],
         Node::Element(element) => element_nodes(element, source, next_group, branches, in_template),
         Node::Comment(_) => vec![WxmlNode::Comment],
         _ => Vec::new(),
@@ -319,6 +322,7 @@ fn element_nodes(
             tag_start: tag_name.location.start,
             tag_end: tag_name.location.end,
             attributes: attributes(element, source),
+            unknown_children: has_unknown_children(children),
             children: flatten(children, source, next_group, branches, in_template),
             branches: branches.to_vec(),
             in_template,
@@ -368,11 +372,38 @@ fn element_nodes(
             tag_end: element.tag_location.start.1.end,
             attributes: attributes(element, source),
             children: Vec::new(),
+            unknown_children: false,
             branches: branches.to_vec(),
             in_template,
         })],
         _ => Vec::new(),
     }
+}
+
+/// 这棵子树里是否有被丢弃的 `<template is>` / `<include>`：展开内容静态不可知。
+fn has_unknown_children(nodes: &[Node]) -> bool {
+    nodes.iter().any(|node| match node {
+        Node::Element(element) => match &element.kind {
+            ElementKind::TemplateRef { .. } | ElementKind::Include { .. } => true,
+            ElementKind::Normal { children, .. }
+            | ElementKind::Pure { children, .. }
+            | ElementKind::For { children, .. } => has_unknown_children(children),
+            ElementKind::If {
+                branches,
+                else_branch,
+                ..
+            } => {
+                branches
+                    .iter()
+                    .any(|(_, _, children)| has_unknown_children(children))
+                    || else_branch
+                        .as_ref()
+                        .is_some_and(|(_, children)| has_unknown_children(children))
+            }
+            _ => false,
+        },
+        _ => false,
+    })
 }
 
 /// 元素属性。只收集「用户写在开始标签里」的属性：`wx:for`/`wx:if` 被解析成

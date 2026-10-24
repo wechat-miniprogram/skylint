@@ -142,6 +142,7 @@ const SUPPORTED_COMPONENTS: &[&str] = &[
     "cover-image",
     "video",
     "picker-view",
+    "picker-view-column",
     "rich-text",
     "page-meta",
     "span",

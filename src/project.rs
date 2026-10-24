@@ -10,7 +10,7 @@
 //!   并把全局 `usingComponents` 摊进页面，那会抹掉「用户没写」和「继承来的」这个区别
 //!   ——而这恰是迁移检查要判断的。
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
@@ -114,6 +114,11 @@ pub struct Project {
     pub deps: BTreeMap<String, Vec<String>>,
     /// 页面 json 原始对象（按 route），只读不改。配置类规则要判断「用户写了什么」。
     pub page_json: BTreeMap<String, Map<String, Value>>,
+    /// 单元 WXML → 该单元（含 app 级）在 `usingComponents` 里声明的标签名。
+    ///
+    /// 声明了同名标签时它会遮住内置组件，规则不能把 `<navigation-bar>` 这类
+    /// 自定义组件当成不支持的内置组件。模板文件不属于任何单元，不在这张表里。
+    pub declared_components: BTreeMap<String, BTreeSet<String>>,
     /// 页面 json 原文（与 `page_json` 同 key），用于把诊断落到具体行列。
     pub page_json_source: BTreeMap<String, String>,
     /// 样式文件 → 引入方（`app.wxss` 记为 [`Scope::Global`]），按路径排序。
@@ -201,7 +206,7 @@ impl Project {
             })
             .collect();
 
-        let (component_paths, deps) = collect_components(
+        let component_graph = collect_components(
             &fs,
             &miniprogram_root,
             &app_value,
@@ -209,13 +214,43 @@ impl Project {
             &app_seeds(&fs, &miniprogram_root, &app_value),
             &mut warnings,
         );
-        let components: Vec<ComponentUnit> = component_paths
+        let components: Vec<ComponentUnit> = component_graph
+            .paths
             .into_iter()
             .map(|path| ComponentUnit {
                 files: resolve_unit(&exts, &fs, &miniprogram_root, &path),
                 path,
             })
             .collect();
+
+        let app_declared = using_component_names(&app_value);
+        let mut declared_components: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut declare = |wxml: Option<&str>, names: &BTreeSet<String>| {
+            if let Some(wxml) = wxml {
+                declared_components
+                    .entry(wxml.to_string())
+                    .or_default()
+                    .extend(names.iter().cloned());
+            }
+        };
+        for page in &pages {
+            let mut names = app_declared.clone();
+            if let Some(json) = page_json
+                .iter()
+                .find(|(route, _)| route == &page.route)
+                .and_then(|(_, json)| json.as_ref())
+            {
+                names.extend(using_component_names(json));
+            }
+            declare(page.files.wxml.as_deref(), &names);
+        }
+        for component in &components {
+            let mut names = app_declared.clone();
+            if let Some(own) = component_graph.declared.get(&component.path) {
+                names.extend(own.iter().cloned());
+            }
+            declare(component.files.wxml.as_deref(), &names);
+        }
 
         let app_style = resolve_unit(&exts, &fs, &miniprogram_root, "app").wxss;
         let styles = collect_styles(
@@ -240,17 +275,26 @@ impl Project {
             project_private_config_source: private_config_source,
             pages,
             components,
-            deps,
+            deps: component_graph.deps,
             page_json: page_json
                 .into_iter()
                 .filter_map(|(route, json)| Some((route, json?)))
                 .collect(),
             page_json_source,
+            declared_components,
             styles,
             scripts,
             template_files,
             warnings,
         })
+    }
+
+    /// 这份 WXML 所属单元声明的组件标签名（含 app 级）；模板文件没有归属，返回空。
+    pub fn declared_components(&self, wxml_path: &str) -> BTreeSet<String> {
+        self.declared_components
+            .get(wxml_path)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// 某个页面（含 app 级声明）**传递**用到的组件。
@@ -460,6 +504,7 @@ impl Project {
             project_private_config: Map::new(),
             project_private_config_source: String::new(),
             pages: Vec::new(),
+            declared_components: BTreeMap::new(),
             components: Vec::new(),
             deps: BTreeMap::new(),
             page_json: BTreeMap::new(),
@@ -516,6 +561,15 @@ impl Project {
 /// 从页面与 app.json 的 `usingComponents` 出发做 BFS，外加 `app_seeds` 提供的
 /// 非声明式入口。npm 裸包名按 `miniprogram_npm` 回溯解析——词法拼接会把这些值
 /// 直接扔进引用方目录，静默丢掉组件。
+struct ComponentGraph {
+    /// 组件路径，排序去重。
+    paths: Vec<String>,
+    /// 单元 → 它直接引用的组件。
+    deps: BTreeMap<String, Vec<String>>,
+    /// 组件路径 → 它自己声明的组件标签名。
+    declared: BTreeMap<String, BTreeSet<String>>,
+}
+
 fn collect_components(
     fs: &LocalFs,
     root: &str,
@@ -523,7 +577,7 @@ fn collect_components(
     page_json: &[(String, Option<Map<String, Value>>)],
     seeds: &[String],
     warnings: &mut Vec<Diagnostic>,
-) -> (Vec<String>, BTreeMap<String, Vec<String>>) {
+) -> ComponentGraph {
     // 入口：页面的组件引用（页面本身不是组件，不入 comps）。
     let mut queue: Vec<String> = Vec::new();
     let mut deps: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -545,6 +599,7 @@ fn collect_components(
     queue.extend(seeds.iter().cloned());
 
     let mut comps: Vec<String> = Vec::new();
+    let mut declared: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     while let Some(unit) = queue.pop() {
         if comps.contains(&unit) {
             continue;
@@ -554,12 +609,17 @@ fn collect_components(
             continue;
         };
         comps.push(unit.clone());
+        declared.insert(unit.clone(), using_component_names(&json));
         let targets = routes_of(fs, root, &unit, &json);
         queue.extend(targets.iter().cloned());
         deps.insert(unit, targets);
     }
     comps.sort();
-    (comps, deps)
+    ComponentGraph {
+        paths: comps,
+        deps,
+        declared,
+    }
 }
 
 /// 一个单元声明的组件引用解析后得到的根相对路径。
@@ -633,6 +693,14 @@ fn app_seeds(fs: &LocalFs, root: &str, app: &Map<String, Value>) -> Vec<String> 
         seeds.push("app-bar/index".to_string());
     }
     seeds
+}
+
+/// `usingComponents` 的**标签名**（key），小写化。
+fn using_component_names(json: &Map<String, Value>) -> BTreeSet<String> {
+    json.get("usingComponents")
+        .and_then(Value::as_object)
+        .map(|map| map.keys().map(|name| name.to_ascii_lowercase()).collect())
+        .unwrap_or_default()
 }
 
 fn using_components(json: &Map<String, Value>) -> Vec<String> {

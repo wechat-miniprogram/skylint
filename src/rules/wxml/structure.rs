@@ -213,20 +213,25 @@ fn direct_violation(
 ) -> Option<String> {
     let expected = render_targets(targets);
     let Some(parent) = ancestors.last() else {
-        return Some(format!(
-            "`<{}>` 位于文件顶层，必须直接放在 {} 内",
-            element.tag, expected
-        ));
+        // 模板定义体的根节点在实例化处的父节点未知。
+        return (!element.in_template).then(|| {
+            format!(
+                "`<{}>` 位于文件顶层，必须直接放在 {} 内",
+                element.tag, expected
+            )
+        });
     };
     // 自定义组件的渲染树未知，不越过它判定。
     if !is_builtin(&parent.tag) {
         return None;
     }
     let Some(target) = targets.iter().find(|target| target.tag == parent.tag) else {
-        return Some(format!(
-            "`<{}>` 必须直接放在 {} 内，当前父节点是 `<{}>`",
-            element.tag, expected, parent.tag
-        ));
+        return (!element.in_template).then(|| {
+            format!(
+                "`<{}>` 必须直接放在 {} 内，当前父节点是 `<{}>`",
+                element.tag, expected, parent.tag
+            )
+        });
     };
     match target.attr {
         None => None,
@@ -270,6 +275,10 @@ fn ancestor_violation(
             },
         };
     }
+    // 模板定义体可能被放在目标容器里，静态看不到实例化处。
+    if element.in_template {
+        return None;
+    }
     Some(format!(
         "`<{}>` 必须放在 {} 内，当前不在该容器中",
         element.tag, expected
@@ -285,6 +294,9 @@ fn first_child_violation(
     // 容器祖先存在但中间隔着内置节点：它仍不是容器的直接子元素。
     // （`<block wx:if>` 已被摊平，不会走到这里。）
     if !is_container(parent, containers) {
+        if element.in_template {
+            return None;
+        }
         let container = nearest_container(ancestors, containers)?;
         if !is_builtin(&parent.tag) {
             return None;
@@ -322,10 +334,10 @@ fn unique_violation(
     containers: &[Target],
 ) -> Option<String> {
     let container = nearest_container(ancestors, containers)?;
-    // 互斥分支里的同标签节点不会与它同时渲染，不计入重复；嵌套在内部节点里的
-    // 同名节点同样是容器下的重复项。
-    let siblings: Vec<&WxmlElement> = descendants(container)
-        .into_iter()
+    // 互斥分支里的同标签节点不会与它同时渲染，不计入重复。只数容器的直接子节点：
+    // 引擎的 `children.firstWhere`（skyline_scroll_view.dart:1559-1563）与
+    // `MultiSliver` 都只看一层。
+    let siblings: Vec<&WxmlElement> = element_children(container)
         .filter(|sibling| sibling.tag == element.tag && !exclusive(sibling, element))
         .collect();
     if siblings.len() < 2 {
@@ -338,27 +350,17 @@ fn unique_violation(
         return None;
     }
     Some(format!(
-        "`{}` 内有 {} 个 `<{}>`，只有第一个会生效",
+        "`{}` 内有 {} 个 `<{}>`，只能有一个",
         describe(container, "type"),
         siblings.len(),
         element.tag
     ))
 }
 
-/// 容器下的全部后代元素（文档顺序，含容器的直接子节点）。
-fn descendants(element: &WxmlElement) -> Vec<&WxmlElement> {
-    let mut out = Vec::new();
-    let mut stack: Vec<&WxmlNode> = element.children.iter().rev().collect();
-    while let Some(node) = stack.pop() {
-        if let WxmlNode::Element(child) = node {
-            out.push(child);
-            stack.extend(child.children.iter().rev());
-        }
-    }
-    out
-}
-
 fn renders_first_violation(element: &WxmlElement) -> Option<String> {
+    if element.unknown_children {
+        return None;
+    }
     let count = max_rendered_children(element);
     if count < 2 {
         return None;
@@ -495,6 +497,19 @@ fn children_violations(
             .collect(),
         Relation::Exactly(expected) => {
             let count = max_rendered_children(element);
+            // 有 `<template is>` / `<include>` 子节点时展开内容不可知。
+            if element.unknown_children && count < *expected as usize {
+                return Vec::new();
+            }
+            // 只有文本子节点也算有响应目标（文本节点能接手势事件），不算漏。
+            if count == 0
+                && element
+                    .children
+                    .iter()
+                    .any(|child| matches!(child, WxmlNode::Text(text) if text.is_meaningful()))
+            {
+                return Vec::new();
+            }
             if count == *expected as usize {
                 return Vec::new();
             }
@@ -532,6 +547,9 @@ fn children_violations(
             if unknown {
                 return Vec::new();
             }
+            if element.unknown_children {
+                return Vec::new();
+            }
             vec![on_element(format!(
                 "`<{}{}>` 没有 `{}=\"{}\"` 的直接子节点，自定义刷新节点不会被渲染",
                 element.tag,
@@ -542,6 +560,7 @@ fn children_violations(
         }
         Relation::RequiresChildTag { child_tag, own } => {
             if !conditions_hold(element, own)
+                || element.unknown_children
                 || element_children(element).any(|child| child.tag == *child_tag)
             {
                 return Vec::new();
