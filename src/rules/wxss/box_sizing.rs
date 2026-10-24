@@ -40,6 +40,24 @@ impl Rule for BoxSizing {
                 return;
             }
             if is_box_sizing_value(&lower) {
+                // `initial` / `unset` / `revert` 落到 ApplyInitial：只有开启
+                // defaultContentBox 才是 content-box（`box_sizing.cc:33-41`）。
+                if is_global_value(&lower) && !project.app_content_box() {
+                    let (line, column) = doc.position(decl.value_offset);
+                    let (end_line, end_column) = doc.position(decl.value_end());
+                    out.push(
+                        Diagnostic::new(
+                            Self::ID,
+                            Severity::Warning,
+                            format!("`box-sizing: {value}` 在 Skyline 下会解析成 border-box（WebView 是 content-box）"),
+                            doc.path(),
+                            line,
+                            column,
+                        )
+                        .end(end_line, end_column)
+                        .help("显式写 content-box 或 border-box：未开启 defaultContentBox 时 Skyline 的初始值是 border-box"),
+                    );
+                }
                 return;
             }
             let (line, column) = doc.position(decl.value_offset);
@@ -60,6 +78,11 @@ impl Rule for BoxSizing {
                     );
         })
     }
+}
+
+/// 全局关键字：它们的天空值是 `ApplyInitial` 的结果。
+fn is_global_value(value: &str) -> bool {
+    matches!(value, "initial" | "unset" | "revert" | "revert-layer")
 }
 
 fn is_box_sizing_value(value: &str) -> bool {
@@ -102,11 +125,26 @@ mod tests {
             .b { box-sizing: border-box; }
             .c { box-sizing: inherit; }
             .d { box-sizing: var(--box); }
-            .e { box-sizing: initial; }
             .f { padding-box: 1px; }
             "#,
         );
         assert_eq!(messages(&BoxSizing, &project), Vec::<String>::new());
+    }
+
+    /// 未开启 defaultContentBox 时 `initial` / `unset` 解析成 border-box，与 WebView 不同。
+    #[test]
+    fn initial_resolves_to_border_box_without_the_flag() {
+        let (_f, project) = single(
+            "box-sizing-initial",
+            r#"
+            .a { box-sizing: initial; }
+            .b { box-sizing: unset; }
+            "#,
+        );
+        let diags = BoxSizing.check(&project);
+        assert_eq!(diags.len(), 2, "{diags:#?}");
+        assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
+        assert!(diags[0].message.contains("border-box"));
     }
 
     /// 预处理器变量不是「不受支持的值」，必须全静默（SCSS / Less 工程上 error 级误报）。
