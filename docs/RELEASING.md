@@ -1,23 +1,31 @@
 # 发版
 
-仓库是单个 crate，零内网依赖，公开 runner 与本地都能构建。发版仍走脚本
-（`examples/release.rs`，依赖记在 dev-dependencies），理由是可重跑、可干跑、流程固定：
-构建、打包、上传三件事，没有隐藏状态。
+推一个 `vX.Y.Z` tag 就完成发版：四平台二进制进 GitHub Release，同时把 crate 发到
+crates.io。tag 必须是 `Cargo.toml` 的版本号——不一致会在第一步就失败，不会产出半成品。
 
 ```bash
-# 1. 提交 + 打 tag（tag 必须与 Cargo.toml 的版本一致）
-git tag v2.0.0 && git push origin v2.0.0
+# 1. 改版本号（唯一来源）
+$EDITOR Cargo.toml          # version = "0.1.0"
 
-# 2. 干跑：构建、打包、算校验和，打印将要调用的接口，不联网
-cargo run --example release -- release
-
-# 3. 真上传
-GITHUB_TOKEN=*** cargo run --example release -- release --upload
+# 2. 提交并打 tag（tag 一般打在主干上）
+git commit -am "release: 0.1.0"
+git tag v0.1.0
+git push origin main v0.1.0
 ```
 
-## 多平台
+## 流水线（`.github/workflows/release.yml`）
 
-四个目标平台：
+| job | 做什么 | 失败点 |
+|---|---|---|
+| `verify` | tag 格式、tag 与 `Cargo.toml` 一致、`cargo test --locked` | 版本不一致 / 测试红 |
+| `build` | 四平台 `cargo build --release --locked`，产物作为 artifact 上传 | 任一平台编不过 |
+| `release` | 打包（`tar.gz` / windows 用 `zip`，内含二进制 + README + LICENSE）并附 `SHA256SUMS`，创建或更新 GitHub Release | 打包 / 上传失败 |
+| `publish` | `cargo publish --locked` 到 crates.io | 见下节凭据配置 |
+
+`release` 与 `publish` 并行，各自都需要 `build` 全绿。两个 job 都可重跑：
+Release 已存在就只覆盖同名产物（`--clobber`），版本已经发布到 crates.io 就跳过 `publish`。
+
+## 产物
 
 | target | 说明 |
 |---|---|
@@ -26,37 +34,48 @@ GITHUB_TOKEN=*** cargo run --example release -- release --upload
 | `x86_64-unknown-linux-gnu` | Linux x64 |
 | `x86_64-pc-windows-msvc` | Windows x64 |
 
-`--target` 可重复，默认当前主机。**一台机器通常只能构建其中一部分**（Windows 目标必须在
-Windows 上、或装好 MSVC 工具链），所以常规做法是每到一台机器就跑一次：
+```text
+skylint-0.1.0-aarch64-apple-darwin.tar.gz   # 内含 skylint + README.md + LICENSE
+skylint-0.1.0-x86_64-pc-windows-msvc.zip
+SHA256SUMS
+```
+
+## crates.io 凭据
+
+和 [glass-easel](https://github.com/wechat-miniprogram/glass-easel) 一样走
+**trusted publishing**：工作流用 `id-token: write` 拿 GitHub OIDC token，向 crates.io
+换一个 30 分钟的临时 token（`rust-lang/crates-io-auth-action@v1`），仓库里不放组织的
+长期 API token。
+
+一次性配置：
+
+1. **首次发布必须手工**（crates.io 要求 crate 已存在才能配 trusted publishing）。
+   用组织账号在 crates.io 生成一个 API token，本地执行：
+
+   ```bash
+   CARGO_REGISTRY_TOKEN=*** cargo publish --locked
+   ```
+
+2. 发布后在 crates.io 的 crate 设置里打开 **Trusted Publishing → GitHub**，填：
+
+   | 字段 | 值 |
+   |---|---|
+   | Repository owner | `wechat-miniprogram` |
+   | Repository name | `skylint` |
+   | Workflow filename | `release.yml` |
+
+3. 之后 tag 触发的 `publish` job 自动走 OIDC，不需要任何 secret。
+
+工作流保留了 `secrets.CARGO_REGISTRY_TOKEN` 兜底（`publish` job 里 OIDC 失败时退回
+secret），所以第 1 步之前也可以在仓库里配一个组织 token 应急；两种方式可并存。
+
+## 本地手工发版（可选）
+
+`examples/release.rs` 是接入 Actions 之前的脚本，仍可用：
 
 ```bash
-cargo run --example release -- release --target aarch64-apple-darwin --upload
-cargo run --example release -- release --target x86_64-unknown-linux-gnu --upload
+cargo run --example release -- release            # 干跑：构建、打包、算校验和，不联网
+GITHUB_TOKEN=*** cargo run --example release -- release --upload
 ```
 
-Release 按 tag 复用：第一次调用会创建 Release，之后几次往里追加产物；同名产物会先删后传，
-所以重跑不会留下旧二进制。
-
-## 产物
-
-```
-dist/
-  skylint-2.0.0-aarch64-apple-darwin.tar.gz   # 内含 skylint + README.md + LICENSE
-  SHA256SUMS
-```
-
-## 前置守卫
-
-脚本会在动手前检查，任何一条不满足都直接退出：
-
-- 工作区必须干净（发版只能从已提交的状态构建）；
-- tag 必须存在且与 `Cargo.toml` 的 `[package] version` 一致；
-- 目标必须在上面四平台之内。
-
-## 与 CI 的分工
-
-`.github/workflows/ci.yml` 只做 `fmt` / `clippy` / `test` / MSRV 检查，不产出二进制。
-发版保持「本地打 tag + 跑 release example」的手动节奏：先干跑确认，再 `--upload`。
-
-如果要交给 GitHub Actions 打包，直接把 matrix 的每一格写成
-`cargo run --example release -- release --target <triple> --upload` 即可——脚本本身不假设宿主环境。
+它只上传 GitHub Release，不发布 crate；产物布局与流水线一致。

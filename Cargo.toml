@@ -1,6 +1,6 @@
 [package]
 name = "skylint"
-version = "2.0.0"
+version = "0.1.0"
 edition = "2024"
 # oxc 0.155 的 oxc_parser / oxc_ast / oxc_allocator 声明 rust-version = 1.97。
 rust-version = "1.97"
