@@ -1,4 +1,12 @@
 //! 渐变参数的额外限制（形状 / 尺寸 / 颜色停止位置）。
+//!
+//! 引擎的解析结果决定严重程度：
+//! - `radial-gradient` 非 circle 形状 → `image_property_utils.h:107-111` 走 `default`
+//!   分支 Diag 后 `return CSSUnsetValue`，整张背景/遮罩图不渲染；
+//! - 颜色停止位置不是 `%` 或 `px` → 只丢这一个停止位置（`:32-40`、`:86-97`）。
+//!
+//! fp 的 `Length` 里 `rpx` 是独立变体（`typing.rs:149-162`），不会归一成 `Px`，
+//! 所以 `0rpx` 同样落进「不支持」分支；物理单位 fp 根本不认（`parse_length_unit`）。
 
 use crate::input::wxss::ValueToken;
 use crate::project::Project;
@@ -28,10 +36,6 @@ impl Rule for GradientLimit {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit_declarations(project, |doc, decl, out| {
-            // mask-image 的渐变由 GradientUnsupported 统一处理，避免重复报。
-            if decl.name.eq_ignore_ascii_case("mask-image") {
-                return;
-            }
             let value = decl.value.trim();
             if value.is_empty() || is_dynamic(&decl.tokens) {
                 return;
@@ -56,7 +60,7 @@ impl Rule for GradientLimit {
                             decl.name,
                             problems.join("；")
                         ),
-                        "radial-gradient 仅支持 circle 形状、px 尺寸，颜色停止仅支持 % 与 px；linear-gradient 颜色停止仅支持 % 与固定长度单位（px、rpx 等）",
+                        "radial-gradient 必须是 circle 形状（默认 ellipse 会导致整张图不渲染）、尺寸用 px，颜色停止用 % 或 px；linear-gradient 颜色停止同样只支持 % 与 px",
                     ));
         })
     }
@@ -69,23 +73,26 @@ fn check_radial(args: &[ValueToken]) -> Vec<String> {
     };
     let mut problems = Vec::new();
     let prelude = radial_prelude(first);
-    if let Some(pre) = prelude {
-        if split_tokens(pre).iter().any(|group| {
-            group
-                .first()
-                .is_some_and(|token| is_ident(token, "ellipse"))
-        }) {
-            problems.push("radial-gradient 仅支持 circle 形状，不支持 ellipse".to_string());
-        }
-        if let Some(size) = radial_size(pre)
-            && let Some(unit) = length_unit(size)
-            && unit != "px"
-        {
-            problems.push(format!(
-                "radial-gradient 尺寸仅支持 px，`{}` 不受支持",
-                token_text(size)
-            ));
-        }
+    // fp 没写形状时默认 ellipse（gradient.rs:390、:848），引擎只认 circle，整张图被丢弃。
+    let circle = prelude.is_some_and(|pre| {
+        split_tokens(pre)
+            .iter()
+            .any(|group| group.first().is_some_and(|token| is_ident(token, "circle")))
+    });
+    if !circle {
+        problems.push(
+            "radial-gradient 只支持 circle 形状，省略形状或写 ellipse 时整张图不会渲染".to_string(),
+        );
+    }
+    if let Some(pre) = prelude
+        && let Some(size) = radial_size(pre)
+        && let Some(unit) = length_unit(size)
+        && unit != "px"
+    {
+        problems.push(format!(
+            "radial-gradient 尺寸仅支持 px，`{}` 不受支持",
+            token_text(size)
+        ));
     }
     let stops = if prelude.is_some() {
         &parts[1..]
@@ -194,9 +201,10 @@ fn is_direction(first: &[ValueToken]) -> bool {
     }
 }
 
-/// 固定长度单位（含绝对物理单位）。相对单位（em/rem/vw/vh…）不算。
+/// 引擎只把 `Length::Px` 收进停止点（`image_property_utils.h:32-40`）；
+/// `rpx` 是 fp 的独立变体，物理单位 fp 不解析，都不算。
 fn is_fixed_length(unit: &str) -> bool {
-    matches!(unit, "px" | "rpx" | "cm" | "mm" | "in" | "pt" | "pc" | "q")
+    unit == "px"
 }
 
 #[cfg(test)]
@@ -227,21 +235,41 @@ mod tests {
         assert!(diags.iter().any(|d| d.message.contains("`0em`")));
     }
 
-    /// 长度型前言（没有形状关键字）不能被当成颜色停止。
+    /// 长度型前言（没有形状关键字）不能被当成颜色停止；省略形状本身也要报。
     #[test]
     fn radial_gradient_with_length_only_prelude_is_a_size_not_a_stop() {
         let (_f, project) = single(
             "gradient-length-prelude",
             r#"
             .a { background-image: radial-gradient(10em, red 0%, blue 100%); }
-            .b { background-image: radial-gradient(10px 20px, red 0%, blue 100%); }
+            .b { background-image: radial-gradient(10px, red 0%, blue 100%); }
             "#,
         );
         let diags = GradientLimit.check(&project);
-        // `10px 20px` 是合法尺寸；只有 `10em` 被报，且归在「尺寸」而不是「颜色停止」。
-        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert_eq!(diags.len(), 2, "{diags:#?}");
+        // `10em` 归在「尺寸」而不是「颜色停止」。
         assert!(diags[0].message.contains("尺寸仅支持 px"));
         assert!(!diags[0].message.contains("颜色停止位置"));
+        assert!(diags[0].message.contains("circle"));
+        assert!(diags[1].message.contains("circle"));
+    }
+
+    /// `rpx` 停止位置不被引擎接受，`mask-image` 也要查。
+    #[test]
+    fn rpx_stops_and_mask_gradients_are_reported() {
+        let (_f, project) = single(
+            "gradient-rpx",
+            r#"
+            .a { background-image: linear-gradient(red 10rpx, blue 100%); }
+            .b { mask-image: linear-gradient(red 10em, blue 100%); }
+            .c { -webkit-mask-image: radial-gradient(circle, red 10rpx, blue 100%); }
+            "#,
+        );
+        let diags = GradientLimit.check(&project);
+        assert_eq!(diags.len(), 3, "{diags:#?}");
+        assert!(diags[0].message.contains("`10rpx`"));
+        assert!(diags[1].message.contains("`10em`"));
+        assert!(diags[2].message.contains("`10rpx`"));
     }
 
     #[test]
@@ -250,10 +278,9 @@ mod tests {
             "gradient-negative",
             r#"
             .a { background-image: radial-gradient(circle 50px at 10% 20%, red 0%, blue 100%); }
-            .b { background-image: linear-gradient(to right, red 0%, blue 100px, green 10rpx); }
+            .b { background-image: linear-gradient(to right, red 0%, blue 100px); }
             .c { background-image: conic-gradient(from 45deg, red 0%, blue 100%); }
             .d { background-image: radial-gradient(circle, red var(--stop), blue 100%); }
-            .e { mask-image: linear-gradient(red 10em, blue); }
             .f { background-image: linear-gradient(to right, red 0%, rgba(0, 0, 0, .5) 50%); }
             .g { background-image: radial-gradient(circle, red 0px, blue 30px); }
             "#,
