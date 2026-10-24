@@ -347,6 +347,12 @@ const ATTRIBUTES: &[AttributeRule] = &[
         help: Some("仅支持 scroll-view、swiper"),
     }, // gesture/gesture-system.md:15-22,56-67；gesture/gesture-negotiation.md:127-129
     AttributeRule {
+        tags: &["scroll-view"],
+        attrs: &["paging-enabled"],
+        constraint: Constraint::Unsupported,
+        help: Some("Skyline 没有分页滚动实现，需要分页时改用 swiper"),
+    }, // 引擎 shadow/、widgets/、package/skyline/lib 均无 paging
+    AttributeRule {
         tags: &["picker-view"],
         attrs: &["indicator-class", "mask-style"],
         constraint: Constraint::Unsupported,
@@ -695,6 +701,17 @@ mod tests {
         assert!(diagnostics[1].message.contains("hidden"));
         assert!(diagnostics[2].message.contains("enter"));
         assert!(diagnostics[3].message.contains("max-lines"));
+    }
+
+    /// WebView 有、引擎没有实现的分页滚动属性。
+    #[test]
+    fn paging_enabled_is_reported() {
+        let diagnostics = check_rule(
+            &project("attr-paging", r#"<scroll-view paging-enabled/>"#),
+            &ComponentAttribute,
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("paging-enabled"));
     }
 
     #[test]

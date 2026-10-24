@@ -151,3 +151,40 @@ fp 会把同单位/纯角度的 `calc()` 折叠成字面值
 
 验收口径（每批）：`cargo test` 全绿、`clippy --all-targets` 0 warning、`fmt --check` 干净、
 四工程诊断逐字段 diff 且每条增减都能对应到某项改动。
+
+---
+
+## G. 落地记录（2026-10-24，P1/P4 第一批）
+
+已改并提交：
+
+| 项 | 提交 | 依据 |
+|---|---|---|
+| 删 `skyline/border-none-width` | `68e27d6` | `style/computed_style.h:1119-1139` 在 `BorderStyle::kNone` 时直接返回 0（`339d08ce4` 起） |
+| `tag-selector-isolation` 减去 `sheet.scopes` | `68e27d6` | 同 sheet 被页面与组件 `@import` 时样式本来就生效 |
+| `route-type` 只认 `navigateTo` | `68e27d6` | `onAppRoute.js:501` 只在 `openType === 'navigateTo'` 分支读 `routeType` |
+| calc 只报非常量、`horizontal-scroll-enable-flex` 方向纠正、动态 class 不再否决 | `68e27d6` | 见各规则上注释 |
+| `unsupported-component` 认 `usingComponents` 声明 | `cd43aad` | 声明同名标签时用的是自定义组件（businessview 8 条误报） |
+| `in_template` 逐关系跳过、`Unique` 只数直接子节点、`Exactly` 算文本、互斥分支文本、span/navigator 承载文本、`nested-scroll-header` 是 sliver 槽、`type=""` 等同缺失 | `cd43aad` | 逐条见 `structure.rs` / `no_inline_text.rs` 注释 |
+| `-webkit-line-clamp` / `object-fit` / `object-position` 入不支持表 | `5a2787a` | `css_parser_impl.h:47` kInvalid；`css/`、`style/` 零命中 |
+| `mask-*` 与 `background-position-x/y` 多值上限、gradient circle 必填 / 只认 px / 覆盖 mask | `360b470` | `image_property_utils.h` 各分支 |
+| `text-decoration` 简写展开到 line、`box-sizing` 全局关键字 | `ff5732d` | `style_property_shorthand.cc:213-223`、`box_sizing.cc:33-41` |
+| WXML 解析失败报 `skylint/unparsed-template`、读文件去 BOM | `8e7d323` | `load_doc` 的 `.ok()?` 吞错；BOM 破坏 JSON/CSS 前缀 |
+
+### 明确不改（证据不足或口径未定）
+
+- `<block slot>` 摊平丢 slot（`RequiresChild` 误报）：要保留 slot 就得改摊平模型，影响所有结构规则。
+- `<include>` 片段按独立文档检查：内联需要跨文件拼接，与「单文件可静态判定」的口径冲突。
+- 大写标签（`<Scroll-View>`）：编译器把它当自定义组件，是否该与内置组件同判未定。
+- 根级 / 模板根级裸文本：`walk` 只从元素开始，需要新遍历入口。
+- `share-element` 的 `key=""`、模板内缺 key、`wx:for` + 静态 key：后者拿不到迭代次数。
+- `styleIsolation`（shared / apply-shared / isolated）：加载器没保留组件 json 内容，要先把 `styleIsolation` 带进 `Project`。
+- `<slot>` fallback 内容、`@use` / `@forward` 样式图、`componentGenerics.default` 闭包：需先确认 minidev / devtool 口径。
+- `flex-flow` 不带 `flex-direction`、`flex-direction` 的 `initial`/分组选择器：反事实工程才有命中，留待下一批。
+
+### 四工程当前基线
+
+novel 6 / 16、businessview 44 / 247、skit_1 10 / 4、plugin_1 2 / 2（error / warning）。
+相较本轮起点（16 / 304 / 10 / 4 全为 warning）：`border-none-width` 7 条误报消失、
+businessview 8 条 `unsupported-component` 误报消失、skit_1 与 businessview 的
+`-webkit-line-clamp` 与 novel 的 `object-fit` 作为真实漏报补出（共 22 条 error）。
