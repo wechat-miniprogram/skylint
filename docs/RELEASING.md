@@ -1,7 +1,7 @@
 # 发版
 
-`skylint-core` 已无内网依赖，公开 runner 与内网机器都能构建。发版仍走脚本
-（`crates/xtask`），理由是可重跑、可干跑、流程固定，不依赖 runner 的隐式状态：
+仓库是单个 crate，零内网依赖，公开 runner 与本地都能构建。发版仍走脚本
+（`examples/release.rs`，依赖记在 dev-dependencies），理由是可重跑、可干跑、流程固定：
 构建、打包、上传三件事，没有隐藏状态。
 
 ```bash
@@ -9,10 +9,10 @@
 git tag v2.0.0 && git push origin v2.0.0
 
 # 2. 干跑：构建、打包、算校验和，打印将要调用的接口，不联网
-cargo run -p xtask -- release
+cargo run --example release -- release
 
 # 3. 真上传
-GITHUB_TOKEN=*** cargo run -p xtask -- release --upload
+GITHUB_TOKEN=*** cargo run --example release -- release --upload
 ```
 
 ## 多平台
@@ -30,8 +30,8 @@ GITHUB_TOKEN=*** cargo run -p xtask -- release --upload
 Windows 上、或装好 MSVC 工具链），所以常规做法是每到一台机器就跑一次：
 
 ```bash
-cargo run -p xtask -- release --target aarch64-apple-darwin --upload
-cargo run -p xtask -- release --target x86_64-unknown-linux-gnu --upload
+cargo run --example release -- release --target aarch64-apple-darwin --upload
+cargo run --example release -- release --target x86_64-unknown-linux-gnu --upload
 ```
 
 Release 按 tag 复用：第一次调用会创建 Release，之后几次往里追加产物；同名产物会先删后传，
@@ -59,4 +59,4 @@ dist/
 发版保持「本地打 tag + 跑 xtask」的手动节奏：先干跑确认，再 `--upload`。
 
 如果要交给 GitHub Actions 打包，直接把 matrix 的每一格写成
-`cargo run -p xtask -- release --target <triple> --upload` 即可——脚本本身不假设宿主环境。
+`cargo run --example release -- release --target <triple> --upload` 即可——脚本本身不假设宿主环境。

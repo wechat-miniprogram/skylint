@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use skylint_core::Registry;
+use skylint::Registry;
 
 #[test]
 fn rule_ids_are_unique_and_namespaced() {
@@ -23,15 +23,15 @@ fn rule_ids_are_unique_and_namespaced() {
 }
 
 /// `docs/RULES.md` 必须与注册表一致。漂了就重生成：
-/// `cargo run -p skylint-core --example rules_doc`。
+/// `cargo run --example rules_doc`。
 #[test]
 fn rules_doc_is_current() {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/RULES.md");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/RULES.md");
     let actual = std::fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("读不到 {}: {err}", path.display()));
     assert!(
         actual == Registry::builtin().rules_document(),
-        "{} 与注册表不一致。跑 `cargo run -p skylint-core --example rules_doc` 重生成",
+        "{} 与注册表不一致。跑 `cargo run --example rules_doc` 重生成",
         path.display()
     );
 }

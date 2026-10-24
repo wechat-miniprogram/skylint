@@ -1629,14 +1629,6 @@ version = "2.0.0"
 dependencies = [
  "anyhow",
  "clap 4.6.7",
- "skylint-core",
-]
-
-[[package]]
-name = "skylint-core"
-version = "2.0.0"
-dependencies = [
- "anyhow",
  "glass-easel-template-compiler",
  "miette",
  "oxc-css-parser",
@@ -1648,6 +1640,8 @@ dependencies = [
  "oxc_syntax",
  "serde",
  "serde_json",
+ "sha2",
+ "ureq",
 ]
 
 [[package]]
@@ -2226,17 +2220,6 @@ name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
-
-[[package]]
-name = "xtask"
-version = "2.0.0"
-dependencies = [
- "anyhow",
- "clap 4.6.7",
- "serde_json",
- "sha2",
- "ureq",
-]
 
 [[package]]
 name = "yoke"

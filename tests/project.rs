@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use skylint_core::Project;
+use skylint::Project;
 
 struct Fixture {
     root: PathBuf,
@@ -109,7 +109,7 @@ fn global_style_resolves_through_the_resolver() {
     let global = project
         .styles
         .iter()
-        .find(|sheet| sheet.scopes.contains(&skylint_core::project::Scope::Global))
+        .find(|sheet| sheet.scopes.contains(&skylint::project::Scope::Global))
         .expect("app.less 必须进样式图");
     assert_eq!(global.doc.path(), "app.less");
 }
@@ -233,7 +233,7 @@ fn single_file_wxml_is_lintable_without_a_project() {
     assert_eq!(project.pages.len(), 1);
     assert!(project.pages[0].is_skyline);
 
-    let diagnostics = skylint_core::Registry::builtin().run(&project, &HashSet::new());
+    let diagnostics = skylint::Registry::builtin().run(&project, &HashSet::new());
     assert!(
         diagnostics
             .iter()
@@ -248,7 +248,7 @@ fn single_file_wxss_needs_no_project_layout() {
     f.write("one.wxss", ".a { user-select: none; }");
 
     let project = Project::single_file(f.path().join("one.wxss")).unwrap();
-    let diagnostics = skylint_core::Registry::builtin().run(&project, &HashSet::new());
+    let diagnostics = skylint::Registry::builtin().run(&project, &HashSet::new());
     assert!(
         diagnostics
             .iter()
@@ -294,7 +294,7 @@ fn broken_page_json_becomes_a_warning() {
     // 单文件坏了不能终止整次扫描。
     assert_eq!(project.pages.len(), 1);
     assert_eq!(project.warnings.len(), 1);
-    assert_eq!(project.warnings[0].severity, skylint_core::Severity::Error);
+    assert_eq!(project.warnings[0].severity, skylint::Severity::Error);
 }
 
 #[test]
@@ -360,7 +360,7 @@ fn scripts_cover_every_source_file_on_disk() {
     let loose: Vec<&str> = project
         .scripts
         .iter()
-        .filter(|script| matches!(script.scope, skylint_core::project::Scope::Loose(_)))
+        .filter(|script| matches!(script.scope, skylint::project::Scope::Loose(_)))
         .map(|script| script.path.as_str())
         .collect();
     assert_eq!(loose, ["utils/one.js", "utils/two.ts"]);

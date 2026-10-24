@@ -1,8 +1,7 @@
-//! 发版维护脚本：`cargo run -p xtask -- release [--upload]`。
+//! 发版维护脚本：`cargo run --example release -- release [--upload]`。
 //!
-//! 为什么不放在 GitHub Actions：`skylint-core` 依赖三个内网 crate，公开 runner 拉不到，
-//! 所以构建与打包在能访问内网的机器上跑，最后一步用 GitHub API 上传产物。
-//! 不带 `--upload` 时只构建、打包、算校验和，并打印将要调用的接口——不联网。
+//! 放在 example 里而不是独立 crate：只在维护时跑，依赖（sha2 / ureq）记在 dev-dependencies，
+//! 不进发布二进制。不带 `--upload` 时只构建、打包、算校验和并打印将要调用的接口——不联网。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -63,13 +62,13 @@ fn main() -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("xtask: {err:#}");
+            eprintln!("release: {err:#}");
             ExitCode::FAILURE
         }
     }
 }
 
-struct Workspace {
+struct Manifest {
     root: PathBuf,
     version: String,
     tag: String,
@@ -83,13 +82,13 @@ fn run_release(
     repo: Option<String>,
     notes: Option<PathBuf>,
 ) -> Result<()> {
-    let root = workspace_root()?;
-    let version = workspace_version(&root)?;
+    let root = project_root()?;
+    let version = package_version(&root)?;
     let tag = tag.unwrap_or_else(|| format!("v{version}"));
     if tag.trim_start_matches('v') != version {
         bail!("tag {tag} 与 Cargo.toml 的版本 {version} 不一致");
     }
-    let ws = Workspace {
+    let ws = Manifest {
         repo: repo.unwrap_or_else(|| repository(&root)),
         root,
         version,
@@ -142,7 +141,7 @@ fn resolve_targets(targets: Vec<String>) -> Result<Vec<String>> {
     Ok(targets)
 }
 
-fn build(ws: &Workspace, target: &str) -> Result<()> {
+fn build(ws: &Manifest, target: &str) -> Result<()> {
     println!("构建 {target}");
     let status = Command::new("cargo")
         .args([
@@ -167,7 +166,7 @@ fn build(ws: &Workspace, target: &str) -> Result<()> {
 }
 
 /// 打成 `dist/skylint-<版本>-<target>.tar.gz`，内含二进制与 README / LICENSE。
-fn package(ws: &Workspace, target: &str) -> Result<String> {
+fn package(ws: &Manifest, target: &str) -> Result<String> {
     let exe = if target.contains("windows") {
         ".exe"
     } else {
@@ -210,7 +209,7 @@ fn package(ws: &Workspace, target: &str) -> Result<String> {
     Ok(archive)
 }
 
-fn write_checksums(ws: &Workspace, archives: &[String]) -> Result<String> {
+fn write_checksums(ws: &Manifest, archives: &[String]) -> Result<String> {
     let mut lines = String::new();
     for archive in archives {
         let bytes = fs::read(ws.root.join("dist").join(archive))?;
@@ -222,7 +221,7 @@ fn write_checksums(ws: &Workspace, archives: &[String]) -> Result<String> {
     Ok("SHA256SUMS".to_string())
 }
 
-fn upload_release(ws: &Workspace, body: &str, assets: &[String]) -> Result<()> {
+fn upload_release(ws: &Manifest, body: &str, assets: &[String]) -> Result<()> {
     let token = std::env::var("GITHUB_TOKEN").context("缺少 GITHUB_TOKEN")?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(300)))
@@ -260,7 +259,7 @@ fn content_type(asset: &str) -> &'static str {
 }
 
 /// 已有同名 Release 就复用——多台机器分别上传各自平台的产物时靠它。
-fn ensure_release(agent: &ureq::Agent, token: &str, ws: &Workspace, body: &str) -> Result<u64> {
+fn ensure_release(agent: &ureq::Agent, token: &str, ws: &Manifest, body: &str) -> Result<u64> {
     let existing = agent
         .get(&format!(
             "https://api.github.com/repos/{}/releases/tags/{}",
@@ -307,7 +306,7 @@ fn ensure_release(agent: &ureq::Agent, token: &str, ws: &Workspace, body: &str) 
 fn delete_asset(
     agent: &ureq::Agent,
     token: &str,
-    ws: &Workspace,
+    ws: &Manifest,
     release: u64,
     name: &str,
 ) -> Result<()> {
@@ -338,7 +337,7 @@ fn delete_asset(
     Ok(())
 }
 
-fn default_notes(ws: &Workspace, targets: &[String]) -> String {
+fn default_notes(ws: &Manifest, targets: &[String]) -> String {
     let mut out = format!("skylint {}\n\n## 产物\n\n", ws.version);
     for target in targets {
         out.push_str(&format!("- `skylint-{}-{target}.tar.gz`\n", ws.version));
@@ -371,20 +370,19 @@ fn ensure_tag(root: &Path, tag: &str) -> Result<()> {
     Ok(())
 }
 
-fn workspace_root() -> Result<PathBuf> {
+fn project_root() -> Result<PathBuf> {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
         .canonicalize()
-        .context("定位 workspace 根目录失败")
+        .context("定位仓库根目录失败")
 }
 
-fn workspace_version(root: &Path) -> Result<String> {
+fn package_version(root: &Path) -> Result<String> {
     let manifest = fs::read_to_string(root.join("Cargo.toml"))?;
     let mut in_package = false;
     for line in manifest.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('[') {
-            in_package = trimmed == "[workspace.package]";
+            in_package = trimmed == "[package]";
             continue;
         }
         if !in_package {
@@ -396,7 +394,7 @@ fn workspace_version(root: &Path) -> Result<String> {
             return Ok(value.trim().trim_matches('"').to_string());
         }
     }
-    bail!("Cargo.toml 里没找到 [workspace.package] version")
+    bail!("Cargo.toml 里没找到 [package] version")
 }
 
 fn repository(root: &Path) -> String {

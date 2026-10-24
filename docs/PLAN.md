@@ -1,7 +1,7 @@
 # skylint 重做计划
 
 > 状态标记：`[x]` 已完成 / `[ ]` 未开始 / `[?]` 待验证。
-> 本文件是计划与进度的唯一来源；规则清单以 `crates/skylint-core/src/rules/` 下的规则注册表
+> 本文件是计划与进度的唯一来源；规则清单以 `src/rules/` 下的规则注册表
 > 为准（生成到 `docs/RULES.md`，不在这里手写）。
 
 ## 0. 前提
@@ -19,13 +19,20 @@ P3 是硬边界。把「Skyline 支持哪些属性值」放进 minidev，skylint
 
 ```
 skylint/
-├── Cargo.toml                   # workspace；无任何内网依赖
-├── crates/skylint-core/         # 全部判断逻辑 + 自有工程加载器
-├── crates/skylint-cli/          # 薄 CLI（clap）
-└── crates/xtask/                # 发版脚本（构建 / 打包 / 上传）
+├── Cargo.toml        # 单个 crate（lib + bin），无任何内网依赖
+├── src/              # 库：工程加载器、输入解析、规则、报告
+│   └── main.rs       # 薄 CLI（clap）
+├── tests/            # 集成测试（工程视图、注册表与文档一致性）
+├── examples/
+│   ├── rules_doc.rs  # 生成 docs/RULES.md
+│   └── release.rs    # 发版：构建 / 打包 / 上传
+└── docs/
 ```
 
-依赖形态（**已落地**）：`skylint-core` 不依赖 minidev。工程加载器自建，见 §3。
+只有一个 crate：库与 CLI 同包（`cargo build` 出 `skylint`，`cargo test` 一次跑完），
+维护脚本放 `examples/`（依赖进 dev-dependencies，不污染发布二进制）。
+
+依赖形态（**已落地**）：不依赖 minidev。工程加载器自建，见 §3。
 
 历史：曾用 `common` / `diag` / `compiler-graph` 三个内网 crate + `.cargo/config.toml` 的
 `[patch.crates-io]` 指向本地 checkout，代价是外部用户 clone 后无法 `cargo build`。
@@ -70,7 +77,7 @@ skylint/
 ## 3. 结构
 
 ```
-crates/skylint-core/src/
+src/
 ├── diag.rs        # Diagnostic（rule/severity/path/line/col/end/help），1-based
 ├── project.rs     # Project + load/single_file 编排；styles/scripts/templates 收集
 ├── project/fs.rs      # 文件视图：递归枚举、相对 miniprogramRoot 的读写
@@ -102,7 +109,7 @@ crates/skylint-core/src/
 ```bash
 git worktree add /tmp/base <解耦前的 commit>
 # 旧版靠 .cargo/config.toml 的 [patch] 指向 minidev，从 git 历史取回该文件并改路径
-cd /tmp/base && cargo build --release -p skylint
+cd /tmp/base && cargo build --release
 # 两个二进制 各跑四工程:  skylint <project> --json
 ```
 

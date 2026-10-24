@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
-use skylint_core::report::Style;
-use skylint_core::{Project, Registry, Report, suppress};
+use skylint::report::Style;
+use skylint::{Project, Registry, Report, suppress};
 
 #[derive(Debug, Parser)]
 #[command(name = "skylint", version, about = "Skyline 小程序迁移检查工具")]

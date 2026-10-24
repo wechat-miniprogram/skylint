@@ -127,7 +127,7 @@ pub struct Project {
     /// 覆盖面是**整个工程**：页面 / 组件的 js 来自 `UnitFiles.js`（已按 typescript
     /// 插件解析到 `.ts` 源），同一文件被多个页面引用时只留一份；其余 `.js` / `.ts`
     /// 源文件一律记为 [`Scope::Loose`]。因此 `utils/` 里的实现也会被 JS 规则看到。
-    /// 解析失败静默跳过：JS 语法错误由 `minidev build` 拦截，linter 不另造诊断。
+    /// 解析失败静默跳过：JS 语法错误由构建阶段拦截，linter 不另造诊断。
     pub scripts: Vec<JsFile>,
     /// 被 `<import>` / `<include>` 引入的模板（项目相对，去重排序）。
     ///
@@ -545,7 +545,7 @@ fn collect_components(
         if comps.contains(&unit) {
             continue;
         }
-        // 缺 json 的组件不在这里报：`minidev build` 的 checkComponentPath 已经会拦。
+        // 缺 json 的组件不在这里报：构建阶段的组件路径校验已经会拦。
         let Some(json) = read_unit_json(fs, root, &unit, warnings) else {
             continue;
         };

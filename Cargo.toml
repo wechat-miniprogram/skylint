@@ -1,24 +1,38 @@
-[workspace]
-resolver = "2"
-members = ["crates/skylint-core", "crates/skylint-cli", "crates/xtask"]
-
-[workspace.package]
+[package]
+name = "skylint"
 version = "2.0.0"
 edition = "2024"
 # oxc 0.155 的 oxc_parser / oxc_ast / oxc_allocator 声明 rust-version = 1.97。
 rust-version = "1.97"
 license = "MIT"
 repository = "https://github.com/wechat-miniprogram/skylint"
+description = "Skyline 小程序迁移检查工具"
+readme = "README.md"
+keywords = ["miniprogram", "wechat", "skyline", "lint"]
+categories = ["development-tools"]
 
-[workspace.dependencies]
-skylint-core = { path = "crates/skylint-core" }
-
-# 终端渲染：与 minidev 的错误出口同一套（GraphicalReportHandler）。
-# fancy-no-backtrace 不带 backtrace，够渲染源码片段 + caret。
-miette = { version = "7.6", default-features = false, features = ["fancy-no-backtrace"] }
-
+[dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "wrap_help"] }
+# 终端渲染：源码片段 + caret。fancy-no-backtrace 不带 backtrace，够用。
+miette = { version = "7.6", default-features = false, features = ["fancy-no-backtrace"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-ureq = "3"
+
+# 模板 / 样式 / 脚本前端。
+glass-easel-template-compiler = "1.2.0"
+# 0.0.x 会有破坏性变更，必须精确锁版本。
+oxc-css-parser = "=0.0.17"
+# JS / TS 前端。与 oxc-css-parser 复用同一条 0.155 版本线（同一套 Allocator），
+# 同样是 0.x，全部精确锁版本，避免 allocator 跨版本混用。
+oxc_parser = "=0.155.0"
+oxc_ast = "=0.155.0"
+oxc_ast_visit = "=0.155.0"
+oxc_allocator = "=0.155.0"
+oxc_span = "=0.155.0"
+oxc_syntax = "=0.155.0"
+
+# 只有维护脚本（examples/）用：发版上传与校验和。不进入发布二进制。
+[dev-dependencies]
+sha2 = "0.10"
+ureq = { version = "3", features = ["json"] }
