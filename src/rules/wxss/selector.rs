@@ -16,6 +16,8 @@ pub struct SimpleSelector {
     universal: bool,
     id: Option<String>,
     classes: Vec<String>,
+    /// 选择器带 `::before` / `::after`（含单冒号写法）：命中的是生成的文本节点。
+    text_pseudo: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +55,7 @@ impl SimpleSelector {
             universal: false,
             id: None,
             classes: Vec::new(),
+            text_pseudo: false,
         };
         for part in &selector.parts {
             match part {
@@ -68,11 +71,19 @@ impl SimpleSelector {
                     if *args || !is_transparent_pseudo(*element, name) {
                         return None;
                     }
+                    if matches!(name.as_str(), "before" | "after") {
+                        parsed.text_pseudo = true;
+                    }
                 }
                 SelectorPart::Other => return None,
             }
         }
         Some(parsed)
+    }
+
+    /// 选择器命中的是伪元素生成的文本节点（`::before` / `::after`）。
+    pub fn text_pseudo_element(&self) -> bool {
+        self.text_pseudo
     }
 
     /// 纯标签选择器（`view`、`*` 之外的）。WebView 下它会命中组件内部节点，

@@ -69,6 +69,7 @@ const ANIMATABLE_PROPERTIES: &[&str] = &[
     "box-shadow",
     "z-index",
     "text-decoration-color",
+    "text-decoration-thickness",
     "color",
     "font-size",
     "font-weight",

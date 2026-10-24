@@ -1,5 +1,6 @@
 //! `calc()` 不支持角度计算。
 
+use crate::input::wxss::ValueToken;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
@@ -30,7 +31,7 @@ impl Rule for CalcAngle {
             }
             if !all_calls(&decl.tokens)
                 .iter()
-                .any(|c| c.name == "calc" && has_angle_unit(c.args))
+                .any(|c| c.name == "calc" && has_angle_unit(c.args) && !foldable(c.args))
             {
                 return;
             }
@@ -43,6 +44,23 @@ impl Rule for CalcAngle {
             ));
         })
     }
+}
+
+/// 纯角度常量表达式：float-pigment 会把它折叠成一个字面角度
+/// （`ComputeCalcExpr<Angle>::try_compute`，`calc.rs:187-225`），到不了 Skyline 那一层。
+/// 只有混入百分比 / 长度 / 变量时才留下无法求值的表达式。
+fn foldable(args: &[ValueToken]) -> bool {
+    args.iter().all(|token| match token {
+        ValueToken::Comma | ValueToken::Number(_) => true,
+        ValueToken::Dimension { unit, .. } => {
+            matches!(
+                unit.to_ascii_lowercase().as_str(),
+                "deg" | "rad" | "grad" | "turn"
+            )
+        }
+        ValueToken::Other(text) => matches!(text.as_str(), "+" | "-" | "*" | "/"),
+        _ => false,
+    })
 }
 
 #[cfg(test)]
@@ -58,13 +76,25 @@ mod tests {
             "calc-positive",
             r#"
             .a { width: calc(100% - 10deg); }
-            .b { transform: rotate(calc(45deg)); }
-            .c { margin-left: calc(1rad * 2); }
+            .b { margin-left: calc(1rad + 2px); }
             "#,
         );
         let diags = CalcAngle.check(&project);
-        assert_eq!(diags.len(), 3);
+        assert_eq!(diags.len(), 2);
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
+    }
+
+    #[test]
+    fn pure_angle_calc_folds_and_is_accepted() {
+        let (_f, project) = single(
+            "calc-folded",
+            r#"
+            .a { transform: rotate(calc(45deg)); }
+            .b { transform: rotate(calc(30deg + 15deg)); }
+            .c { margin-left: calc(1rad * 2); }
+            "#,
+        );
+        assert_eq!(messages(&CalcAngle, &project), Vec::<String>::new());
     }
 
     #[test]

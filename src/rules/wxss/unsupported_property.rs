@@ -102,24 +102,37 @@ mod tests {
     }
 
     #[test]
-    fn property_reports_animation_play_state_and_missing_property_ids() {
+    fn property_reports_missing_property_ids() {
         let (_f, project) = single(
             "property-unconditional",
             r#"
-            .a { animation-play-state: paused; }
-            .b { animation-play-state: running; }
             .c { text-transform: uppercase; }
             .d { user-select: none; }
             "#,
         );
         let diags = UnsupportedProperty.check(&project);
-        assert_eq!(diags.len(), 4);
+        assert_eq!(diags.len(), 2, "{diags:#?}");
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Error));
-        assert!(diags[0].message.contains("`animation-play-state`"));
-        assert!(diags[1].message.contains("`animation-play-state`"));
-        assert!(diags[2].message.contains("`text-transform`"));
-        assert!(diags[3].message.contains("`user-select`"));
-        assert!(diags[3].help.as_deref().unwrap().contains("user-select"));
+        assert!(diags[0].message.contains("`text-transform`"));
+        assert!(diags[1].message.contains("`user-select`"));
+        assert!(diags[1].help.as_deref().unwrap().contains("user-select"));
+    }
+
+    #[test]
+    fn animation_play_state_takes_effect_statically() {
+        // 引擎会为它发 Diag，但 Parse 返回的是有效值（animation_play_state.cc:51-86），
+        // 且运行时读 PlayStateList 判 kPaused（css_animations.cc:415-416）——静态写法生效。
+        let (_f, project) = single(
+            "property-animation",
+            r#"
+            .a { animation-play-state: paused; }
+            .b { animation-play-state: running; }
+            "#,
+        );
+        assert_eq!(
+            messages(&UnsupportedProperty, &project),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

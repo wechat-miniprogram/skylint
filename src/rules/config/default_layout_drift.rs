@@ -221,13 +221,25 @@ mod tests {
     }
 
     #[test]
-    fn string_booleans_count_as_off() {
-        // 只认 JSON 布尔 true；类型写错由 skyline/renderer-options 报，这里按未开启处理。
+    fn string_booleans_are_truthy_like_the_runtime() {
+        // 运行时是 `rendererOptions.skyline.defaultDisplayBlock || false`，字符串 "false"
+        // 也是非空字符串 —— 同样算开启。类型写错由 skyline/renderer-options 负责报。
         let (_f, project) = project(
             "drift-string-bool",
             r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":"true","defaultContentBox":"true"}}}"#,
             "{}",
         );
-        assert_eq!(DefaultLayoutDrift.check(&project).len(), 2);
+        assert!(DefaultLayoutDrift.check(&project).is_empty());
+    }
+
+    #[test]
+    fn app_level_display_block_wins_over_the_nested_layer() {
+        // `runtime/index.ts:141-144` 是 `顶层 || 嵌套`：顶层 true 就算开了。
+        let (_f, project) = project(
+            "drift-top-wins",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"defaultDisplayBlock":true,"skyline":{"defaultDisplayBlock":false,"defaultContentBox":true}}}"#,
+            "{}",
+        );
+        assert!(DefaultLayoutDrift.check(&project).is_empty());
     }
 }

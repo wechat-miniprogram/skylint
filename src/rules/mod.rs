@@ -53,7 +53,6 @@ impl Registry {
             Box::new(wxml::ShareElementKey),
             Box::new(wxml::HorizontalScrollEnableFlex),
             Box::new(wxss::NoPseudo),
-            Box::new(wxss::BorderNoneWidth),
             Box::new(wxss::BoxSizing),
             Box::new(wxss::FlexDirection),
             Box::new(wxss::TextOverflowEllipsis),

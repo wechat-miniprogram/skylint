@@ -70,6 +70,17 @@ impl crate::rules::Rule for TagSelectorIsolation {
 
         visit_rules(project, |sheet, rule, _out| {
             let doc = &sheet.doc;
+            // 这份样式表自己就作用于的单元：它们内部的选择器照常命中，不算「外部」。
+            // 典型是 default-box-sizing.scss 既被页面 import、又被组件自己 import。
+            let in_scope: Vec<&str> = sheet
+                .scopes
+                .iter()
+                .filter_map(|scope| match scope {
+                    Scope::Page(route) => Some(route.as_str()),
+                    Scope::Component(path) => Some(path.as_str()),
+                    Scope::Global | Scope::Loose(_) => None,
+                })
+                .collect();
             for scope in &sheet.scopes {
                 let (foreign, legacy) = match scope {
                     // app.wxss 走全局规则表，不分作用域，不受影响
@@ -95,6 +106,10 @@ impl crate::rules::Rule for TagSelectorIsolation {
                     // 样式图不会产生 Loose。
                     Scope::Loose(_) => continue,
                 };
+                let foreign: Vec<&str> = foreign
+                    .into_iter()
+                    .filter(|unit| !in_scope.contains(unit))
+                    .collect();
                 if foreign.is_empty() {
                     continue;
                 }
@@ -272,6 +287,39 @@ mod tests {
         assert_eq!(diagnostics[0].rule, ID);
         assert!(diagnostics[0].message.contains("view"));
         assert!(diagnostics[0].message.contains("components/c/c"));
+    }
+
+    #[test]
+    fn shared_stylesheet_imported_by_the_component_itself_is_not_reported() {
+        // default-box-sizing.scss 这类全局重置常被页面和组件各 import 一次；
+        // 组件自己那份照常生效，不存在隔离失效。
+        let fixture = Fixture::new("shared-scope");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"c":"/components/c/c"}}"#,
+            )
+            .write(
+                "pages/index/index.wxml",
+                r#"<view class="page"><c/></view>"#,
+            )
+            .write(
+                "pages/index/index.wxss",
+                r#"@import "../../styles/base.wxss";"#,
+            )
+            .write("components/c/c.json", "{}")
+            .write("components/c/c.wxml", r#"<view class="inner"/>"#)
+            .write(
+                "components/c/c.wxss",
+                r#"@import "../../styles/base.wxss";"#,
+            )
+            .write("styles/base.wxss", "view { box-sizing: border-box; }");
+        assert_eq!(check(&fixture).len(), 0);
     }
 
     #[test]

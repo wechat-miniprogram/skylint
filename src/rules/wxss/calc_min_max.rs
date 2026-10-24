@@ -77,14 +77,25 @@ fn is_math_function(name: &str) -> bool {
     matches!(name, "min" | "max" | "clamp")
 }
 
-/// 参数是否全为可常量折叠的纯 px / 数字常量（逗号分隔符不算参数）。
+/// 参数是否可常量折叠：数字、同一单位的长度、或全是百分比。
+/// fp 的 `fold_length_extreme` / `fold_length_clamp` 要求「同一个 specified unit」
+/// （`calc.rs:352-386`，百分比在 fp 里是 `Length::Ratio`，也参与折叠）。
 fn is_constant(args: &[ValueToken]) -> bool {
-    args.iter().all(|token| match token {
-        ValueToken::Comma => true,
-        ValueToken::Number(_) => true,
-        ValueToken::Dimension { unit, .. } => unit.eq_ignore_ascii_case("px"),
-        _ => false,
-    })
+    let mut unit: Option<String> = None;
+    for token in args {
+        let key = match token {
+            ValueToken::Comma | ValueToken::Number(_) => continue,
+            ValueToken::Percentage(_) => "%".to_string(),
+            ValueToken::Dimension { unit, .. } => unit.to_ascii_lowercase(),
+            _ => return false,
+        };
+        match &unit {
+            None => unit = Some(key),
+            Some(existing) if *existing == key => {}
+            Some(_) => return false,
+        }
+    }
+    true
 }
 
 #[cfg(test)]
@@ -127,6 +138,8 @@ mod tests {
             .e { --w: min(100%, 10px); }
             .f { transition: min .3s; }
             .g { width: calc(100% - 10px); }
+            .h { width: min(1rem, 2rem); }
+            .i { width: min(50%, 60%); }
             "#,
         );
         assert_eq!(messages(&CalcMinMax, &project), Vec::<String>::new());

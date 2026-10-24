@@ -392,8 +392,12 @@ impl Project {
             .get("rendererOptions")
             .and_then(|options| options.get("skyline"))
             .and_then(|skyline| skyline.get("defaultContentBox"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
+            .is_some_and(truthy)
+    }
+
+    /// app.json 顶层的开关（JS 真值语义，如 `convertRpxToVw`）。
+    pub fn app_flag(&self, key: &str) -> bool {
+        self.app_json.get(key).is_some_and(truthy)
     }
 
     /// 页面级覆盖；`None` 表示这一页没写，回落到 app 级。运行时只认
@@ -404,7 +408,7 @@ impl Project {
             .and_then(|json| json.get("rendererOptions"))
             .and_then(|options| options.get("skyline"))
             .and_then(|skyline| skyline.get("defaultDisplayBlock"))
-            .and_then(Value::as_bool)
+            .map(truthy)
     }
 
     /// `Scope::Global` 覆盖的全部 WXML（页面 + 组件，页面按 opt-out 过滤）。
@@ -1022,13 +1026,24 @@ fn read_config(root: &Path, name: &str) -> (Value, String) {
 
 /// `rendererOptions` 里的布尔开关。
 ///
-/// 运行时两种写法都认（`wxapplib/src/skyline/src/runtime/index.ts:139-141`）：
-/// `rendererOptions.skyline.<key>` 与 app 级的 `rendererOptions.<key>`。
+/// 运行时是 `rendererOptions.<key> || rendererOptions.skyline.<key> || false`
+/// （`wxapplib/src/skyline/src/runtime/index.ts:141-144`）：**顶层优先**，且是 JS 的
+/// `||` 真值语义（非空字符串、非零数字都算开启）。
 fn renderer_flag(options: &Map<String, Value>, key: &str) -> bool {
-    options
-        .get("skyline")
-        .and_then(|skyline| skyline.get(key))
-        .and_then(Value::as_bool)
-        .or_else(|| options.get(key).and_then(Value::as_bool))
-        .unwrap_or(false)
+    options.get(key).is_some_and(truthy)
+        || options
+            .get("skyline")
+            .and_then(|skyline| skyline.get(key))
+            .is_some_and(truthy)
+}
+
+/// JS 的真值语义（作为 `||` 的操作数时）。
+fn truthy(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(value) => *value,
+        Value::Number(number) => number.as_f64().is_some_and(|number| number != 0.0),
+        Value::String(text) => !text.is_empty(),
+        Value::Array(_) | Value::Object(_) => true,
+    }
 }

@@ -26,11 +26,10 @@ use super::{Callee, at_span};
 const ROUTE_TYPE: &str = "routeType";
 const PRESET_PREFIX: &str = "wx://";
 const REGISTER: Callee = Callee::Qualified("addRouteBuilder");
-const NAVIGATION: [Callee; 3] = [
-    Callee::Method("navigateTo"),
-    Callee::Method("redirectTo"),
-    Callee::Method("reLaunch"),
-];
+/// 只有 navigateTo 会消费 `routeType`：运行时在 `openType === 'navigateTo'` 分支才
+/// 读它（wxapplib `src/sdk/src/appservice/app/onAppRoute.js:501`），redirectTo / reLaunch
+/// 传了这个键也不会被读。
+const NAVIGATION: Callee = Callee::Method("navigateTo");
 
 pub struct RouteType;
 
@@ -41,7 +40,7 @@ impl RouteType {
 /// 跳转调用的接收者必须是已知的对象：`navigateTo` 裸调用、`wx.*`、`*.pageRouter`。
 /// 其它接收者（`myRouter.navigateTo`、类实例方法）不看，语义无法静态确认。
 fn navigation_callee(callee: &str) -> bool {
-    if !NAVIGATION.iter().any(|pattern| pattern.matches(callee)) {
+    if !NAVIGATION.matches(callee) {
         return false;
     }
     match callee.rsplit_once('.') {
@@ -235,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn page_router_and_other_jump_apis_are_checked() {
+    fn only_navigate_to_is_checked() {
         let (_f, project) = single(
             "route-type-apis",
             r#"
@@ -245,8 +244,8 @@ mod tests {
             "#,
         );
         let diagnostics = RouteType.check(&project);
-        assert_eq!(diagnostics.len(), 3, "{diagnostics:#?}");
-        assert!(diagnostics.iter().all(|d| d.message.contains("没有对应")));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("slide"));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 39 条：error 11 条、warning 27 条、info 1 条。
+共 38 条：error 11 条、warning 26 条、info 1 条。
 
 | 规则 | 级别 | 说明 |
 |---|---|---|
@@ -16,7 +16,6 @@
 | `skyline/share-element-key` | error | `<share-element>` 的 key 必填且同一文件内唯一 |
 | `skyline/horizontal-scroll-enable-flex` | warning | 横向滚动的 `<scroll-view>` 需开启 `enable-flex` 以兼容 WebView |
 | `skyline/no-pseudo` | warning | Skyline 不支持该伪类/伪元素，选择器不会命中 |
-| `skyline/border-none-width` | warning | border-style 为 none 时 Skyline 仍按 border-width 参与布局，元素比 WebView 多占宽度 |
 | `skyline/box-sizing` | error | box-sizing 的值在 Skyline 下不受支持，声明会被忽略 |
 | `skyline/flex-direction` | warning | display: flex 未声明 flex-direction，迁移后默认方向会从 row 变为 column |
 | `skyline/text-overflow-ellipsis` | warning | text-overflow: ellipsis 在 Skyline 下只对 `<text>` 生效 |

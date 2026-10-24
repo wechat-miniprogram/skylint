@@ -11,8 +11,6 @@
 //! 判定只覆盖能静态比较的写法：`latest` / `trial` / `widelyUsed` / `development`
 //! 都是 schema 允许的值，无法判断「够不够」，一律跳过。
 
-use serde_json::Value;
-
 use crate::input::json::JsonPositions;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
@@ -84,8 +82,10 @@ impl Rule for LibVersion {
 
 /// 工程实际用到的最高要求。同一工程只报一条，所以这里直接返回阈值最高的那项。
 fn requirement(project: &Project) -> Option<(Version, &'static str)> {
-    let skyline = project.pages.iter().any(|page| page.is_skyline)
-        || project.app_json.get("renderer").and_then(Value::as_str) == Some("skyline");
+    let skyline = project
+        .pages
+        .iter()
+        .any(|page| page.is_skyline && !page.opted_out);
 
     let mut required: Option<(Version, &'static str)> = None;
     let mut bump = |candidate: (Version, &'static str)| {
@@ -111,7 +111,7 @@ fn requirement(project: &Project) -> Option<(Version, &'static str)> {
     }
     // 只认 app.json 顶层：写在 rendererOptions 里的 convertRpxToVw 运行时不会读，
     // 位置错误由 `skyline/renderer-options` 报。
-    if project.app_json.contains_key("convertRpxToVw") {
+    if project.app_flag("convertRpxToVw") {
         bump(((3, 3, 0), "convertRpxToVw"));
     }
     required
