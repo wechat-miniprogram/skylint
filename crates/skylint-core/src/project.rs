@@ -209,7 +209,16 @@ impl Project {
             })
             .collect();
 
-        let styles = collect_styles(&root, &miniprogram_root, &pages, &components, &mut warnings);
+        let app_style = resolve_unit_files(&resolver, "app").wxss;
+
+        let styles = collect_styles(
+            &root,
+            &miniprogram_root,
+            app_style.as_deref(),
+            &pages,
+            &components,
+            &mut warnings,
+        );
         let scripts = collect_scripts(&fs, &miniprogram_root, &resolver, &pages, &components);
         let template_files = collect_template_files(&fs, &miniprogram_root, &pages, &components);
         let app_json_source = fs
@@ -534,6 +543,7 @@ fn existing_unit(fs: &dyn ProjectFs, root: &str, base: &str) -> Option<String> {
 fn collect_styles(
     root: &Path,
     miniprogram_root: &str,
+    app_style: Option<&str>,
     pages: &[PageUnit],
     components: &[ComponentUnit],
     warnings: &mut Vec<Diagnostic>,
@@ -542,8 +552,9 @@ fn collect_styles(
     let mut docs: BTreeMap<String, WxssDoc> = BTreeMap::new();
 
     let mut entries: Vec<(String, Scope)> = Vec::new();
-    if root.join(miniprogram_root).join("app.wxss").is_file() {
-        entries.push((posix_join(miniprogram_root, "app.wxss"), Scope::Global));
+    // 全局样式同样要过 Resolver：工程可能只有 app.less / app.scss，没有 app.wxss。
+    if let Some(path) = app_style {
+        entries.push((path.to_string(), Scope::Global));
     }
     entries.extend(pages.iter().filter_map(|page| {
         page.files

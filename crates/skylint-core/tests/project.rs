@@ -97,6 +97,23 @@ fn routes_resolve_to_actual_sources() {
 }
 
 #[test]
+fn global_style_resolves_through_the_resolver() {
+    // 全局样式也要过 Resolver：工程可能只有 app.less / app.scss。
+    // 旧实现把 `miniprogramRoot` 拼了两次（读成 miniprogram/miniprogram/app.wxss），
+    // 于是 app 级样式被静默跳过。
+    let f = standard_project("app-style");
+    f.write("miniprogram/app.less", ".g{color:red}");
+    let project = Project::load(f.path()).unwrap();
+
+    let global = project
+        .styles
+        .iter()
+        .find(|sheet| sheet.scopes.contains(&skylint_core::project::Scope::Global))
+        .expect("app.less 必须进样式图");
+    assert_eq!(global.doc.path(), "app.less");
+}
+
+#[test]
 fn skyline_flag_follows_page_then_app_renderer() {
     let f = standard_project("skyline");
     let project = Project::load(f.path()).unwrap();
