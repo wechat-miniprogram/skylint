@@ -2,7 +2,7 @@
 
 > 状态标记：`[x]` 已完成 / `[ ]` 未开始 / `[?]` 待验证。
 > 本文件是计划与进度的唯一来源；规则清单以 `crates/skylint-core/src/rules/` 下的规则注册表
-> 为准（`skylint --rules` 输出整表），不在这里手写。
+> 为准（生成到 `docs/RULES.md`，不在这里手写）。
 
 ## 0. 前提
 
@@ -114,7 +114,7 @@ crates/skylint-core/src/
 | 0.4 | `ProjectView` + `Project::load` + 报告管道 + 单文件失败不终止 | `[x]` 真实工程验证：31 页混合项目（3 skyline）与独立脚本逐页对照一致 |
 | 0.5 | CLI：`--format text/json`、退出码（0 无 error / 1 有 error / 2 加载失败）、`--ignore`、inline disable；text 用 miette 图形报告（源码片段 + 行列定位，TTY 自动上色） | `[x]` |
 | 0.6 | 6 条规则验证管道：`unsupported-component`、`scroll-view-type`、`no-pseudo`、`box-sizing`、`no-inline-text`、`flex-direction` | `[x]` |
-| 0.7 | 规则文档从代码生成（`skylint --rules`） | `[x]` |
+| 0.7 | 规则文档从代码生成（`docs/RULES.md`） | `[x]` |
 
 ### P1 WXSS 字典（ROI 最高）
 

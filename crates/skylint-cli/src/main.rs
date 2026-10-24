@@ -27,20 +27,11 @@ struct Cli {
     /// 跳过的规则 id（可重复）
     #[arg(long = "ignore", value_name = "RULE")]
     ignore: Vec<String>,
-
-    /// 只列出全部规则（markdown 表格），不检查工程
-    #[arg(long)]
-    rules: bool,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let registry = Registry::builtin();
-
-    if cli.rules {
-        print!("{}", registry.to_markdown());
-        return ExitCode::SUCCESS;
-    }
 
     let project = match Project::load(&cli.project) {
         Ok(project) => project,

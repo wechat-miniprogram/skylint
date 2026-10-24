@@ -1,6 +1,7 @@
-//! 规则注册表的自检：这些不变量一旦破坏，规则文档、`--ignore`、CI 过滤会一起失真。
+//! 规则注册表的自检：这些不变量一旦破坏，`--ignore`、CI 过滤与规则文档会一起失真。
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use skylint_core::Registry;
 
@@ -21,15 +22,23 @@ fn rule_ids_are_unique_and_namespaced() {
     }
 }
 
+/// `docs/RULES.md` 必须与注册表一致。改了规则元信息后重跑：
+/// `UPDATE_DOCS=1 cargo test -p skylint-core rules_doc`。
 #[test]
-fn markdown_lists_every_rule() {
-    let registry = Registry::builtin();
-    let markdown = registry.to_markdown();
-    for meta in registry.metas() {
-        assert!(
-            markdown.contains(&format!("`{}`", meta.id)),
-            "规则文档漏了 {}",
-            meta.id
-        );
+fn rules_doc_is_current() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/RULES.md");
+    let expected = Registry::builtin().rules_document();
+
+    if std::env::var_os("UPDATE_DOCS").is_some() {
+        std::fs::write(&path, &expected).expect("写入 docs/RULES.md 失败");
+        return;
     }
+
+    let actual = std::fs::read_to_string(&path)
+        .unwrap_or_else(|err| panic!("读不到 {}: {err}", path.display()));
+    assert!(
+        actual == expected,
+        "{} 与注册表不一致。跑 `UPDATE_DOCS=1 cargo test -p skylint-core rules_doc` 重新生成",
+        path.display()
+    );
 }
