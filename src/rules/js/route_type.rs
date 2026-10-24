@@ -114,7 +114,12 @@ impl Rule for RouteType {
                 }
                 for arg in &call.args {
                     for (name, (start, end)) in route_types(arg) {
-                        if name.starts_with(PRESET_PREFIX) || registered.contains(name) {
+                        // 空串等同没写：运行时 `if (spaData.routeType)` 是假值，不会
+                        // 走自定义路由。
+                        if name.is_empty()
+                            || name.starts_with(PRESET_PREFIX)
+                            || registered.contains(name)
+                        {
                             continue;
                         }
                         out.push(at_span(
@@ -273,6 +278,16 @@ mod tests {
             "#,
         );
         assert_eq!(messages(&RouteType, &project), Vec::<String>::new());
+    }
+
+    /// 空串是假值，运行时不会走自定义路由，等同于没写。
+    #[test]
+    fn empty_route_type_is_not_reported() {
+        let (_f, project) = single(
+            "route-type-empty",
+            "wx.navigateTo({ url: 'a', routeType: '' });",
+        );
+        assert!(messages(&RouteType, &project).is_empty());
     }
 
     #[test]

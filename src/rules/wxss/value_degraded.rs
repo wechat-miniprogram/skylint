@@ -298,9 +298,12 @@ const EXACT_VALUES: &[(&[&str], &str, &str)] = &[
 
 /// `[only]` 条目：`(属性名, 允许的 ident, 说明)`；值里每个 ident 都必须在列表内。
 const ONLY_VALUES: &[(&str, &[&str], &str)] = &[
+    // `none` 与 `auto` 在引擎里走同一条路：`will_change.cc` 的 ApplyValue 只处理
+    // 值列表（contents / scroll-position / 自定义 ident），identifier 一律 return，
+    // 效果等同初始值——和 WebView 的 `none` 一样什么都不做，不算降级。
     (
         "will-change",
-        &["auto", "contents"],
+        &["auto", "none", "contents"],
         "仅支持 auto / contents",
     ), // animation.md:106
 ];
@@ -434,6 +437,7 @@ mod tests {
             .a { will-change: auto; }
             .b { will-change: contents; }
             .c { will-change: var(--layer); }
+            .d { will-change: none; }
             "#,
         );
         assert_eq!(messages(&ValueDegraded, &project), Vec::<String>::new());
