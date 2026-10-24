@@ -44,7 +44,7 @@ impl Rule for ShareElementKey {
         RuleMeta {
             id: ID,
             severity: Severity::Error,
-            description: "<share-element> 的 key 必填且同一文件内唯一",
+            description: "`<share-element>` 的 key 必填且同一文件内唯一",
         }
     }
 

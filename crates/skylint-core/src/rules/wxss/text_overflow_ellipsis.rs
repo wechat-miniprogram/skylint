@@ -33,7 +33,7 @@ impl crate::rules::Rule for TextOverflowEllipsis {
         RuleMeta {
             id: ID,
             severity: Severity::Warning,
-            description: "text-overflow: ellipsis 在 Skyline 下只对 <text> 生效",
+            description: "text-overflow: ellipsis 在 Skyline 下只对 `<text>` 生效",
         }
     }
 

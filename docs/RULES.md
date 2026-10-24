@@ -13,13 +13,13 @@
 | `skyline/component-attribute` | warning | Skyline 会静默忽略的组件属性取值与组合（枚举白名单 / 不支持的属性 / 数值范围 / 跨属性条件） |
 | `skyline/scroll-view-family` | error | scroll-view 家族组件的结构约束（挂载位置 / 顺序 / 唯一性 / 必需属性 / 关联容器） |
 | `skyline/component-children` | error | 组件对直接子节点的结构约束（只允许某类子节点 / 必须唯一子节点 / 条件必需的子节点） |
-| `skyline/share-element-key` | error | <share-element> 的 key 必填且同一文件内唯一 |
+| `skyline/share-element-key` | error | `<share-element>` 的 key 必填且同一文件内唯一 |
 | `skyline/horizontal-scroll-enable-flex` | warning | 横向滚动的 `<scroll-view>` 需开启 `enable-flex` 以兼容 WebView |
 | `skyline/no-pseudo` | warning | Skyline 不支持该伪类/伪元素，选择器不会命中 |
 | `skyline/border-none-width` | warning | border-style 为 none 时 Skyline 仍按 border-width 参与布局，元素比 WebView 多占宽度 |
 | `skyline/box-sizing` | error | box-sizing 的值在 Skyline 下不受支持，声明会被忽略 |
 | `skyline/flex-direction` | warning | display: flex 未声明 flex-direction，迁移后默认方向会从 row 变为 column |
-| `skyline/text-overflow-ellipsis` | warning | text-overflow: ellipsis 在 Skyline 下只对 <text> 生效 |
+| `skyline/text-overflow-ellipsis` | warning | text-overflow: ellipsis 在 Skyline 下只对 `<text>` 生效 |
 | `skyline/tag-selector-isolation` | warning | 标签 / id 选择器在 Skyline 下不跨组件匹配，WebView 上生效的样式会静默失效 |
 | `skyline/unsupported-property` | error | 声明了 Skyline 完全不支持的属性，该属性不会生效 |
 | `skyline/unsupported-value` | error | 属性在 Skyline 下可用，但该值不支持，声明会被静默忽略 |
@@ -30,7 +30,7 @@
 | `skyline/multi-value-limit` | warning | background / mask 的多值数量超出 Skyline 支持范围 |
 | `skyline/filter-limit` | warning | filter / backdrop-filter 使用了不支持的函数或组合 |
 | `skyline/text-decoration-line` | warning | text-decoration-line 只支持单值，多值组合不生效 |
-| `skyline/text-decoration-target` | warning | text-decoration 在 Skyline 下只对 <text>/<span>/<input>/<navigator> 生效 |
+| `skyline/text-decoration-target` | warning | text-decoration 在 Skyline 下只对 `<text>` / `<span>` / `<input>` / `<navigator>` 生效 |
 | `skyline/calc-angle` | warning | calc() 不支持角度计算，表达式中的角度单位不生效 |
 | `skyline/calc-min-max` | warning | min() / max() / clamp() 在 Skyline 下求值为 0，整个表达式失效 |
 | `skyline/gradient-unsupported` | warning | repeating 渐变不被 Skyline 解析，mask 也不支持 conic 渐变 |

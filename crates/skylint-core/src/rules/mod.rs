@@ -117,7 +117,7 @@ impl Registry {
                 "| `{}` | {} | {} |\n",
                 meta.id,
                 meta.severity.as_str(),
-                meta.description
+                escape_cell(meta.description)
             ));
         }
         out
@@ -131,4 +131,24 @@ impl Registry {
             .flat_map(|rule| rule.check(project))
             .collect()
     }
+}
+
+/// 表格单元里的 `|` 会截断单元格，裸写的 `<tag>` 会被 markdown 当成 HTML 标签吞掉——
+/// 两者都按「是否在反引号内」分开处理：代码段里的 `<` 本来就是字面量，不该转义。
+fn escape_cell(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_code = false;
+    for ch in text.chars() {
+        match ch {
+            '`' => {
+                in_code = !in_code;
+                out.push(ch);
+            }
+            '|' => out.push_str("\\|"),
+            '<' if !in_code => out.push_str("&lt;"),
+            '>' if !in_code => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }

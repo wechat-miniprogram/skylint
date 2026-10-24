@@ -44,7 +44,7 @@ impl crate::rules::Rule for TextDecorationTarget {
         RuleMeta {
             id: ID,
             severity: Severity::Warning,
-            description: "text-decoration 在 Skyline 下只对 <text>/<span>/<input>/<navigator> 生效",
+            description: "text-decoration 在 Skyline 下只对 `<text>` / `<span>` / `<input>` / `<navigator>` 生效",
         }
     }
 
