@@ -16,7 +16,7 @@ use crate::Severity;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::{Callee, at_span, is_plugin};
+use super::{Callee, at_span, in_plugin, renders_in_skyline};
 
 #[derive(Debug, Clone, Copy)]
 enum Entry {
@@ -24,6 +24,8 @@ enum Entry {
     Call {
         callee: &'static str,
         message: &'static str,
+        /// 只在 Skyline 渲染的单元里才失效。
+        skyline_only: bool,
     },
     /// 调用点：callee 等于目标名或以 `目标名.` 开头，且只在插件工程里判。
     ///
@@ -39,6 +41,7 @@ const ENTRIES: &[Entry] = &[
     Entry::Call {
         callee: "this.animate",
         message: "Skyline 不支持 `this.animate`，动画不会执行；改用 worklet（wx.worklet.shared + applyAnimatedStyle）",
+        skyline_only: true,
     },
     Entry::PluginCall {
         prefix: "wx.router",
@@ -70,16 +73,20 @@ impl Rule for UnsupportedApi {
     }
 
     fn check(&self, project: &Project) -> Vec<crate::Diagnostic> {
-        let plugin = is_plugin(project);
         let mut out = Vec::new();
         for file in &project.scripts {
             for call in file.doc.calls() {
                 for entry in ENTRIES {
+                    // `this.animate` 只在 Skyline 下失效：纯 WebView 页面照常可用。
                     let span = match entry {
-                        Entry::Call { callee, .. } => Callee::Exact(callee)
-                            .matches(&call.callee)
-                            .then_some((call.start, call.end)),
-                        Entry::PluginCall { prefix, .. } => (plugin
+                        Entry::Call {
+                            callee,
+                            skyline_only,
+                            ..
+                        } => (Callee::Exact(callee).matches(&call.callee)
+                            && (!skyline_only || renders_in_skyline(project, &file.scope)))
+                        .then_some((call.start, call.end)),
+                        Entry::PluginCall { prefix, .. } => (in_plugin(project, &file.path)
                             && Callee::Namespace(prefix).matches(&call.callee))
                         .then_some((call.start, call.end)),
                     };
@@ -123,16 +130,37 @@ mod tests {
         (f, project)
     }
 
+    /// 插件工程的 `miniprogramRoot` 是宿主示例小程序，宿主代码用 `wx.router` 没问题。
     #[test]
-    fn utility_scripts_outside_units_are_scanned() {
+    fn host_pages_in_a_plugin_project_are_not_restricted() {
+        let f = Fixture::new("unsupported-plugin-host");
+        f.write(
+            "project.config.json",
+            r#"{"miniprogramRoot":"dist/miniprogram/","pluginRoot":"dist/plugin/","compileType":"plugin"}"#,
+        )
+        .write(
+            "dist/miniprogram/app.json",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+        )
+        .write("dist/miniprogram/pages/index/index.json", "{}")
+        .write("dist/miniprogram/pages/index/index.wxml", "<view/>")
+        .write(
+            "dist/miniprogram/pages/index/index.js",
+            "Page({ go() { wx.router.navigateTo({ url: '/x' }); } });",
+        );
+        assert!(UnsupportedApi.check(&f.project()).is_empty());
+    }
+
+    /// 没有单元归属的脚本（`utils/`、`app.js`）静态判断不了会不会跑在 Skyline 下，
+    /// 按「不是」处理：`this.animate` 在 WebView 里是好的，报了就是误报。
+    #[test]
+    fn scripts_without_a_unit_are_not_judged() {
         let (_f, project) = with_script(
             "unsupported-loose-util",
             "utils/helper.ts",
-            "export const jump = () => this.animate('.x', [], 100);",
+            "export const jump = this.animate('.x', [], 100);",
         );
-        let diagnostics = UnsupportedApi.check(&project);
-        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-        assert_eq!(diagnostics[0].path, "utils/helper.ts");
+        assert!(UnsupportedApi.check(&project).is_empty());
     }
 
     #[test]
@@ -180,17 +208,38 @@ mod tests {
         assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
     }
 
+    /// `app.js` 没有单元归属，不判；页面脚本里的调用照报。
     #[test]
-    fn app_js_is_scanned_too() {
+    fn app_js_is_not_judged_but_page_scripts_are() {
         let (_f, project) = single_with_app(
             "unsupported-app",
             "this.animate('.b', [], 1);",
             Some("this.animate('.a', [], 1);"),
         );
         let diagnostics = UnsupportedApi.check(&project);
-        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
-        assert_eq!(diagnostics[0].path, "app.js");
-        assert_eq!(diagnostics[1].path, "pages/index/index.js");
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].path, "pages/index/index.js");
+    }
+
+    /// 纯 WebView 页面照常支持 `this.animate`，不能报。
+    #[test]
+    fn webview_page_is_not_reported() {
+        let f = Fixture::new("unsupported-webview");
+        f.write(
+            "project.config.json",
+            r#"{"miniprogramRoot":"","compileType":"miniprogram"}"#,
+        )
+        .write(
+            "app.json",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+        )
+        .write("pages/index/index.json", r#"{"renderer":"webview"}"#)
+        .write("pages/index/index.wxml", "<web-view/>")
+        .write(
+            "pages/index/index.js",
+            "Page({ onLoad() { this.animate('.a', [], 1); } });",
+        );
+        assert!(UnsupportedApi.check(&f.project()).is_empty());
     }
 
     #[test]

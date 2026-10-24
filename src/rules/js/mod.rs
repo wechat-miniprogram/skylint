@@ -47,6 +47,41 @@ pub(crate) fn is_plugin(project: &Project) -> bool {
     }
 }
 
+/// 这个脚本是否属于插件代码——插件限制只对插件代码成立。
+///
+/// `compileType: plugin` 的工程里 `miniprogramRoot` 通常是宿主示例小程序
+/// （`weapp-novel-plugin_1` 是 `dist/miniprogram` + `dist/plugin`），宿主代码
+/// 照常能用 `wx.router`。只有落在 `pluginRoot` 下的文件才受插件限制；
+/// 纯插件仓库（没有 `pluginRoot`、代码就在根目录）按 `compileType` 整体算。
+pub(crate) fn in_plugin(project: &Project, path: &str) -> bool {
+    match project.plugin_root.as_deref() {
+        Some(root) => path == root || path.starts_with(&format!("{root}/")),
+        None => is_plugin(project),
+    }
+}
+
+/// 脚本所属单元是否真的按 Skyline 渲染。
+///
+/// 「Skyline 不支持某个 API」只对会走 Skyline 的代码成立：页面看 `renderer`，
+/// 组件看有没有 Skyline 页面用到它。`app.js`、`utils/` 这类没有单元归属的脚本
+/// 静态判断不了，按「不是」处理（宁可漏报）。
+pub(crate) fn renders_in_skyline(project: &Project, scope: &Scope) -> bool {
+    let page_is_skyline = |route: &str| {
+        project
+            .pages
+            .iter()
+            .any(|page| page.route == route && page.is_skyline && !page.opted_out)
+    };
+    match scope {
+        Scope::Page(route) => page_is_skyline(route),
+        Scope::Component(path) => project
+            .component_pages(path)
+            .iter()
+            .any(|route| page_is_skyline(route)),
+        Scope::Global | Scope::Loose(_) => false,
+    }
+}
+
 /// 单元对应的脚本。`Project.scripts` 里一个文件只归一个单元，所以按 scope 查即可。
 ///
 /// [`Scope::Loose`] 不是单元：显式返回 `None`，避免把 `utils/` 里的文件当成页面脚本。

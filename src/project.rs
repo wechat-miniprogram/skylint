@@ -93,6 +93,11 @@ pub struct Project {
     pub root: PathBuf,
     /// 主包根（项目相对，可为空串）。
     pub miniprogram_root: String,
+    /// 插件代码根（项目相对，可为空串）。
+    ///
+    /// `compileType: plugin` 的工程里插件代码与宿主示例小程序是两块目录，插件限制
+    /// （不支持 `wx.router`、`scrollViewContext`）只对这里面的代码成立。
+    pub plugin_root: Option<String>,
     /// app.json 原始对象。
     pub app_json: Map<String, Value>,
     /// app.json 原文，配置类规则定位用；读不到时为空串。
@@ -156,6 +161,11 @@ impl Project {
             .unwrap_or("")
             .trim_matches('/')
             .to_string();
+        let plugin_root = config
+            .get("pluginRoot")
+            .and_then(Value::as_str)
+            .map(|root| root.trim_matches('/').to_string())
+            .filter(|root| !root.is_empty());
 
         let fs = LocalFs::new(root.clone());
         let app_source = fs
@@ -278,6 +288,7 @@ impl Project {
         Ok(Self {
             root,
             miniprogram_root,
+            plugin_root,
             app_json: app_value,
             app_json_source: app_source,
             project_config: config.as_object().cloned().unwrap_or_default(),
@@ -507,6 +518,7 @@ impl Project {
         let mut project = Self {
             root: path.parent().unwrap_or(Path::new(".")).to_path_buf(),
             miniprogram_root: String::new(),
+            plugin_root: None,
             // 单文件默认按 Skyline 工程算：用户想看的就是「这文件在 Skyline 下怎样」。
             app_json: Map::from_iter([("renderer".to_string(), Value::String("skyline".into()))]),
             app_json_source: String::new(),

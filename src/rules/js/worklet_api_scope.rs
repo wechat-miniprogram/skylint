@@ -21,7 +21,7 @@ use crate::Severity;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::{Callee, at_span, is_plugin};
+use super::{Callee, at_span, in_plugin};
 
 /// 只在 UI 线程（worklet）可用的方法。按段匹配：`worklet.scrollViewContext.scrollTo`
 /// 算，`myscrollViewContext.scrollTo` 不算。
@@ -43,7 +43,6 @@ impl Rule for WorkletApiScope {
     }
 
     fn check(&self, project: &Project) -> Vec<crate::Diagnostic> {
-        let plugin = is_plugin(project);
         let mut out = Vec::new();
         for file in &project.scripts {
             for call in file.doc.calls() {
@@ -65,7 +64,7 @@ impl Rule for WorkletApiScope {
                     continue;
                 }
                 // 插件里这个 API 整体不可用，比「不在 worklet 内」更根本，只报一条。
-                if plugin {
+                if in_plugin(project, &file.path) {
                     out.push(at_span(
                         Self::ID,
                         Severity::Error,
