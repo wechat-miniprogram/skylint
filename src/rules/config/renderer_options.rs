@@ -92,6 +92,9 @@ impl Rule for RendererOptions {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
+        if !super::applicable(project) {
+            return Vec::new();
+        }
         let mut out = Vec::new();
         check_file(
             "app.json",

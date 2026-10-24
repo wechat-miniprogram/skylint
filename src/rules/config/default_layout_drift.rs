@@ -32,6 +32,9 @@ impl Rule for DefaultLayoutDrift {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
+        if !super::applicable(project) {
+            return Vec::new();
+        }
         if !project.pages.iter().any(|page| page.is_skyline) {
             return Vec::new();
         }

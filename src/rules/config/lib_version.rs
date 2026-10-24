@@ -35,6 +35,9 @@ impl Rule for LibVersion {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
+        if !super::applicable(project) {
+            return Vec::new();
+        }
         let Some((min, feature)) = requirement(project) else {
             return Vec::new();
         };

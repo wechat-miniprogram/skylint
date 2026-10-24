@@ -36,6 +36,9 @@ impl Rule for ConfigIgnored {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
+        if !super::applicable(project) {
+            return Vec::new();
+        }
         let mut out = Vec::new();
         check_app_window(project, &mut out);
         check_project_setting(project, &mut out);

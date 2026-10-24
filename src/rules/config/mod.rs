@@ -22,6 +22,16 @@ pub use lib_version::LibVersion;
 pub use renderer_options::RendererOptions;
 
 use crate::diag::{Diagnostic, Severity};
+use crate::project::Project;
+
+/// 配置类规则只在真实工程里跑。
+///
+/// 单文件模式（`skylint page.wxml`）用合成的 app.json 撑起「按 Skyline 检查」，
+/// 拿它去判 `defaultDisplayBlock` 会在用户只想看一个文件时对着不存在的
+/// `app.json:1:1` 报两条噪音。
+pub(crate) fn applicable(project: &Project) -> bool {
+    !project.single_file
+}
 
 /// 配置类诊断：给出 `at` 就落在该位置，否则落在文件首字符。
 pub(crate) fn warn(

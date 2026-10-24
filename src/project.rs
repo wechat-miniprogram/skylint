@@ -93,6 +93,9 @@ pub struct Project {
     pub root: PathBuf,
     /// 主包根（项目相对，可为空串）。
     pub miniprogram_root: String,
+    /// 由单个文件包出来的临时工程（`skylint page.wxml`）：没有真实的配置可读，
+    /// 配置类规则整体不参与，否则会对着不存在的 app.json 报噪音。
+    pub single_file: bool,
     /// 插件代码根（项目相对，可为空串）。
     ///
     /// `compileType: plugin` 的工程里插件代码与宿主示例小程序是两块目录，插件限制
@@ -288,6 +291,7 @@ impl Project {
         Ok(Self {
             root,
             miniprogram_root,
+            single_file: false,
             plugin_root,
             app_json: app_value,
             app_json_source: app_source,
@@ -518,6 +522,7 @@ impl Project {
         let mut project = Self {
             root: path.parent().unwrap_or(Path::new(".")).to_path_buf(),
             miniprogram_root: String::new(),
+            single_file: true,
             plugin_root: None,
             // 单文件默认按 Skyline 工程算：用户想看的就是「这文件在 Skyline 下怎样」。
             app_json: Map::from_iter([("renderer".to_string(), Value::String("skyline".into()))]),
