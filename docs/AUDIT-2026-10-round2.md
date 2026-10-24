@@ -199,6 +199,7 @@ fp 会把同单位/纯角度的 `calc()` 折叠成字面值
 | `>>>` / `>>` 不再让整份样式表变成一条 `unparsed-style` | `e5f3a1b` | 解析失败时等长掩码重试，偏移不变；原先整份文件的声明级规则全部静默 |
 | `componentGenerics.{key}.default` 进组件闭包 | `caa2669` | minidev `compiler-graph/src/conf.rs:309-315` 与 usingComponents 一起入队 |
 | 单文件模式跳过四条配置规则 | `c505340` | 合成的 app.json 不是真工程，原会对着不存在的 `app.json:1:1` 报噪音 |
+| `will-change: none` 不再算降级、`routeType: ''` 不再报未注册 | `db7845b` | `will_change.cc` ApplyValue 对 identifier 一律 return；`onAppRoute.js:501` 对空串为假 |
 
 ### 四工程当前基线
 
