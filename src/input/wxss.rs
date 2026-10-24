@@ -243,7 +243,27 @@ pub fn parse(path: &str, source: &str) -> Result<WxssDoc, ParseError> {
     parse_document(path, source)
 }
 
+/// 一遍解析；解析失败且原文含穿透组合器时，用等长掩码重试。
+///
+/// oxc 遇到 `>>>` / `>>` 直接放弃整份文件（`ExpectSimpleSelector`），于是整份样式表
+/// 只剩一条 `unparsed-style`、其余规则全部静默。这类选择器是 WebView 的穿透写法，
+/// Skyline 下本来就不命中，掩码成空白只让「选择器不再解析」、声明照常检查。
 fn parse_document(path: &str, source: &str) -> Result<WxssDoc, ParseError> {
+    match parse_document_with(path, source, source) {
+        Err(ParseError::Syntax(detail)) => {
+            let masked = mask_penetrating_combinators(source);
+            if masked == source {
+                return Err(ParseError::Syntax(detail));
+            }
+            parse_document_with(path, &masked, source).map_err(|_| ParseError::Syntax(detail))
+        }
+        result => result,
+    }
+}
+
+/// `source` 是喂给解析器的文本，`display` 是落进文档、用于定位与展示的原文。
+/// 两者等长，偏移可以互用。
+fn parse_document_with(path: &str, source: &str, display: &str) -> Result<WxssDoc, ParseError> {
     let allocator = Allocator::default();
     let mut parser = ParserBuilder::new(&allocator, source)
         .syntax(syntax_for(path))
@@ -259,14 +279,46 @@ fn parse_document(path: &str, source: &str) -> Result<WxssDoc, ParseError> {
     }
 
     let mut out = Collector::default();
-    walk(&mut out, &ast.statements, source, &[], &[], false, 0);
+    walk(&mut out, &ast.statements, display, &[], &[], false, 0);
 
     Ok(WxssDoc {
         path: path.to_string(),
-        source: source.to_string(),
+        source: display.to_string(),
         rules: out.rules,
         imports: out.imports,
     })
+}
+
+/// 把相邻的 `>`（`>>` / `>>>` / `> >`）替换成等长空白。
+///
+/// 单写 `>` 是合法的子代组合器，不动；连续两个以上才会让 oxc 放弃解析。
+fn mask_penetrating_combinators(source: &str) -> String {
+    if !source.contains(">>") {
+        return source.to_string();
+    }
+    let mut bytes = source.as_bytes().to_vec();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'>' {
+            index += 1;
+            continue;
+        }
+        let mut end = index + 1;
+        let mut adjacent = 0;
+        while end < bytes.len() && (bytes[end] == b'>' || bytes[end].is_ascii_whitespace()) {
+            if bytes[end] == b'>' {
+                adjacent += 1;
+            }
+            end += 1;
+        }
+        if adjacent > 0 {
+            for byte in &mut bytes[index..end] {
+                *byte = b' ';
+            }
+        }
+        index = end;
+    }
+    String::from_utf8(bytes).expect("只替换 ASCII 字节，仍是合法 UTF-8")
 }
 
 /// 后缀 → 语法。`.wxss` 等其余后缀按纯 CSS 处理。
@@ -1196,6 +1248,24 @@ mod tests {
             .collect();
         assert_eq!(selectors, ["from", "to", ".a"]);
         assert_eq!(doc.rules[0].declarations[0].name, "transform");
+    }
+
+    /// `>>>` 是 WebView 的穿透选择器：不能让它把整份样式表变成一条 unparsed-style。
+    #[test]
+    fn penetrating_combinators_do_not_kill_the_stylesheet() {
+        let doc = parse(
+            "a.wxss",
+            ".a >>> .b { float: left; }\n.c > .d { display: grid; }",
+        )
+        .unwrap();
+        // 两条声明都保留；`>` 单写是正常组合器，不能被掩码。
+        assert_eq!(doc.rules.len(), 2);
+        assert_eq!(doc.rules[0].declarations[0].name, "float");
+        assert_eq!(doc.rules[1].declarations[0].value, "grid");
+        // 展示用的原文仍是原文。
+        assert!(doc.source().contains(">>>"));
+        // 穿透选择器的原文保留（决策树不认它 → 不参与元素匹配）。
+        assert_eq!(doc.rules[0].selectors[0].text, ".a >>> .b");
     }
 
     #[test]
