@@ -161,6 +161,69 @@ fn npm_components_join_the_closure() {
 }
 
 #[test]
+fn non_declarative_component_entries_join_the_closure() {
+    let f = Fixture::new("seeds");
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"","setting":{}}"#,
+    )
+    .write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"tabBar":{"custom":true},"appBar":{}}"#,
+    )
+    .write("pages/index/index.wxml", "<view/>")
+    .write("custom-tab-bar/index.json", r#"{"component":true}"#)
+    .write("custom-tab-bar/index.wxml", "<view/>")
+    .write("app-bar/index.json", r#"{"component":true}"#)
+    .write("app-bar/index.wxml", "<view/>");
+
+    let project = Project::load(f.path()).unwrap();
+    let paths: Vec<&str> = project.components.iter().map(|c| c.path.as_str()).collect();
+    assert_eq!(paths, ["app-bar/index", "custom-tab-bar/index"]);
+}
+
+#[test]
+fn npm_lookup_walks_up_to_the_main_package() {
+    // 分包页面引 npm 裸包名时，`miniprogram_npm` 可能在主包根，也可能在分包目录下。
+    let f = Fixture::new("npm-up");
+    f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+        .write(
+            "app.json",
+            r#"{"pages":["pkg/a/a"],"subPackages":[{"root":"pkg","pages":["a/a"]}]}"#,
+        )
+        .write(
+            "pkg/a/a.json",
+            r#"{"usingComponents":{"btn":"my-lib/button"}}"#,
+        )
+        .write("pkg/a/a.wxml", "<btn/>")
+        .write(
+            "miniprogram_npm/my-lib/button.json",
+            r#"{"component":true}"#,
+        )
+        .write("miniprogram_npm/my-lib/button.wxml", "<view/>");
+
+    let project = Project::load(f.path()).unwrap();
+    assert_eq!(project.components.len(), 1);
+    assert_eq!(project.components[0].path, "miniprogram_npm/my-lib/button");
+}
+
+#[test]
+fn lowercase_subpackages_is_accepted() {
+    let f = Fixture::new("lower-sub");
+    f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+        .write(
+            "app.json",
+            r#"{"pages":["pages/a/a"],"subpackages":[{"root":"pkg/","pages":["b/b"]}]}"#,
+        )
+        .write("pages/a/a.wxml", "<view/>")
+        .write("pkg/b/b.wxml", "<view/>");
+
+    let project = Project::load(f.path()).unwrap();
+    let routes: Vec<&str> = project.pages.iter().map(|p| p.route.as_str()).collect();
+    assert_eq!(routes, ["pages/a/a", "pkg/b/b"]);
+}
+
+#[test]
 fn missing_app_json_is_an_error() {
     let f = Fixture::new("no-app");
     f.write("project.config.json", r#"{"miniprogramRoot":""}"#);

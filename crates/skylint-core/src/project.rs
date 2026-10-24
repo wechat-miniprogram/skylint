@@ -1,27 +1,32 @@
 //! 工程视图：把项目目录变成一个「可被规则消费」的结构。
 //!
-//! 这里是与 minidev 的唯一接触面。用途是文件与配置的**事实**（页面清单、每页
-//! 四件套的实际源文件、组件闭包、是否 Skyline 页面），不含任何 Skyline 语义判断。
+//! 只依赖文件与配置的**事实**（页面清单、每页四件套的实际源文件、组件闭包、是否
+//! Skyline 页面），不含任何 Skyline 语义判断。加载器是自有的：同一套代码在内部与
+//! 公开构建里行为一致，不依赖非公开 crate。
 //!
 //! 两个刻意的设计：
 //! - 位置只用「项目相对 posix 路径」表达，避免下游每条规则自己拼绝对路径；
-//! - 永远读**原始** JSON。minidev 的编译路径会往页面 json 里注入
-//!   `disableScroll`/`navigationStyle`、并把全局 `usingComponents` 摊进页面，
-//!   那会抹掉「用户没写」和「继承来的」这个区别——而这恰是迁移检查要判断的。
+//! - 永远读**原始** JSON。编译路径会往页面 json 里注入 `disableScroll`/`navigationStyle`、
+//!   并把全局 `usingComponents` 摊进页面，那会抹掉「用户没写」和「继承来的」这个区别
+//!   ——而这恰是迁移检查要判断的。
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use common::pathutil::{posix_dirname, posix_join};
-use common::{LocalFs, ProjectFs};
-use compiler_graph::{AppConf, ResolveExtConf, Resolver, is_skyline_page, resolve_component_path};
 use serde_json::{Map, Value};
 
-use crate::diag::from_compiler_diag;
 use crate::input::js::JsDoc;
 use crate::input::wxml;
 use crate::input::wxss::{self, ParseError, WxssDoc};
 use crate::{Diagnostic, Severity};
+
+mod fs;
+mod paths;
+mod units;
+
+use self::fs::LocalFs;
+use self::paths::{posix_dirname, posix_join};
+use self::units::{Exts, resolve_unit};
 
 /// 一个编译单元（页面或自定义组件）的四件套，值为项目相对 posix 路径。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -147,19 +152,20 @@ impl Project {
             .trim_matches('/')
             .to_string();
 
-        let fs = LocalFs {
-            project_path: root.clone(),
-        };
-        let app =
-            AppConf::build(&fs, &miniprogram_root).map_err(|e| anyhow::anyhow!(describe(&e)))?;
-        let resolver = Resolver::new(&fs, &miniprogram_root, ext_conf(&config));
+        let fs = LocalFs::new(root.clone());
+        let app_source = fs
+            .read_file(&miniprogram_root, "app.json")
+            .ok_or_else(|| anyhow::anyhow!("Couldn't found the 'app.json' file"))?;
+        let app_value: Map<String, Value> =
+            serde_json::from_str(&app_source).map_err(|err| anyhow::anyhow!("app.json: {err}"))?;
+        let exts = Exts::from_config(&config);
+        let app_json = Value::Object(app_value.clone());
+        let routes: Vec<String> = routes_of_app(&app_value);
 
         let mut warnings = Vec::new();
-        let app_value = Value::Object(app.app_value.clone());
 
         // 页面 json 只解析一次：既用于 skyline 判定，也作为组件闭包的入口。
-        let page_json: Vec<(String, Option<Map<String, Value>>)> = app
-            .pages
+        let page_json: Vec<(String, Option<Map<String, Value>>)> = routes
             .iter()
             .map(|route| {
                 let json = read_unit_json(&fs, &miniprogram_root, route, &mut warnings);
@@ -186,9 +192,9 @@ impl Project {
                 let page = json.as_ref().unwrap_or(&empty);
                 PageUnit {
                     route: route.clone(),
-                    is_skyline: is_skyline_page(&app_value, page),
+                    is_skyline: is_skyline_page(&app_json, page),
                     opted_out: page.get("renderer").and_then(Value::as_str) == Some("webview"),
-                    files: resolve_unit_files(&resolver, route),
+                    files: resolve_unit(&exts, &fs, &miniprogram_root, route),
                 }
             })
             .collect();
@@ -196,21 +202,20 @@ impl Project {
         let (component_paths, deps) = collect_components(
             &fs,
             &miniprogram_root,
-            &app.app_value,
+            &app_value,
             &page_json,
-            &app.comps,
+            &app_seeds(&fs, &miniprogram_root, &app_value),
             &mut warnings,
         );
         let components: Vec<ComponentUnit> = component_paths
             .into_iter()
             .map(|path| ComponentUnit {
-                files: resolve_unit_files(&resolver, &path),
+                files: resolve_unit(&exts, &fs, &miniprogram_root, &path),
                 path,
             })
             .collect();
 
-        let app_style = resolve_unit_files(&resolver, "app").wxss;
-
+        let app_style = resolve_unit(&exts, &fs, &miniprogram_root, "app").wxss;
         let styles = collect_styles(
             &root,
             &miniprogram_root,
@@ -219,17 +224,14 @@ impl Project {
             &components,
             &mut warnings,
         );
-        let scripts = collect_scripts(&fs, &miniprogram_root, &resolver, &pages, &components);
+        let scripts = collect_scripts(&fs, &miniprogram_root, &exts, &pages, &components);
         let template_files = collect_template_files(&fs, &miniprogram_root, &pages, &components);
-        let app_json_source = fs
-            .read_file(&miniprogram_root, "app.json")
-            .unwrap_or_default();
 
         Ok(Self {
             root,
             miniprogram_root,
-            app_json: app.app_value.clone(),
-            app_json_source,
+            app_json: app_value,
+            app_json_source: app_source,
             project_config: config.as_object().cloned().unwrap_or_default(),
             project_config_source: config_source,
             project_private_config: private_config.as_object().cloned().unwrap_or_default(),
@@ -426,13 +428,11 @@ impl Project {
 
 /// 组件闭包。
 ///
-/// `AppConf::comps` 只做词法解析（`usingComponents` 的值直接拼到引用方目录下），
-/// 因此 `my-lib/button` 这类 npm 裸包名会被静默丢掉——编译器在
-/// `check_component_path` 里另有一套 `miniprogram_npm` 回溯，但闭包不走那条路。
-/// 这里以 `comps` 为种子（它已覆盖 appBar / custom-tab-bar / agent.skills 等
-/// 额外入口），再按编译器的解析语义补齐 npm 分支。
+/// 从页面与 app.json 的 `usingComponents` 出发做 BFS，外加 `app_seeds` 提供的
+/// 非声明式入口。npm 裸包名按 `miniprogram_npm` 回溯解析——词法拼接会把这些值
+/// 直接扔进引用方目录，静默丢掉组件。
 fn collect_components(
-    fs: &dyn ProjectFs,
+    fs: &LocalFs,
     root: &str,
     app_json: &Map<String, Value>,
     page_json: &[(String, Option<Map<String, Value>>)],
@@ -456,7 +456,7 @@ fn collect_components(
         .collect();
     queue.extend(app_targets.iter().cloned());
     deps.insert("app.json".to_string(), app_targets);
-    // AppConf.comps 兜住 appBar / custom-tab-bar / agent.skills 这类非声明式入口。
+    // 非声明式入口（custom-tab-bar / app-bar / agent.skills）不在任何 usingComponents 里。
     queue.extend(seeds.iter().cloned());
 
     let mut comps: Vec<String> = Vec::new();
@@ -478,11 +478,81 @@ fn collect_components(
 }
 
 /// 一个单元声明的组件引用解析后得到的根相对路径。
-fn routes_of(fs: &dyn ProjectFs, root: &str, unit: &str, json: &Map<String, Value>) -> Vec<String> {
+fn routes_of(fs: &LocalFs, root: &str, unit: &str, json: &Map<String, Value>) -> Vec<String> {
     using_components(json)
         .iter()
         .filter_map(|target| resolve_component_route(fs, root, unit, target))
         .collect()
+}
+
+/// app.json 的页面清单：主包 pages + 分包（`subPackages`，兼容全小写写法）。
+///
+/// 分包 root 的真编译器接受 `pkg` / `pkg/` / `/pkg` 三种形态，这里统一去首尾 `/`。
+fn routes_of_app(app: &Map<String, Value>) -> Vec<String> {
+    let mut routes: Vec<String> = app
+        .get("pages")
+        .and_then(Value::as_array)
+        .map(|pages| {
+            pages
+                .iter()
+                .filter_map(Value::as_str)
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    let subs = app
+        .get("subPackages")
+        .or_else(|| app.get("subpackages"))
+        .and_then(Value::as_array);
+    for sub in subs.into_iter().flatten() {
+        let root = sub
+            .get("root")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim_matches('/');
+        let pages = sub
+            .get("pages")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten();
+        for page in pages.filter_map(Value::as_str) {
+            routes.push(if root.is_empty() {
+                page.to_string()
+            } else {
+                format!("{root}/{page}")
+            });
+        }
+    }
+    routes
+}
+
+/// 页面级 `renderer` 优先，缺省回落 app.json。
+fn is_skyline_page(app: &Value, page: &Map<String, Value>) -> bool {
+    match page.get("renderer").and_then(Value::as_str) {
+        Some("skyline") => true,
+        Some(_) => false,
+        None => app.get("renderer").and_then(Value::as_str) == Some("skyline"),
+    }
+}
+
+/// 非声明式组件入口：`custom-tab-bar` 与 `app-bar`。
+///
+/// 这两个入口不在任何 `usingComponents` 里，但会被编译器当作组件加载；漏掉它们，
+/// 闭包会变小，跨文件规则（如标签选择器隔离）跟着漏报。
+fn app_seeds(fs: &LocalFs, root: &str, app: &Map<String, Value>) -> Vec<String> {
+    let mut seeds = Vec::new();
+    let custom_tab_bar = app
+        .get("tabBar")
+        .and_then(|tab| tab.get("custom"))
+        .and_then(Value::as_bool)
+        == Some(true);
+    if custom_tab_bar && fs.exists(root, "custom-tab-bar/index.json") {
+        seeds.push("custom-tab-bar/index".to_string());
+    }
+    if app.get("appBar").is_some() && fs.exists(root, "app-bar/index.json") {
+        seeds.push("app-bar/index".to_string());
+    }
+    seeds
 }
 
 fn using_components(json: &Map<String, Value>) -> Vec<String> {
@@ -498,9 +568,9 @@ fn using_components(json: &Map<String, Value>) -> Vec<String> {
 }
 
 /// `usingComponents` 的 target → 根相对路径。三种写法的优先级与编译器一致：
-/// 绝对路径 → 相对路径 → npm / extendedLib 裸名（交给编译器的解析器）。
+/// 绝对路径 → 相对路径 → npm 裸包名（`miniprogram_npm` 回溯）。
 fn resolve_component_route(
-    fs: &dyn ProjectFs,
+    fs: &LocalFs,
     root: &str,
     from_unit: &str,
     target: &str,
@@ -518,15 +588,42 @@ fn resolve_component_route(
         return Some(route);
     }
 
-    let (_, rel) = resolve_component_path(fs, root, &dir, target);
-    (!rel.is_empty()).then(|| posix_join(&dir, &rel))
+    resolve_npm_unit(fs, root, &dir, target)
+}
+
+/// npm 裸包名：`<祖先目录>/miniprogram_npm/<name>`（含 `index` 变体）逐级向上。
+///
+/// 与 `checkComponentPath` 的搜索序列一致：先当前目录直连，再逐层向上找
+/// `miniprogram_npm`，最后回主包根。命中要求 json 与 wxml 同时存在——只有 json
+/// 的目录是构建产物碎片，不是能渲染的组件。
+fn resolve_npm_unit(fs: &LocalFs, root: &str, dir: &str, name: &str) -> Option<String> {
+    let mut dirs: Vec<&str> = dir
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .collect();
+    loop {
+        let prefix = dirs.join("/");
+        let base = if prefix.is_empty() {
+            format!("miniprogram_npm/{name}")
+        } else {
+            format!("{prefix}/miniprogram_npm/{name}")
+        };
+        for candidate in [base.clone(), format!("{base}/index")] {
+            if fs.exists(root, &format!("{candidate}.json"))
+                && fs.exists(root, &format!("{candidate}.wxml"))
+            {
+                return Some(candidate);
+            }
+        }
+        dirs.pop()?;
+    }
 }
 
 /// 目标路径本身或它的 `index` 存在时返回根相对路径（与 checkComponentPath 的
 /// `isValid` / `isValid(value + "/index")` 同序）。
-fn existing_unit(fs: &dyn ProjectFs, root: &str, base: &str) -> Option<String> {
+fn existing_unit(fs: &LocalFs, root: &str, base: &str) -> Option<String> {
     let base = base.trim_matches('/');
-    let has = |p: &str| fs.stat(root, &format!("{p}.json")).is_some();
+    let has = |p: &str| fs.exists(root, &format!("{p}.json"));
     if has(base) {
         return Some(base.to_string());
     }
@@ -552,7 +649,7 @@ fn collect_styles(
     let mut docs: BTreeMap<String, WxssDoc> = BTreeMap::new();
 
     let mut entries: Vec<(String, Scope)> = Vec::new();
-    // 全局样式同样要过 Resolver：工程可能只有 app.less / app.scss，没有 app.wxss。
+    // 全局样式同样要过后缀优先级解析：工程可能只有 app.less / app.scss，没有 app.wxss。
     if let Some(path) = app_style {
         entries.push((path.to_string(), Scope::Global));
     }
@@ -628,20 +725,20 @@ fn collect_styles(
 
 /// 脚本图：`app.js` + 每个页面 / 组件的 js + 其余全部 `.js` / `.ts` 源文件。
 ///
-/// 单元脚本的路径来自 resolver 的解析结果（因此 typescript 插件的 `.ts` 源会命中），
+/// 单元脚本的路径按后缀优先级解析（因此 typescript 插件的 `.ts` 源会命中），
 /// 不在这里重新拼后缀；同一文件被多个页面的组件闭包重复引用时按 path 去重。
-/// 其余文件由 [`ProjectFs::list_files`] 全域枚举（已剪掉 `node_modules` 与点目录），
+/// 其余文件由 [`LocalFs::list_files`] 全域枚举（已剪掉 `node_modules` 与点目录），
 /// 排除 `.d.ts` 与 `miniprogram_npm` 编译产物后记为 [`Scope::Loose`]。
 /// 解析失败（语法错误 / 空文件）静默跳过——JS 语法由构建阶段拦，linter 不另造诊断。
 fn collect_scripts(
-    fs: &dyn ProjectFs,
+    fs: &LocalFs,
     miniprogram_root: &str,
-    resolver: &Resolver,
+    exts: &Exts,
     pages: &[PageUnit],
     components: &[ComponentUnit],
 ) -> Vec<JsFile> {
     let mut entries: BTreeMap<String, Scope> = BTreeMap::new();
-    if let Some(path) = resolve_unit_files(resolver, "app").js {
+    if let Some(path) = resolve_unit(exts, fs, miniprogram_root, "app").js {
         entries.insert(path, Scope::Global);
     }
     for page in pages {
@@ -698,7 +795,7 @@ fn is_source_script(path: &str) -> bool {
 /// 只保留 `fs.exists` 校验通过的路径；`src` 由编译器剥掉了 `.wxml` 后缀，这里按
 /// 「无扩展名就补 `.wxml`」还原。模板可以再引用模板，闭包按 visited 去重。
 fn collect_template_files(
-    fs: &dyn ProjectFs,
+    fs: &LocalFs,
     miniprogram_root: &str,
     pages: &[PageUnit],
     components: &[ComponentUnit],
@@ -737,7 +834,7 @@ fn collect_template_files(
 
 /// `<import src>` / `<include src>` 的值 → 项目相对路径（必须是真实存在的文件）。
 fn resolve_template_ref(
-    fs: &dyn ProjectFs,
+    fs: &LocalFs,
     miniprogram_root: &str,
     from: &str,
     src: &str,
@@ -799,25 +896,10 @@ fn resolve_style_import(
     })
 }
 
-fn resolve_unit_files(resolver: &Resolver, unit: &str) -> UnitFiles {
-    let at = |ext: &str| {
-        resolver
-            .resolve_info_map
-            .get(&format!("{unit}.{ext}"))
-            .map(|info| info.source.clone())
-    };
-    UnitFiles {
-        json: at("json"),
-        wxml: at("wxml"),
-        wxss: at("wxss"),
-        js: at("js"),
-    }
-}
-
 /// 读页面/组件的原始 json。文件不存在返回 `None`（页面 json 本来就是可选的），
 /// 解析失败记一条 warning 并返回 `None`。
 fn read_unit_json(
-    fs: &dyn ProjectFs,
+    fs: &LocalFs,
     miniprogram_root: &str,
     unit: &str,
     warnings: &mut Vec<Diagnostic>,
@@ -854,39 +936,12 @@ fn read_unit_json(
     }
 }
 
-fn ext_conf(config: &Value) -> ResolveExtConf {
-    let mut conf = ResolveExtConf::default();
-    let Some(plugins) = config
-        .pointer("/setting/useCompilerPlugins")
-        .and_then(Value::as_array)
-    else {
-        return conf;
-    };
-    for plugin in plugins.iter().filter_map(Value::as_str) {
-        match plugin {
-            "typescript" => conf.register("js", &["ts"]),
-            "less" => conf.register("wxss", &["less"]),
-            "sass" => conf.register("wxss", &["sass", "scss"]),
-            _ => {}
-        }
-    }
-    conf
-}
-
 /// project 根目录下的配置文件原文与解析结果。文件缺失 / 不是合法 JSON 时给空串与
 /// `Null`——与页面 json 的宽容策略一致，缺文件不该升级成 linter 自己的错误。
 fn read_config(root: &Path, name: &str) -> (Value, String) {
     let source = std::fs::read_to_string(root.join(name)).unwrap_or_default();
     let value = serde_json::from_str(&source).unwrap_or(Value::Null);
     (value, source)
-}
-
-/// minidev 的错误链里可能挂着结构化诊断，优先取它（带行列），否则用 Display。
-fn describe(err: &anyhow::Error) -> String {
-    err.chain()
-        .find_map(|e| e.downcast_ref::<diag::Diagnostic>())
-        .map(|d| from_compiler_diag(d).message)
-        .unwrap_or_else(|| err.to_string())
 }
 
 /// `rendererOptions` 里的布尔开关。
