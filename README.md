@@ -7,20 +7,14 @@ Skyline 小程序迁移检查工具。适合 Webview 小程序使用 Agent 一�
 
 ## 构建
 
-此项目目前处于半开源阶段，`common` / `diag` / `compiler-graph` 等模块源码来自微信内部项目 minidev；规则集等部分为开源。
-
 ```bash
-# 1. 把 minidev clone 到与 skylint 同级，或在下面的 patch 里改成任意路径
-#    git clone <minidev> ../minidev
-
-# 2. 生成本地 cargo 配置
-cp .cargo/config.toml.example .cargo/config.toml
-
-# 3. 构建
 cargo build --release
 ```
 
-外部用户使用可以直接安装预编译二进制。
+没有任何内网依赖：工程加载器、模板解析、样式解析都在本仓库里，`cargo build` 拿到的就是你
+跑起来的那份二进制。需要 Rust 1.97+（oxc 前端的下限）。
+
+也可以直接装预编译二进制，见 Release 页。
 
 ## 使用
 
@@ -30,6 +24,10 @@ skylint
 
 # 指定项目根
 skylint ../my-miniapp
+
+# 只检查一个文件（不要求工程结构；跨文件规则不出结果）
+skylint page.wxml
+skylint app.wxss
 
 # 机器可读输出（CI / Agent 使用）
 skylint --json

@@ -9,7 +9,7 @@
 | # | 前提 | 影响 |
 |---|---|---|
 | P1 | skylint 是独立仓库（`github.com/wechat-miniprogram/skylint`），Rust 重写，目标可对外开源 | 不做 `minidev` 的子命令，不把 Skyline 语义放进 minidev |
-| P2 | minidev 通过内部 remote 取源码，后期再决定是否开源 | 依赖面收窄到 3 个 crate；所有接触点收敛在一个模块 |
+| P2 | ~~minidev 通过内部 remote 取源码~~ → **自有加载器**（2026-10-24） | 公开仓库零内网依赖，`cargo build` 直接可用 |
 | P3 | **minidev 提供事实，skylint 提供判断** | Skyline 支持表、规则、诊断策略、报告永远留在 skylint |
 
 P3 是硬边界。把「Skyline 支持哪些属性值」放进 minidev，skylint 开源就没有意义了——
@@ -19,22 +19,18 @@ P3 是硬边界。把「Skyline 支持哪些属性值」放进 minidev，skylint
 
 ```
 skylint/
-├── Cargo.toml                   # workspace；minidev crate 以普通版本依赖声明
-├── .cargo/config.toml.example   # [patch.crates-io] → 本机 minidev checkout
-├── crates/skylint-core/         # 全部判断逻辑
-└── crates/skylint-cli/          # 薄 CLI（clap）
+├── Cargo.toml                   # workspace；无任何内网依赖
+├── crates/skylint-core/         # 全部判断逻辑 + 自有工程加载器
+├── crates/skylint-cli/          # 薄 CLI（clap）
+└── crates/xtask/                # 发版脚本（构建 / 打包 / 上传）
 ```
 
-依赖形态（**已落地**）：公开 `Cargo.toml` 只写 `compiler-common = "0.10"` 这类普通版本依赖，
-开发期由 `.cargo/config.toml`（gitignore）的 `[patch.crates-io]` 指向本地 minidev。
-好处：
+依赖形态（**已落地**）：`skylint-core` 不依赖 minidev。工程加载器自建，见 §3。
 
-- 公开仓库不出现内网域名；
-- 不需要 cargo 的 git-source 替换（实测 `[patch]` 对 git 源仍会先 fetch 原地址，
-  `[source]` 替换 git→git 不被支持）；
-- minidev 发布到 crates.io 后，这里一行都不用改。
-
-代价：外部用户 clone 后无法 `cargo build`，只能装预编译二进制。等 minidev 开源/发布后解除。
+历史：曾用 `common` / `diag` / `compiler-graph` 三个内网 crate + `.cargo/config.toml` 的
+`[patch.crates-io]` 指向本地 checkout，代价是外部用户 clone 后无法 `cargo build`。
+实测「只加 feature 门控」并不能解除——Cargo 连 `optional = true` 的依赖也会去索引解析，
+内网 crate 不存在就直接失败。于是按「加载器自有」重写，三个依赖全部删除。
 
 ## 2. minidev 侧改造
 
@@ -76,14 +72,28 @@ skylint/
 ```
 crates/skylint-core/src/
 ├── diag.rs        # Diagnostic（rule/severity/path/line/col/end/help），1-based
-├── project.rs     # ProjectView + minidev_adapter（唯一接触面）
+├── project.rs     # Project + load/single_file 编排；styles/scripts/templates 收集
+├── project/fs.rs      # 文件视图：递归枚举、相对 miniprogramRoot 的读写
+├── project/paths.rs   # posix 路径工具（normalize / join / dirname）
+├── project/units.rs   # 后缀优先级（wxss←less/sass/scss、js←ts）→ 单元四件套
 ├── report.rs      # text / json 两种渲染
 └── （待建）input/{wxml,wxss,json}.rs、effective.rs、rules/
 ```
 
-`project.rs` 是与 minidev 的唯一接触点：只取**事实**（路由、四件套实际源文件、组件闭包、
-是否 Skyline 页面），永远读**原始** JSON——编译路径会注入 `disableScroll`/`navigationStyle`
-并摊平全局 `usingComponents`，那会抹掉「用户没写」和「继承来的」的区别。
+`project` 模块只取**事实**（路由、四件套实际源文件、组件闭包、是否 Skyline 页面），
+永远读**原始** JSON——编译路径会注入 `disableScroll`/`navigationStyle` 并摊平全局
+`usingComponents`，那会抹掉「用户没写」和「继承来的」的区别。
+
+加载器口径（与 miniprogram-ci 对齐，改这里必须先量四工程诊断）：
+
+- 文件枚举：递归、跳过 `node_modules` 与点目录、反斜杠归一；`list_files` 带
+  `miniprogramRoot` 前缀；
+- 后缀优先级由 `setting.useCompilerPlugins` 决定：`scss > sass > wxss`、`ts > js`；
+- 组件闭包：`usingComponents` BFS，npm 裸包名按 `<祖先目录>/miniprogram_npm/<name>`
+  逐级回溯（要求 json + wxml 同时存在），外加 `custom-tab-bar` / `app-bar` 入口；
+- 页面：`pages` + `subPackages`（兼容全小写 `subpackages`），分包 root 接受
+  `pkg` / `pkg/` / `/pkg`；
+- 单文件模式：`Project::single_file` 把孤立文件包成最小工程，CLI 传文件即走这条。
 
 ## 4. 阶段
 

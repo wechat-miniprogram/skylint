@@ -424,6 +424,85 @@ impl Project {
     pub fn abs(&self, rel: &str) -> PathBuf {
         self.root.join(self.miniprogram_root.as_str()).join(rel)
     }
+
+    /// 单文件视图：把一个孤立文件包成最小工程。
+    ///
+    /// 给没准备整包工程的开发者试规则用（`skylint page.wxml`）。代价是跨文件判断
+    /// 全部缺失：样式→节点、组件闭包、配置都是空的，只有单文件规则会出结果。
+    pub fn single_file(path: impl AsRef<Path>) -> anyhow::Result<Self> {
+        let path = path.as_ref();
+        let source = std::fs::read_to_string(path)
+            .map_err(|err| anyhow::anyhow!("{}: {err}", path.display()))?;
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let ext = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default();
+
+        let mut project = Self {
+            root: path.parent().unwrap_or(Path::new(".")).to_path_buf(),
+            miniprogram_root: String::new(),
+            // 单文件默认按 Skyline 工程算：用户想看的就是「这文件在 Skyline 下怎样」。
+            app_json: Map::from_iter([("renderer".to_string(), Value::String("skyline".into()))]),
+            app_json_source: String::new(),
+            project_config: Map::new(),
+            project_config_source: String::new(),
+            project_private_config: Map::new(),
+            project_private_config_source: String::new(),
+            pages: Vec::new(),
+            components: Vec::new(),
+            deps: BTreeMap::new(),
+            page_json: BTreeMap::new(),
+            page_json_source: BTreeMap::new(),
+            styles: Vec::new(),
+            scripts: Vec::new(),
+            template_files: Vec::new(),
+            warnings: Vec::new(),
+        };
+
+        match ext {
+            "wxml" => project.pages.push(PageUnit {
+                route: name.trim_end_matches(".wxml").to_string(),
+                is_skyline: true,
+                opted_out: false,
+                files: UnitFiles {
+                    wxml: Some(name),
+                    ..UnitFiles::default()
+                },
+            }),
+            "wxss" | "less" | "scss" | "sass" => match wxss::parse(&name, &source) {
+                Ok(doc) => project.styles.push(StyleSheet {
+                    doc,
+                    scopes: vec![Scope::Global],
+                }),
+                Err(ParseError::Empty) => {}
+                Err(ParseError::Syntax(detail)) => project.warnings.push(Diagnostic::new(
+                    "skylint/unparsed-style",
+                    Severity::Warning,
+                    format!("样式文件无法解析，其中的规则未做任何检查：{detail}"),
+                    name,
+                    1,
+                    1,
+                )),
+            },
+            "js" | "ts" => {
+                let Ok(doc) = JsDoc::parse(&name, &source) else {
+                    anyhow::bail!("{name}: 脚本语法错误")
+                };
+                project.scripts.push(JsFile {
+                    path: name.clone(),
+                    scope: Scope::Loose(name),
+                    doc,
+                });
+            }
+            other => anyhow::bail!("不支持的文件类型：.{other}（支持 wxml / wxss / js / ts）"),
+        }
+        Ok(project)
+    }
 }
 
 /// 组件闭包。

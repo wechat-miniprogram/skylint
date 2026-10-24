@@ -10,9 +10,9 @@ use skylint_core::{Project, Registry, Report, suppress};
 #[derive(Debug, Parser)]
 #[command(name = "skylint", version, about = "Skyline 小程序迁移检查工具")]
 struct Cli {
-    /// 项目根目录（含 project.config.json）
+    /// 项目根目录（含 project.config.json），或单个 .wxml / .wxss / .js 文件
     #[arg(default_value = ".", value_name = "PATH")]
-    project: PathBuf,
+    path: PathBuf,
 
     /// 输出 JSON（机器可读）
     #[arg(long)]
@@ -27,7 +27,13 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let registry = Registry::builtin();
 
-    let project = match Project::load(&cli.project) {
+    // 传文件时走单文件视图：不要求工程结构，但跨文件规则也没东西可比。
+    let loaded = if cli.path.is_file() {
+        Project::single_file(&cli.path)
+    } else {
+        Project::load(&cli.path)
+    };
+    let project = match loaded {
         Ok(project) => project,
         Err(err) => {
             eprintln!("skylint: {err}");

@@ -1,10 +1,8 @@
 # 发版
 
-`skylint-core` 依赖三个内网 crate（`common` / `diag` / `compiler-graph`），公开的
-GitHub Actions runner 拉不到，所以发版打包在能访问内网的机器上跑；最后一个动作才是
-调 GitHub API 把产物挂到 Release 上。
-
-脚本在 `crates/xtask`，只有构建、打包、上传三件事，没有隐藏状态：
+`skylint-core` 已无内网依赖，公开 runner 与内网机器都能构建。发版仍走脚本
+（`crates/xtask`），理由是可重跑、可干跑、流程固定，不依赖 runner 的隐式状态：
+构建、打包、上传三件事，没有隐藏状态。
 
 ```bash
 # 1. 提交 + 打 tag（tag 必须与 Cargo.toml 的版本一致）
@@ -55,8 +53,10 @@ dist/
 - tag 必须存在且与 `Cargo.toml` 的 `[workspace.package] version` 一致；
 - 目标必须在上面四平台之内。
 
-## 为什么不放在 GitHub Actions
+## 与 CI 的分工
 
-规则集与输入解析不依赖内网 crate，但这不足以让 CI 完成打包：`project.rs` 仍然需要
-`compiler-graph`。把发版交给脚本还有一个好处——流程固定、可重跑、不依赖 runner 环境。
-公开 CI 只负责 `fmt` 与（依赖解耦后）`clippy` / `test`。
+`.github/workflows/ci.yml` 只做 `fmt` / `clippy` / `test` / MSRV 检查，不产出二进制。
+发版保持「本地打 tag + 跑 xtask」的手动节奏：先干跑确认，再 `--upload`。
+
+如果要交给 GitHub Actions 打包，直接把 matrix 的每一格写成
+`cargo run -p xtask -- release --target <triple> --upload` 即可——脚本本身不假设宿主环境。

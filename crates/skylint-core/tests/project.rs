@@ -1,6 +1,7 @@
 //! 工程视图的端到端测试：真造一个磁盘工程，验证「路由 → 实际源文件」与
 //! 「是否 Skyline 页面」两条最容易被上游实现细节带偏的语义。
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -221,6 +222,39 @@ fn lowercase_subpackages_is_accepted() {
     let project = Project::load(f.path()).unwrap();
     let routes: Vec<&str> = project.pages.iter().map(|p| p.route.as_str()).collect();
     assert_eq!(routes, ["pages/a/a", "pkg/b/b"]);
+}
+
+#[test]
+fn single_file_wxml_is_lintable_without_a_project() {
+    let f = Fixture::new("single-wxml");
+    f.write("one.wxml", "<view>text<image/></view>");
+
+    let project = Project::single_file(f.path().join("one.wxml")).unwrap();
+    assert_eq!(project.pages.len(), 1);
+    assert!(project.pages[0].is_skyline);
+
+    let diagnostics = skylint_core::Registry::builtin().run(&project, &HashSet::new());
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.rule == "skyline/no-inline-text"),
+        "单文件也该跑单文件规则：{diagnostics:?}"
+    );
+}
+
+#[test]
+fn single_file_wxss_needs_no_project_layout() {
+    let f = Fixture::new("single-wxss");
+    f.write("one.wxss", ".a { user-select: none; }");
+
+    let project = Project::single_file(f.path().join("one.wxss")).unwrap();
+    let diagnostics = skylint_core::Registry::builtin().run(&project, &HashSet::new());
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.rule == "skyline/unsupported-property"),
+        "单文件也该跑声明级规则：{diagnostics:?}"
+    );
 }
 
 #[test]
