@@ -52,11 +52,20 @@ impl Rule for MultiValueLimit {
 
 fn value_limit(name: &str) -> Option<usize> {
     match name.to_ascii_lowercase().as_str() {
+        // 每一层背景/遮罩各一份；引擎逐层应用，超过两层直接丢声明
+        // （image_property_utils.h:390-403、:518-530、:655-666）。
         "background-image"
         | "mask-image"
         | "background-position"
+        | "mask-position"
+        | "background-position-x"
+        | "mask-position-x"
+        | "background-position-y"
+        | "mask-position-y"
         | "background-repeat"
-        | "background-size" => Some(2),
+        | "mask-repeat"
+        | "background-size"
+        | "mask-size" => Some(2),
         _ => None,
     }
 }
@@ -77,10 +86,15 @@ mod tests {
             .b { background-position: 0 0, 10px 10px, 20px 20px; }
             .c { background-repeat: no-repeat, repeat, repeat-x; }
             .d { background-size: 10px 10px, 20px 20px, 30px 30px; }
+            .e { mask-position: 0 0, 10px 10px, 20px 20px; }
+            .f { mask-repeat: no-repeat, repeat, repeat-x; }
+            .g { mask-size: 10px 10px, 20px 20px, 30px 30px; }
+            .h { background-position-x: 0, 10px, 20px; }
+            .i { mask-position-y: 0, 10px, 20px; }
             "#,
         );
         let diags = MultiValueLimit.check(&project);
-        assert_eq!(diags.len(), 4);
+        assert_eq!(diags.len(), 9);
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
         assert!(diags.iter().any(|d| d.message.contains("3 个")));
     }
@@ -97,6 +111,11 @@ mod tests {
             .e { background-size: 10px 10px; }
             .h { background-repeat: no-repeat, repeat; }
             .i { background-size: 10px 10px, 20px 20px; }
+            .j { mask-position: 0 0, 10px 10px; }
+            .k { mask-repeat: no-repeat, repeat; }
+            .l { mask-size: 10px 10px, 20px 20px; }
+            .m { background-position-x: 0, 10px; }
+            .n { mask-position-y: 0, 10px; }
             .f { background-image: var(--imgs); }
             .g { background-image: linear-gradient(red, blue), url(a.png); }
             "#,

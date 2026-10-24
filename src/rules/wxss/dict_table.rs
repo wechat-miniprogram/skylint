@@ -36,6 +36,16 @@ const UNSUPPORTED_PROPERTIES: &[(&str, &str)] = &[
         "user-select",
         "改用 `<text user-select=\"{{false}}\">` 属性",
     ), // css_property_names.h 无该属性 id
+    (
+        "-webkit-line-clamp",
+        "多行省略改用 `<text max-lines=\"\">`（引擎把该属性映射成 kInvalid，css_parser_impl.h:47）",
+    ),
+    // 引擎里没有这两个属性（css/、style/ 零命中），图片裁剪用 <image mode>。
+    (
+        "object-fit",
+        "图片裁剪改用 `<image mode=\"aspectFill\">` 等属性",
+    ),
+    ("object-position", "图片裁剪改用 `<image mode>`"),
 ];
 
 // 已移除 direction / overflow-x / overflow-y：引擎实际接受（css_parser_impl.h:136 映射 kDirection，

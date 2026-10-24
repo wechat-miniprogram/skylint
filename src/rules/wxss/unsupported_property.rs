@@ -66,10 +66,13 @@ mod tests {
             .e { justify-items: center; }
             .f { list-style-type: none; }
             .g { FLOAT: left; }
+            .h { -webkit-line-clamp: 2; }
+            .i { object-fit: cover; }
+            .j { object-position: center; }
             "#,
         );
         let diags = UnsupportedProperty.check(&project);
-        assert_eq!(diags.len(), 7);
+        assert_eq!(diags.len(), 10);
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Error));
         assert!(diags.iter().any(|d| d.message.contains("`float`")));
         assert!(diags.iter().any(|d| d.message.contains("`writing-mode`")));
