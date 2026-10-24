@@ -51,7 +51,7 @@ fp 会把同单位/纯角度的 `calc()` 折叠成字面值
 （`float-pigment-css/src/parser/property_value/calc.rs:187-225`、`:352-386`），
 规则却按「Skyline 不算 calc」报。`min(1rem,2rem)`、`rotate(calc(45deg))` 都是误报。
 
-### A8. `unsupported-api` / `is_plugin` 的工程级判定
+### A8. `unsupported-api` / `is_plugin` 的工程级判定 ✅核（`6ef867e`）
 `unsupported_api.rs:75-85` 遍历全部 `Project.scripts`，不看页面 `renderer` 与工程是否为 Skyline；
 纯 WebView 工程的 `this.animate` 会全量报。`rules/js/mod.rs:36-47` 的 `is_plugin` 按整个工程判，
 插件工程的**宿主页**用 `wx.router` 会被误报（限制只针对 `pluginRoot`）。
@@ -60,9 +60,12 @@ fp 会把同单位/纯角度的 `calc()` 折叠成字面值
 前者按「文件里任意 `.ref`」放行（`scroll_context_ref.rs:36-55`）；后者任意 `.scrollTo` 都查，
 且只看 `size`/`pixels` 键存在与否（`draggable_sheet_scroll_to.rs:17,37-45`）。
 
-### A10. `<import>` 文件的顶层节点被当页面查
+### A10. `<import>` 文件的顶层节点被当页面查 ✅核（`2e946a4`）
 `card.wxml` 顶层的 `<web-view>` 运行时不会渲染，却被 `unsupported-component` 报出（`c1g`）。
-`import` 只暴露 `<template name>` 定义体，`include` 才整份内联。
+``import` 只暴露 `<template name>` 定义体，`include` 才整份内联。
+
+处理：两种片段的根节点都不再参与「挂载位置」判定（`Direct`/`Ancestor`/`FirstChild`/`Unique`），
+`WxmlDoc.fragment` 按 `Project.template_files` 标记。`include` 的真正内联仍不做（见 §G 明确不改）。
 
 ### A11. `COVERAGE.md` 两处理由与实现矛盾
 #128 说「已按页面 opt-out 跳过」，但 `lib_version.rs:87-88` 的 `|| app_json.renderer == "skyline"`
@@ -174,13 +177,28 @@ fp 会把同单位/纯角度的 `calc()` 折叠成字面值
 ### 明确不改（证据不足或口径未定）
 
 - `<block slot>` 摊平丢 slot（`RequiresChild` 误报）：要保留 slot 就得改摊平模型，影响所有结构规则。
-- `<include>` 片段按独立文档检查：内联需要跨文件拼接，与「单文件可静态判定」的口径冲突。
+- `<include>` 真正内联（把片段内容拼进实例化处）：需要跨文件拼接并重编互斥分支组号，
+  与「单文件可静态判定」的口径冲突。片段根节点的挂载位置已改为跳过（见 §H）。
 - 大写标签（`<Scroll-View>`）：编译器把它当自定义组件，是否该与内置组件同判未定。
 - 根级 / 模板根级裸文本：`walk` 只从元素开始，需要新遍历入口。
 - `share-element` 的 `key=""`、模板内缺 key、`wx:for` + 静态 key：后者拿不到迭代次数。
 - `styleIsolation`（shared / apply-shared / isolated）：加载器没保留组件 json 内容，要先把 `styleIsolation` 带进 `Project`。
-- `<slot>` fallback 内容、`@use` / `@forward` 样式图、`componentGenerics.default` 闭包：需先确认 minidev / devtool 口径。
+- `<slot>` fallback 内容、`@use` / `@forward` 样式图：需先确认 minidev / devtool 口径
+  （四工程零 `@use`，当前无实际影响）。`componentGenerics.default` 已修（见 §H）。
 - `flex-flow` 不带 `flex-direction`、`flex-direction` 的 `initial`/分组选择器：反事实工程才有命中，留待下一批。
+
+## H. 落地记录（2026-10-24，P2/P3/P5 第二批）
+
+| 项 | 提交 | 依据 |
+|---|---|---|
+| 抽象收敛：`find_attr` 四份合一、config `warn` 构造器、`at_value_with` 支持 severity | `67539ae` | 纯重构，四工程 9 字段 0 diff |
+| `@keyframes` 块内声明参与检查 | `2e946a4` | oxc 的 `Statement::KeyframeBlock` 以前整块跳过；块内声明动画期间照样作用 |
+| 片段根节点不判挂载位置（`Direct`/`Ancestor`/`FirstChild`/`Unique`） | `2e946a4` | `WxmlDoc.fragment` 由 `Project.template_files` 标记；A10 的误报面 |
+| JS 规则按渲染器收敛（`this.animate` 只判 Skyline 单元） | `6ef867e` | 纯 WebView 页面照常支持；`app.js`/`utils/` 无单元归属不判 |
+| 插件限制只对 `pluginRoot` 下的代码成立 | `6ef867e` | `compileType: plugin` 的 `miniprogramRoot` 是宿主示例（plugin_1 的两块目录） |
+| `>>>` / `>>` 不再让整份样式表变成一条 `unparsed-style` | `e5f3a1b` | 解析失败时等长掩码重试，偏移不变；原先整份文件的声明级规则全部静默 |
+| `componentGenerics.{key}.default` 进组件闭包 | `caa2669` | minidev `compiler-graph/src/conf.rs:309-315` 与 usingComponents 一起入队 |
+| 单文件模式跳过四条配置规则 | `c505340` | 合成的 app.json 不是真工程，原会对着不存在的 `app.json:1:1` 报噪音 |
 
 ### 四工程当前基线
 
