@@ -95,6 +95,21 @@ crates/skylint-core/src/
   `pkg` / `pkg/` / `/pkg`；
 - 单文件模式：`Project::single_file` 把孤立文件包成最小工程，CLI 传文件即走这条。
 
+改加载器后的验收口径：拿解耦前最后一个 commit 的二进制做基线，四工程诊断按 9 字段
+（severity / rule / path / line / column / end_line / end_column / message / help）逐条 diff，
+再加 summary 里的 pages / skylinePages / components。步骤：
+
+```bash
+git worktree add /tmp/base <解耦前的 commit>
+# 旧版靠 .cargo/config.toml 的 [patch] 指向 minidev，从 git 历史取回该文件并改路径
+cd /tmp/base && cargo build --release -p skylint
+# 两个二进制 各跑四工程:  skylint <project> --json
+```
+
+diff 必须逐字段 identical（不是总数相等）。合成工程还要盖住四工程没有的形态：
+npm 裸包名（含 `@scope/`）、`componentGenerics` 默认值、`appBar`、`custom-tab-bar`、
+`subpackages` 全小写写法。
+
 ## 4. 阶段
 
 ### P0 地基
