@@ -8,7 +8,9 @@ Skyline 小程序迁移检查工具。适合 Webview 小程序使用 Agent 一�
 ## 构建
 
 ```bash
-cargo build --release
+cargo build --release        # 产物在 target/release/skylint
+# 或
+cargo install --path .
 ```
 
 没有任何内网依赖：工程加载器、模板解析、样式解析都在本仓库里，`cargo build` 拿到的就是你

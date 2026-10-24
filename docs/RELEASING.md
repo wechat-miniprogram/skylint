@@ -50,13 +50,13 @@ dist/
 脚本会在动手前检查，任何一条不满足都直接退出：
 
 - 工作区必须干净（发版只能从已提交的状态构建）；
-- tag 必须存在且与 `Cargo.toml` 的 `[workspace.package] version` 一致；
+- tag 必须存在且与 `Cargo.toml` 的 `[package] version` 一致；
 - 目标必须在上面四平台之内。
 
 ## 与 CI 的分工
 
 `.github/workflows/ci.yml` 只做 `fmt` / `clippy` / `test` / MSRV 检查，不产出二进制。
-发版保持「本地打 tag + 跑 xtask」的手动节奏：先干跑确认，再 `--upload`。
+发版保持「本地打 tag + 跑 release example」的手动节奏：先干跑确认，再 `--upload`。
 
 如果要交给 GitHub Actions 打包，直接把 matrix 的每一格写成
 `cargo run --example release -- release --target <triple> --upload` 即可——脚本本身不假设宿主环境。

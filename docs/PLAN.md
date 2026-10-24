@@ -39,40 +39,14 @@ skylint/
 实测「只加 feature 门控」并不能解除——Cargo 连 `optional = true` 的依赖也会去索引解析，
 内网 crate 不存在就直接失败。于是按「加载器自有」重写，三个依赖全部删除。
 
-## 2. minidev 侧改造
+## 2. minidev 侧改造（已废弃）
 
-分支：`skylint-p0`（从 `main` 0fc280f 切出）。
+这一段曾记录为复用 minidev 工程图而在 `skylint-p0` 分支上做的改造（关掉 `reqwest`、
+分包前缀按路径段匹配、`is_skyline_page` 提取、撤销的 `page_comps` 等）。加载器自建后
+这些改动不再被 skylint 依赖，正文删除；要考据看 `git log -- docs/PLAN.md`。
 
-### 2.1 已落地
-
-| ID | 内容 | 位置 |
-|---|---|---|
-| M1 `[x]` | `jsonschema` 关闭默认 feature，去掉 `reqwest`/`rustls`/`tokio`（约 360 个包） | `crates/graph/Cargo.toml` |
-| M2 `[x]` | 分包前缀按路径段边界匹配（`pkg` 不再命中 `pkg2/`）。含 `conf.rs` 两处 + `mutate.rs` 两处 | `conf.rs` `in_package` / `mutate.rs` |
-| M3 `[x]` | 删除 9 份死副本 `src/json/schema_*.json`（`include_str!` 实际用 `json/json/`） | `crates/graph/src/json/` |
-| M6 `[x]` | `resolve_component_path2` → `pub fn resolve_component_path`，可被外部调用 | `mutate.rs` / `lib.rs` |
-| M8 `[x]` | 提取 `pub fn is_skyline_page(app, page_json)`，编译器与 lint 共用同一定义 | `mutate.rs` / `lib.rs` |
-
-验证：`cargo test -p compiler-graph` 70 passed；`cargo tree -p compiler-graph | grep -c reqwest` = 0。
-
-### 2.2 已结（含撤销项）
-
-| ID | 结论 | 说明 |
-|---|---|---|
-| M4 `[x]` | 补上 `checkComponentFramework` | 只校验 `all_pages` 里的页面：skyline 页面必须 `componentFramework == "glass-easel"`（页面级优先、缺省回落 app.json）。组件沿用 app 级声明。与 `check_renderer` 共用 `is_skyline_page`。lint 因此不需要这条规则 |
-| M7 `[—]` | **撤销** | 原计划给 `AppConf` 加 `page_comps`/`comp_children`。但 `collect_page_deps` 用 `resolve_path` 做词法拼接，npm 裸包名解析不出来；在 minidev 里补一份 npm 不完整的映射，比 skylint 自建闭包更糟。skylint 的 `collect_components` 已经按 `resolve_component_path` 的语义自己走 BFS，页→组件边也在那一处一并记录 |
-| M9 `[—]` | **撤销** | 约定的是「lint 用 `compiler-diag` 的 DTO」，实际 skylint 有自己的 `Diagnostic`，只从 `compiler_diag::Diagnostic` 里取 `message` 贴到加载失败信息上；`Severity::Info`、`end_line`/`end_column` 没有任何消费者 |
-| M5 `[—]` | **不是缺陷** | `on_file_change` 的注释写明 TS 侧 `onFileChange` 为空实现、conf 靠 `getConf` 时全量重建，minidev 同步如此。常驻进程读的是重建后的 conf，不会陈旧 |
-
-### 2.3 待验证
-
-| ID | 问题 | 已知证据 |
-|---|---|---|
-| **V1** `[x]` | **已确认**：`collect_comps` 把 `usingComponents` 的值纯词法拼到引用方目录（`conf.rs:185-282`），`my-lib/button` 这类 npm 裸名 stat 失败后被静默丢弃——`miniprogram_npm` 回溯只存在于 `check_component_path`。**已解在 lint 侧**：自建闭包，种子取 `AppConf.comps`（兜住 appBar / custom-tab-bar / agent.skills 等非声明式入口）+ 页面与 app 的 `usingComponents`，npm 分支交给编译器的 `resolve_component_path`。`collect_comps` 不动 | 2026-10-22 补充取证：①`json/generate.rs:229` 的组件 json 产物**只**由 `conf.comps` 驱动，所以 `comps` 漏掉的组件在产物里就没有 json——而页面 json 里的引用已被 `check_component_path` 改写成 `../../miniprogram_npm/...`，即产物会留下悬空引用；②但 3 个真实工程（miniprogram-novel / businessview / miniprogram-skit_1，共 110 个 json）**没有一个**用 npm 裸名，全部写相对路径进 `miniprogram_npm/`；③TS 侧 `loadComp` 是否做同样回溯无从查证（仓库里没有 TS 源），无法排除「TS 也漏、devtools 靠别处兜底」。因此仍不改 `collect_comps`：改了会动产物字节，语料 golden 可能失败，而收益在真实工程上尚未被观测到。若将来真要修，验法是造一个 `miniprogram_npm/comp/index.{json,wxml}` + `usingComponents:{"comp":"comp"}` 的 fixture，断言产物里出现该 json |
-
-### 2.4 明确不改
-
-`collect_comps` 的解析语义（parity 区）；不加 WXSS 解析器/规则表/报告器；不加 `minidev lint` 子命令。
+唯一仍成立的结论：组件闭包不能靠词法拼接，npm 裸包名必须做 `miniprogram_npm` 回溯
+——现在由 `src/project.rs` 的 `resolve_npm_unit` 实现。
 
 ## 3. 结构
 
@@ -529,7 +503,7 @@ worklet」）用一次过滤算出来，不做增量缓存。
 
 | # | 风险 | 缓解 |
 |---|---|---|
-| R1 | 公开仓库依赖未开源的 minidev，外部不可构建 | 二进制为分发主通道；`[patch.crates-io]` 单点切换 |
+| R1 | 加载器的语义正确性由我们自己负责（不再有编译器团队兜底） | 四工程 + 合成工程逐字段对拍；口径与复验步骤见 §3 |
 | R2 | 改 minidev 破坏 parity | 行为变更（M4/V1）必须先有 fixture 证明「原行为是错的」 |
 | R3 | 知识库自身矛盾（`form` / `calc` / `scroll-view type` / `display:inline`） | 实现前到 skyline 源码取实证 |
 | R4 | 规则噪声 | negative fixture 下限；默认只开 error；inline disable |
