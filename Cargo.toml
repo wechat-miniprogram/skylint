@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/skylint-core", "crates/skylint-cli"]
+members = ["crates/skylint-core", "crates/skylint-cli", "crates/xtask"]
 
 [workspace.package]
 version = "2.0.0"
@@ -18,12 +18,14 @@ skylint-core = { path = "crates/skylint-core" }
 # minidev 发布到 crates.io 后此处无需改动。
 common = "0.12"
 diag = "0.12"
+compiler-graph = "0.12"
+
 # 终端渲染：与 minidev 的错误出口同一套（GraphicalReportHandler）。
 # fancy-no-backtrace 不带 backtrace，够渲染源码片段 + caret。
 miette = { version = "7.6", default-features = false, features = ["fancy-no-backtrace"] }
-compiler-graph = "0.12"
 
 anyhow = "1"
 clap = { version = "4", features = ["derive", "wrap_help"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+ureq = "3"
