@@ -258,6 +258,24 @@ fn single_file_wxss_needs_no_project_layout() {
 }
 
 #[test]
+fn malformed_app_json_types_fail_loudly() {
+    // 类型写错必须在加载阶段失败：静默当成 0 个页面，等于所有规则都不跑却没人知道。
+    for (name, app_json) in [
+        ("app-pages-type", r#"{"pages":"pages/a"}"#),
+        ("app-subs-type", r#"{"pages":[],"subPackages":"pkg"}"#),
+        (
+            "app-sub-root",
+            r#"{"pages":[],"subPackages":[{"pages":["a"]}]}"#,
+        ),
+    ] {
+        let f = Fixture::new(name);
+        f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write("app.json", app_json);
+        assert!(Project::load(f.path()).is_err(), "{app_json} 应该加载失败");
+    }
+}
+
+#[test]
 fn missing_app_json_is_an_error() {
     let f = Fixture::new("no-app");
     f.write("project.config.json", r#"{"miniprogramRoot":""}"#);

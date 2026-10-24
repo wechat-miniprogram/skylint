@@ -160,7 +160,9 @@ impl Project {
             serde_json::from_str(&app_source).map_err(|err| anyhow::anyhow!("app.json: {err}"))?;
         let exts = Exts::from_config(&config);
         let app_json = Value::Object(app_value.clone());
-        let routes: Vec<String> = routes_of_app(&app_value);
+        let app_routes: AppRoutes = serde_json::from_value(app_json.clone())
+            .map_err(|err| anyhow::anyhow!("app.json: {err}"))?;
+        let routes = app_routes.routes();
 
         let mut warnings = Vec::new();
 
@@ -564,45 +566,40 @@ fn routes_of(fs: &LocalFs, root: &str, unit: &str, json: &Map<String, Value>) ->
         .collect()
 }
 
-/// app.json 的页面清单：主包 pages + 分包（`subPackages`，兼容全小写写法）。
+/// app.json 里本项目真正消费的部分：页面清单与分包。
 ///
-/// 分包 root 的真编译器接受 `pkg` / `pkg/` / `/pkg` 三种形态，这里统一去首尾 `/`。
-fn routes_of_app(app: &Map<String, Value>) -> Vec<String> {
-    let mut routes: Vec<String> = app
-        .get("pages")
-        .and_then(Value::as_array)
-        .map(|pages| {
-            pages
-                .iter()
-                .filter_map(Value::as_str)
-                .map(String::from)
-                .collect()
-        })
-        .unwrap_or_default();
-    let subs = app
-        .get("subPackages")
-        .or_else(|| app.get("subpackages"))
-        .and_then(Value::as_array);
-    for sub in subs.into_iter().flatten() {
-        let root = sub
-            .get("root")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim_matches('/');
-        let pages = sub
-            .get("pages")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten();
-        for page in pages.filter_map(Value::as_str) {
-            routes.push(if root.is_empty() {
-                page.to_string()
-            } else {
-                format!("{root}/{page}")
-            });
+/// 用类型而不是 `Value::get` 读，是为了让「类型写错了」在加载阶段就失败：
+/// `"pages": "pages/a"` 这种手误会静默变成 0 个页面，于是所有规则一条都不跑。
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default)]
+struct AppRoutes {
+    pages: Vec<String>,
+    #[serde(rename = "subPackages", alias = "subpackages")]
+    sub_packages: Vec<SubPackage>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SubPackage {
+    root: String,
+    pages: Vec<String>,
+}
+
+impl AppRoutes {
+    /// 分包页在调用方看来已带 root 前缀；root 接受 `pkg` / `pkg/` / `/pkg` 三种写法。
+    fn routes(&self) -> Vec<String> {
+        let mut routes = self.pages.clone();
+        for sub in &self.sub_packages {
+            let root = sub.root.trim_matches('/');
+            for page in &sub.pages {
+                routes.push(if root.is_empty() {
+                    page.clone()
+                } else {
+                    format!("{root}/{page}")
+                });
+            }
         }
+        routes
     }
-    routes
 }
 
 /// 页面级 `renderer` 优先，缺省回落 app.json。
