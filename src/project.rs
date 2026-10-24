@@ -234,7 +234,7 @@ impl Project {
             })
             .collect();
 
-        let app_declared = using_component_names(&app_value);
+        let app_declared = declared_component_names(&app_value);
         let mut declared_components: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut declare = |wxml: Option<&str>, names: &BTreeSet<String>| {
             if let Some(wxml) = wxml {
@@ -251,7 +251,7 @@ impl Project {
                 .find(|(route, _)| route == &page.route)
                 .and_then(|(_, json)| json.as_ref())
             {
-                names.extend(using_component_names(json));
+                names.extend(declared_component_names(json));
             }
             declare(page.files.wxml.as_deref(), &names);
         }
@@ -632,7 +632,7 @@ fn collect_components(
             continue;
         };
         comps.push(unit.clone());
-        declared.insert(unit.clone(), using_component_names(&json));
+        declared.insert(unit.clone(), declared_component_names(&json));
         let targets = routes_of(fs, root, &unit, &json);
         queue.extend(targets.iter().cloned());
         deps.insert(unit, targets);
@@ -646,11 +646,28 @@ fn collect_components(
 }
 
 /// 一个单元声明的组件引用解析后得到的根相对路径。
+///
+/// `usingComponents` 之外还有 `componentGenerics.{key}.default`：默认实现同样会被
+/// 编译器加载（minidev `compiler-graph/src/conf.rs:309-315` 一并入队），
+/// 漏掉它这个组件就完全不参与检查。
 fn routes_of(fs: &LocalFs, root: &str, unit: &str, json: &Map<String, Value>) -> Vec<String> {
     using_components(json)
-        .iter()
-        .filter_map(|target| resolve_component_route(fs, root, unit, target))
+        .into_iter()
+        .chain(generic_defaults(json))
+        .filter_map(|target| resolve_component_route(fs, root, unit, &target))
         .collect()
+}
+
+fn generic_defaults(json: &Map<String, Value>) -> Vec<String> {
+    json.get("componentGenerics")
+        .and_then(Value::as_object)
+        .map(|map| {
+            map.values()
+                .filter_map(|generic| generic.get("default").and_then(Value::as_str))
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// app.json 里本项目真正消费的部分：页面清单与分包。
@@ -718,12 +735,16 @@ fn app_seeds(fs: &LocalFs, root: &str, app: &Map<String, Value>) -> Vec<String> 
     seeds
 }
 
-/// `usingComponents` 的**标签名**（key），小写化。
-fn using_component_names(json: &Map<String, Value>) -> BTreeSet<String> {
-    json.get("usingComponents")
-        .and_then(Value::as_object)
-        .map(|map| map.keys().map(|name| name.to_ascii_lowercase()).collect())
-        .unwrap_or_default()
+/// 单元声明的组件**标签名**（key），小写化。
+///
+/// `componentGenerics` 的 key 也是标签名（`<my-card generic:xxx>`），同样会遮住
+/// 同名内置组件。
+fn declared_component_names(json: &Map<String, Value>) -> BTreeSet<String> {
+    ["usingComponents", "componentGenerics"]
+        .iter()
+        .filter_map(|field| json.get(*field).and_then(Value::as_object))
+        .flat_map(|map| map.keys().map(|name| name.to_ascii_lowercase()))
+        .collect()
 }
 
 fn using_components(json: &Map<String, Value>) -> Vec<String> {

@@ -337,6 +337,35 @@ fn unparsable_wxml_is_reported_not_silently_skipped() {
     assert_eq!(reported[0].path, "pages/index/index.wxml");
 }
 
+/// `componentGenerics.{key}.default` 也是组件引用：编译器会加载默认实现，
+/// 漏掉它这个组件完全不参与检查（minidev `compiler-graph/src/conf.rs:309-315`）。
+#[test]
+fn component_generics_default_joins_the_closure() {
+    let f = standard_project("generics");
+    f.write(
+        "miniprogram/pages/index/index.json",
+        r#"{"usingComponents":{"card":"/components/card/card"},"componentGenerics":{"slot-comp":{"default":"/components/slot-comp/slot-comp"}}}"#,
+    );
+    f.write(
+        "miniprogram/components/slot-comp/slot-comp.json",
+        r#"{"component":true}"#,
+    )
+    .write("miniprogram/components/slot-comp/slot-comp.wxml", "<view/>");
+    let project = Project::load(f.path()).unwrap();
+    assert!(
+        project
+            .components
+            .iter()
+            .any(|component| component.path == "components/slot-comp/slot-comp"),
+        "{:?}",
+        project
+            .components
+            .iter()
+            .map(|component| &component.path)
+            .collect::<Vec<_>>()
+    );
+}
+
 /// BOM 是合法字节但不是合法 JSON / CSS 前缀，读入时要去掉。
 #[test]
 fn utf8_bom_is_stripped_for_config_and_styles() {
