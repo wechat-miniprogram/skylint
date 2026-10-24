@@ -32,7 +32,7 @@ skylint
 skylint ../my-miniapp
 
 # 机器可读输出（CI / Agent 使用）
-skylint --format json
+skylint --json
 
 # 跳过某些规则（可重复）
 skylint --ignore skyline/no-pseudo --ignore skyline/flex-direction

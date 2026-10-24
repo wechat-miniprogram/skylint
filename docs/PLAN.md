@@ -112,7 +112,7 @@ crates/skylint-core/src/
 | 0.2 | minidev 低风险批 M1/M2/M3/M6/M8 | `[x]` |
 | 0.3 | minidev M4（M7/M9 已撤销，见 2.2） | `[x]` |
 | 0.4 | `ProjectView` + `Project::load` + 报告管道 + 单文件失败不终止 | `[x]` 真实工程验证：31 页混合项目（3 skyline）与独立脚本逐页对照一致 |
-| 0.5 | CLI：`--format text/json`、退出码（0 无 error / 1 有 error / 2 加载失败）、`--ignore`、inline disable；text 用 miette 图形报告（源码片段 + 行列定位，TTY 自动上色） | `[x]` |
+| 0.5 | CLI：`--json`（默认 text）、退出码（0 无 error / 1 有 error / 2 加载失败）、`--ignore`、inline disable；text 用 miette 图形报告（源码片段 + 行列定位，TTY 自动上色） | `[x]` |
 | 0.6 | 6 条规则验证管道：`unsupported-component`、`scroll-view-type`、`no-pseudo`、`box-sizing`、`no-inline-text`、`flex-direction` | `[x]` |
 | 0.7 | 规则文档从代码生成（`docs/RULES.md`） | `[x]` |
 

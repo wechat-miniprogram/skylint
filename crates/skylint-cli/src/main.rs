@@ -3,15 +3,9 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use skylint_core::report::Style;
 use skylint_core::{Project, Registry, Report, suppress};
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum Format {
-    Text,
-    Json,
-}
 
 #[derive(Debug, Parser)]
 #[command(name = "skylint", version, about = "Skyline 小程序迁移检查工具")]
@@ -20,9 +14,9 @@ struct Cli {
     #[arg(default_value = ".", value_name = "PATH")]
     project: PathBuf,
 
-    /// 输出格式
-    #[arg(long, value_enum, default_value_t = Format::Text)]
-    format: Format,
+    /// 输出 JSON（机器可读）
+    #[arg(long)]
+    json: bool,
 
     /// 跳过的规则 id（可重复）
     #[arg(long = "ignore", value_name = "RULE")]
@@ -45,8 +39,10 @@ fn main() -> ExitCode {
     let diagnostics = suppress::apply(&project, registry.run(&project, &ignored));
     let report = Report::new(&project, diagnostics);
 
-    match cli.format {
-        Format::Text => print!(
+    if cli.json {
+        println!("{}", report.to_json());
+    } else {
+        print!(
             "{}",
             report.to_text(
                 |path| {
@@ -64,8 +60,7 @@ fn main() -> ExitCode {
                         .unwrap_or(100),
                 }
             )
-        ),
-        Format::Json => println!("{}", report.to_json()),
+        );
     }
 
     if report.has_errors() {
