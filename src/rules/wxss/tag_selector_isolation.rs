@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, HashMap};
 use serde_json::{Map, Value};
 
 use crate::input::wxml::WxmlDoc;
-use crate::project::{Project, Scope};
+use crate::project::{Project, Scope, StyleIsolation};
 use crate::rules::RuleMeta;
 use crate::{Diagnostic, Severity};
 
@@ -93,7 +93,17 @@ impl crate::rules::Rule for TagSelectorIsolation {
                     Scope::Component(path) => {
                         // 组件样式漏到外部：用到它的页面，以及同一页面里的兄弟组件。
                         // WebView 能命中，Skyline 不跨作用域。
-                        let pages = project.component_pages(path);
+                        //
+                        // `styleIsolation: shared` 是例外：它的规则拿到的是页面那一份
+                        // scope（`space.ts:633-636`），页面节点按主 scope 查规则集时
+                        // 就会命中（`selector_matcher.cc:456-460` 用的是节点主 scope），
+                        // 与 WebView 一致，只剩兄弟组件还会失效。
+                        let shared = project.style_isolation(path) == StyleIsolation::Shared;
+                        let pages = if shared {
+                            Vec::new()
+                        } else {
+                            project.component_pages(path)
+                        };
                         let mut foreign = pages.clone();
                         for page in &pages {
                             for component in project.page_components(page) {
@@ -366,6 +376,26 @@ mod tests {
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
         assert_eq!(diagnostics[0].path, "components/c/c.wxss");
         assert!(diagnostics[0].message.contains("components/d/d"));
+    }
+
+    /// `styleIsolation: shared` 的组件规则拿到页面那份 scope，页面节点照样命中，
+    /// 与 WebView 一致；`apply-shared` 只放开 class，标签选择器仍然不跨作用域。
+    #[test]
+    fn shared_isolation_reaches_page_but_apply_shared_does_not() {
+        let shared = fixture("component-shared", "");
+        shared
+            .write("components/c/c.json", r#"{"styleIsolation":"shared"}"#)
+            .write("components/c/c.wxss", "view { margin: 0; }");
+        assert!(check(&shared).is_empty(), "{:?}", check(&shared));
+
+        let applied = fixture("component-apply-shared", "");
+        applied
+            .write(
+                "components/c/c.json",
+                r#"{"styleIsolation":"apply-shared"}"#,
+            )
+            .write("components/c/c.wxss", "view { margin: 0; }");
+        assert_eq!(check(&applied).len(), 1);
     }
 
     /// 组件自己的标签选择器命中的是自己内部的节点，不算跨作用域。

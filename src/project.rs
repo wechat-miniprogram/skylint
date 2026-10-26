@@ -132,6 +132,13 @@ pub struct Project {
     /// 声明了同名标签时它会遮住内置组件，规则不能把 `<navigation-bar>` 这类
     /// 自定义组件当成不支持的内置组件。模板文件不属于任何单元，不在这张表里。
     pub declared_components: BTreeMap<String, BTreeSet<String>>,
+    /// 组件 json 原始对象（按组件路径）。
+    ///
+    /// 组件 json 不是只管 `usingComponents`：`styleIsolation` / `addGlobalClass` 决定
+    /// 样式能不能跨组件边界作用，`disableScroll` 这类页面级开关写在这里也没有读者。
+    pub component_json: BTreeMap<String, Map<String, Value>>,
+    /// 组件 json 原文（与 `component_json` 同 key）。
+    pub component_json_source: BTreeMap<String, String>,
     /// 页面 json 原文（与 `page_json` 同 key），用于把诊断落到具体行列。
     pub page_json_source: BTreeMap<String, String>,
     /// 样式文件 → 引入方（`app.wxss` 记为 [`Scope::Global`]），按路径排序。
@@ -199,6 +206,30 @@ impl Project {
     }
 
     /// 传递用到某个组件的页面。
+    /// 组件的样式隔离级别（`styleIsolation`，`addGlobalClass` 是它的旧写法）。
+    ///
+    /// 归一规则见 `wxapplib/src/glass-easel-adapter/src/space.ts:610-640`：没写
+    /// `styleIsolation` 时 `addGlobalClass: true` 等价于 `apply-shared`，否则
+    /// `isolated`；`page-*` 前缀的三个值分别等同去掉前缀的三个值。
+    pub fn style_isolation(&self, path: &str) -> StyleIsolation {
+        let json = self.component_json.get(path);
+        match json
+            .and_then(|json| json.get("styleIsolation"))
+            .and_then(Value::as_str)
+        {
+            Some("shared" | "page-shared") => StyleIsolation::Shared,
+            Some("apply-shared" | "page-apply-shared") => StyleIsolation::ApplyShared,
+            Some("isolated" | "page-isolated") => StyleIsolation::Isolated,
+            _ if json
+                .and_then(|json| json.get("addGlobalClass"))
+                .is_some_and(truthy) =>
+            {
+                StyleIsolation::ApplyShared
+            }
+            _ => StyleIsolation::Isolated,
+        }
+    }
+
     pub fn component_pages(&self, path: &str) -> Vec<&str> {
         self.pages
             .iter()
@@ -390,6 +421,8 @@ impl Project {
             plugin_root: None,
             // 单文件默认按 Skyline 工程算：用户想看的就是「这文件在 Skyline 下怎样」。
             app_json: Map::from_iter([("renderer".to_string(), Value::String("skyline".into()))]),
+            component_json: BTreeMap::new(),
+            component_json_source: BTreeMap::new(),
             app_json_source: String::new(),
             project_config: Map::new(),
             project_config_source: String::new(),
@@ -446,6 +479,17 @@ impl Project {
         }
         Ok(project)
     }
+}
+
+/// 组件的样式隔离级别。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StyleIsolation {
+    /// 组件样式只作用于自己，外部样式也进不来。
+    Isolated,
+    /// 组件样式不外泄，但全局（页面 / app）的 class 样式能进来。
+    ApplyShared,
+    /// 双向共享：组件样式拿到页面那一份 scope，页面节点也会被命中。
+    Shared,
 }
 
 /// 工程根下的共享上下文：配置只读一次，宿主与插件两个视图共用。
@@ -600,8 +644,13 @@ impl Loaded {
 
         let component_graph =
             collect_components(fs, base, view.app, &page_json, &view.seeds, &mut warnings);
-        let components: Vec<ComponentUnit> = component_graph
-            .paths
+        let ComponentGraph {
+            paths: component_paths,
+            declared: component_declared,
+            json: component_json,
+            ..
+        } = component_graph;
+        let components: Vec<ComponentUnit> = component_paths
             .into_iter()
             .map(|path| ComponentUnit {
                 files: resolve_unit(exts, fs, base, &path),
@@ -609,6 +658,14 @@ impl Loaded {
             })
             .collect();
 
+        // 组件 json 原文：配置类规则要指到用户写的那一行。
+        let component_json_source: BTreeMap<String, String> = component_json
+            .keys()
+            .map(|path| {
+                let rel = format!("{path}.json");
+                (path.clone(), fs.read_file(base, &rel).unwrap_or_default())
+            })
+            .collect();
         let app_declared = declared_component_names(view.app);
         let mut declared_components: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
         let mut declare = |wxml: Option<&str>, names: &BTreeSet<String>| {
@@ -632,7 +689,7 @@ impl Loaded {
         }
         for component in &components {
             let mut names = app_declared.clone();
-            if let Some(own) = component_graph.declared.get(&component.path) {
+            if let Some(own) = component_declared.get(&component.path) {
                 names.extend(own.iter().cloned());
             }
             declare(component.files.wxml.as_deref(), &names);
@@ -674,6 +731,8 @@ impl Loaded {
             project_private_config_source: self.private_config_source.clone(),
             pages,
             components,
+            component_json,
+            component_json_source,
             deps: component_graph.deps,
             page_json: page_json
                 .into_iter()
@@ -731,6 +790,11 @@ struct ComponentGraph {
     deps: BTreeMap<String, Vec<String>>,
     /// 组件路径 → 它自己声明的组件标签名。
     declared: BTreeMap<String, BTreeSet<String>>,
+    /// 组件路径 → 组件 json 对象。
+    ///
+    /// 组件 json 里也有规则要读的东西（`styleIsolation` / `addGlobalClass` /
+    /// `disableScroll`），以前只拿来展开组件闭包就丢掉了。
+    json: BTreeMap<String, Map<String, Value>>,
 }
 
 fn collect_components(
@@ -763,6 +827,7 @@ fn collect_components(
 
     let mut comps: Vec<String> = Vec::new();
     let mut declared: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut jsons: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
     while let Some(unit) = queue.pop() {
         if comps.contains(&unit) {
             continue;
@@ -773,6 +838,7 @@ fn collect_components(
         };
         comps.push(unit.clone());
         declared.insert(unit.clone(), declared_component_names(&json));
+        jsons.insert(unit.clone(), json.clone());
         let targets = routes_of(fs, root, &unit, &json);
         queue.extend(targets.iter().cloned());
         deps.insert(unit, targets);
@@ -782,6 +848,7 @@ fn collect_components(
         paths: comps,
         deps,
         declared,
+        json: jsons,
     }
 }
 

@@ -41,6 +41,7 @@ impl Rule for ConfigIgnored {
         }
         let mut out = Vec::new();
         check_app_scroll(project, &mut out);
+        check_component_scroll(project, &mut out);
         check_project_setting(project, &mut out);
         out
     }
@@ -66,6 +67,28 @@ fn check_app_scroll(project: &Project, out: &mut Vec<Diagnostic>) {
         "app.json 里的 `disableScroll` 不生效，它只能写在页面 json".to_string(),
         "Skyline 页面默认不滚动（`check_renderer` 会把 skyline 页的 `disableScroll` 改成 true）；需要关滚动的页面，把 `disableScroll: true` 写在该页的 json 里",
     );
+}
+
+/// 组件 json 里的 `disableScroll` 同样没有读者：它是页面级配置
+/// （官方文档「只在页面 json 中有效」），组件配置里没有任何代码读它。
+fn check_component_scroll(project: &Project, out: &mut Vec<Diagnostic>) {
+    for (path, json) in &project.component_json {
+        if !json.contains_key("disableScroll") {
+            continue;
+        }
+        let source = project
+            .component_json_source
+            .get(path)
+            .map_or("", String::as_str);
+        warn(
+            out,
+            ConfigIgnored::ID,
+            &format!("{path}.json"),
+            JsonPositions::new(source).key("disableScroll"),
+            "`disableScroll` 是页面级配置，写在组件 json 里没有读者".to_string(),
+            "把 disableScroll 写到需要关滚动的页面 json 里",
+        );
+    }
 }
 
 /// `setting` 里的开关由开发者工具按真值读取，类型不符比缺失更危险。
@@ -180,6 +203,31 @@ mod tests {
         let diags = ConfigIgnored.check(&project);
         assert_eq!(diags.len(), 1);
         assert_eq!((diags[0].line, diags[0].column), (5, 5), "应指向键本身");
+    }
+
+    #[test]
+    fn reports_disable_scroll_in_component_json() {
+        let f = Fixture::new("config-ignored-component-scroll");
+        f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"card":"/components/card/card"}}"#,
+            )
+            .write("pages/index/index.wxml", "<card/>")
+            .write(
+                "components/card/card.json",
+                "{\n  \"component\": true,\n  \"disableScroll\": true\n}",
+            )
+            .write("components/card/card.wxml", "<view/>");
+        let project = f.project();
+        let diags = ConfigIgnored.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert_eq!(diags[0].path, "components/card/card.json");
+        assert_eq!((diags[0].line, diags[0].column), (3, 3));
     }
 
     #[test]
