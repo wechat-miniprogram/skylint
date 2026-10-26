@@ -616,7 +616,16 @@ fn style_attributes(style: &StyleAttribute, source: &str) -> Vec<WxmlAttribute> 
 fn full_name(prefix: Option<&Range<Position>>, name: &Ident, source: &str) -> String {
     match prefix {
         Some(prefix) => slice(source, prefix.start..name.location.end),
-        None => name.name.to_string(),
+        // 模板编译器会改写属性名：`data-theme` 被剥成 `theme`、自定义组件插槽上的
+        // 连字符名被驼峰化。名字以原文为准，位置区间始终指向原始拼写。
+        None => {
+            let raw = slice(source, name.location.start..name.location.end);
+            if raw.is_empty() {
+                name.name.to_string()
+            } else {
+                raw
+            }
+        }
     }
 }
 
