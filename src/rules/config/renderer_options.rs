@@ -68,6 +68,12 @@ const KNOWN: &[(&str, Kind, Where)] = &[
 /// app 级 `rendererOptions` 顶层**不生效**的键：运行时只读
 /// `rendererOptions.skyline.*`（`runtime/index.ts:126-151`）。
 /// `defaultDisplayBlock` 不在此列——运行时两种写法都认。
+/// app 级 `rendererOptions` 顶层**会**被读取的键。
+///
+/// 运行时只认这两个（`runtime/index.ts:139` 的 `?.defaultDisplayBlock`、`:126`
+/// 起的 `?.skyline?.`）加上 `__useTextStyle`（`typings/wxConfig.d.ts:92`）。
+const APP_TOP_READ_KEYS: &[&str] = &["defaultDisplayBlock", "__useTextStyle"];
+
 const SKYLINE_ONLY_TOP: &[&str] = &[
     "defaultContentBox",
     "enableImagePreload",
@@ -184,9 +190,7 @@ fn check_file(
             continue;
         }
         if level == Level::Page {
-            if kind_of(key).is_none() {
-                continue;
-            }
+            // 页面级只读 rendererOptions.skyline.*，顶层任何键（含不认识的）都没有读者。
             warn(
                 out,
                 RendererOptions::ID,
@@ -197,8 +201,8 @@ fn check_file(
                 ),
                 "把该开关移进 rendererOptions.skyline 下",
             );
-        } else if key == "defaultDisplayBlock" {
-            // 运行时明确读取 rendererOptions.defaultDisplayBlock。
+        } else if APP_TOP_READ_KEYS.contains(&key.as_str()) {
+            // 运行时明确读取这两个键。
         } else if SKYLINE_ONLY_TOP.contains(&key.as_str()) {
             warn(
                 out,
@@ -209,6 +213,17 @@ fn check_file(
                     "app 级 `{key}` 写在 rendererOptions 顶层不会生效，运行时只读 rendererOptions.skyline.{key}"
                 ),
                 "把该配置移进 rendererOptions.skyline 下",
+            );
+        } else {
+            warn(
+                out,
+                RendererOptions::ID,
+                path,
+                positions.key(key),
+                format!(
+                    "app 级 `rendererOptions.{key}` 没有读者：app 级只读 rendererOptions.defaultDisplayBlock 与 rendererOptions.skyline.*"
+                ),
+                "把开关移进 rendererOptions.skyline 下；已知配置项见 skyline-config/references/app-config.md",
             );
         }
     }
@@ -488,6 +503,35 @@ mod tests {
             "{}",
             diags[0].message
         );
+    }
+
+    #[test]
+    fn reports_unknown_app_level_top_keys() {
+        // 运行时只读 rendererOptions.defaultDisplayBlock 与 rendererOptions.skyline.*，
+        // 其余顶层键（含拼错的）静默失效。
+        let (_f, project) = project(
+            "renderer-options-app-top-unknown",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"defaultDispayBlock":true,"__useTextStyle":true}}"#,
+            "{}",
+        );
+        let diags = RendererOptions.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert!(diags[0].message.contains("defaultDispayBlock"), "{diags:?}");
+        assert!(diags[0].message.contains("没有读者"), "{diags:?}");
+    }
+
+    #[test]
+    fn reports_unknown_page_level_top_keys() {
+        // 页面级只读 rendererOptions.skyline.*，顶层写什么都不生效。
+        let (_f, project) = project(
+            "renderer-options-page-top-unknown",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            r#"{"rendererOptions":{"whatever":true}}"#,
+        );
+        let diags = RendererOptions.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert_eq!(diags[0].path, "pages/index/index.json");
+        assert!(diags[0].message.contains("whatever"), "{diags:?}");
     }
 
     #[test]

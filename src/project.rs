@@ -457,6 +457,8 @@ struct Loaded {
     config_source: String,
     private_config: Map<String, Value>,
     private_config_source: String,
+    /// 配置文件解析失败的诊断（只在宿主视图报，插件视图的路径前缀对不上）。
+    config_errors: Vec<Diagnostic>,
 }
 
 /// 一个视图的定位与 app 级配置来源。
@@ -480,8 +482,8 @@ struct ViewSpec<'a> {
 
 impl Loaded {
     fn read(root: PathBuf) -> Self {
-        let (config, config_source) = read_config(&root, "project.config.json");
-        let (private_config, private_config_source) =
+        let (config, config_source, config_error) = read_config(&root, "project.config.json");
+        let (private_config, private_config_source, private_error) =
             read_config(&root, "project.private.config.json");
         let exts = Exts::from_config(&config);
         Self {
@@ -492,6 +494,7 @@ impl Loaded {
             config_source,
             private_config: private_config.as_object().cloned().unwrap_or_default(),
             private_config_source,
+            config_errors: config_error.into_iter().chain(private_error).collect(),
         }
     }
 
@@ -507,10 +510,13 @@ impl Loaded {
     /// 宿主视图：`miniprogramRoot/app.json`。
     fn host(&self) -> anyhow::Result<Project> {
         let base = self.dir("miniprogramRoot").unwrap_or_default();
-        let source = self
-            .fs
-            .read_file(&base, "app.json")
-            .ok_or_else(|| anyhow::anyhow!("Couldn't found the 'app.json' file"))?;
+        let source = self.fs.read_file(&base, "app.json").ok_or_else(|| {
+            // 配置解析不了时 app.json 必然找不到：把真实原因说出来，别指错文件。
+            match self.config_errors.first() {
+                Some(diag) => anyhow::anyhow!("{}（{}）", diag.message, diag.path),
+                None => anyhow::anyhow!("Couldn't found the 'app.json' file"),
+            }
+        })?;
         let app: Map<String, Value> = serde_json::from_str(crate::input::strip_bom(&source))
             .map_err(|err| anyhow::anyhow!("app.json: {err}"))?;
         let routes = serde_json::from_str::<AppRoutes>(crate::input::strip_bom(&source))
@@ -552,6 +558,9 @@ impl Loaded {
     fn build(&self, view: ViewSpec<'_>) -> Project {
         let (fs, exts, base) = (&self.fs, &self.exts, view.base);
         let mut warnings = Vec::new();
+        if !view.plugin_view {
+            warnings.extend(self.config_errors.iter().cloned());
+        }
 
         // 页面 json 只解析一次：既用于 skyline 判定，也作为组件闭包的入口。
         let page_json: Vec<(String, Option<Map<String, Value>>)> = view
@@ -1303,12 +1312,36 @@ fn read_unit_json(
     }
 }
 
-/// project 根目录下的配置文件原文与解析结果。文件缺失 / 不是合法 JSON 时给空串与
-/// `Null`——与页面 json 的宽容策略一致，缺文件不该升级成 linter 自己的错误。
-fn read_config(root: &Path, name: &str) -> (Value, String) {
-    let source = std::fs::read_to_string(root.join(name)).unwrap_or_default();
-    let value = serde_json::from_str(crate::input::strip_bom(&source)).unwrap_or(Value::Null);
-    (value, source)
+/// project 根目录下的配置文件原文、解析结果与（可能的）解析失败诊断。
+///
+/// 文件缺失视作「没写」，不产出诊断；存在但解析不了时必须报出来：`miniprogramRoot`
+/// 与 `pluginRoot` 都读不到，整个工程的路径解析会退化成「按项目根当主包根」，
+/// `lib-version` / `config-ignored` 这类规则也会静默跳过——而页面 json 的同类
+/// 错误是会报 `skylint/invalid-json` 的。
+fn read_config(root: &Path, name: &str) -> (Value, String, Option<Diagnostic>) {
+    let Ok(source) = std::fs::read_to_string(root.join(name)) else {
+        return (Value::Null, String::new(), None);
+    };
+    match serde_json::from_str::<Value>(crate::input::strip_bom(&source)) {
+        Ok(value) => (value, source, None),
+        // 空文件等价于没写。
+        Err(_) if source.trim().is_empty() => (Value::Null, source, None),
+        Err(e) => (
+            Value::Null,
+            source,
+            Some(
+                Diagnostic::new(
+                    "skylint/invalid-json",
+                    Severity::Error,
+                    format!("{name} 无法解析：{e}"),
+                    name,
+                    e.line() as u32,
+                    e.column() as u32,
+                )
+                .help("修复语法错误后重新运行；这份文件解析不了时，miniprogramRoot / pluginRoot 等配置按未设置处理"),
+            ),
+        ),
+    }
 }
 
 /// `rendererOptions` 里的布尔开关。

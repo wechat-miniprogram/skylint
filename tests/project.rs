@@ -345,6 +345,61 @@ fn unparsable_wxml_is_reported_not_silently_skipped() {
     assert_eq!(reported[0].path, "pages/index/index.wxml");
 }
 
+/// project.config.json 解析失败不能静默：miniprogramRoot 读不到时 app.json 必然
+/// 找不到，报错必须指向真正的坏文件；项目就在根目录时则退化成一条诊断。
+#[test]
+fn unparsable_project_config_names_the_real_cause() {
+    let f = standard_project("bad-project-config");
+    f.write(
+        "project.config.json",
+        "{\"miniprogramRoot\": \"miniprogram/\",}",
+    );
+    let error = match Project::load(f.path()) {
+        Ok(_) => panic!("配置解析失败不该成功"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("project.config.json"), "{error}");
+}
+
+#[test]
+fn unparsable_project_config_at_root_is_a_diagnostic() {
+    let f = Fixture::new("bad-project-config-root");
+    f.write("project.config.json", "{\"libVersion\": \"3.0.0\",}")
+        .write(
+            "app.json",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+        )
+        .write("pages/index/index.wxml", "<view/>");
+    let project = Project::load(f.path()).unwrap();
+    let reported: Vec<_> = project
+        .warnings
+        .iter()
+        .filter(|w| w.rule == "skylint/invalid-json")
+        .collect();
+    assert_eq!(reported.len(), 1, "{:?}", project.warnings);
+    assert_eq!(reported[0].path, "project.config.json");
+}
+
+/// 缺文件等价于没写，不该产出诊断。
+#[test]
+fn missing_project_config_is_silent() {
+    let f = Fixture::new("no-project-config");
+    f.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+    )
+    .write("pages/index/index.wxml", "<view/>");
+    let project = Project::load(f.path()).unwrap();
+    assert!(
+        project
+            .warnings
+            .iter()
+            .all(|w| w.rule != "skylint/invalid-json"),
+        "{:?}",
+        project.warnings
+    );
+}
+
 /// `componentGenerics.{key}.default` 也是组件引用：编译器会加载默认实现，
 /// 漏掉它这个组件完全不参与检查（minidev `compiler-graph/src/conf.rs:309-315`）。
 #[test]

@@ -40,26 +40,30 @@ impl Rule for ConfigIgnored {
             return Vec::new();
         }
         let mut out = Vec::new();
-        check_app_window(project, &mut out);
+        check_app_scroll(project, &mut out);
         check_project_setting(project, &mut out);
         out
     }
 }
 
-/// app.json 的 `window` 是全局窗口配置，页面级开关写在这里没有读者。
-fn check_app_window(project: &Project, out: &mut Vec<Diagnostic>) {
-    let Some(window) = project.app_json.get("window").and_then(Value::as_object) else {
-        return;
-    };
-    if !window.contains_key("disableScroll") {
+/// `disableScroll` 只能写在页面 json：app.json 里两处位置（顶层与 `window` 内）
+/// 都没有读者，官方文档明确「无法在 app.json 中设置」。
+fn check_app_scroll(project: &Project, out: &mut Vec<Diagnostic>) {
+    let positions = JsonPositions::new(&project.app_json_source);
+    let in_window = project
+        .app_json
+        .get("window")
+        .and_then(Value::as_object)
+        .is_some_and(|window| window.contains_key("disableScroll"));
+    if !in_window && !project.app_json.contains_key("disableScroll") {
         return;
     }
     warn(
         out,
         ConfigIgnored::ID,
         "app.json",
-        JsonPositions::new(&project.app_json_source).key("disableScroll"),
-        "app.json 的 `window.disableScroll` 不生效，`disableScroll` 只能写在页面 json".to_string(),
+        positions.key("disableScroll"),
+        "app.json 里的 `disableScroll` 不生效，它只能写在页面 json".to_string(),
         "Skyline 页面默认不滚动（`check_renderer` 会把 skyline 页的 `disableScroll` 改成 true）；需要关滚动的页面，把 `disableScroll: true` 写在该页的 json 里",
     );
 }
@@ -154,7 +158,7 @@ mod tests {
         assert_eq!(diags[0].severity, Severity::Warning);
         assert_eq!(diags[0].path, "app.json");
         assert!(
-            diags[0].message.contains("`window.disableScroll`"),
+            diags[0].message.contains("`disableScroll`"),
             "{}",
             diags[0].message
         );
@@ -179,14 +183,17 @@ mod tests {
     }
 
     #[test]
-    fn accepts_disable_scroll_outside_window() {
-        // disableScroll 不在 window 里：本规则不管，避免与其它位置判定重复。
+    fn reports_disable_scroll_at_app_top_level() {
+        // 官方文档明确「此配置只在页面 json 中有效，无法在 app.json 中设置」，
+        // 顶层与 window 内两种位置都没有读者。
         let (_f, project) = project(
             "config-ignored-disable-scroll-top",
             r#"{"pages":["pages/index/index"],"disableScroll":true}"#,
             r#"{"miniprogramRoot":""}"#,
         );
-        assert!(ConfigIgnored.check(&project).is_empty());
+        let diags = ConfigIgnored.check(&project);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].path, "app.json");
     }
 
     #[test]
