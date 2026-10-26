@@ -88,8 +88,9 @@ pub struct WxmlAttribute {
     pub name: String,
     pub value: Option<String>,
     pub is_static: bool,
-    /// 值区间的原文（不含引号）。动态绑定也保留原文，用于提取其中确定的 class token。
-    pub raw_value: Option<String>,
+    /// 动态绑定的 class 词元信息：确定出现 / 可能出现的词，是否还可能出现任意词。
+    /// 只有 `class` 且取值动态时才有值。
+    pub class_tokens: Option<crate::input::expr::ClassTokens>,
     /// 属性名（含前缀）到值结尾的范围。
     pub start: Position,
     pub end: Position,
@@ -448,20 +449,10 @@ fn attributes(element: &Element, source: &str) -> Vec<WxmlAttribute> {
             out.extend(extra_attr.iter().map(|attr| static_attribute(attr, source)));
             out.extend(let_vars.iter().map(|attr| prefixed_attribute(attr, source)));
             if let Some((range, value)) = &common.id {
-                out.push(value_attribute(
-                    "id".to_string(),
-                    range,
-                    Some(value),
-                    source,
-                ));
+                out.push(value_attribute("id".to_string(), range, Some(value)));
             }
             if let Some((range, value)) = &common.slot {
-                out.push(value_attribute(
-                    "slot".to_string(),
-                    range,
-                    Some(value),
-                    source,
-                ));
+                out.push(value_attribute("slot".to_string(), range, Some(value)));
             }
             out.extend(
                 common
@@ -491,12 +482,7 @@ fn attributes(element: &Element, source: &str) -> Vec<WxmlAttribute> {
         ElementKind::Slot { values, common, .. } => {
             out.extend(values.iter().map(|attr| prefixed_attribute(attr, source)));
             if let Some((range, value)) = &common.id {
-                out.push(value_attribute(
-                    "id".to_string(),
-                    range,
-                    Some(value),
-                    source,
-                ));
+                out.push(value_attribute("id".to_string(), range, Some(value)));
             }
             out.extend(
                 common
@@ -512,12 +498,7 @@ fn attributes(element: &Element, source: &str) -> Vec<WxmlAttribute> {
     out
 }
 
-fn value_attribute(
-    name: String,
-    range: &Range<Position>,
-    value: Option<&Value>,
-    source: &str,
-) -> WxmlAttribute {
+fn value_attribute(name: String, range: &Range<Position>, value: Option<&Value>) -> WxmlAttribute {
     match value {
         Some(Value::Static {
             value, location, ..
@@ -525,31 +506,28 @@ fn value_attribute(
             name,
             value: Some(value.to_string()),
             is_static: true,
-            raw_value: Some(slice(source, location.start..location.end)),
+            class_tokens: None,
             start: range.start,
             end: location.end,
             value_start: Some(location.start),
         },
-        Some(dynamic @ Value::Dynamic { .. }) => {
-            let location = dynamic.location();
-            WxmlAttribute {
-                name,
-                value: None,
-                is_static: false,
-                // `class="novel {{renderer}}"` 的 `location()` 只覆盖 `{{…}}`，
-                // 写死的前缀在表达式 AST 里，只能回源码按引号取。
-                raw_value: quoted_value(source, location.start),
-                start: range.start,
-                end: location.end,
-                value_start: Some(location.start),
-            }
-        }
+        Some(dynamic @ Value::Dynamic { expression, .. }) => WxmlAttribute {
+            class_tokens: name
+                .eq_ignore_ascii_case("class")
+                .then(|| crate::input::expr::class_tokens(expression)),
+            name,
+            value: None,
+            is_static: false,
+            start: range.start,
+            end: dynamic.location().end,
+            value_start: Some(dynamic.location().start),
+        },
         // 解析器新增的值形态按「动态」处理，规则不会把它当成静态字符串。
         Some(_) => WxmlAttribute {
             name,
             value: None,
             is_static: false,
-            raw_value: None,
+            class_tokens: None,
             start: range.start,
             end: range.end,
             value_start: None,
@@ -558,44 +536,12 @@ fn value_attribute(
             name,
             value: None,
             is_static: true,
-            raw_value: None,
+            class_tokens: None,
             start: range.start,
             end: range.end,
             value_start: None,
         },
     }
-}
-
-/// 属性值的原文：从值的起点往回找到开引号，再向右扫到同名引号。
-///
-/// `value.location()` 对 `a {{b}}` 这种混排只覆盖 `{{b}}`，静态前缀丢失；
-/// 回归过的动态值（`{{a}} b`）同理。
-fn quoted_value(source: &str, value_start: Position) -> Option<String> {
-    let start = byte_offset(source, value_start)?;
-    let bytes = source.as_bytes();
-    // 往回找开引号：紧跟在 `=` 之后的那一个。值里的另一种引号因此不会误判。
-    let mut cursor = start;
-    let begin = loop {
-        if cursor == 0 {
-            return None;
-        }
-        cursor -= 1;
-        let quote = bytes[cursor];
-        if quote != b'"' && quote != b'\'' {
-            continue;
-        }
-        let mut name_end = cursor;
-        while name_end > 0 && bytes[name_end - 1].is_ascii_whitespace() {
-            name_end -= 1;
-        }
-        if name_end > 0 && bytes[name_end - 1] == b'=' {
-            break cursor + 1;
-        }
-    };
-    let quote = bytes[begin - 1];
-    let rest = source.get(begin..)?;
-    let len = rest.find(quote as char)?;
-    Some(rest.get(..len)?.to_string())
 }
 
 fn normal_attribute(attr: &NormalAttribute, source: &str) -> WxmlAttribute {
@@ -605,24 +551,14 @@ fn normal_attribute(attr: &NormalAttribute, source: &str) -> WxmlAttribute {
     };
     let name = full_name(prefix, &attr.name, source);
     let start = prefix.map_or(attr.name.location.start, |range| range.start);
-    value_attribute(
-        name,
-        &(start..attr.name.location.end),
-        attr.value.as_ref(),
-        source,
-    )
+    value_attribute(name, &(start..attr.name.location.end), attr.value.as_ref())
 }
 
 fn prefixed_attribute(attr: &Attribute, source: &str) -> WxmlAttribute {
     let prefix = attr.prefix_location.as_ref();
     let name = full_name(prefix, &attr.name, source);
     let start = prefix.map_or(attr.name.location.start, |range| range.start);
-    value_attribute(
-        name,
-        &(start..attr.name.location.end),
-        attr.value.as_ref(),
-        source,
-    )
+    value_attribute(name, &(start..attr.name.location.end), attr.value.as_ref())
 }
 
 fn static_attribute(attr: &StaticAttribute, source: &str) -> WxmlAttribute {
@@ -633,10 +569,7 @@ fn static_attribute(attr: &StaticAttribute, source: &str) -> WxmlAttribute {
         name,
         value: Some(attr.value.name.to_string()),
         is_static: true,
-        raw_value: Some(slice(
-            source,
-            attr.value.location.start..attr.value.location.end,
-        )),
+        class_tokens: None,
         start,
         end: attr.value.location.end,
         value_start: Some(attr.value.location.start),
@@ -649,7 +582,6 @@ fn event_attribute(binding: &EventBinding, source: &str) -> WxmlAttribute {
         name,
         &(binding.prefix_location.start..binding.name.location.end),
         binding.value.as_ref(),
-        source,
     )
 }
 
@@ -657,19 +589,14 @@ fn class_attributes(class: &ClassAttribute, source: &str) -> Vec<WxmlAttribute> 
     match class {
         ClassAttribute::None => Vec::new(),
         ClassAttribute::String(range, value) => {
-            vec![value_attribute(
-                "class".to_string(),
-                range,
-                Some(value),
-                source,
-            )]
+            vec![value_attribute("class".to_string(), range, Some(value))]
         }
         ClassAttribute::Multiple(items) => items
             .iter()
             .map(|(range, name, value)| {
                 let full = full_name(Some(range), name, source);
                 let range = range.start..name.location.end;
-                value_attribute(full, &range, value.as_ref(), source)
+                value_attribute(full, &range, value.as_ref())
             })
             .collect(),
         _ => Vec::new(),
@@ -680,19 +607,14 @@ fn style_attributes(style: &StyleAttribute, source: &str) -> Vec<WxmlAttribute> 
     match style {
         StyleAttribute::None => Vec::new(),
         StyleAttribute::String(range, value) => {
-            vec![value_attribute(
-                "style".to_string(),
-                range,
-                Some(value),
-                source,
-            )]
+            vec![value_attribute("style".to_string(), range, Some(value))]
         }
         StyleAttribute::Multiple(items) => items
             .iter()
             .map(|(range, name, value)| {
                 let full = full_name(Some(range), name, source);
                 let range = range.start..name.location.end;
-                value_attribute(full, &range, Some(value), source)
+                value_attribute(full, &range, Some(value))
             })
             .collect(),
         _ => Vec::new(),

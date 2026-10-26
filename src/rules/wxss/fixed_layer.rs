@@ -117,6 +117,10 @@ impl Rule for FixedLayer {
                     if fixed && !covers_viewport(project, &tree, element) {
                         return;
                     }
+                    // 被盖的那一层必须静态可见：它和遮罩是否同时出现，静态只有这一种判法。
+                    if !fixed && !statically_visible(element, ancestors) {
+                        return;
+                    }
                     layers.push(Layer {
                         doc,
                         element,
@@ -185,6 +189,25 @@ impl Rule for FixedLayer {
         }
         out
     }
+}
+
+/// 元素在静态视角下始终可见：不在条件分支里，自己与祖先都没有运行时改写的 `class`。
+///
+/// 浮层几乎都由 `class` 或 `wx:if` 驱动显隐（`.option {{showOption ? 'show' : ''}}`），
+/// 这种层和遮罩是否同时出现静态判不了——`showContents` 与 `showOption` 互斥这类事实
+/// 写在 JS 里。只有「始终可见」的层（顶栏、导航栏）能确定会被遮罩盖住。
+fn statically_visible(element: &WxmlElement, ancestors: &[&WxmlElement]) -> bool {
+    std::iter::once(element)
+        .chain(ancestors.iter().copied())
+        .all(|node| {
+            node.branches.is_empty()
+                && node.attributes.iter().all(|attr| {
+                    // `hidden` 是显隐开关；`class` 一旦含插值就可能被运行时改写。
+                    let toggles =
+                        matches!(attr.name.to_ascii_lowercase().as_str(), "hidden" | "class");
+                    !toggles || attr.is_static
+                })
+        })
 }
 
 /// fixed 元素是否铺满视口（遮罩层）。
@@ -295,6 +318,37 @@ mod tests {
              .panel { z-index: 2; }",
         );
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn class_toggled_panel_is_not_reported() {
+        // 浮层由 class 驱动显隐时，它和遮罩是否同时出现静态判不了（互斥写在 JS 里）。
+        let fixture = Fixture::wxml(
+            "fixed-layer-toggled",
+            r#"<view class="page"><view class="mask"/><view class="panel {{open ? 'show' : ''}}"/></view>"#,
+        );
+        fixture.write(
+            "pages/index/index.wxss",
+            ".mask { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1; }
+             .panel { position: absolute; bottom: 0; z-index: 2; }",
+        );
+        let project = fixture.project();
+        assert!(FixedLayer.check(&project).is_empty());
+    }
+
+    #[test]
+    fn conditional_panel_is_not_reported() {
+        let fixture = Fixture::wxml(
+            "fixed-layer-conditional",
+            r#"<view class="page"><view class="mask"/><view wx:if="{{open}}" class="panel"/></view>"#,
+        );
+        fixture.write(
+            "pages/index/index.wxss",
+            ".mask { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1; }
+             .panel { position: absolute; bottom: 0; z-index: 2; }",
+        );
+        let project = fixture.project();
+        assert!(FixedLayer.check(&project).is_empty());
     }
 
     #[test]

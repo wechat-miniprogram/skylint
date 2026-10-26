@@ -176,16 +176,20 @@ impl<'a> selectors::Element for Node<'a> {
                 .split_whitespace()
                 .any(|class| case_sensitivity.eq(class.as_bytes(), name.0.as_bytes()));
         }
-        // 动态 class：原文里写死的 token 仍然确定存在（`class="novel {{renderer}}"`）。
-        if attr.raw_value.as_deref().is_some_and(|raw| {
-            super::certain_tokens(raw)
-                .into_iter()
-                .any(|t| case_sensitivity.eq(t.as_bytes(), name.0.as_bytes()))
-        }) {
+        let case_sensitive = matches!(case_sensitivity, CaseSensitivity::CaseSensitive);
+        let Some(tokens) = &attr.class_tokens else {
+            // 没有词元信息（解析器新增的动态形态）：本轮判不了。
+            self.tree.unresolved.set(true);
+            return false;
+        };
+        // 任何取值下都出现的词（`class="novel {{renderer}}"` 的 `novel`）。
+        if tokens.is_definite(name.0.as_str(), case_sensitive) {
             return true;
         }
-        // 找不到：可能是运行时拼上去的，也可能真的没有——本轮判不了。
-        self.tree.unresolved.set(true);
+        // 只在部分取值下出现，或取值任意：可能命中，也可能不命中。
+        if tokens.might_appear(name.0.as_str(), case_sensitive) {
+            self.tree.unresolved.set(true);
+        }
         false
     }
 

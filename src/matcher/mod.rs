@@ -125,39 +125,6 @@ pub fn subject(selector: &str) -> Option<Subject> {
     Some(subject)
 }
 
-/// 动态 class 原文里「确定存在」的 token。
-///
-/// 只看插值之外的直属文本：`class="novel {{renderer}}"` → `novel`；
-/// `class="a-{{b}}"` 整体丢弃（插值可能补出 `a-1`）；
-/// `class="{{ r === 'skyline' ? 'skyline' : 'webview' }}"` 里的 `skyline`/`webview`
-/// 属于表达式内部，不是确定的类名。
-pub(crate) fn certain_tokens(raw: &str) -> Vec<&str> {
-    let mut words = Vec::new();
-    let mut cursor = 0;
-    while cursor < raw.len() {
-        let seg_end = raw[cursor..]
-            .find("{{")
-            .map_or(raw.len(), |offset| cursor + offset);
-        let segment = &raw[cursor..seg_end];
-        let from_value_start = cursor == 0;
-        let to_value_end = seg_end == raw.len();
-        let mut items: Vec<&str> = segment.split_whitespace().collect();
-        // 紧贴插值的词只能算前缀/后缀，不成词。
-        if !(from_value_start || segment.starts_with(char::is_whitespace)) && !items.is_empty() {
-            items.remove(0);
-        }
-        if !(to_value_end || segment.ends_with(char::is_whitespace)) {
-            items.pop();
-        }
-        words.extend(items);
-        match raw[seg_end..].find("}}") {
-            Some(close) => cursor = seg_end + close + 2,
-            None => break,
-        }
-    }
-    words
-}
-
 /// 三值判定：`Unknown` 表示静态阶段无法确定（动态属性 / 运行时状态 / 非线性兄弟区）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tri {
@@ -408,14 +375,19 @@ impl<'a> Tree<'a> {
             .is_some_and(|attr| !attr.is_static)
     }
 
-    /// 动态 class 上这个 token 是否不可判定（原文里没写死）。
+    /// 动态 class 上这个 token 是否不可判定。
+    ///
+    /// 确定出现的词 → 判得出（不置标记）；词落在枚举候选里、或取值任意 → 不可判定；
+    /// 其余 → 确定不出现。
     fn class_unresolved(&self, token: &str, element: &WxmlElement) -> bool {
         match self.attribute(element, "class") {
-            Some(attr) if !attr.is_static => !attr.raw_value.as_deref().is_some_and(|raw| {
-                certain_tokens(raw)
-                    .into_iter()
-                    .any(|t| t.eq_ignore_ascii_case(token))
-            }),
+            Some(attr) if !attr.is_static => match &attr.class_tokens {
+                Some(tokens) => {
+                    !tokens.is_definite(token, false) && tokens.might_appear(token, false)
+                }
+                // 没有词元信息（解析器新增的动态形态）：一律不可判定。
+                None => true,
+            },
             _ => false,
         }
     }
@@ -690,6 +662,16 @@ mod tests {
         assert_eq!(check(&d, 0, ".c", Dialect::WebView), Tri::Yes);
         assert_eq!(check(&d, 0, ".c.webview", Dialect::WebView), Tri::Unknown);
         assert_eq!(check(&d, 0, ".c.skyline", Dialect::WebView), Tri::Unknown);
+    }
+
+    #[test]
+    fn enumerable_class_branches_exclude_other_words() {
+        // 三目只能取这两个字面量：不在候选里的词确定不出现，而不是「判不了」。
+        let d = doc(r#"<view class="{{ ok ? 'btn-active' : 'btn-idle' }}"/>"#);
+        assert_eq!(check(&d, 0, ".btn-active", Dialect::WebView), Tri::Unknown);
+        assert_eq!(check(&d, 0, ".btn-idle", Dialect::WebView), Tri::Unknown);
+        assert_eq!(check(&d, 0, ".btn-disabled", Dialect::WebView), Tri::No);
+        assert_eq!(check(&d, 0, ".other", Dialect::WebView), Tri::No);
     }
 
     #[test]
