@@ -20,6 +20,7 @@ use crate::{Diagnostic, Severity};
 
 use super::selector::SimpleSelector;
 use super::visit_rules;
+use crate::matcher::{Dialect, Tree, Tri};
 
 pub const ID: &str = "skyline/tag-selector-isolation";
 
@@ -126,7 +127,7 @@ impl crate::rules::Rule for TagSelectorIsolation {
                         continue;
                     }
                     let Some((unit, foreign_tag)) =
-                        find_foreign(project, &foreign, &simple, &mut docs)
+                        find_foreign(project, &foreign, selector.text.trim(), &mut docs)
                     else {
                         continue;
                     };
@@ -176,7 +177,7 @@ impl crate::rules::Rule for TagSelectorIsolation {
 fn find_foreign<'a>(
     project: &'a Project,
     units: &[&'a str],
-    selector: &SimpleSelector,
+    selector: &str,
     docs: &mut HashMap<&'a str, Option<WxmlDoc>>,
 ) -> Option<(String, String)> {
     for unit in units {
@@ -203,8 +204,10 @@ fn find_foreign<'a>(
             // 该单元 WXML 解析失败只跳过它，不影响其它外部单元。
             continue;
         };
+        let tree = Tree::new(doc);
         for element in doc.elements() {
-            if selector.matches(element) == super::selector::Match::Yes {
+            // 「WebView 能不能命中」才是这条规则关心的方向。
+            if tree.matches(element, selector, Dialect::WebView) == Tri::Yes {
                 return Some((unit.to_string(), element.tag.clone()));
             }
         }

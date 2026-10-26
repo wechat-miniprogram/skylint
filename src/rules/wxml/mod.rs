@@ -31,8 +31,8 @@ use glass_easel_template_compiler::parse::Position;
 
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{self, WxmlDoc, WxmlElement, WxmlNode};
+use crate::matcher::{Dialect, Tree, Tri};
 use crate::project::{Project, Scope, StyleSheet};
-use crate::rules::wxss::selector::{Match, SimpleSelector};
 
 /// 页面与组件的 WXML + 被 import / include 的模板，按路径去重。
 ///
@@ -105,12 +105,12 @@ pub(crate) fn walk(doc: &WxmlDoc, mut visit: impl FnMut(&WxmlElement, &[&WxmlEle
 
 /// 元素自身在样式层里的全部 `display` 取值（内联 `style` 在前）。
 ///
-/// 只统计能静态判定的部分：动态 class、组合符选择器一律看不见，所以调用方要把
-/// 「一无所获」当成未知而不是「不是 flex」。同一元素命中多份互相矛盾的 `display`
-/// 时全部返回，由调用方决定怎么解释。
+/// 用 Skyline 方言求值：这里问的是「Skyline 下这个元素算出什么 display」，
+/// 所以属性选择器按引擎的口径当成恒真（见 [`crate::matcher::Dialect`]）。
+/// 同一元素命中多份互相矛盾的 `display` 时全部返回，由调用方决定怎么解释。
 pub(crate) fn display_values(
     project: &Project,
-    doc: &WxmlDoc,
+    tree: &Tree<'_>,
     element: &WxmlElement,
 ) -> Vec<String> {
     let mut out = Vec::new();
@@ -123,12 +123,11 @@ pub(crate) fn display_values(
         project
             .styles
             .iter()
-            .filter(|sheet| sheet_covers(sheet, project, doc.path()))
+            .filter(|sheet| sheet_covers(sheet, project, tree.path()))
             .flat_map(|sheet| &sheet.doc.rules)
             .filter(|rule| {
                 rule.selectors.iter().any(|selector| {
-                    SimpleSelector::parse(selector)
-                        .is_some_and(|simple| simple.matches(element) == Match::Yes)
+                    tree.matches(element, selector.text.trim(), Dialect::Skyline) == Tri::Yes
                 })
             })
             .filter_map(|rule| {

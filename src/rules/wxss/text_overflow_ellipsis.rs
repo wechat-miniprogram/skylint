@@ -243,10 +243,21 @@ mod tests {
     }
 
     #[test]
-    fn complex_selector_is_skipped() {
+    fn descendant_selector_is_matched() {
+        // 后代选择器现在能命中视图：`.b` 是 `<view>`，承载不了 text-overflow。
         let diagnostics = check(
             "complex",
             r#"<view class="a"><view class="b">x</view></view>"#,
+            ".a .b { text-overflow: ellipsis; }",
+        );
+        assert_eq!(diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn descendant_selector_on_text_is_fine() {
+        let diagnostics = check(
+            "complex-text",
+            r#"<view class="a"><text class="b">x</text></view>"#,
             ".a .b { text-overflow: ellipsis; }",
         );
         assert!(diagnostics.is_empty());

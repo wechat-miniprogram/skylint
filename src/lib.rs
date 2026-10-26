@@ -8,6 +8,7 @@
 
 pub mod diag;
 pub mod input;
+pub mod matcher;
 pub mod project;
 pub mod report;
 pub mod rules;

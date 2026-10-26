@@ -50,9 +50,8 @@ use std::collections::HashMap;
 use crate::Diagnostic;
 use crate::input::wxml::{WxmlDoc, WxmlElement};
 use crate::input::wxss::{WxssDeclaration, WxssDoc, WxssRule, WxssSelector};
+use crate::matcher::{Dialect, Tree, Tri};
 use crate::project::{Project, Scope, StyleSheet};
-
-use selector::{Match, SimpleSelector};
 
 /// 这条声明的作用域里需要一起看的 WXML。
 pub(crate) fn scope_wxml<'a>(project: &'a Project, scope: &Scope) -> Vec<&'a str> {
@@ -66,8 +65,11 @@ pub(crate) fn scope_wxml<'a>(project: &'a Project, scope: &Scope) -> Vec<&'a str
 
 /// 命中节点是否全都承载不了这条声明；返回「在某处失效」的选择器原文。
 ///
-/// 只看静态命中（[`Match::Yes`]）：动态属性命中的是**别的**节点，`一个动态 class
-/// 不能把已经确定失效的静态命中洗白，也不能单独成为一个命中。
+/// 用 WebView 方言求值：这里问的是「这条声明在 WebView 下落在哪些节点上」，
+/// 迁移前用户看到的正是 WebView 的渲染结果。
+///
+/// 只看静态命中（[`Tri::Yes`]）：动态属性 / 运行时状态命中的是**别的**节点，
+/// 一个动态 class 不能把已经确定失效的静态命中洗白，也不能单独成为一个命中。
 pub(crate) fn broken_selectors(
     project: &Project,
     sheet: &StyleSheet,
@@ -75,41 +77,40 @@ pub(crate) fn broken_selectors(
     docs: &mut HashMap<String, Option<WxmlDoc>>,
     can_host: impl Fn(&WxmlElement) -> bool,
 ) -> Vec<String> {
-    let mut out = Vec::new();
-    for selector in selectors {
-        let Some(simple) = SimpleSelector::parse(selector) else {
-            continue;
-        };
-        // 伪元素生成的是文本节点，声明的承载对象就是它，不看宿主元素。
-        if simple.text_pseudo_element() {
-            continue;
-        }
-        // 按作用域分别判：共享样式在 A 页失效、B 页正常也要报。
-        let mut broken = false;
-        for scope in &sheet.scopes {
-            let (mut matched, mut hostable) = (false, false);
-            for path in scope_wxml(project, scope) {
-                let Some(doc) = docs
-                    .entry(path.to_string())
-                    .or_insert_with(|| crate::rules::wxml::load_doc(project, path))
-                    .as_ref()
-                else {
-                    continue;
-                };
+    // (选择器, 作用域) → (是否静态命中, 命中里是否有能承载的节点)
+    let mut tallies = vec![vec![(false, false); sheet.scopes.len()]; selectors.len()];
+    for (scope_index, scope) in sheet.scopes.iter().enumerate() {
+        for path in scope_wxml(project, scope) {
+            let Some(doc) = docs
+                .entry(path.to_string())
+                .or_insert_with(|| crate::rules::wxml::load_doc(project, path))
+                .as_ref()
+            else {
+                continue;
+            };
+            let tree = Tree::new(doc);
+            for (selector_index, selector) in selectors.iter().enumerate() {
+                let tally = &mut tallies[selector_index][scope_index];
+                let text = selector.text.trim();
                 for element in doc.elements() {
-                    if simple.matches(element) == Match::Yes {
-                        matched = true;
-                        hostable |= can_host(element);
+                    if tree.matches(element, text, Dialect::WebView) == Tri::Yes {
+                        tally.0 = true;
+                        tally.1 |= can_host(element);
                     }
                 }
             }
-            broken |= matched && !hostable;
-        }
-        if broken {
-            out.push(selector.text.trim().to_string());
         }
     }
-    out
+    selectors
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| {
+            tallies[*index]
+                .iter()
+                .any(|(matched, hostable)| *matched && !*hostable)
+        })
+        .map(|(_, selector)| selector.text.trim().to_string())
+        .collect()
 }
 
 /// 遍历全部样式文件的每一条规则。

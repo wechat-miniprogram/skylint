@@ -487,8 +487,38 @@ worklet」）用一次过滤算出来，不做增量缓存。
 （`SelectorPart`：Tag/Universal/Class/Id/Other，来自 `ComplexSelector`/`CompoundSelector`）。
 规则层因此不再自己切值、扫选择器：`value_util` 只剩十几个基于词元的包装（`split_top_level`
 按顶层 `Comma` 切、`split_tokens` 直接取词元、`top_level_calls` 取 `Function`），
-`selector::SimpleSelector::parse` 只是对 `parts` 做一次折叠——组合符 / 伪类 / 属性选择器在
-部件构造阶段就落成 `Other`，策略仍是「宁可漏报」。
+选择器的形状分类（`rules/wxss/selector.rs`）只剩「是不是纯标签 / 纯 id」这一个用途，
+「命中哪些节点」交给下面这一层。
+
+### 选择器匹配（`src/matcher`）
+
+跨文件规则要回答「这条声明落到哪些节点上」。解析与匹配分两层：解析仍用 oxc
+（`input/wxss.rs`），匹配用 `selectors`（servo/stylo 抽出的引擎，MPL-2.0）。
+
+分工是刻意的：CSS 文法（`an+b`、`:not()` 的复合参数、6 种属性运算符、`i`/`s` 标志）交给
+引擎；我们只实现 `selectors::Element` 的 WXML 适配器（取父子兄弟、读属性）+ 一层分类。
+
+**方言参数**是必需的，同一段选择器在两个渲染器下可匹配的范围不同：
+
+| 构造 | WebView | Skyline |
+|---|---|---|
+| `[attr]` / `[attr=v]` | 按规范 | 条件被丢弃（`css/selector.h` 的 `CompoundSelector` 无 attribute 字段），等价 `*` |
+| `:nth-child(an+b)` / `+` / `~` | 按规范 | 按规范（`selector_matcher.cc:126,292,311`） |
+| `:nth-of-type` / `::selection` | 按规范 | 无对应 case，降级成「没有这个伪类/伪元素」 |
+| `:active` / `:hover` / `:placeholder-shown` | 运行时状态 | 整条规则在解析阶段被丢弃（`parser/mod.rs:989-991`） |
+| `::before` / `::after` | 文本节点，不是宿主 | 同左 |
+
+三态（`Tri::Yes/No/Unknown`）由我们自己产生，引擎只返回 bool：动态属性（`class="{{x}}"`）、
+运行时状态伪类、以及「选择器用到 `+`/`~`/`:nth-*` 但兄弟区含 `wx:if`/`wx:for`/模板片段」
+三类提前判成 `Unknown`。Skyline 按运行时 shadow tree 计数兄弟（假分支不占位、`wx:for` 每份
+是真兄弟），静态模板算不出序号，只能承认未知。
+
+消费者与方言归属：`display_values`（`no-inline-text`、`horizontal-scroll-enable-flex`）
+问「Skyline 算出什么 display」→ Skyline 方言；`broken_selectors`（`text-overflow`、
+`text-decoration`）与 `tag-selector-isolation` 问「WebView 命中哪里」→ WebView 方言。
+
+已知边界：选择器解析失败按 `Unknown` 处理（宁可漏报）；`wx:for` 的复制次数不建模；
+组件边界不在这里判（由 scope 决定）。
 
 这一层换来的是把 428 行手写状态机（`value_util` 283 + `selector` 145）删掉。代价是生产代码
 净增约 225 行：AST → owned 词元的映射要自己写，而且**语义必须逐字保持**——验收口径是四个

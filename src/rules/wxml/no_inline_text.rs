@@ -10,6 +10,8 @@ use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode, WxmlText};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
+use crate::matcher::Tree;
+
 use super::{display_values, is_flex_value, span_diagnostic, visit, walk};
 
 pub const ID: &str = "skyline/no-inline-text";
@@ -33,8 +35,9 @@ impl Rule for NoInlineText {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
+            let tree = Tree::new(doc);
             walk(doc, |element, _ancestors| {
-                check_element(project, doc, element, out);
+                check_element(project, doc, &tree, element, out);
             });
         })
     }
@@ -45,6 +48,7 @@ impl Rule for NoInlineText {
 fn check_element(
     project: &Project,
     doc: &WxmlDoc,
+    tree: &Tree<'_>,
     element: &WxmlElement,
     out: &mut Vec<Diagnostic>,
 ) {
@@ -52,7 +56,7 @@ fn check_element(
         return;
     }
     // flex 容器里文本与元素在两种渲染器下都是 flex item，不存在错位。
-    let displays = display_values(project, doc, element);
+    let displays = display_values(project, tree, element);
     if !displays.is_empty() && displays.iter().all(|value| is_flex_value(value)) {
         return;
     }

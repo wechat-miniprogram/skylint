@@ -300,10 +300,23 @@ version = "0.34.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7c66d1cd8ed61bf80b38432613a7a2f09401ab8d0501110655f8b341484a3e3"
 dependencies = [
- "cssparser-macros",
+ "cssparser-macros 0.6.1",
  "dtoa-short",
  "itoa",
  "phf 0.11.3",
+ "smallvec",
+]
+
+[[package]]
+name = "cssparser"
+version = "0.38.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11119743ad110e8c1bdccd930d7f5c30c99e5fc76a7b63ec9807e84eef0c5f59"
+dependencies = [
+ "cssparser-macros 0.7.1",
+ "dtoa-short",
+ "itoa",
+ "phf 0.14.0",
  "smallvec",
 ]
 
@@ -315,6 +328,16 @@ checksum = "13b588ba4ac1a99f7f2964d24b3d896ddc6bf847ee3855dbd4366f058cfcd331"
 dependencies = [
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "cssparser-macros"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d045de693cb712d0b22c6a64be5b953f67b3ce00ab5ad3dd5d8b441886ab8e1a"
+dependencies = [
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]
@@ -331,6 +354,27 @@ checksum = "bef552e6f588e446098f6ba40d89ac146c8c7b64aade83c051ee00bb5d2bc18d"
 dependencies = [
  "serde",
  "uuid",
+]
+
+[[package]]
+name = "derive_more"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d751e9e49156b02b44f9c1815bcb94b984cdcc4396ecc32521c739452808b134"
+dependencies = [
+ "derive_more-impl",
+]
+
+[[package]]
+name = "derive_more-impl"
+version = "2.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "rustc_version 0.4.1",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -455,7 +499,7 @@ dependencies = [
  "clap 2.34.0",
  "compact_str 0.7.1",
  "console_log",
- "cssparser",
+ "cssparser 0.34.0",
  "entities",
  "env_logger",
  "js-sys",
@@ -756,6 +800,12 @@ dependencies = [
  "textwrap 0.16.4",
  "unicode-width 0.1.14",
 ]
+
+[[package]]
+name = "new_debug_unreachable"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
 name = "nonmax"
@@ -1137,6 +1187,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "precomputed-hash"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1216,7 +1272,16 @@ version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "138e3e0acb6c9fb258b19b67cb8abd63c00679d2851805ea151465464fe9030a"
 dependencies = [
- "semver",
+ "semver 0.9.0",
+]
+
+[[package]]
+name = "rustc_version"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
+dependencies = [
+ "semver 1.0.28",
 ]
 
 [[package]]
@@ -1245,6 +1310,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
+name = "selectors"
+version = "0.41.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8322aebea94a6cc288ff884e8a49bdbceef60206c400c6c46d22e62fc4fd91a6"
+dependencies = [
+ "bitflags 2.13.2",
+ "cssparser 0.38.0",
+ "derive_more",
+ "log",
+ "new_debug_unreachable",
+ "precomputed-hash",
+ "rustc-hash",
+ "servo_arc",
+ "smallvec",
+]
+
+[[package]]
 name = "semver"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1252,6 +1334,12 @@ checksum = "1d7eb9ef2c18661902cc47e535f9bc51b78acd254da71d375c2f6720d9a40403"
 dependencies = [
  "semver-parser",
 ]
+
+[[package]]
+name = "semver"
+version = "1.0.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "semver-parser"
@@ -1320,6 +1408,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "servo_arc"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4eceb519ec34d8290aaf6e46f435102f2bfa63f22b05a144fb16ab266d3b198"
+dependencies = [
+ "stable_deref_trait",
+]
+
+[[package]]
 name = "simd-abstraction"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1340,6 +1437,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap 4.6.7",
+ "cssparser 0.38.0",
  "glass-easel-template-compiler",
  "miette",
  "oxc-css-parser",
@@ -1349,6 +1447,8 @@ dependencies = [
  "oxc_parser",
  "oxc_span",
  "oxc_syntax",
+ "precomputed-hash",
+ "selectors",
  "serde",
  "serde_json",
 ]
@@ -1384,7 +1484,7 @@ dependencies = [
  "data-encoding",
  "debugid",
  "if_chain",
- "rustc_version",
+ "rustc_version 0.2.3",
  "serde",
  "serde_json",
  "unicode-id-start",

@@ -21,6 +21,13 @@ serde_json = "1"
 
 # 模板 / 样式 / 脚本前端。
 glass-easel-template-compiler = "1.2.0"
+# 选择器匹配（servo/stylo 抽出）。只用于「选择器命中哪些元素」，
+# CSS 文法（an+b、:not 复合参数、属性运算符）交给它，方言差异在 Element 回调里。
+selectors = "0.41"
+# selectors 的 trait 要用到这两个 crate 的类型（ToCss / PrecomputedHash），
+# 版本与 selectors 0.41 的依赖保持一致。
+cssparser = "0.38"
+precomputed-hash = "0.1"
 # 0.0.x 会有破坏性变更，必须精确锁版本。
 oxc-css-parser = "=0.0.17"
 # JS / TS 前端。与 oxc-css-parser 复用同一条 0.155 版本线（同一套 Allocator），
