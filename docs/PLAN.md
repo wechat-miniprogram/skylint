@@ -452,6 +452,47 @@ A 页失效、B 页正常时要报）、`no_pseudo` 的转义冒号（`.hover\:b
 - `scroll-context-ref` 的文件级启发：改成「同一函数内要有 `.ref`」会在「onReady 里取 ref、
   手势里 scrollTo」这种常见写法上误报，静态数据流不在工具边界内。
 
+### P6 适配历史审计（161 个渲染相关提交）
+
+沿 `skylinenovel` 的演进历史逐提交审计（7 条只读线并行，结论与每条的 diff 原文落在
+`.tmp/hist/`）。最大的发现不是缺规则，而是**匹配器从不求值 `renderer`**：工程里 286 处
+动态 class（33 处直接含 renderer），`has_class` 对非静态 class 一律返回 false，于是
+`.novel .container …`（根节点 `class="novel {{PLATFORM}}-font"`）整条判不命中，
+该页 272/396 条规则失效——**恰好在专门为迁移改过的元素上失明**。
+修复取「确定 token」口径（`matcher::certain_tokens`）：插值之外的直属文本词一定出现在
+运行时 class 列表里，`a-{{b}}` 整词丢弃，表达式内部的字面量不算；判不出的动态属性置
+`Tree.unresolved` 让 `match_one` 返回 `Unknown` 而不是 `No`。
+
+已落地（六工程 9 字段 diff 逐条核过）：
+
+| 项 | 规则 | 六工程新增 |
+|---|---|---|
+| 动态 class 的确定 token | 全部 class 匹配型规则 | plugin_1 +9 / plugin_2 +12 / skit-player +4，另 −6 条 `no-inline-text` 误报 |
+| `<text overflow="ellipsis">` 缺 `max-lines` | `component-attribute` | plugin_1/2 各 +31 |
+| 标准 `line-clamp`（引擎只认私有 `_wx_line_clamp`） | `unsupported-property` | 0（条目补齐） |
+| 媒体查询条件被丢弃 | `media-query` | businessview +11、plugin_1/2 各 +4、skit-player +2 |
+| 插件视图的配置规则（含 `plugin.json` 路径） | 配置族 | skit-player +6 |
+| `renderer` 取值 / 版本区间校验、`ohosVersion*` 键 | `renderer-options` | 0（项目本身写对） |
+| `<text>` 里的块级子节点 | `component-children` | skit_1 +1、plugin_1/2 各 +2 |
+
+评估后不做（附理由）：
+
+- `skyline/fixed-layer`：证据只到「fixed 节点被移到 root container」
+  （`shadow/shadow_tree.cc:697-706`、`shadow_node.h:140`），而命中它需要知道 root container
+  内 fixed 节点与页面节点的合成顺序与 z-index 是否还参与比较——现有源码读不出这一步，
+  没有它写出来的规则就是猜。历史上四处踩坑（255<260、999<1000、0<250、105<200）只能作为
+  待验证的场景清单。
+- `<span>` 被 WebView 页面复用：这是反向差异（WebView 坏、Skyline 好），与本工具
+  #1443 的口径相反；且 WebView 对未知标签的处理未在源码里确证。
+- `.a .a` 这类退化选择器（本意是同类却写成后代）：属于 #1443 排除的 dead-code 检查。
+- 简写里含 `var()` 会被丢弃：已用 fp 源码否掉
+  （`float-pigment-css-macro/src/style_syntax.rs:796-810` 为含 `var(` 的简写生成
+  `var_in_shorthand`，运行时代入后重新解析），两个工程的 `rgba(var(--x), .5)` 至今正常显示。
+- `no-inline-text` 在本工程（开了 `defaultDisplayBlock`）前提不成立：方向相反，
+  `defaultDisplayBlock` 让容器变 block，而真差异正是块级容器。
+- `display: -webkit-box` / `-webkit-box-orient` 单独建条目：只出现在多行省略链里，同链的
+  `-webkit-line-clamp` 已在报，补上会让 businessview 多 116 条重复噪音。
+
 ### 不做
 
 autofix；14 条只能运行时判定的条目；`app.json` 自动改写。
