@@ -49,7 +49,7 @@ fn check_file(doc: &WxmlDoc, out: &mut Vec<Diagnostic>) {
     // 模板定义体里的 `share-element` 只在实例化处出现，跨定义的重复不一定是错，跳过。
     let mut seen: Vec<(String, Vec<Branch>)> = Vec::new();
     walk(doc, |element, _ancestors| {
-        if element.tag != TAG || element.in_template {
+        if element.tag != TAG {
             return;
         }
         let key = match find_attr(element, "key") {
@@ -113,7 +113,11 @@ fn check_file(doc: &WxmlDoc, out: &mut Vec<Diagnostic>) {
                 .help("每个 `<share-element>` 用页面内唯一的 `key`；列表里重复渲染时把数据 id 拼进 key"),
             );
         }
-        seen.push((key.to_string(), element.branches.clone()));
+        // 模板定义体里的元素只在实例化处渲染，实例数量与相对位置静态不可知，
+        // 只判「缺 key / 空 key」这类与实例无关的问题，不参与重复判定。
+        if !element.in_template {
+            seen.push((key.to_string(), element.branches.clone()));
+        }
     });
 }
 
@@ -231,6 +235,27 @@ mod tests {
         let diagnostics = check(&project("share-empty", r#"<share-element key=""/>"#));
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(diagnostics[0].message.contains("为空"), "{diagnostics:#?}");
+    }
+
+    /// 模板定义体里的元素实例化次数不可知：缺 key 一定错（每一份都缺），
+    /// 重复不定错（可能只实例化一次），所以只报前者。
+    #[test]
+    fn missing_key_inside_a_template_body_is_reported_but_duplicates_are_not() {
+        let diagnostics = check(&project(
+            "share-template",
+            concat!(
+                r#"<template name="t">"#,
+                r#"<share-element/>"#,
+                r#"<share-element key="hero"/>"#,
+                r#"<share-element key="hero"/>"#,
+                r#"</template>"#,
+            ),
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0].message.contains("未声明"),
+            "{diagnostics:#?}"
+        );
     }
 
     // ---- 互斥分支 ----
