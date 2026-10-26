@@ -178,7 +178,7 @@ impl<'a> selectors::Element for Node<'a> {
         }
         // 动态 class：原文里写死的 token 仍然确定存在（`class="novel {{renderer}}"`）。
         if attr.raw_value.as_deref().is_some_and(|raw| {
-            super::certain_tokens(raw).any(|t| case_sensitivity.eq(t.as_bytes(), name.0.as_bytes()))
+            super::certain_tokens(raw).into_iter().any(|t| case_sensitivity.eq(t.as_bytes(), name.0.as_bytes()))
         }) {
             return true;
         }

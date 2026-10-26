@@ -44,7 +44,7 @@ impl Rule for ValueDegraded {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit_declarations(project, |doc, decl, out| {
+        visit_declarations(project, |doc, _, decl, out| {
             if decl.value.trim().is_empty() {
                 return;
             }

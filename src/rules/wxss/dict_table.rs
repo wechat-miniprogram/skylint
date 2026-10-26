@@ -40,6 +40,11 @@ const UNSUPPORTED_PROPERTIES: &[(&str, &str)] = &[
         "-webkit-line-clamp",
         "多行省略改用 `<text max-lines=\"\">`（引擎把该属性映射成 kInvalid，css_parser_impl.h:47）",
     ),
+    // 标准名同样不是属性名：fp 只有私有 `_wx_line_clamp`（property.rs:34），映射 kInvalid。
+    (
+        "line-clamp",
+        "多行省略改用 `<text max-lines=\"\">`（引擎只认私有 `_wx_line_clamp`）",
+    ),
     // 引擎里没有这两个属性（css/、style/ 零命中），图片裁剪用 <image mode>。
     (
         "object-fit",

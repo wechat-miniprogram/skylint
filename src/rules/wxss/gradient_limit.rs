@@ -35,7 +35,7 @@ impl Rule for GradientLimit {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit_declarations(project, |doc, decl, out| {
+        visit_declarations(project, |doc, _, decl, out| {
             let value = decl.value.trim();
             if value.is_empty() || is_dynamic(&decl.tokens) {
                 return;

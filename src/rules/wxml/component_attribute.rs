@@ -98,8 +98,7 @@ struct Requires {
 enum Trigger {
     /// `attr=*`：属性存在且取值非空；无值属性（布尔 true）同样触发。
     Present(&'static str),
-    /// `attr=v` 精确匹配。当前数据没有这种触发条件，保留以覆盖完整的表达式模型。
-    #[allow(dead_code)]
+    /// `attr=v` 精确匹配。
     Equals(&'static str, &'static str),
     NotAny(&'static str, &'static [&'static str]),
 }
@@ -108,6 +107,8 @@ enum Trigger {
 enum Requirement {
     /// `attr=value`：属性必须存在且等于该值。
     Equals(&'static str, &'static str),
+    /// `attr`：属性必须存在。
+    Present(&'static str),
     /// `attr=!(a|b)`：属性不得等于其中任一值。
     NotAny(&'static str, &'static [&'static str]),
 }
@@ -412,6 +413,12 @@ const REQUIRES: &[Requires] = &[
         ),
         help: Some("这三个 indicator-type 不支持 circular，去掉 circular 或改用其它指示器动画"),
     }, // layout/swiper.md:270
+    Requires {
+        tag: "text",
+        trigger: Trigger::Equals("overflow", "ellipsis"),
+        requirement: Requirement::Present("max-lines"),
+        help: Some("只要一行省略改用 `overflow=\"clip\"`；要限制行数就同时写 `max-lines`"),
+    }, // text_shadow_node.h:102-103：max_lines=0 表示不施加行数约束，overflow 与 maxLines 是两个独立属性
 ];
 
 fn table() -> &'static Table {
@@ -564,6 +571,11 @@ fn judge(element: &WxmlElement, requirement: &Requirement) -> Verdict {
                 Verdict::Violated(Some(value.to_string()))
             }
         }
+        Requirement::Present(name) => match find_attr(element, name) {
+            // 声明了就算满足（含无值属性与动态绑定，静态阶段判不了它的取值）。
+            Some(_) => Verdict::Ok,
+            None => Verdict::Violated(None),
+        },
         Requirement::NotAny(name, banned) => {
             let Some(attr) = find_attr(element, name) else {
                 // 缺失同样按「不存在」处理：不等于任一被禁值（如 layout-type 缺省 normal），
@@ -599,6 +611,9 @@ fn requires_message(tag: &str, rule: &Requires, value: &str, current: Option<&st
                 rule.trigger.attr()
             )
         }
+        Requirement::Present(name) => format!(
+            "`<{tag} {trigger}>` 缺少 `{name}`，省略号不会生效（文本不限行数）"
+        ),
         Requirement::NotAny(name, _) => format!(
             "`<{tag} {trigger}>` 的 `{}` 在 `{name}=\"{}\"` 时不生效，会被忽略",
             rule.trigger.attr(),
@@ -729,6 +744,24 @@ mod tests {
         assert!(diagnostics[0].message.contains("paging-enabled"));
     }
 
+    /// `overflow="ellipsis"` 不带 `max-lines` 时引擎不施加行数约束，省略号不会出现。
+    #[test]
+    fn overflow_ellipsis_requires_max_lines() {
+        let diagnostics = check_rule(
+            &project(
+                "attr-ellipsis",
+                r#"<text overflow="ellipsis"/>
+<text overflow="ellipsis" max-lines="2"/>
+<text overflow="clip"/>
+<text overflow="{{o}}" max-lines="2"/>"#,
+            ),
+            &ComponentAttribute,
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("max-lines"));
+        assert_eq!((diagnostics[0].line, diagnostics[0].column), (1, 7));
+    }
+
     #[test]
     fn valid_enum_values_are_allowed() {
         let diagnostics = check_rule(
@@ -741,7 +774,7 @@ mod tests {
 <input type="nickname" confirm-type="done"/>
 <input type="text" confirm-type="return"/>
 <snapshot mode="picture"/>
-<text overflow="ellipsis"/>
+        <text overflow="ellipsis" max-lines="2"/>
 <text overflow="unset"/>
 <image mode="auto"/>
 <text max-lines="0"/>"#,

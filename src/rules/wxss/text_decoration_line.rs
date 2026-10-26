@@ -34,7 +34,7 @@ impl Rule for TextDecorationLine {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit_declarations(project, |doc, decl, out| {
+        visit_declarations(project, |doc, _, decl, out| {
             let name = decl.name.to_ascii_lowercase();
             if name != "text-decoration-line" && name != "text-decoration" {
                 return;

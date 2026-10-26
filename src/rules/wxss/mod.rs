@@ -140,13 +140,13 @@ pub(crate) fn visit_rules(
 /// 遍历全部样式文件的每一条声明。
 pub(crate) fn visit_declarations(
     project: &Project,
-    mut f: impl FnMut(&WxssDoc, &WxssDeclaration, &mut Vec<Diagnostic>),
+    mut f: impl FnMut(&WxssDoc, &WxssRule, &WxssDeclaration, &mut Vec<Diagnostic>),
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for sheet in &project.styles {
         for rule in &sheet.doc.rules {
             for declaration in &rule.declarations {
-                f(&sheet.doc, declaration, &mut out);
+                f(&sheet.doc, rule, declaration, &mut out);
             }
         }
     }

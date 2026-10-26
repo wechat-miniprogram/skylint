@@ -25,7 +25,7 @@ impl Rule for UnsupportedValue {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let table = table();
-        visit_declarations(project, |doc, decl, out| {
+        visit_declarations(project, |doc, _, decl, out| {
             let name = decl.name.to_ascii_lowercase();
             let Some(value) = normalize_value(&decl.value) else {
                 return;

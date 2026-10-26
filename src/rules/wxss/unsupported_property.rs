@@ -24,11 +24,15 @@ impl Rule for UnsupportedProperty {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let table = table();
-        visit_declarations(project, |doc, decl, out| {
+        visit_declarations(project, |doc, rule, decl, out| {
             let name = decl.name.to_ascii_lowercase();
             let Some(advice) = table.property(&name) else {
                 return;
             };
+            if name == "line-clamp" && rule.declaration("-webkit-line-clamp").is_some() {
+                // 同一块里两条都写时只报一次（autoprefixer 产物很常见）。
+                return;
+            }
             let (line, column) = doc.position(decl.offset);
             let (end_line, end_column) = doc.position(decl.offset + decl.name.len());
             out.push(

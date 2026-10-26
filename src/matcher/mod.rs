@@ -127,11 +127,35 @@ pub fn subject(selector: &str) -> Option<Subject> {
 
 /// 动态 class 原文里「确定存在」的 token。
 ///
-/// `class="book_name {{renderer}}"` → `book_name`；`class="a-{{b}}"` 整体丢弃，
-/// 因为插值可能补出 `a-1` 这样的完整词，`a-` 本身并不是一个类名。
-pub(crate) fn certain_tokens(raw: &str) -> impl Iterator<Item = &str> {
-    raw.split_whitespace()
-        .filter(|word| !word.contains(['{', '}']))
+/// 只看插值之外的直属文本：`class="novel {{renderer}}"` → `novel`；
+/// `class="a-{{b}}"` 整体丢弃（插值可能补出 `a-1`）；
+/// `class="{{ r === 'skyline' ? 'skyline' : 'webview' }}"` 里的 `skyline`/`webview`
+/// 属于表达式内部，不是确定的类名。
+pub(crate) fn certain_tokens(raw: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let mut cursor = 0;
+    while cursor < raw.len() {
+        let seg_end = raw[cursor..]
+            .find("{{")
+            .map_or(raw.len(), |offset| cursor + offset);
+        let segment = &raw[cursor..seg_end];
+        let from_value_start = cursor == 0;
+        let to_value_end = seg_end == raw.len();
+        let mut items: Vec<&str> = segment.split_whitespace().collect();
+        // 紧贴插值的词只能算前缀/后缀，不成词。
+        if !(from_value_start || segment.starts_with(char::is_whitespace)) && !items.is_empty() {
+            items.remove(0);
+        }
+        if !(to_value_end || segment.ends_with(char::is_whitespace)) {
+            items.pop();
+        }
+        words.extend(items);
+        match raw[seg_end..].find("}}") {
+            Some(close) => cursor = seg_end + close + 2,
+            None => break,
+        }
+    }
+    words
 }
 
 /// 三值判定：`Unknown` 表示静态阶段无法确定（动态属性 / 运行时状态 / 非线性兄弟区）。
@@ -390,7 +414,7 @@ impl<'a> Tree<'a> {
             Some(attr) if !attr.is_static => !attr
                 .raw_value
                 .as_deref()
-                .is_some_and(|raw| certain_tokens(raw).any(|t| t.eq_ignore_ascii_case(token))),
+                .is_some_and(|raw| certain_tokens(raw).into_iter().any(|t| t.eq_ignore_ascii_case(token))),
             _ => false,
         }
     }
@@ -654,6 +678,17 @@ mod tests {
         assert_eq!(check(&d, 0, ".a-", Dialect::WebView), Tri::Unknown);
         assert_eq!(check(&d, 1, ".e", Dialect::WebView), Tri::Yes);
         assert_eq!(check(&d, 1, ".c", Dialect::WebView), Tri::Unknown);
+    }
+
+    #[test]
+    fn tokens_inside_an_expression_are_not_certain() {
+        // 三目表达式里的 `webview` 只是分支字面量，Skyline 下不会出现在 class 列表里。
+        let d = doc(
+            r#"<view class="c {{ r === 'skyline' ? 'skyline' : 'webview' }}"/><view class="dark"/>"#,
+        );
+        assert_eq!(check(&d, 0, ".c", Dialect::WebView), Tri::Yes);
+        assert_eq!(check(&d, 0, ".c.webview", Dialect::WebView), Tri::Unknown);
+        assert_eq!(check(&d, 0, ".c.skyline", Dialect::WebView), Tri::Unknown);
     }
 
     #[test]

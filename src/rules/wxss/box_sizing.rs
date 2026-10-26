@@ -26,7 +26,7 @@ impl Rule for BoxSizing {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit_declarations(project, |doc, decl, out| {
+        visit_declarations(project, |doc, _, decl, out| {
             if !decl.name.eq_ignore_ascii_case("box-sizing") {
                 return;
             }
