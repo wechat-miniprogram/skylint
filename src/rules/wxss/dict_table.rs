@@ -190,6 +190,25 @@ impl Table {
             .find(|(names, candidate, _)| *candidate == value && names.contains(&name))
             .map(|(_, _, advice)| *advice)
     }
+
+    /// 多值形态里逐项判：`overflow: hidden auto`、`border-style: solid double` 这类
+    /// 声明整值匹配不到，但其中不支持的项会被引擎按项丢弃（分轴 / 分边展开），
+    /// 其余项照常生效。返回「不支持的项 + 各自建议」。
+    pub(crate) fn unsupported_items(
+        &self,
+        name: &str,
+        value: &str,
+    ) -> Vec<(&'static str, &'static str)> {
+        value
+            .split_ascii_whitespace()
+            .filter_map(|item| {
+                self.values
+                    .iter()
+                    .find(|(names, candidate, _)| *candidate == item && names.contains(&name))
+                    .map(|(_, candidate, advice)| (*candidate, *advice))
+            })
+            .collect()
+    }
 }
 
 pub(crate) fn table() -> &'static Table {

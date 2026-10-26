@@ -47,11 +47,7 @@ impl Rule for FlexDirection {
             if rule.selectors.is_empty() {
                 return;
             }
-            // `flex-flow` 同时设置 flex-direction 与 flex-wrap，算已显式声明方向。
-            if rule.declaration("flex-direction").is_some()
-                || rule.declaration("flex-flow").is_some()
-                || declares_flex_direction_elsewhere(doc, rule)
-            {
+            if declares_direction(rule) || declares_flex_direction_elsewhere(doc, rule) {
                 return;
             }
             // 同一条规则里 display 写多次时以后面的为准；最后一条不是 flex 就不报。
@@ -87,13 +83,34 @@ impl Rule for FlexDirection {
 fn declares_flex_direction_elsewhere(doc: &WxssDoc, rule: &WxssRule) -> bool {
     doc.rules.iter().any(|other| {
         !std::ptr::eq(other, rule)
-            && (other.declaration("flex-direction").is_some()
-                || other.declaration("flex-flow").is_some())
+            && declares_direction(other)
             && other
                 .selectors
                 .iter()
                 .any(|selector| shares_selector(selector, &rule.selectors))
     })
+}
+
+/// 这条规则是否显式声明了**具体**方向。
+///
+/// `flex-direction: initial` / `unset` / `revert` / `inherit` 不算：运行时的
+/// `ApplyInitial` 在未开 `defaultDisplayBlock` 时给出 column（`flex_direction.cc:39-46`），
+/// 与 WebView 的 row 仍然相反，写这些关键字并没有消除差异。
+/// `flex-flow` 一律算已声明：按 CSS 语义 `flex-flow: wrap` 的方向缺省值是 row，
+/// fp 的 shorthand 定义里 `flex_direction` 的缺省值也是 `Row`
+/// （`float-pigment-css/src/property.rs:48,380`），静态判起来与 WebView 一致。
+fn declares_direction(rule: &WxssRule) -> bool {
+    if let Some(decl) = rule.declaration("flex-direction") {
+        let value = decl.value.trim().to_ascii_lowercase();
+        if super::value_util::text_is_dynamic(&value) || is_direction(&value) {
+            return true;
+        }
+    }
+    rule.declaration("flex-flow").is_some()
+}
+
+fn is_direction(value: &str) -> bool {
+    matches!(value, "row" | "row-reverse" | "column" | "column-reverse")
 }
 
 fn shares_selector(selector: &WxssSelector, selectors: &[WxssSelector]) -> bool {
@@ -160,6 +177,25 @@ mod tests {
             "#,
         );
         assert!(messages(&FlexDirection, &project).is_empty());
+    }
+
+    /// `initial` / `unset` / `inherit` 没有消除方向差异：未开 defaultDisplayBlock 时
+    /// Skyline 的初值是 column，WebView 是 row。
+    #[test]
+    fn global_keywords_do_not_count_as_declaring_a_direction() {
+        let (_f, project) = single(
+            "flex-global-keywords",
+            r#"
+            .a { display: flex; flex-direction: initial; }
+            .b { display: flex; flex-direction: unset; }
+            .c { display: flex; flex-direction: inherit; }
+            .d { display: flex; flex-direction: var(--dir); }
+            .e { display: flex; flex-flow: wrap; }
+            "#,
+        );
+        let diags = FlexDirection.check(&project);
+        // .d / .e 静态判不了，按已声明处理（宁可漏报）。
+        assert_eq!(diags.len(), 3, "{diags:#?}");
     }
 
     /// 同一条规则里 display 写两次时，后一条生效。

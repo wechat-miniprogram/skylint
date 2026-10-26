@@ -30,18 +30,38 @@ impl Rule for UnsupportedValue {
             let Some(value) = normalize_value(&decl.value) else {
                 return;
             };
-            let Some(advice) = table.value(&name, &value) else {
-                return;
+            let raw = decl.value.trim();
+            let (message, advice) = match table.value(&name, &value) {
+                Some(advice) => (
+                    format!("`{name}: {raw}` 在 Skyline 下不受支持，该值会被静默忽略"),
+                    advice,
+                ),
+                None => {
+                    // 多值形态：引擎按项解析（分轴 overflow、分边 border-style），
+                    // 不支持的项被丢弃，其余项照常生效。
+                    let items = table.unsupported_items(&name, &value);
+                    let Some((_, advice)) = items.first().copied() else {
+                        return;
+                    };
+                    let names = items
+                        .iter()
+                        .map(|(item, _)| format!("`{item}`"))
+                        .collect::<Vec<_>>()
+                        .join("、");
+                    (
+                        format!(
+                            "`{name}: {raw}` 里的 {names} 在 Skyline 下不受支持，这些项会被丢弃"
+                        ),
+                        advice,
+                    )
+                }
             };
             out.push(at_declaration(
                 Self::ID,
                 doc,
                 decl,
                 Severity::Error,
-                format!(
-                    "`{name}: {}` 在 Skyline 下不受支持，该值会被静默忽略",
-                    decl.value.trim()
-                ),
+                message,
                 advice,
             ));
         })
@@ -54,6 +74,46 @@ mod tests {
 
     use super::UnsupportedValue;
     use crate::rules::testutil::wxss::{messages, single};
+
+    #[test]
+    fn value_reports_unsupported_items_of_multi_value_forms() {
+        // 引擎按项解析（overflow 分轴、border-style 分边），不支持的项被丢弃，
+        // 其余项照常生效。
+        let (_f, project) = single(
+            "value-multi",
+            r#"
+            .a { overflow: hidden auto; }
+            .b { border-style: solid double; }
+            .c { border-top-style: double groove; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 3, "{diags:?}");
+        assert!(diags[0].message.contains("`auto`"), "{}", diags[0].message);
+        assert!(
+            diags[1].message.contains("`double`"),
+            "{}",
+            diags[1].message
+        );
+        assert!(
+            diags[2].message.contains("`double`") && diags[2].message.contains("`groove`"),
+            "{}",
+            diags[2].message
+        );
+    }
+
+    #[test]
+    fn multi_value_forms_keep_supported_items_silent() {
+        let (_f, project) = single(
+            "value-multi-negative",
+            r#"
+            .a { overflow: hidden visible; }
+            .b { border-style: solid dashed none dotted; }
+            .c { padding: 1px 2px 3px 4px; }
+            "#,
+        );
+        assert!(UnsupportedValue.check(&project).is_empty());
+    }
 
     #[test]
     fn value_reports_unsupported_values() {
@@ -95,7 +155,7 @@ mod tests {
             .d { display: var(--d); }
             .e { margin: 0 auto; }
             .f { background: url(grid.png); }
-            .g { overflow: auto hidden; }
+            .g { overflow: visible hidden; }
             .h { content: "pre-wrap"; }
             .i { display: env(display); }
             .j { width: calc(100% - 1px); }

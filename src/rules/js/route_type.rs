@@ -37,16 +37,19 @@ impl RouteType {
     pub const ID: &'static str = "skyline/route-type";
 }
 
-/// 跳转调用的接收者必须是已知的对象：`navigateTo` 裸调用、`wx.*`、`*.pageRouter`。
-/// 其它接收者（`myRouter.navigateTo`、类实例方法）不看，语义无法静态确认。
-fn navigation_callee(callee: &str) -> bool {
-    if !NAVIGATION.matches(callee) {
-        return false;
+/// 只认已知接收者上的跳转方法：裸调用、`wx.*`、`*.pageRouter`。其它接收者
+/// （`myRouter.navigateTo`、类实例方法）语义无法静态确认，不看。
+const ROUTER_METHODS: &[&str] = &["navigateTo", "redirectTo", "reLaunch", "switchTab"];
+
+/// 这个调用是不是跳转调用；是的话返回它会不会消费 `routeType`。
+fn route_call(callee: &str) -> Option<bool> {
+    let (receiver, method) = callee.rsplit_once('.').unwrap_or(("", callee));
+    if !receiver.is_empty() && receiver != "wx" && !receiver.ends_with("pageRouter") {
+        return None;
     }
-    match callee.rsplit_once('.') {
-        None => true,
-        Some((receiver, _)) => receiver == "wx" || receiver.ends_with("pageRouter"),
-    }
+    ROUTER_METHODS
+        .contains(&method)
+        .then(|| NAVIGATION.matches(callee))
 }
 
 /// `'slide'` / `"slide"` 字面量的内容。注册名不做转义解码，带反斜杠的跳过。
@@ -102,14 +105,41 @@ impl Rule for RouteType {
                 }
             }
         }
-        if dynamic_registration {
-            return Vec::new();
-        }
-
         let mut out = Vec::new();
+        // `routeType` 只在 `navigateTo` 分支被读（`onAppRoute.js:501`）：写在
+        // redirectTo / reLaunch 的实参里没有读者，自定义路由不会生效。
+        // 这条判定与注册表无关，动态注册也照报。
         for file in &project.scripts {
             for call in file.doc.calls() {
-                if !navigation_callee(&call.callee) {
+                if route_call(&call.callee) != Some(false) {
+                    continue;
+                }
+                for arg in &call.args {
+                    for (name, (start, end)) in route_types(arg) {
+                        if name.is_empty() {
+                            continue;
+                        }
+                        out.push(at_span(
+                            Self::ID,
+                            Severity::Warning,
+                            file,
+                            start,
+                            end,
+                            format!(
+                                "`routeType: '{name}'` 写在 `{}` 里不会被读取：运行时只在 `navigateTo` 分支消费 routeType，自定义路由与转场不会生效",
+                                call.callee
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        if dynamic_registration {
+            return out;
+        }
+        for file in &project.scripts {
+            for call in file.doc.calls() {
+                if route_call(&call.callee) != Some(true) {
                     continue;
                 }
                 for arg in &call.args {
@@ -199,6 +229,27 @@ mod tests {
         assert_eq!(messages(&RouteType, &project), Vec::<String>::new());
     }
 
+    /// `routeType` 只在 `navigateTo` 分支被读，写在其它跳转里没有读者。
+    #[test]
+    fn route_type_outside_navigate_to_is_reported_as_ignored() {
+        let src = r#"
+            wx.router.addRouteBuilder('slide', () => ({}));
+            wx.redirectTo({ url: 'pageB', routeType: 'slide' });
+            wx.reLaunch({ url: 'pageB', routeType: 'slide' });
+            pageRouter.navigateTo({ url: 'pageB', routeType: 'slide' });
+            myRouter.redirectTo({ url: 'pageB', routeType: 'slide' });
+            "#;
+        let (_f, project) = single("route-type-ignored", src);
+        let diagnostics = RouteType.check(&project);
+        // 前两条报（已知接收者上的 redirectTo / reLaunch）；navigateTo 正常；
+        // `myRouter.*` 接收者未知，不看。
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+        assert!(
+            diagnostics.iter().all(|d| d.message.contains("不会被读取")),
+            "{diagnostics:#?}"
+        );
+    }
+
     /// 路由注册常写在 `utils/router.js` 这种被 require 的工具模块里，它不属于任何页面 /
     /// 组件，所以不在 `Project.scripts`。漏掉它会把整个工程判成「没注册」。
     #[test]
@@ -239,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn only_navigate_to_is_checked() {
+    fn only_navigate_to_consumes_route_type() {
         let (_f, project) = single(
             "route-type-apis",
             r#"
@@ -249,8 +300,20 @@ mod tests {
             "#,
         );
         let diagnostics = RouteType.check(&project);
-        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-        assert!(diagnostics[0].message.contains("slide"));
+        assert_eq!(diagnostics.len(), 3, "{diagnostics:#?}");
+        // navigateTo 那条是「未注册」，另外两条是「这个调用根本不读 routeType」。
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|d| d.message.contains("不会被读取"))
+                .count(),
+            2
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("没有对应的") && d.message.contains("slide"))
+        );
     }
 
     #[test]
