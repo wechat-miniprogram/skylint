@@ -611,9 +611,9 @@ fn requires_message(tag: &str, rule: &Requires, value: &str, current: Option<&st
                 rule.trigger.attr()
             )
         }
-        Requirement::Present(name) => format!(
-            "`<{tag} {trigger}>` 缺少 `{name}`，省略号不会生效（文本不限行数）"
-        ),
+        Requirement::Present(name) => {
+            format!("`<{tag} {trigger}>` 缺少 `{name}`，省略号不会生效（文本不限行数）")
+        }
         Requirement::NotAny(name, _) => format!(
             "`<{tag} {trigger}>` 的 `{}` 在 `{name}=\"{}\"` 时不生效，会被忽略",
             rule.trigger.attr(),

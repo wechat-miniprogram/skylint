@@ -411,10 +411,11 @@ impl<'a> Tree<'a> {
     /// 动态 class 上这个 token 是否不可判定（原文里没写死）。
     fn class_unresolved(&self, token: &str, element: &WxmlElement) -> bool {
         match self.attribute(element, "class") {
-            Some(attr) if !attr.is_static => !attr
-                .raw_value
-                .as_deref()
-                .is_some_and(|raw| certain_tokens(raw).into_iter().any(|t| t.eq_ignore_ascii_case(token))),
+            Some(attr) if !attr.is_static => !attr.raw_value.as_deref().is_some_and(|raw| {
+                certain_tokens(raw)
+                    .into_iter()
+                    .any(|t| t.eq_ignore_ascii_case(token))
+            }),
             _ => false,
         }
     }

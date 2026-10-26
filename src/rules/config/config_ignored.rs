@@ -59,12 +59,13 @@ fn check_app_scroll(project: &Project, out: &mut Vec<Diagnostic>) {
     if !in_window && !project.app_json.contains_key("disableScroll") {
         return;
     }
+    let path = project.app_json_path.as_str();
     warn(
         out,
         ConfigIgnored::ID,
-        "app.json",
+        path,
         positions.key("disableScroll"),
-        "app.json 里的 `disableScroll` 不生效，它只能写在页面 json".to_string(),
+        format!("{path} 里的 `disableScroll` 不生效，它只能写在页面 json"),
         "Skyline 页面默认不滚动（`check_renderer` 会把 skyline 页的 `disableScroll` 改成 true）；需要关滚动的页面，把 `disableScroll: true` 写在该页的 json 里",
     );
 }

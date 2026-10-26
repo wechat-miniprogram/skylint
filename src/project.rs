@@ -112,6 +112,9 @@ pub struct Project {
     pub app_json: Map<String, Value>,
     /// app.json 原文，配置类规则定位用；读不到时为空串。
     pub app_json_source: String,
+    /// 该视图的 app 级配置文件（`app.json` / 插件视图的 `plugin.json`），
+    /// 诊断路径相对视图根，前缀由报告层补。
+    pub app_json_path: String,
     /// project.config.json 原始对象（缺失 / 解析失败为空）。
     pub project_config: Map<String, Value>,
     /// project.config.json 原文，定位 `libVersion` 这类值时用；读不到时为空串。
@@ -435,6 +438,7 @@ impl Project {
             component_json: BTreeMap::new(),
             component_json_source: BTreeMap::new(),
             app_json_source: String::new(),
+            app_json_path: "app.json".to_string(),
             project_config: Map::new(),
             project_config_source: String::new(),
             project_private_config: Map::new(),
@@ -738,6 +742,11 @@ impl Loaded {
             report_prefix: view.report_prefix.to_string(),
             app_json: view.app.clone(),
             app_json_source: view.app_source.to_string(),
+            app_json_path: if view.plugin_view {
+                "plugin.json".to_string()
+            } else {
+                "app.json".to_string()
+            },
             project_config: self.config.clone(),
             project_config_source: self.config_source.clone(),
             project_private_config: self.private_config.clone(),

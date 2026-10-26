@@ -63,6 +63,8 @@ const KNOWN: &[(&str, Kind, Where)] = &[
     ("iosVersionEnd", Kind::Text, Where::AppOnly),
     ("androidVersionBegin", Kind::Text, Where::AppOnly),
     ("androidVersionEnd", Kind::Text, Where::AppOnly),
+    ("ohosVersionBegin", Kind::Text, Where::AppOnly),
+    ("ohosVersionEnd", Kind::Text, Where::AppOnly),
 ];
 
 /// app 级 `rendererOptions` 顶层**不生效**的键：运行时只读
@@ -103,10 +105,13 @@ impl Rule for RendererOptions {
         }
         let mut out = Vec::new();
         check_file(
-            "app.json",
+            &project.app_json_path,
             &project.app_json_source,
             &project.app_json,
             Level::App,
+            // plugin.json 有自己的键集（pages 是 map、publicComponents 等），
+            // 套 app.json 的键表会造误报，插件视图只做已知键的类型 / 层级检查。
+            !project.plugin_view,
             &mut out,
         );
         for (route, json) in &project.page_json {
@@ -120,6 +125,7 @@ impl Rule for RendererOptions {
                 source,
                 json,
                 Level::Page,
+                true,
                 &mut out,
             );
         }
@@ -132,6 +138,7 @@ fn check_file(
     source: &str,
     json: &Map<String, Value>,
     level: Level,
+    known_keys_only: bool,
     out: &mut Vec<Diagnostic>,
 ) {
     let positions = JsonPositions::new(source);
@@ -150,6 +157,25 @@ fn check_file(
             ),
             "写成 JSON 布尔值 true / false，不要加引号或写数字",
         );
+    }
+
+    // `renderer` 只认字面量 skyline / webview：编译器与加载器都是精确比较
+    // （`miniprogram-compiler-rs crates/graph/src/json/mutate.rs:425-441`），
+    // 写成 `Skyline` 既不算 Skyline 也不算 opt-out，页面会按默认处理。
+    if level == Level::App
+        && let Some(value) = json.get("renderer")
+    {
+        let recognized = value.as_str() == Some("skyline") || value.as_str() == Some("webview");
+        if !recognized {
+            warn(
+                out,
+                RendererOptions::ID,
+                path,
+                positions.key("renderer"),
+                format!("`renderer` 的取值 {value} 不会被识别，只认 \"skyline\" / \"webview\""),
+                "写成小写的精确值：\"skyline\" 或 \"webview\"",
+            );
+        }
     }
 
     let Some(options) = json.get("rendererOptions") else {
@@ -172,7 +198,10 @@ fn check_file(
 
     match options.get("skyline") {
         None => {}
-        Some(Value::Object(skyline)) => check_skyline(path, &positions, skyline, level, out),
+        Some(Value::Object(skyline)) => {
+            check_version_pairs(path, &positions, skyline, out);
+            check_skyline(path, &positions, skyline, level, known_keys_only, out)
+        }
         Some(_) => warn(
             out,
             RendererOptions::ID,
@@ -215,13 +244,16 @@ fn check_file(
                 "把该配置移进 rendererOptions.skyline 下",
             );
         } else {
+            if !known_keys_only {
+                continue;
+            }
             warn(
                 out,
                 RendererOptions::ID,
                 path,
                 positions.key(key),
                 format!(
-                    "app 级 `rendererOptions.{key}` 没有读者：app 级只读 rendererOptions.defaultDisplayBlock 与 rendererOptions.skyline.*"
+                    "{path} 的 `rendererOptions.{key}` 没有读者：app 级只读 rendererOptions.defaultDisplayBlock 与 rendererOptions.skyline.*"
                 ),
                 "把开关移进 rendererOptions.skyline 下；已知配置项见 skyline-config/references/app-config.md",
             );
@@ -269,11 +301,61 @@ fn walk_convert_rpx_to_vw(
     }
 }
 
+/// 版本区间：`xxxVersionEnd` 必须不小于 `xxxVersionBegin`，否则整个版本段都不生效
+/// （官方文档「`xxxVersionEnd` 填最大值，否则新版本不生效」）。
+const VERSION_PAIRS: &[(&str, &str)] = &[
+    ("sdkVersionBegin", "sdkVersionEnd"),
+    ("iosVersionBegin", "iosVersionEnd"),
+    ("androidVersionBegin", "androidVersionEnd"),
+    ("ohosVersionBegin", "ohosVersionEnd"),
+];
+
+fn check_version_pairs(
+    path: &str,
+    positions: &JsonPositions,
+    skyline: &Map<String, Value>,
+    out: &mut Vec<Diagnostic>,
+) {
+    for (begin_key, end_key) in VERSION_PAIRS {
+        let pair = (
+            skyline.get(*begin_key).and_then(Value::as_str),
+            skyline.get(*end_key).and_then(Value::as_str),
+        );
+        let (Some(begin), Some(end)) = pair else {
+            continue;
+        };
+        let (Some(begin_value), Some(end_value)) = (version_tuple(begin), version_tuple(end))
+        else {
+            continue;
+        };
+        if begin_value > end_value {
+            warn(
+                out,
+                RendererOptions::ID,
+                path,
+                positions.key(end_key),
+                format!(
+                    "`{begin_key}: \"{begin}\"` 大于 `{end_key}: \"{end}\"`，版本区间为空，Skyline 在这个区间里不会启用"
+                ),
+                "把 xxxVersionEnd 写成最大值（如 \"15.255.255\"），或让 begin 不大于 end",
+            );
+        }
+    }
+}
+
+/// `3.0.1` → `(3, 0, 1)`；解析失败（含 `*` / 空串）返回 `None`，不判。
+fn version_tuple(text: &str) -> Option<Vec<u32>> {
+    text.split('.')
+        .map(|part| part.parse::<u32>().ok())
+        .collect()
+}
+
 fn check_skyline(
     path: &str,
     positions: &JsonPositions,
     skyline: &Map<String, Value>,
     level: Level,
+    known_keys_only: bool,
     out: &mut Vec<Diagnostic>,
 ) {
     for (key, value) in skyline {
@@ -281,6 +363,9 @@ fn check_skyline(
             continue;
         }
         let Some((kind, scope)) = kind_of(key) else {
+            if !known_keys_only {
+                continue;
+            }
             warn(
                 out,
                 RendererOptions::ID,
@@ -674,6 +759,56 @@ mod tests {
         let (_f, project) = project(
             "renderer-options-app-top",
             r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"defaultDisplayBlock":true}}"#,
+            "{}",
+        );
+        assert!(RendererOptions.check(&project).is_empty());
+    }
+
+    #[test]
+    fn reports_unrecognized_renderer_value() {
+        // 编译器与加载器都是精确比较，`Skyline` 既不算 Skyline 也不算 opt-out。
+        let (_f, project) = project(
+            "renderer-case",
+            r#"{"pages":["pages/index/index"],"renderer":"Skyline"}"#,
+            "{}",
+        );
+        let diags = RendererOptions.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert!(diags[0].message.contains("renderer"));
+        assert_eq!((diags[0].line, diags[0].column), (1, 32));
+    }
+
+    #[test]
+    fn reports_empty_version_window() {
+        let (_f, project) = project(
+            "renderer-version-window",
+            &app_with(
+                r#"{"skyline":{"sdkVersionBegin":"3.14.2","sdkVersionEnd":"3.3.3","iosVersionBegin":"8.0.40","iosVersionEnd":"8.0.39"}}"#,
+            ),
+            "{}",
+        );
+        let diags = RendererOptions.check(&project);
+        assert_eq!(diags.len(), 2, "{diags:#?}");
+        assert!(diags.iter().all(|d| d.message.contains("版本区间为空")));
+    }
+
+    #[test]
+    fn accepts_documented_version_window_and_ohos_keys() {
+        let (_f, project) = project(
+            "renderer-version-ok",
+            &app_with(
+                r#"{"skyline":{"sdkVersionBegin":"3.0.1","sdkVersionEnd":"15.255.255","ohosVersionBegin":"1.0.5","ohosVersionEnd":"15.255.255"}}"#,
+            ),
+            "{}",
+        );
+        assert!(RendererOptions.check(&project).is_empty());
+    }
+
+    #[test]
+    fn unparsable_versions_are_not_compared() {
+        let (_f, project) = project(
+            "renderer-version-odd",
+            &app_with(r#"{"skyline":{"sdkVersionBegin":"3.0.x","sdkVersionEnd":"3.0.1"}}"#),
             "{}",
         );
         assert!(RendererOptions.check(&project).is_empty());
