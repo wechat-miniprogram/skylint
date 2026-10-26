@@ -31,8 +31,3 @@ oxc_ast_visit = "=0.155.0"
 oxc_allocator = "=0.155.0"
 oxc_span = "=0.155.0"
 oxc_syntax = "=0.155.0"
-
-# 只有维护脚本（examples/）用：发版上传与校验和。不进入发布二进制。
-[dev-dependencies]
-sha2 = "0.10"
-ureq = { version = "3", features = ["json"] }

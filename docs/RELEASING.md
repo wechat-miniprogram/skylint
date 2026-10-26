@@ -68,14 +68,3 @@ SHA256SUMS
 
 工作流保留了 `secrets.CARGO_REGISTRY_TOKEN` 兜底（`publish` job 里 OIDC 失败时退回
 secret），所以第 1 步之前也可以在仓库里配一个组织 token 应急；两种方式可并存。
-
-## 本地手工发版（可选）
-
-`examples/release.rs` 是接入 Actions 之前的脚本，仍可用：
-
-```bash
-cargo run --example release -- release            # 干跑：构建、打包、算校验和，不联网
-GITHUB_TOKEN=*** cargo run --example release -- release --upload
-```
-
-它只上传 GitHub Release，不发布 crate；产物布局与流水线一致。

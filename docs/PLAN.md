@@ -24,13 +24,12 @@ skylint/
 │   └── main.rs       # 薄 CLI（clap）
 ├── tests/            # 集成测试（工程视图、注册表与文档一致性）
 ├── examples/
-│   ├── rules_doc.rs  # 生成 docs/RULES.md
-│   └── release.rs    # 发版：构建 / 打包 / 上传
+│   └── rules_doc.rs  # 生成 docs/RULES.md
 └── docs/
 ```
 
 只有一个 crate：库与 CLI 同包（`cargo build` 出 `skylint`，`cargo test` 一次跑完），
-维护脚本放 `examples/`（依赖进 dev-dependencies，不污染发布二进制）。
+维护脚本放 `examples/`；发版走 tag 触发的 GitHub Actions（`.github/workflows/release.yml`）。
 
 依赖形态（**已落地**）：不依赖 minidev。工程加载器自建，见 §3。
 
