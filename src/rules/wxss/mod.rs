@@ -4,6 +4,7 @@
 //! 「值的个数/结构」类限制各占一个文件。它们共用 [`visit_rules`] /
 //! [`visit_declarations`] 两层遍历与 [`value_util`] 的值分词工具。
 
+pub mod attribute_selector;
 pub mod box_sizing;
 pub mod calc_angle;
 pub mod calc_min_max;
@@ -26,6 +27,7 @@ pub mod unsupported_value;
 pub mod value_degraded;
 pub mod value_util;
 
+pub use attribute_selector::AttributeSelector;
 pub use box_sizing::BoxSizing;
 pub use calc_angle::CalcAngle;
 pub use calc_min_max::CalcMinMax;

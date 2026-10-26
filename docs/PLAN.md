@@ -242,6 +242,16 @@ LESS，外加缩进语法）都是同一个 `Syntax` 枚举，差异只剩摊平
 两条同选择器规则，选择器类规则会重复报同一条。`Report::new` 在排序后 `dedup`——全字段
 相同的诊断不携带信息（businessview 的 `no-pseudo` 499 → 488）。
 
+- `skyline/attribute-selector`：属性选择器在 Skyline 下不参与匹配，两种后果分开判。
+  引擎入集按 id → tag → class 分桶，主体三者都空且不是 `:host` 时直接返回
+  （`style/rule_set.cc:106-160`），匹配也只查这三类桶（`selector_matcher.cc:456-500`）：
+  主体只有属性（`[aria-checked]`）时整条声明从不生效；主体另有标签/class 时条件被
+  丢掉，命中范围放宽。两种都只在真的能观察到差异时报——逐元素比对两个方言，要求存在
+  「WebView 命中而 Skyline 不命中」或反向的节点。工程里没写过该属性时两端都不命中，
+  所有 `.a` 都带该属性时放宽也没有后果，都不报。四个非插件工程只有 businessview 命中
+  1 条（weui 的 `.weui-agree__checkbox-check[aria-checked='true'] + …`：WebView 靠
+  `aria-checked` 判定，Skyline 丢掉条件后勾选样式恒亮），其余三个工程 0 条。
+
 - `skyline/tag-selector-isolation`：标签 / id 选择器在 Skyline 下不跨组件匹配。
   引擎证据在 `skyline/style/selector_matcher.cc`：页面/组件样式表走 `MatchScopedRules`，
   命中前要求 `node.StyleScopeId() == rule_scope_id`；`legacy` 只把**标签**选择器改查
@@ -502,7 +512,7 @@ worklet」）用一次过滤算出来，不做增量缓存。
 
 | 构造 | WebView | Skyline |
 |---|---|---|
-| `[attr]` / `[attr=v]` | 按规范 | 条件被丢弃（`css/selector.h` 的 `CompoundSelector` 无 attribute 字段），等价 `*` |
+| `[attr]` / `[attr=v]` | 按规范 | 条件被丢弃（`css/selector.h` 的 `CompoundSelector` 无 attribute 字段）；主体另有 id/标签/class 时等价于去掉该条件，主体只有属性时整条规则进不了规则集（`rule_set.cc:106-160`） |
 | `:nth-child(an+b)` / `+` / `~` | 按规范 | 按规范（`selector_matcher.cc:126,292,311`） |
 | `:nth-of-type` / `::selection` | 按规范 | 无对应 case，降级成「没有这个伪类/伪元素」 |
 | `:active` / `:hover` / `:placeholder-shown` | 运行时状态 | 整条规则在解析阶段被丢弃（`parser/mod.rs:989-991`） |

@@ -39,6 +39,91 @@ pub enum Dialect {
     Skyline,
 }
 
+/// 主体 compound（最右一段）的构成。
+///
+/// Skyline 的 `CompoundSelector` 只保留 id / 标签 / class（`css/selector.h:78`），
+/// 属性条件在转换时被丢弃（`css/css_parser_impl.h:191-220`），所以「主体有没有
+/// id/tag/class」决定这条规则是「整条失效」还是「条件被放宽」。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Subject {
+    pub has_tag: bool,
+    pub has_id: bool,
+    pub has_class: bool,
+    /// 主体里有 `*`。
+    pub universal: bool,
+    /// 主体里的属性选择器名（小写，保持书写顺序）。
+    pub attributes: Vec<String>,
+    /// 主体之前（祖先 / 兄弟段）的属性选择器名：这些条件的丢弃同样会放宽匹配。
+    pub other_attributes: Vec<String>,
+    /// 主体带 `:host`：`rule_set.cc:150-158` 会给它单独的宿主桶，不受 id/tag/class 影响。
+    pub has_host: bool,
+}
+
+impl Subject {
+    /// 主体是否有 Skyline 能认的定位条件。
+    pub fn has_locator(&self) -> bool {
+        self.has_tag || self.has_id || self.has_class
+    }
+}
+
+/// 这条选择器在 Skyline 下会不会被收进某个规则桶。
+///
+/// 主体 compound 要有 id / 标签 / class；`:host` 走宿主桶（`rule_set.cc:150-158`），
+/// 也收得进去。两者都没有时规则根本不入集。
+fn skyline_bucketed(selector: &Selector<SelImpl>) -> bool {
+    for component in selector.iter_raw_match_order() {
+        match component {
+            Component::Combinator(_) => return false,
+            Component::LocalName(_) | Component::ID(_) | Component::Class(_) => return true,
+            Component::NonTSPseudoClass(pseudo) if pseudo.name.eq_ignore_ascii_case("host") => {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// 解析一条选择器，取出主体 compound 的构成。
+///
+/// 选择器列表（`a, b`）返回 `None`：调用方按单个选择器处理，列表形态不猜。
+pub fn subject(selector: &str) -> Option<Subject> {
+    let list = imp::parse(selector)?;
+    let [one] = list.slice() else {
+        return None;
+    };
+    let mut subject = Subject::default();
+    let mut in_subject = true;
+    for component in one.iter_raw_match_order() {
+        // 匹配顺序是从右往左：碰到组合符，主体就结束了。
+        if matches!(component, Component::Combinator(_)) {
+            in_subject = false;
+            continue;
+        }
+        let attributes = if in_subject {
+            &mut subject.attributes
+        } else {
+            &mut subject.other_attributes
+        };
+        match component {
+            Component::LocalName(_) => subject.has_tag = true,
+            Component::ID(_) => subject.has_id = true,
+            Component::Class(_) => subject.has_class = true,
+            Component::ExplicitUniversalType => subject.universal = true,
+            Component::AttributeInNoNamespaceExists { local_name, .. }
+            | Component::AttributeInNoNamespace { local_name, .. } => {
+                attributes.push(local_name.0.to_string())
+            }
+            Component::AttributeOther(other) => attributes.push(other.local_name.0.to_string()),
+            Component::NonTSPseudoClass(pseudo) if pseudo.name.eq_ignore_ascii_case("host") => {
+                subject.has_host = true;
+            }
+            _ => {}
+        }
+    }
+    Some(subject)
+}
+
 /// 三值判定：`Unknown` 表示静态阶段无法确定（动态属性 / 运行时状态 / 非线性兄弟区）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tri {
@@ -143,6 +228,12 @@ impl<'a> Tree<'a> {
 
     /// 静态不可判定的情况，先于引擎短路。
     fn classify(&self, selector: &Selector<SelImpl>, idx: usize, dialect: Dialect) -> Option<Tri> {
+        if dialect == Dialect::Skyline && !skyline_bucketed(selector) {
+            // Skyline 按 id / tag / class 三类桶匹配（`selector_matcher.cc:456-500`），
+            // 主体三者都没有的规则连规则集都进不去（`rule_set.cc:106-160`）——
+            // `[foo]` 不是等价 `*`，而是整条声明从不生效。
+            return Some(Tri::No);
+        }
         let element = self.elems[idx];
         let mut positional = false;
         let mut dynamic = false;
@@ -504,9 +595,13 @@ mod tests {
             check(&d, 0, "[aria-checked='TRUE' i]", Dialect::WebView),
             Tri::Yes
         );
-        // Skyline 丢弃属性条件 → 等价 `*`。
+        // Skyline 丢弃属性条件；但主体只剩属性时规则进不了规则桶，整条不生效。
         assert_eq!(
             check(&d, 0, "[data-theme='dark']", Dialect::Skyline),
+            Tri::No
+        );
+        assert_eq!(
+            check(&d, 0, ".x[data-theme='dark']", Dialect::Skyline),
             Tri::Yes
         );
     }
