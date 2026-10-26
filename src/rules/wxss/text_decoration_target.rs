@@ -189,10 +189,22 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_class_is_fine() {
+    fn dynamic_class_with_static_token_is_still_matched() {
+        // `link` 是原文里写死的 token，运行时一定在 class 列表里；元素是 view，装饰不会绘制。
         let diagnostics = check(
             "dynamic",
             r#"<view class="link {{active}}">详情</view>"#,
+            ".link { text-decoration: underline; }",
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].rule, "skyline/text-decoration-target");
+    }
+
+    #[test]
+    fn fully_dynamic_class_is_fine() {
+        let diagnostics = check(
+            "dynamic",
+            r#"<view class="{{cls}}">详情</view>"#,
             ".link { text-decoration: underline; }",
         );
         assert!(diagnostics.is_empty(), "{diagnostics:?}");

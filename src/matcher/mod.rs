@@ -20,6 +20,7 @@ mod imp;
 
 pub use imp::{Ident, SelImpl};
 
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
@@ -124,6 +125,15 @@ pub fn subject(selector: &str) -> Option<Subject> {
     Some(subject)
 }
 
+/// 动态 class 原文里「确定存在」的 token。
+///
+/// `class="book_name {{renderer}}"` → `book_name`；`class="a-{{b}}"` 整体丢弃，
+/// 因为插值可能补出 `a-1` 这样的完整词，`a-` 本身并不是一个类名。
+pub(crate) fn certain_tokens(raw: &str) -> impl Iterator<Item = &str> {
+    raw.split_whitespace()
+        .filter(|word| !word.contains(['{', '}']))
+}
+
 /// 三值判定：`Unknown` 表示静态阶段无法确定（动态属性 / 运行时状态 / 非线性兄弟区）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tri {
@@ -144,6 +154,9 @@ pub struct Tree<'a> {
     pos: Vec<usize>,
     by_ptr: HashMap<usize, usize>,
     parsed: RefCell<HashMap<String, Option<SelectorList<SelImpl>>>>,
+    /// 本次匹配过程中是否问到了「静态判不了」的属性（含祖先节点）。
+    /// `has_class` 等只能返回 `bool`，不可判定的情况由这个标记带回来。
+    unresolved: Cell<bool>,
 }
 
 impl<'a> Tree<'a> {
@@ -155,6 +168,7 @@ impl<'a> Tree<'a> {
             pos: Vec::new(),
             by_ptr: HashMap::new(),
             parsed: RefCell::new(HashMap::new()),
+            unresolved: Cell::new(false),
         };
         collect(doc, &doc.nodes, None, &mut tree);
         tree
@@ -208,6 +222,7 @@ impl<'a> Tree<'a> {
         if let Some(verdict) = self.classify(selector, idx, dialect) {
             return verdict;
         }
+        self.unresolved.set(false);
         let node = element::Node {
             tree: self,
             idx,
@@ -223,7 +238,14 @@ impl<'a> Tree<'a> {
             MatchingForInvalidation::No,
         );
         let matched = matches_selector(selector, 0, None, &node, &mut context);
-        if matched { Tri::Yes } else { Tri::No }
+        if matched {
+            Tri::Yes
+        } else if self.unresolved.replace(false) {
+            // 有环节问到了不可判定的属性：不命中可能是「本轮不可判」而非「确实不命中」。
+            Tri::Unknown
+        } else {
+            Tri::No
+        }
     }
 
     /// 静态不可判定的情况，先于引擎短路。
@@ -268,8 +290,13 @@ impl<'a> Tree<'a> {
                     // 伪元素声明的承载者是生成的文本节点，不是宿主元素。
                     return Some(Tri::No);
                 }
-                Component::Class(_) | Component::ID(_) => {
-                    if self.has_dynamic(index_of_class_attr(component), element) {
+                Component::Class(name) => {
+                    if self.class_unresolved(&name.0, element) {
+                        dynamic = true;
+                    }
+                }
+                Component::ID(_) => {
+                    if self.has_dynamic(Some("id"), element) {
                         dynamic = true;
                     }
                 }
@@ -306,8 +333,8 @@ impl<'a> Tree<'a> {
                     for inner in list.slice() {
                         for component in inner.iter_raw_match_order() {
                             match component {
-                                Component::Class(_) => {
-                                    if self.has_dynamic(Some("class"), element) {
+                                Component::Class(name) => {
+                                    if self.class_unresolved(&name.0, element) {
                                         dynamic = true;
                                     }
                                 }
@@ -355,6 +382,17 @@ impl<'a> Tree<'a> {
     fn has_dynamic(&self, name: Option<&str>, element: &WxmlElement) -> bool {
         name.and_then(|name| self.attribute(element, name))
             .is_some_and(|attr| !attr.is_static)
+    }
+
+    /// 动态 class 上这个 token 是否不可判定（原文里没写死）。
+    fn class_unresolved(&self, token: &str, element: &WxmlElement) -> bool {
+        match self.attribute(element, "class") {
+            Some(attr) if !attr.is_static => !attr
+                .raw_value
+                .as_deref()
+                .is_some_and(|raw| certain_tokens(raw).any(|t| t.eq_ignore_ascii_case(token))),
+            _ => false,
+        }
     }
 
     /// 兄弟区是否线性：含条件分支 / 循环 / 模板片段时序号不可静态确定。
@@ -461,14 +499,6 @@ const STRUCTURAL_PSEUDO_CLASSES: &[&str] = &[
     "only-of-type",
     "host",
 ];
-
-fn index_of_class_attr(component: &Component<SelImpl>) -> Option<&'static str> {
-    match component {
-        Component::Class(_) => Some("class"),
-        Component::ID(_) => Some("id"),
-        _ => None,
-    }
-}
 
 fn collect<'a>(
     doc: &'a WxmlDoc,
@@ -609,10 +639,34 @@ mod tests {
     #[test]
     fn dynamic_attributes_are_unknown() {
         let d = doc(r#"<view class="{{cls}} static"><text/></view>"#);
-        assert_eq!(check(&d, 0, ".static", Dialect::WebView), Tri::Unknown);
+        // 原文里写死的 token 一定出现在运行时 class 列表里。
+        assert_eq!(check(&d, 0, ".static", Dialect::WebView), Tri::Yes);
+        assert_eq!(check(&d, 0, ".cls", Dialect::WebView), Tri::Unknown);
         assert_eq!(check(&d, 0, "[class='x']", Dialect::WebView), Tri::Unknown);
         // 不依赖动态属性的选择器照常判定。
         assert_eq!(check(&d, 0, "view", Dialect::WebView), Tri::Yes);
+    }
+
+    #[test]
+    fn interpolated_token_boundaries_stay_unknown() {
+        // `a-{{b}}` 可能拼成 `a-1`，`a-` 本身不是确定的类名。
+        let d = doc(r#"<view class="a-{{b}}"/><view class="c{{d}} e"/>"#);
+        assert_eq!(check(&d, 0, ".a-", Dialect::WebView), Tri::Unknown);
+        assert_eq!(check(&d, 1, ".e", Dialect::WebView), Tri::Yes);
+        assert_eq!(check(&d, 1, ".c", Dialect::WebView), Tri::Unknown);
+    }
+
+    #[test]
+    fn dynamic_ancestor_class_does_not_kill_the_selector() {
+        // 迁移范式：根节点 `class="novel {{renderer}}"`，后代选择器靠 `novel` 这一节。
+        let d = doc(r#"<view class="novel {{renderer}}"><view class="label"/></view>"#);
+        assert_eq!(check(&d, 1, ".novel .label", Dialect::WebView), Tri::Yes);
+        assert_eq!(check(&d, 1, ".novel .label", Dialect::Skyline), Tri::Yes);
+        // 祖先的动态部分仍判不了。
+        assert_eq!(
+            check(&d, 1, ".skyline .label", Dialect::WebView),
+            Tri::Unknown
+        );
     }
 
     #[test]

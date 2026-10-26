@@ -113,8 +113,11 @@ impl<'a> selectors::Element for Node<'a> {
         }
         match self.attribute(&local_name.0) {
             None => false,
-            // 静态判不了的属性：classify 已经先行返回 Unknown，这里给保守值。
-            Some(attr) if !attr.is_static => false,
+            // 动态属性：值由运行时决定，本轮判不了。
+            Some(attr) if !attr.is_static => {
+                self.tree.unresolved.set(true);
+                false
+            }
             Some(attr) => operation.eval_str(attr.value.as_deref().unwrap_or("")),
         }
     }
@@ -153,20 +156,35 @@ impl<'a> selectors::Element for Node<'a> {
                 attr.value.as_deref().unwrap_or("").trim().as_bytes(),
                 id.0.as_bytes(),
             ),
-            _ => false,
+            Some(_) => {
+                self.tree.unresolved.set(true);
+                false
+            }
+            None => false,
         }
     }
 
     fn has_class(&self, name: &super::imp::Ident, case_sensitivity: CaseSensitivity) -> bool {
-        match self.attribute("class") {
-            Some(attr) if attr.is_static => attr
+        let Some(attr) = self.attribute("class") else {
+            return false;
+        };
+        if attr.is_static {
+            return attr
                 .value
                 .as_deref()
                 .unwrap_or("")
                 .split_whitespace()
-                .any(|class| case_sensitivity.eq(class.as_bytes(), name.0.as_bytes())),
-            _ => false,
+                .any(|class| case_sensitivity.eq(class.as_bytes(), name.0.as_bytes()));
         }
+        // 动态 class：原文里写死的 token 仍然确定存在（`class="novel {{renderer}}"`）。
+        if attr.raw_value.as_deref().is_some_and(|raw| {
+            super::certain_tokens(raw).any(|t| case_sensitivity.eq(t.as_bytes(), name.0.as_bytes()))
+        }) {
+            return true;
+        }
+        // 找不到：可能是运行时拼上去的，也可能真的没有——本轮判不了。
+        self.tree.unresolved.set(true);
+        false
     }
 
     fn has_custom_state(&self, _name: &super::imp::Ident) -> bool {
