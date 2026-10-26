@@ -2,6 +2,9 @@
 //!
 //! 与 [`super::unsupported_value`] 的分界：这里是「值有效但行为不同」（warning），
 //! 那里是「值根本无效，声明被静默忽略」（error）。数据以 const 形式定义在本模块。
+//!
+//! 例外是 `will-change`：引擎不认的值只是拿不到性能提示、没有视觉差异，按 info 报
+//! （见 [`check_will_change`]）。
 
 use crate::input::wxss::{ValueToken, WxssDeclaration, WxssDoc};
 use crate::project::Project;
@@ -9,7 +12,9 @@ use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
 use super::dict_table::normalize_value;
-use super::value_util::{all_calls, at_value, is_dynamic, is_ident, top_level_calls};
+use super::value_util::{
+    all_calls, at_value, at_value_with, is_dynamic, is_ident, top_level_calls,
+};
 use super::visit_declarations;
 
 const EXACT_HELP: &str = "按实际渲染效果调整取值，或改用 Skyline 下表现一致的值";
@@ -19,6 +24,8 @@ const FUNCTION_HELP: &str =
 const ENV_HELP: &str =
     "仅支持 safe-area-inset-top / -right / -bottom / -left 四个变量，其他尺寸改用固定值或自行计算";
 const FONT_WEIGHT_HELP: &str = "Skyline 在 font_weight.cc 里先 round 到百位、再在 SetFontWeight(int) 的 switch 里回落 normal，所以 950 会变成普通字重；直接写 400/500/…/900";
+const WILL_CHANGE_HELP: &str =
+    "保留也无害；若要按 Skyline 的能力优化，可用 contents（提层）或 scroll-position";
 const FONT_FAMILY_HELP: &str = "把 system-ui 换成具体字体名（如 -apple-system / sans-serif），并保留一个 Skyline 可用的兜底字体";
 
 pub struct ValueDegraded;
@@ -46,6 +53,7 @@ impl Rule for ValueDegraded {
             check_function(doc, decl, out);
             check_font_weight(doc, decl, out);
             check_font_family(doc, decl, out);
+            check_will_change(doc, decl, out);
             check_env(doc, decl, out);
         })
     }
@@ -147,6 +155,60 @@ fn check_function(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnosti
             decl.value.trim()
         ),
         FUNCTION_HELP,
+    ));
+}
+
+/// `will-change`：引擎只认 `auto` / `contents` / `scroll-position`，其余 ident 被静默忽略。
+///
+/// 与其它降级值不同的是**没有视觉差异**——`will-change` 只是性能提示，引擎也只有
+/// `contents` 会设置 repaint boundary（`style/style_builder.cc:1178-1186`），
+/// 所以按 info 报，不能沿用「表现与 WebView 不同」的 warning 口径。
+///
+/// `scroll-position` 在引擎里是有效值（`css_properties/will_change.cc:30-51`），不报。
+fn check_will_change(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
+    if !decl.name.eq_ignore_ascii_case("will-change") {
+        return;
+    }
+    if decl.value.trim().is_empty() || is_dynamic(&decl.tokens) {
+        return;
+    }
+    let mut offenders: Vec<&str> = Vec::new();
+    for token in &decl.tokens {
+        let ValueToken::Ident(ident) = token else {
+            continue;
+        };
+        // `auto` / `none` 与 WebView 一样什么都不做；`contents` / `scroll-position` 引擎认。
+        if ["auto", "none", "contents", "scroll-position"]
+            .iter()
+            .any(|supported| supported.eq_ignore_ascii_case(ident))
+        {
+            continue;
+        }
+        if !offenders
+            .iter()
+            .any(|seen| seen.eq_ignore_ascii_case(ident))
+        {
+            offenders.push(ident);
+        }
+    }
+    if offenders.is_empty() {
+        return;
+    }
+    let list = offenders
+        .iter()
+        .map(|ident| format!("`{ident}`"))
+        .collect::<Vec<_>>()
+        .join("、");
+    out.push(at_value_with(
+        ValueDegraded::ID,
+        doc,
+        decl,
+        Severity::Info,
+        format!(
+            "`will-change: {}` 里的 {list} 不会被 Skyline 识别：只是拿不到这层性能提示，渲染结果不受影响",
+            decl.value.trim()
+        ),
+        WILL_CHANGE_HELP,
     ));
 }
 
@@ -297,16 +359,12 @@ const EXACT_VALUES: &[(&[&str], &str, &str)] = &[
 ];
 
 /// `[only]` 条目：`(属性名, 允许的 ident, 说明)`；值里每个 ident 都必须在列表内。
-const ONLY_VALUES: &[(&str, &[&str], &str)] = &[
-    // `none` 与 `auto` 在引擎里走同一条路：`will_change.cc` 的 ApplyValue 只处理
-    // 值列表（contents / scroll-position / 自定义 ident），identifier 一律 return，
-    // 效果等同初始值——和 WebView 的 `none` 一样什么都不做，不算降级。
-    (
-        "will-change",
-        &["auto", "none", "contents"],
-        "仅支持 auto / contents",
-    ), // animation.md:106
-];
+///
+/// 目前为空：`will-change` 曾按「只支持 auto / contents」放在这里，但引擎实际认
+/// `contents` 与 `scroll-position`（`css_properties/will_change.cc:30-51`），且不支持
+/// 的自定义 ident 只是不被当作性能提示、没有视觉差异，用 warning 报是夸大。改成
+/// [`check_will_change`] 单独判定。
+const ONLY_VALUES: &[(&str, &[&str], &str)] = &[];
 
 /// `[function]` 条目：`(属性名, 函数名, 说明)`；值里出现该函数调用即命中。
 const FUNCTION_VALUES: &[(&str, &str, &str)] = &[
@@ -394,50 +452,38 @@ mod tests {
     }
 
     #[test]
-    fn only_reports_identifiers_outside_the_allow_list() {
+    fn will_change_reports_unsupported_idents_as_info() {
         let (_f, project) = single(
-            "degraded-only",
+            "degraded-will-change",
             r#"
             .a { will-change: transform; }
             .b { will-change: transform, opacity; }
-            .c { will-change: scroll-position; }
             "#,
         );
         let diags = ValueDegraded.check(&project);
-        assert_eq!(diags.len(), 3);
-        assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
-        assert!(diags[0].message.contains("`transform` 不生效"));
+        assert_eq!(diags.len(), 2);
+        // 只是拿不到性能提示，渲染结果不变：不能按 warning 报成「表现不同」。
+        assert!(
+            diags.iter().all(|d| d.severity == crate::Severity::Info),
+            "{diags:#?}"
+        );
+        assert!(diags[0].message.contains("`transform`"));
         assert!(diags[1].message.contains("`transform`"));
         assert!(diags[1].message.contains("`opacity`"));
-        assert!(diags[2].message.contains("`scroll-position` 不生效"));
     }
 
     #[test]
-    fn scroll_position_is_reported_by_one_rule_only() {
+    fn will_change_accepts_every_value_the_engine_understands() {
+        // 引擎认 auto / contents / scroll-position（`will_change.cc:30-51`），
+        // 之前把 scroll-position 当「不生效」报是误报。
         let (_f, project) = single(
-            "degraded-scroll-position",
-            ".a { will-change: scroll-position; }",
-        );
-        let diags =
-            crate::rules::Registry::builtin().run(&project, &std::collections::HashSet::new());
-        let hits: Vec<_> = diags
-            .iter()
-            .filter(|d| d.message.contains("will-change"))
-            .collect();
-        assert_eq!(hits.len(), 1, "同一声明只应由一条规则报出：{hits:#?}");
-        assert_eq!(hits[0].rule, ValueDegraded::ID);
-        assert_eq!(hits[0].severity, crate::Severity::Warning);
-    }
-
-    #[test]
-    fn only_accepts_auto_contents_and_dynamic_values() {
-        let (_f, project) = single(
-            "degraded-only-negative",
+            "degraded-will-change-supported",
             r#"
             .a { will-change: auto; }
-            .b { will-change: contents; }
-            .c { will-change: var(--layer); }
-            .d { will-change: none; }
+            .b { will-change: none; }
+            .c { will-change: contents; }
+            .d { will-change: scroll-position; }
+            .e { will-change: var(--layer); }
             "#,
         );
         assert_eq!(messages(&ValueDegraded, &project), Vec::<String>::new());

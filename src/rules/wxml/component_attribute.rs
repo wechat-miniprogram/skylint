@@ -144,21 +144,24 @@ impl Table {
     }
 }
 
+/// WebView 的 `<image mode>` 裁剪取值：Skyline 不支持它们，但两个渲染器都认。
+const IMAGE_CROP_MODES: &[&str] = &[
+    "top",
+    "bottom",
+    "center",
+    "left",
+    "right",
+    "top left",
+    "top right",
+    "bottom left",
+    "bottom right",
+];
+
 const ATTRIBUTES: &[AttributeRule] = &[
     AttributeRule {
         tags: &["image"],
         attrs: &["mode"],
-        constraint: Constraint::WebviewOnly(&[
-            "top",
-            "bottom",
-            "center",
-            "left",
-            "right",
-            "top left",
-            "top right",
-            "bottom left",
-            "bottom right",
-        ]),
+        constraint: Constraint::WebviewOnly(IMAGE_CROP_MODES),
         help: Some("Skyline 不支持 WebView 的裁剪模式，改用 aspectFill 配合 CSS 定位"),
     }, // media/image.md:42-54
     AttributeRule {
@@ -615,6 +618,11 @@ fn message(tag: &str, attr: &str, value: &str, constraint: &Constraint) -> Strin
         Constraint::Number(NumberRange::Between(min, max)) => {
             format!("`<{tag} {attr}=\"{value}\">` 必须是 {min}~{max} 的数值")
         }
+        // `<image mode>` 命中这里说明它既不是 Skyline 的值、也不是 WebView 的裁剪模式：
+        // 两个渲染器都不认这个取值，不是迁移差异而是取值本身写错了。
+        Constraint::Enum(_) if tag == "image" && attr == "mode" => format!(
+            "`<{tag} {attr}=\"{value}\">` 不是合法的 mode：WebView 与 Skyline 都不识别，两个渲染器都会回退成拉伸填满"
+        ),
         Constraint::Enum(_) | Constraint::WebviewOnly(_) => {
             format!("`<{tag} {attr}=\"{value}\">` 不是 Skyline 支持的值，会被忽略")
         }
@@ -756,6 +764,27 @@ mod tests {
         assert!(diagnostics.iter().all(|d| d.message.contains("不支持")));
         assert!(diagnostics[0].message.contains("indicator-class"));
         assert!(diagnostics[1].message.contains("placeholder-class"));
+    }
+
+    #[test]
+    fn garbage_image_modes_are_not_blamed_on_skyline() {
+        // `mode` 写成一串用竖线拼起来的候选值：WebView 的 `_checkMode` 同样不认
+        // （未知值直接 return，background-size 保持默认），不是 Skyline 差异。
+        let diagnostics = check_rule(
+            &project(
+                "attr-mode-garbage",
+                r#"<image mode="aspectFit|aspectFill|widthFix"/>"#,
+            ),
+            &ComponentAttribute,
+        );
+        assert_eq!(diagnostics.len(), 1);
+        assert!(
+            diagnostics[0]
+                .message
+                .contains("WebView 与 Skyline 都不识别"),
+            "{}",
+            diagnostics[0].message
+        );
     }
 
     #[test]

@@ -26,7 +26,9 @@
 //!
 //! - navigator：skyline-overview/references/introduction/component-support.md:23
 //!   「navigator | 只能嵌套 text 组件或文本节点」；同文件 :150-162 给出正反例
-//!   （❌ `<navigator><view>不能这样用</view></navigator>`）。
+//!   （❌ `<navigator><view>不能这样用</view></navigator>`）。引擎侧不会报错：
+//!   navigator 是 TextShadowNode，非文本子节点被包装成 inline-block 的 widget span，
+//!   只是宽度不再撑满——所以按 warning 而不是 error。
 //! - 手势组件单子节点：skyline-components/references/gesture/gesture-system.md:186
 //!   MUST「必须使用单子节点：手势组件只能包含一个直接子节点」；同文件 :11-22 的表
 //!   列出 8 个手势组件（tap / double-tap / long-press / pan / horizontal-drag /
@@ -53,7 +55,12 @@ const ROWS: &[Constraint] = &[
     Constraint {
         tag: "navigator",
         relation: Relation::ChildrenOnly(&["text"]),
-        severity: Severity::Error,
+        // 文档约束是「只能嵌套 text 组件或文本节点」，但引擎不会硬失败：navigator 是
+        // TextShadowNode（`shadow/node_factory.cc:311-314`），非文本子节点走
+        // `ShadowNode::EstablishInlineBlockContext`（`shadow/shadow_node.cc:206-209,
+        // 279-300`）变成 inline-block 的 widget span，内容照常渲染、宽度从撑满变成
+        // 收缩到内容。是布局差异而不是坏掉，所以按 warning 报。
+        severity: Severity::Warning,
         help: "把 `<navigator>` 的内容改成 `<text>` 或文本节点；需要自定义布局时改用 `bind:tap` 的 `<view>`",
     },
     Constraint {
@@ -169,7 +176,8 @@ mod tests {
             r#"<navigator url="/pages/a/a"><view>不能这样用</view></navigator>"#,
         ));
         assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].severity, Severity::Error);
+        // 引擎把非文本子节点包成 inline-block，不会坏掉，只是宽度不撑满。
+        assert_eq!(diagnostics[0].severity, Severity::Warning);
         assert!(diagnostics[0].message.contains("只能嵌套"));
         // 报在违规的子节点上，不是 navigator 上。
         assert_eq!(diagnostics[0].column, 30);
