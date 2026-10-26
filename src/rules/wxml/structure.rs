@@ -450,6 +450,12 @@ fn condition_text(condition: &Condition) -> String {
     }
 }
 
+/// 文本级组件：WebView 下默认 inline / inline-block（`wx-text`、`wx-image`、
+/// `wx-input`、`wx-icon` 与 `<span>`）。它们进到只允许文本的容器里会变成原子的
+/// inline widget span（`shadow/shadow_node.cc:206-209`），布局不变，因此不算违规；
+/// 块级节点与自定义组件才会从块变成行内。
+const INLINE_TEXT_TAGS: &[&str] = &["text", "span", "image", "input", "icon"];
+
 /// 允许的子节点渲染成文档里的写法：`text` 指 `<text>` 组件与裸文本节点，其余按标签名。
 fn render_allowed(allowed: &[&str]) -> String {
     allowed
@@ -477,7 +483,10 @@ fn children_violations(
     match &constraint.relation {
         Relation::ChildrenOnly(allowed) => element_children(element)
             // 文本子节点不是元素，天然不在候选集里：`text` 只表示它们合法。
-            .filter(|child| !allowed.contains(&child.tag.as_str()))
+            .filter(|child| {
+                !allowed.contains(&child.tag.as_str())
+                    && !INLINE_TEXT_TAGS.contains(&child.tag.as_str())
+            })
             .map(|child| {
                 element_diagnostic(
                     id,

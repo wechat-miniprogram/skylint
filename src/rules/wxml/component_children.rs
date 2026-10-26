@@ -53,6 +53,17 @@ pub const ID: &str = "skyline/component-children";
 /// 组件对直接子节点的约束表，组件标签唯一。
 const ROWS: &[Constraint] = &[
     Constraint {
+        tag: "text",
+        relation: Relation::ChildrenOnly(&["text", "span"]),
+        // `<text>` 与 `<navigator>` 同为 TextShadowNode（`shadow/node_factory.cc:309-314`）：
+        // 非文本子节点走 `EstablishInlineBlockContext`（`shadow/shadow_node.cc:206-209,
+        // 279-300`）变成原子 inline widget span：在 WebView 下本来就是 inline /
+        // inline-block 的文本级组件布局不变（由 structure.rs 的 INLINE_TEXT_TAGS 跳过），
+        // 块级节点与自定义组件则从块变成行内，`<text>` 的排版属性也不再作用于它们。
+        severity: Severity::Warning,
+        help: "把块级子节点移出 `<text>`；只想换字体 / 颜色用 `<span>`，需要块级布局用 `<view>` 包住",
+    },
+    Constraint {
         tag: "navigator",
         relation: Relation::ChildrenOnly(&["text"]),
         // 文档约束是「只能嵌套 text 组件或文本节点」，但引擎不会硬失败：navigator 是
@@ -187,14 +198,27 @@ mod tests {
     fn every_disallowed_navigator_child_is_reported() {
         let diagnostics = check(&project(
             "navigator-two",
-            r#"<navigator url="/x"><view/><image/></navigator>"#,
+            r#"<navigator url="/x"><view/><scroll-view/><image/></navigator>"#,
         ));
+        // `image` 在 WebView 下已经是 inline-block，包成原子 inline widget 后布局不变，不报。
         assert_eq!(diagnostics.len(), 2);
         assert!(
             diagnostics
                 .iter()
                 .all(|d| d.message.contains("<navigator>"))
         );
+    }
+
+    #[test]
+    fn block_child_of_text_is_reported() {
+        let diagnostics = check(&project(
+            "text-block",
+            r#"<text><view>块</view></text><text><image/><span>行内</span></text>"#,
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("<text>"));
+        assert!(diagnostics[0].message.contains("<view>"));
+        assert_eq!(diagnostics[0].severity, Severity::Warning);
     }
 
     #[test]
