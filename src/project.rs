@@ -96,6 +96,11 @@ pub struct Project {
     /// 由单个文件包出来的临时工程（`skylint page.wxml`）：没有真实的配置可读，
     /// 配置类规则整体不参与，否则会对着不存在的 app.json 报噪音。
     pub single_file: bool,
+    /// 这个视图整个是插件代码（`pluginRoot` 下那一套）。
+    pub plugin_view: bool,
+    /// 报告里给本视图所有诊断路径加的前缀。宿主视图为空串，插件视图是 `pluginRoot/`：
+    /// 视图内的路径相对自己的根（`abs` 靠它定位），输出时才拼成项目相对路径。
+    pub report_prefix: String,
     /// 插件代码根（项目相对，可为空串）。
     ///
     /// `compileType: plugin` 的工程里插件代码与宿主示例小程序是两块目录，插件限制
@@ -154,165 +159,22 @@ pub struct Project {
 impl Project {
     /// `root` 是项目根（含 `project.config.json` 的目录）。
     pub fn load(root: impl Into<PathBuf>) -> anyhow::Result<Self> {
-        let root = root.into();
-        let (config, config_source) = read_config(&root, "project.config.json");
-        let (private_config, private_config_source) =
-            read_config(&root, "project.private.config.json");
-        let miniprogram_root = config
-            .get("miniprogramRoot")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .trim_matches('/')
-            .to_string();
-        let plugin_root = config
-            .get("pluginRoot")
-            .and_then(Value::as_str)
-            .map(|root| root.trim_matches('/').to_string())
-            .filter(|root| !root.is_empty());
+        Loaded::read(root.into()).host()
+    }
 
-        let fs = LocalFs::new(root.clone());
-        let app_source = fs
-            .read_file(&miniprogram_root, "app.json")
-            .ok_or_else(|| anyhow::anyhow!("Couldn't found the 'app.json' file"))?;
-        let app_value: Map<String, Value> =
-            serde_json::from_str(crate::input::strip_bom(&app_source))
-                .map_err(|err| anyhow::anyhow!("app.json: {err}"))?;
-        let exts = Exts::from_config(&config);
-        let app_json = Value::Object(app_value.clone());
-        let app_routes: AppRoutes = serde_json::from_value(app_json.clone())
-            .map_err(|err| anyhow::anyhow!("app.json: {err}"))?;
-        let routes = app_routes.routes();
-
-        let mut warnings = Vec::new();
-
-        // 页面 json 只解析一次：既用于 skyline 判定，也作为组件闭包的入口。
-        let page_json: Vec<(String, Option<Map<String, Value>>)> = routes
-            .iter()
-            .map(|route| {
-                let json = read_unit_json(&fs, &miniprogram_root, route, &mut warnings);
-                (route.clone(), json)
-            })
-            .collect();
-        // 原文单独留一份：`Value` 丢了 span，配置类规则要指到用户写的那一行。
-        let page_json_source: BTreeMap<String, String> = page_json
-            .iter()
-            .filter(|(_, json)| json.is_some())
-            .map(|(route, _)| {
-                let rel = format!("{route}.json");
-                (
-                    route.clone(),
-                    fs.read_file(&miniprogram_root, &rel).unwrap_or_default(),
-                )
-            })
-            .collect();
-
-        let pages: Vec<PageUnit> = page_json
-            .iter()
-            .map(|(route, json)| {
-                let empty = Map::new();
-                let page = json.as_ref().unwrap_or(&empty);
-                PageUnit {
-                    route: route.clone(),
-                    is_skyline: is_skyline_page(&app_json, page),
-                    opted_out: page.get("renderer").and_then(Value::as_str) == Some("webview"),
-                    files: resolve_unit(&exts, &fs, &miniprogram_root, route),
-                }
-            })
-            .collect();
-
-        let component_graph = collect_components(
-            &fs,
-            &miniprogram_root,
-            &app_value,
-            &page_json,
-            &app_seeds(&fs, &miniprogram_root, &app_value),
-            &mut warnings,
-        );
-        let components: Vec<ComponentUnit> = component_graph
-            .paths
-            .into_iter()
-            .map(|path| ComponentUnit {
-                files: resolve_unit(&exts, &fs, &miniprogram_root, &path),
-                path,
-            })
-            .collect();
-
-        let app_declared = declared_component_names(&app_value);
-        let mut declared_components: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        let mut declare = |wxml: Option<&str>, names: &BTreeSet<String>| {
-            if let Some(wxml) = wxml {
-                declared_components
-                    .entry(wxml.to_string())
-                    .or_default()
-                    .extend(names.iter().cloned());
-            }
-        };
-        for page in &pages {
-            let mut names = app_declared.clone();
-            if let Some(json) = page_json
-                .iter()
-                .find(|(route, _)| route == &page.route)
-                .and_then(|(_, json)| json.as_ref())
-            {
-                names.extend(declared_component_names(json));
-            }
-            declare(page.files.wxml.as_deref(), &names);
-        }
-        for component in &components {
-            let mut names = app_declared.clone();
-            if let Some(own) = component_graph.declared.get(&component.path) {
-                names.extend(own.iter().cloned());
-            }
-            declare(component.files.wxml.as_deref(), &names);
-        }
-
-        let app_style = resolve_unit(&exts, &fs, &miniprogram_root, "app").wxss;
-        let styles = collect_styles(
-            &root,
-            &miniprogram_root,
-            app_style.as_deref(),
-            &pages,
-            &components,
-            &mut warnings,
-        );
-        let scripts = collect_scripts(&fs, &miniprogram_root, &exts, &pages, &components);
-        let template_files = collect_template_files(&fs, &miniprogram_root, &pages, &components);
-        record_unparsed_templates(
-            &fs,
-            &miniprogram_root,
-            pages.iter().filter_map(|page| page.files.wxml.as_deref()),
-            components
-                .iter()
-                .filter_map(|component| component.files.wxml.as_deref()),
-            &template_files,
-            &mut warnings,
-        );
-
-        Ok(Self {
-            root,
-            miniprogram_root,
-            single_file: false,
-            plugin_root,
-            app_json: app_value,
-            app_json_source: app_source,
-            project_config: config.as_object().cloned().unwrap_or_default(),
-            project_config_source: config_source,
-            project_private_config: private_config.as_object().cloned().unwrap_or_default(),
-            project_private_config_source: private_config_source,
-            pages,
-            components,
-            deps: component_graph.deps,
-            page_json: page_json
-                .into_iter()
-                .filter_map(|(route, json)| Some((route, json?)))
-                .collect(),
-            page_json_source,
-            declared_components,
-            styles,
-            scripts,
-            template_files,
-            warnings,
-        })
+    /// 宿主视图 + 插件视图。
+    ///
+    /// `project.config.json` 同时声明 `miniprogramRoot` 与 `pluginRoot` 时，两边是两套
+    /// 独立的页面与组件：宿主示例小程序在 `miniprogramRoot`，插件代码在 `pluginRoot`，
+    /// 插件页由 `pluginRoot/plugin.json` 的 `pages` 描述（宿主 `app.json` 里看不到）。
+    /// 插件视图的路径以 `pluginRoot/` 为前缀输出（[`Project::report_prefix`]），
+    /// 与宿主路径不会混淆。
+    ///
+    /// 没有 `pluginRoot` / `plugin.json` 的工程只有宿主视图。
+    pub fn load_views(root: impl Into<PathBuf>) -> anyhow::Result<Vec<Self>> {
+        let loaded = Loaded::read(root.into());
+        let host = loaded.host()?;
+        Ok(std::iter::once(host).chain(loaded.plugin()).collect())
     }
 
     /// 这份 WXML 所属单元声明的组件标签名（含 app 级）；模板文件没有归属，返回空。
@@ -523,6 +385,8 @@ impl Project {
             root: path.parent().unwrap_or(Path::new(".")).to_path_buf(),
             miniprogram_root: String::new(),
             single_file: true,
+            plugin_view: false,
+            report_prefix: String::new(),
             plugin_root: None,
             // 单文件默认按 Skyline 工程算：用户想看的就是「这文件在 Skyline 下怎样」。
             app_json: Map::from_iter([("renderer".to_string(), Value::String("skyline".into()))]),
@@ -582,6 +446,268 @@ impl Project {
         }
         Ok(project)
     }
+}
+
+/// 工程根下的共享上下文：配置只读一次，宿主与插件两个视图共用。
+struct Loaded {
+    root: PathBuf,
+    fs: LocalFs,
+    exts: Exts,
+    config: Map<String, Value>,
+    config_source: String,
+    private_config: Map<String, Value>,
+    private_config_source: String,
+}
+
+/// 一个视图的定位与 app 级配置来源。
+struct ViewSpec<'a> {
+    /// 文件所在目录（项目相对，可为空串）。
+    base: &'a str,
+    /// 报告路径前缀（宿主视图为空串，插件视图是 `pluginRoot/`）。
+    report_prefix: &'a str,
+    /// app 级配置对象：宿主的 `app.json`，或插件的 `plugin.json`。
+    app: &'a Map<String, Value>,
+    app_source: &'a str,
+    /// 页面清单（相对 `base`）。
+    routes: Vec<String>,
+    /// 非声明式组件入口（`custom-tab-bar` / `app-bar` / `publicComponents`）。
+    seeds: Vec<String>,
+    /// 全局样式；插件没有 `app.wxss`。
+    global_style: Option<String>,
+    /// 整个视图都是插件代码。
+    plugin_view: bool,
+}
+
+impl Loaded {
+    fn read(root: PathBuf) -> Self {
+        let (config, config_source) = read_config(&root, "project.config.json");
+        let (private_config, private_config_source) =
+            read_config(&root, "project.private.config.json");
+        let exts = Exts::from_config(&config);
+        Self {
+            fs: LocalFs::new(root.clone()),
+            exts,
+            root,
+            config: config.as_object().cloned().unwrap_or_default(),
+            config_source,
+            private_config: private_config.as_object().cloned().unwrap_or_default(),
+            private_config_source,
+        }
+    }
+
+    /// `miniprogramRoot` / `pluginRoot` 这类目录配置（去首尾斜杠，空串视为没写）。
+    fn dir(&self, key: &str) -> Option<String> {
+        self.config
+            .get(key)
+            .and_then(Value::as_str)
+            .map(|root| root.trim_matches('/').to_string())
+            .filter(|root| !root.is_empty())
+    }
+
+    /// 宿主视图：`miniprogramRoot/app.json`。
+    fn host(&self) -> anyhow::Result<Project> {
+        let base = self.dir("miniprogramRoot").unwrap_or_default();
+        let source = self
+            .fs
+            .read_file(&base, "app.json")
+            .ok_or_else(|| anyhow::anyhow!("Couldn't found the 'app.json' file"))?;
+        let app: Map<String, Value> = serde_json::from_str(crate::input::strip_bom(&source))
+            .map_err(|err| anyhow::anyhow!("app.json: {err}"))?;
+        let routes = serde_json::from_str::<AppRoutes>(crate::input::strip_bom(&source))
+            .map_err(|err| anyhow::anyhow!("app.json: {err}"))?
+            .routes();
+        Ok(self.build(ViewSpec {
+            base: &base,
+            report_prefix: "",
+            app: &app,
+            app_source: &source,
+            seeds: app_seeds(&self.fs, &base, &app),
+            routes,
+            global_style: resolve_unit(&self.exts, &self.fs, &base, "app").wxss,
+            plugin_view: false,
+        }))
+    }
+
+    /// 插件视图：`pluginRoot/plugin.json` 描述的那一套页面与组件。
+    ///
+    /// 清单缺失 / 读不了时没有这个视图——插件清单本身有问题由开发者工具拦，
+    /// linter 不另造诊断。
+    fn plugin(&self) -> Option<Project> {
+        let base = self.dir("pluginRoot")?;
+        let source = self.fs.read_file(&base, "plugin.json")?;
+        let app: Map<String, Value> =
+            serde_json::from_str(crate::input::strip_bom(&source)).ok()?;
+        Some(self.build(ViewSpec {
+            base: &base,
+            report_prefix: &format!("{base}/"),
+            app: &app,
+            app_source: &source,
+            routes: plugin_routes(&app),
+            seeds: plugin_seeds(&app),
+            global_style: None,
+            plugin_view: true,
+        }))
+    }
+
+    fn build(&self, view: ViewSpec<'_>) -> Project {
+        let (fs, exts, base) = (&self.fs, &self.exts, view.base);
+        let mut warnings = Vec::new();
+
+        // 页面 json 只解析一次：既用于 skyline 判定，也作为组件闭包的入口。
+        let page_json: Vec<(String, Option<Map<String, Value>>)> = view
+            .routes
+            .iter()
+            .map(|route| {
+                (
+                    route.clone(),
+                    read_unit_json(fs, base, route, &mut warnings),
+                )
+            })
+            .collect();
+        // 原文单独留一份：`Value` 丢了 span，配置类规则要指到用户写的那一行。
+        let page_json_source: BTreeMap<String, String> = page_json
+            .iter()
+            .filter(|(_, json)| json.is_some())
+            .map(|(route, _)| {
+                let rel = format!("{route}.json");
+                (route.clone(), fs.read_file(base, &rel).unwrap_or_default())
+            })
+            .collect();
+
+        let app_value = Value::Object(view.app.clone());
+        let pages: Vec<PageUnit> = page_json
+            .iter()
+            .map(|(route, json)| {
+                let empty = Map::new();
+                let page = json.as_ref().unwrap_or(&empty);
+                PageUnit {
+                    route: route.clone(),
+                    is_skyline: is_skyline_page(&app_value, page),
+                    opted_out: page.get("renderer").and_then(Value::as_str) == Some("webview"),
+                    files: resolve_unit(exts, fs, base, route),
+                }
+            })
+            .collect();
+
+        let component_graph =
+            collect_components(fs, base, view.app, &page_json, &view.seeds, &mut warnings);
+        let components: Vec<ComponentUnit> = component_graph
+            .paths
+            .into_iter()
+            .map(|path| ComponentUnit {
+                files: resolve_unit(exts, fs, base, &path),
+                path,
+            })
+            .collect();
+
+        let app_declared = declared_component_names(view.app);
+        let mut declared_components: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut declare = |wxml: Option<&str>, names: &BTreeSet<String>| {
+            if let Some(wxml) = wxml {
+                declared_components
+                    .entry(wxml.to_string())
+                    .or_default()
+                    .extend(names.iter().cloned());
+            }
+        };
+        for page in &pages {
+            let mut names = app_declared.clone();
+            if let Some(json) = page_json
+                .iter()
+                .find(|(route, _)| route == &page.route)
+                .and_then(|(_, json)| json.as_ref())
+            {
+                names.extend(declared_component_names(json));
+            }
+            declare(page.files.wxml.as_deref(), &names);
+        }
+        for component in &components {
+            let mut names = app_declared.clone();
+            if let Some(own) = component_graph.declared.get(&component.path) {
+                names.extend(own.iter().cloned());
+            }
+            declare(component.files.wxml.as_deref(), &names);
+        }
+
+        let styles = collect_styles(
+            &self.root,
+            base,
+            view.global_style.as_deref(),
+            &pages,
+            &components,
+            &mut warnings,
+        );
+        let scripts = collect_scripts(fs, base, exts, &pages, &components);
+        let template_files = collect_template_files(fs, base, &pages, &components);
+        record_unparsed_templates(
+            fs,
+            base,
+            pages.iter().filter_map(|page| page.files.wxml.as_deref()),
+            components
+                .iter()
+                .filter_map(|component| component.files.wxml.as_deref()),
+            &template_files,
+            &mut warnings,
+        );
+
+        Project {
+            root: self.root.clone(),
+            miniprogram_root: base.to_string(),
+            single_file: false,
+            plugin_root: self.dir("pluginRoot"),
+            plugin_view: view.plugin_view,
+            report_prefix: view.report_prefix.to_string(),
+            app_json: view.app.clone(),
+            app_json_source: view.app_source.to_string(),
+            project_config: self.config.clone(),
+            project_config_source: self.config_source.clone(),
+            project_private_config: self.private_config.clone(),
+            project_private_config_source: self.private_config_source.clone(),
+            pages,
+            components,
+            deps: component_graph.deps,
+            page_json: page_json
+                .into_iter()
+                .filter_map(|(route, json)| Some((route, json?)))
+                .collect(),
+            page_json_source,
+            declared_components,
+            styles,
+            scripts,
+            template_files,
+            warnings,
+        }
+    }
+}
+
+/// 插件页清单：`plugin.json` 的 `pages` 是「页面名 → 路径」的 map（旧版写过数组）。
+fn plugin_routes(app: &Map<String, Value>) -> Vec<String> {
+    let paths: Vec<&str> = match app.get("pages") {
+        Some(Value::Object(map)) => map.values().filter_map(Value::as_str).collect(),
+        Some(Value::Array(list)) => list.iter().filter_map(Value::as_str).collect(),
+        _ => return Vec::new(),
+    };
+    let mut routes: Vec<String> = Vec::new();
+    for path in paths {
+        if !routes.iter().any(|route| route == path) {
+            routes.push(path.to_string());
+        }
+    }
+    routes
+}
+
+/// 插件对外导出的组件：宿主 `usingComponents` 里的 `plugin://` 指向它们，
+/// 它们不出现在任何插件页的 `usingComponents` 里，要单独入队。
+fn plugin_seeds(app: &Map<String, Value>) -> Vec<String> {
+    app.get("publicComponents")
+        .and_then(Value::as_object)
+        .map(|map| {
+            map.values()
+                .filter_map(Value::as_str)
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 组件闭包。
@@ -850,12 +976,19 @@ fn collect_styles(
     if let Some(path) = app_style {
         entries.push((path.to_string(), Scope::Global));
     }
-    entries.extend(pages.iter().filter_map(|page| {
-        page.files
-            .wxss
-            .clone()
-            .map(|p| (p, Scope::Page(page.route.clone())))
-    }));
+    // opt-out 的页面永远不迁 Skyline，它自己的样式表只作用于它，检查它只是噪音
+    // （与 wxml 侧同口径）。被别的单元 `@import` 时仍会从那条边进来。
+    entries.extend(
+        pages
+            .iter()
+            .filter(|page| !page.opted_out)
+            .filter_map(|page| {
+                page.files
+                    .wxss
+                    .clone()
+                    .map(|p| (p, Scope::Page(page.route.clone())))
+            }),
+    );
     entries.extend(components.iter().filter_map(|c| {
         c.files
             .wxss

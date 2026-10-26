@@ -130,6 +130,25 @@ impl Registry {
             .flat_map(|rule| rule.check(project))
             .collect()
     }
+
+    /// 多个视图（宿主 + 插件）依次检查，合并成一份结果。
+    ///
+    /// 视图内的诊断路径相对该视图自己的根，这里补上 [`Project::report_prefix`]
+    /// 变成项目相对路径；工程视图产出的 warning 也一并计入。
+    pub fn run_views(&self, projects: &[&Project], ignored: &HashSet<String>) -> Vec<Diagnostic> {
+        let mut diagnostics = Vec::new();
+        for project in projects {
+            let mut view = crate::suppress::apply(project, self.run(project, ignored));
+            view.extend(project.warnings.iter().cloned());
+            if !project.report_prefix.is_empty() {
+                for diagnostic in &mut view {
+                    diagnostic.path = format!("{}{}", project.report_prefix, diagnostic.path);
+                }
+            }
+            diagnostics.extend(view);
+        }
+        diagnostics
+    }
 }
 
 /// 表格单元里的 `|` 会截断单元格，裸写的 `<tag>` 会被 markdown 当成 HTML 标签吞掉——

@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 use clap::Parser;
 use skylint::report::Style;
-use skylint::{Project, Registry, Report, suppress};
+use skylint::{Project, Registry, Report};
 
 #[derive(Debug, Parser)]
 #[command(name = "skylint", version, about = "Skyline 小程序迁移检查工具")]
@@ -29,12 +29,13 @@ fn main() -> ExitCode {
 
     // 传文件时走单文件视图：不要求工程结构，但跨文件规则也没东西可比。
     let loaded = if cli.path.is_file() {
-        Project::single_file(&cli.path)
+        Project::single_file(&cli.path).map(|project| vec![project])
     } else {
-        Project::load(&cli.path)
+        // 插件工程的宿主与插件是两套页面，各自一个视图。
+        Project::load_views(&cli.path)
     };
-    let project = match loaded {
-        Ok(project) => project,
+    let projects = match loaded {
+        Ok(projects) => projects,
         Err(err) => {
             eprintln!("skylint: {err}");
             return ExitCode::from(2);
@@ -42,8 +43,9 @@ fn main() -> ExitCode {
     };
 
     let ignored: HashSet<String> = cli.ignore.into_iter().collect();
-    let diagnostics = suppress::apply(&project, registry.run(&project, &ignored));
-    let report = Report::new(&project, diagnostics);
+    let views: Vec<&Project> = projects.iter().collect();
+    let diagnostics = registry.run_views(&views, &ignored);
+    let report = Report::from_views(&projects, diagnostics);
 
     if cli.json {
         println!("{}", report.to_json());
@@ -52,10 +54,12 @@ fn main() -> ExitCode {
             "{}",
             report.to_text(
                 |path| {
-                    // 多数路径相对 miniprogramRoot；project.config.json 在项目根，补一次回落。
-                    std::fs::read_to_string(project.abs(path))
-                        .or_else(|_| std::fs::read_to_string(project.root.join(path)))
-                        .ok()
+                    // 宿主路径相对 miniprogramRoot、插件路径相对项目根，
+                    // project.config.json 这类配置又在项目根，依次回落。
+                    projects
+                        .iter()
+                        .find_map(|project| std::fs::read_to_string(project.abs(path)).ok())
+                        .or_else(|| std::fs::read_to_string(projects[0].root.join(path)).ok())
                 },
                 Style {
                     colored: std::io::stdout().is_terminal(),

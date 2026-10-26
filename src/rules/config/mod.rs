@@ -29,8 +29,14 @@ use crate::project::Project;
 /// 单文件模式（`skylint page.wxml`）用合成的 app.json 撑起「按 Skyline 检查」，
 /// 拿它去判 `defaultDisplayBlock` 会在用户只想看一个文件时对着不存在的
 /// `app.json:1:1` 报两条噪音。
+/// 配置类规则的适用面：工程级配置只有一份，单文件视图没有工程可读，插件视图
+/// （`pluginRoot` 下那一套）也不重复检查。
+///
+/// 插件自己的 `plugin.json` 目前不在这组规则的覆盖范围内：它的 schema 与 app.json
+/// 不同（`pages` 是 map、`publicComponents` 等键 app.json 没有），直接套 app 级
+/// 键表会造误报，等有真实需求再单独加一层。
 pub(crate) fn applicable(project: &Project) -> bool {
-    !project.single_file
+    !project.single_file && !project.plugin_view
 }
 
 /// 配置类诊断：给出 `at` 就落在该位置，否则落在文件首字符。

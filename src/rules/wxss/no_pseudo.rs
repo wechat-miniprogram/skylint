@@ -236,7 +236,8 @@ mod tests {
         .write("pages/c/c.json", "{}")
         .write("pages/c/c.wxml", "<view/>")
         .write("pages/c/c.less", ".c:hover { color: red; }")
-        // 未迁到 Skyline 的页面同样检查（迁移工具，目标用户就是 WebView 工程）。
+        // 显式 opt-out（`renderer: "webview"`）的页面不查：它不会迁 Skyline，
+        // 与 wxml 侧同口径。没写 renderer 的页面仍然检查。
         .write("pages/legacy/legacy.json", r#"{"renderer":"webview"}"#)
         .write("pages/legacy/legacy.wxml", "<view/>")
         .write("pages/legacy/legacy.wxss", ".l:hover { color: red; }")
@@ -247,14 +248,13 @@ mod tests {
 
         let project = f.project();
         let diags = NoPseudo.check(&project);
-        assert_eq!(diags.len(), 4);
+        assert_eq!(diags.len(), 3);
         let paths: HashSet<_> = diags.iter().map(|d| d.path.as_str()).collect();
         assert_eq!(
             paths,
             HashSet::from([
                 "pages/a/a.wxss",
                 "pages/c/c.less",
-                "pages/legacy/legacy.wxss",
                 "components/nav/nav.wxss",
             ])
         );

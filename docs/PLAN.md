@@ -318,9 +318,25 @@ zoomOut/deepthPage`（不是 `scaleTinder/...`）；`indicator-type` 是 16 个�
 `box-sizing` 只看「值是否受支持」，不受 `defaultContentBox` 影响；
 `tag-selector-isolation` 早已读了 `tagNameStyleIsolation`。
 
-**已知盲区**：`weapp-novel-plugin_1` 有 `pluginRoot`，而 `Project::load` 只读
-`miniprogramRoot`（`project.rs:103-114`），插件源码整块没进扫描——它的 3 条诊断只覆盖
-miniprogram 侧。补插件根要处理 scope 归属（插件页面/组件不属于主包页面集合），单独评估。
+**插件工程（已落地）**：`project.config.json` 同时声明 `miniprogramRoot` 与
+`pluginRoot` 时，宿主示例小程序（`miniprogramRoot/app.json`）与插件
+（`pluginRoot/plugin.json`）是**两套独立视图**，`Project::load_views` 各加载一个：
+
+| | 宿主视图 | 插件视图 |
+|---|---|---|
+| 页面清单 | `app.json.pages` | `plugin.json.pages`（「页面名 → 路径」的 map，兼容数组） |
+| app 级配置 | `app.json` | `plugin.json`（`renderer` / `rendererOptions`） |
+| 组件入口 | `usingComponents` + `custom-tab-bar` / `app-bar` | 页面 `usingComponents` + `publicComponents` |
+| 全局样式 | `app.wxss` | 无 |
+| 报告路径 | 相对 `miniprogramRoot`（不变） | 前缀 `pluginRoot/` |
+
+视图内的路径相对自己的根（`Project::abs` 用 `miniprogram_root` 字段定位），输出时才由
+`Project::report_prefix` 拼成项目相对路径——宿主路径因此完全不变（四个真实工程逐字段
+0 diff），插件页与插件组件也各自有独立的 `scope` 归属，不需要改规则的跨文件判定。
+`plugin_view` 标记该视图整块是插件代码，`rules/js` 的 `in_plugin` 据此判定。
+
+`pluginRoot` 存在但 `plugin.json` 缺失/读不了时没有插件视图——插件清单本身有问题由
+开发者工具拦，linter 不另造诊断。
 
 ### P4 JS（worklet / API 禁令 / 路由）
 

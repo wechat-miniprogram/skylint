@@ -46,10 +46,12 @@ pub struct Summary {
 }
 
 impl Report {
-    pub fn new(project: &Project, mut diagnostics: Vec<Diagnostic>) -> Self {
-        // warnings 由工程视图产出（json 解析失败、文件缺失），与规则结果合并后统一排序：
-        // 路径 → 行 → 列 → 规则 id，保证同一工程多次运行输出稳定。
-        diagnostics.extend(project.warnings.iter().cloned());
+    /// 多视图（宿主 + 插件）的结果合并。
+    ///
+    /// 调用方负责把每个视图的路径前缀补上（[`crate::Project::report_prefix`]）；
+    /// 这里只做排序、去重与计数，summary 是各视图之和。
+    pub fn from_views(projects: &[Project], mut diagnostics: Vec<Diagnostic>) -> Self {
+        // 统一排序：路径 → 行 → 列 → 规则 id，保证同一工程多次运行输出稳定。
         diagnostics.sort_by(|a, b| {
             (&a.path, a.line, a.column, &a.rule).cmp(&(&b.path, b.line, b.column, &b.rule))
         });
@@ -59,11 +61,16 @@ impl Report {
         diagnostics.dedup();
 
         let count = |s: Severity| diagnostics.iter().filter(|d| d.severity == s).count();
+        let pages = projects.iter().map(|p| p.pages.len()).sum();
         Self {
             summary: Summary {
-                pages: project.pages.len(),
-                skyline_pages: project.pages.iter().filter(|p| p.is_skyline).count(),
-                components: project.components.len(),
+                pages,
+                skyline_pages: projects
+                    .iter()
+                    .flat_map(|p| &p.pages)
+                    .filter(|page| page.is_skyline)
+                    .count(),
+                components: projects.iter().map(|p| p.components.len()).sum(),
                 errors: count(Severity::Error),
                 warnings: count(Severity::Warning),
                 infos: count(Severity::Info),

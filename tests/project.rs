@@ -6,6 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use skylint::Project;
+use skylint::project::Scope;
 
 struct Fixture {
     root: PathBuf,
@@ -436,6 +437,162 @@ fn scripts_cover_every_source_file_on_disk() {
         .map(|script| script.path.as_str())
         .collect();
     assert_eq!(loose, ["utils/one.js", "utils/two.ts"]);
+}
+
+/// 插件的宿主示例与插件本身是两个视图：插件页只在 `pluginRoot/plugin.json` 里，
+/// 宿主 `app.json` 看不到它们。
+fn plugin_project(name: &str) -> Fixture {
+    let f = Fixture::new(name);
+    f.write(
+        "project.config.json",
+        r#"{"compileType":"plugin","miniprogramRoot":"dist/miniprogram/","pluginRoot":"dist/plugin/","libVersion":"2.20.0"}"#,
+    )
+    // 宿主：一个页面，通过 plugin:// 用了插件的 public component。
+    .write(
+        "dist/miniprogram/app.json",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline","usingComponents":{"card":"plugin://demo/card"}}"#,
+    )
+    .write("dist/miniprogram/pages/index/index.json", r#"{}"#)
+    .write("dist/miniprogram/pages/index/index.wxml", "<card/>")
+    // 插件：一页一组件，组件只在 publicComponents 里出现。
+    .write(
+        "dist/plugin/plugin.json",
+        r#"{"pages":{"novel":"pages/novel/index"},"renderer":"skyline","publicComponents":{"card":"components/card/card"}}"#,
+    )
+    .write(
+        "dist/plugin/pages/novel/index.json",
+        r#"{"usingComponents":{"row":"../../components/row/row"}}"#,
+    )
+    .write("dist/plugin/pages/novel/index.wxml", "<row/>")
+    .write("dist/plugin/pages/novel/index.wxss", ".a:hover{color:red}")
+    .write("dist/plugin/components/row/row.json", r#"{"component":true}"#)
+    .write("dist/plugin/components/row/row.wxml", "<view/>")
+    .write("dist/plugin/components/card/card.json", r#"{"component":true}"#)
+    .write("dist/plugin/components/card/card.wxml", "<view/>");
+    f
+}
+
+#[test]
+fn plugin_pages_get_their_own_view() {
+    let f = plugin_project("plugin-view");
+    let views = Project::load_views(f.path()).unwrap();
+    assert_eq!(views.len(), 2, "宿主 + 插件两个视图");
+
+    let [host, plugin] = &views[..] else {
+        unreachable!()
+    };
+    assert_eq!(host.report_prefix, "");
+    assert_eq!(host.pages.len(), 1);
+    assert!(!host.plugin_view);
+
+    assert_eq!(plugin.report_prefix, "dist/plugin/");
+    assert!(plugin.plugin_view);
+    let routes: Vec<&str> = plugin.pages.iter().map(|p| p.route.as_str()).collect();
+    assert_eq!(routes, ["pages/novel/index"]);
+    // 页面 usingComponents 与 publicComponents 都要进闭包。
+    let components: Vec<&str> = plugin.components.iter().map(|c| c.path.as_str()).collect();
+    assert_eq!(components, ["components/card/card", "components/row/row"]);
+    // 插件视图没有 app.wxss，页面样式照样入图。
+    let scopes: Vec<&Scope> = plugin
+        .styles
+        .iter()
+        .flat_map(|sheet| &sheet.scopes)
+        .collect();
+    assert_eq!(scopes, [&Scope::Page("pages/novel/index".to_string())]);
+}
+
+#[test]
+fn plugin_paths_are_prefixed_and_resolvable() {
+    let f = plugin_project("plugin-paths");
+    let views = Project::load_views(f.path()).unwrap();
+    let plugin = &views[1];
+    // 视图内路径相对 pluginRoot，`abs` 才能定位到真实文件。
+    assert_eq!(
+        plugin.abs("pages/novel/index.wxml"),
+        f.path().join("dist/plugin/pages/novel/index.wxml")
+    );
+    assert!(plugin.abs("pages/novel/index.wxml").is_file());
+}
+
+#[test]
+fn project_without_plugin_root_has_one_view() {
+    let f = Fixture::new("no-plugin");
+    f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+        .write("app.json", r#"{"pages":["pages/a/a"]}"#)
+        .write("pages/a/a.json", "{}")
+        .write("pages/a/a.wxml", "<view/>");
+    // pluginRoot 指向不存在的目录，或压根没写，都只有一个视图。
+    let views = Project::load_views(f.path()).unwrap();
+    assert_eq!(views.len(), 1);
+}
+
+#[test]
+fn missing_plugin_manifest_has_no_plugin_view() {
+    let f = Fixture::new("plugin-missing");
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/","pluginRoot":"plugin/"}"#,
+    )
+    .write("miniprogram/app.json", r#"{"pages":["pages/a/a"]}"#)
+    .write("miniprogram/pages/a/a.json", "{}")
+    .write("miniprogram/pages/a/a.wxml", "<view/>");
+    assert_eq!(Project::load_views(f.path()).unwrap().len(), 1);
+}
+
+#[test]
+fn plugin_pages_accept_list_shaped_pages() {
+    let f = Fixture::new("plugin-list-pages");
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/","pluginRoot":"plugin/"}"#,
+    )
+    .write("miniprogram/app.json", r#"{"pages":[]}"#)
+    .write(
+        "plugin/plugin.json",
+        r#"{"pages":["pages/a/a","pages/a/a"]}"#,
+    )
+    .write("plugin/pages/a/a.json", "{}")
+    .write("plugin/pages/a/a.wxml", "<view/>");
+    let views = Project::load_views(f.path()).unwrap();
+    let routes: Vec<&str> = views[1].pages.iter().map(|p| p.route.as_str()).collect();
+    assert_eq!(routes, ["pages/a/a"], "重复项只保留一次");
+}
+
+#[test]
+fn project_level_config_rules_run_once() {
+    // `libVersion` 偏低在宿主与插件两个视图下是同一个事实，不能报两遍；
+    // 也不能被插件视图的路径前缀带偏成 `dist/plugin/project.config.json`。
+    let f = plugin_project("plugin-config-once");
+    let views = Project::load_views(f.path()).unwrap();
+    let refs: Vec<&Project> = views.iter().collect();
+    let diagnostics = skylint::Registry::builtin().run_views(&refs, &HashSet::new());
+    let lib: Vec<&skylint::Diagnostic> = diagnostics
+        .iter()
+        .filter(|d| d.rule == "skyline/lib-version")
+        .collect();
+    assert_eq!(lib.len(), 1, "{lib:#?}");
+    assert_eq!(lib[0].path, "project.config.json");
+}
+
+#[test]
+fn plugin_diagnostics_carry_the_view_prefix() {
+    let f = plugin_project("plugin-run");
+    let views = Project::load_views(f.path()).unwrap();
+    let refs: Vec<&Project> = views.iter().collect();
+    let diagnostics = skylint::Registry::builtin().run_views(&refs, &HashSet::new());
+
+    assert!(
+        diagnostics.iter().any(
+            |d| d.rule == "skyline/no-pseudo" && d.path == "dist/plugin/pages/novel/index.wxss"
+        ),
+        "插件页的样式要参与检查，路径带 pluginRoot 前缀"
+    );
+    // 宿主视图的路径保持原样，不带任何前缀。
+    assert!(
+        diagnostics
+            .iter()
+            .all(|d| !d.path.starts_with("dist/miniprogram/"))
+    );
 }
 
 fn fixture_root(name: &str) -> std::path::PathBuf {

@@ -54,6 +54,9 @@ pub(crate) fn is_plugin(project: &Project) -> bool {
 /// 照常能用 `wx.router`。只有落在 `pluginRoot` 下的文件才受插件限制；
 /// 纯插件仓库（没有 `pluginRoot`、代码就在根目录）按 `compileType` 整体算。
 pub(crate) fn in_plugin(project: &Project, path: &str) -> bool {
+    if project.plugin_view {
+        return true;
+    }
     match project.plugin_root.as_deref() {
         Some(root) => path == root || path.starts_with(&format!("{root}/")),
         None => is_plugin(project),
