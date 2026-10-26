@@ -92,7 +92,7 @@ fn check_element(
                     element.tag
                 ),
             )
-            .help("把文本包进 `<text>`，或把整段文字移入独立的 `<text>` 子节点"),
+            .help("把文本包进 `<text>`；里面还要放 `<text>` 或元素时改用 `<span>`（同为文本节点容器）"),
         );
     }
 }

@@ -484,7 +484,7 @@ impl Rule for ComponentAttribute {
                             attr.start,
                             attr.end,
                             doc.path(),
-                            Severity::Warning,
+                            severity(&element.tag, &name, &entry.constraint),
                             message(&element.tag, &name, value, &entry.constraint),
                         )
                         .help(help(entry)),
@@ -607,6 +607,15 @@ fn requires_message(tag: &str, rule: &Requires, value: &str, current: Option<&st
     }
 }
 
+/// `<image mode>` 写成非法取值时两个渲染器都回退成拉伸填满，不是迁移差异：仍然
+/// 值得修，但不是 Skyline 阻塞项，按 info 报。
+fn severity(tag: &str, attr: &str, constraint: &Constraint) -> Severity {
+    match constraint {
+        Constraint::Enum(_) if tag == "image" && attr == "mode" => Severity::Info,
+        _ => Severity::Warning,
+    }
+}
+
 fn message(tag: &str, attr: &str, value: &str, constraint: &Constraint) -> String {
     match constraint {
         Constraint::Unsupported => {
@@ -657,7 +666,7 @@ mod tests {
     use super::ComponentAttribute;
 
     #[test]
-    fn enum_violations_are_warnings_on_the_attribute() {
+    fn enum_violations_are_reported_on_the_attribute() {
         let diagnostics = check_rule(
             &project(
                 "attr-enum",
@@ -666,16 +675,19 @@ mod tests {
             &ComponentAttribute,
         );
         assert_eq!(diagnostics.len(), 2);
-        assert!(
-            diagnostics
-                .iter()
-                .all(|d| d.severity == crate::Severity::Warning)
-        );
         let image = diagnostics
             .iter()
             .find(|d| d.message.contains("image"))
             .unwrap();
         assert_eq!((image.line, image.column), (1, 14));
+        // `mode` 的非法值两个渲染器都回退成拉伸，按 info 报；其余枚举违规仍是 warning。
+        assert_eq!(image.severity, crate::Severity::Info);
+        assert!(
+            diagnostics
+                .iter()
+                .filter(|d| !d.message.contains("image"))
+                .all(|d| d.severity == crate::Severity::Warning)
+        );
         assert_eq!(
             image.help.as_deref().unwrap(),
             "合法值：scaleToFill、aspectFit、aspectFill、widthFix、heightFix、auto"
@@ -697,6 +709,7 @@ mod tests {
         assert!(
             diagnostics
                 .iter()
+                .skip(1)
                 .all(|d| d.severity == crate::Severity::Warning)
         );
         assert!(diagnostics[0].message.contains("cover"));
@@ -778,6 +791,7 @@ mod tests {
             &ComponentAttribute,
         );
         assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].severity, crate::Severity::Info);
         assert!(
             diagnostics[0]
                 .message

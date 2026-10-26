@@ -66,7 +66,7 @@ impl Rule for NoPseudo {
                             )
                             .end(end_line, end_column)
                             .help(
-                                "Skyline 只支持 ::before/::after 与 :not()/:first-child/:last-child/:only-child/:nth-child()/:empty/:host；请改用 class 或调整 WXML 结构",
+                                "Skyline 只支持 ::before/::after 与 :not()/:first-child/:last-child/:only-child/:nth-child()/:empty/:host；请改用 class 或调整 WXML 结构，按压反馈用 `hover-class`",
                             ),
                         );
                 }

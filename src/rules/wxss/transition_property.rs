@@ -83,7 +83,7 @@ const ANIMATABLE_PROPERTIES: &[&str] = &[
 ];
 
 const HELP: &str = "改用受支持的动画属性（transform / opacity 等），可动画属性表见 animation.md";
-const DROP_HELP: &str = "删掉这条声明里的 visibility（需要显隐过渡就改成 opacity 或配合条件渲染）";
+const DROP_HELP: &str = "把 `visibility` 从这条 transition 里删掉（留着它整条声明都会失效）；显隐改用 class 切换，如 `.show { visibility: visible }`";
 
 /// CSS 全局关键字，不是属性名（两种属性上都合法）。
 const GLOBAL_KEYWORDS: [&str; 5] = ["inherit", "initial", "unset", "revert", "revert-layer"];
