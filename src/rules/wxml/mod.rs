@@ -82,11 +82,14 @@ pub(crate) fn visit(
 /// 深度优先遍历全部元素，并维护从根到父节点的祖先栈。
 ///
 /// 不做任何过滤（包括 `in_template`）：是否跳过由调用方决定。
-pub(crate) fn walk(doc: &WxmlDoc, mut visit: impl FnMut(&WxmlElement, &[&WxmlElement])) {
+pub(crate) fn walk<'a>(
+    doc: &'a WxmlDoc,
+    mut visit: impl FnMut(&'a WxmlElement, &[&'a WxmlElement]),
+) {
     fn recurse<'a>(
         nodes: &'a [WxmlNode],
         ancestors: &mut Vec<&'a WxmlElement>,
-        visit: &mut impl FnMut(&WxmlElement, &[&WxmlElement]),
+        visit: &mut impl FnMut(&'a WxmlElement, &[&'a WxmlElement]),
     ) {
         for node in nodes {
             let WxmlNode::Element(element) = node else {
@@ -139,6 +142,78 @@ pub(crate) fn display_values(
             }),
     );
     out
+}
+
+/// 元素命中的某条属性声明（取级联的最后一个近似值）。
+///
+/// 不计算 specificity：按样式表顺序与规则顺序取最后一条（`visit` 侧同口径），
+/// 同名规则里靠后的声明覆盖靠前的，与同优先级 CSS 一致；跨优先级冲突时静态判不了。
+pub(crate) struct Resolved<'a> {
+    pub value: String,
+    /// 来自样式表时的文件与声明；来自内联 `style` 时都是 `None`。
+    pub sheet: Option<&'a crate::project::StyleSheet>,
+    pub declaration: Option<&'a crate::input::wxss::WxssDeclaration>,
+}
+
+/// 元素某个属性的有效取值：内联 `style` 最后生效（`!important` 不计）。
+pub(crate) fn resolved_property<'a>(
+    project: &'a Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    property: &str,
+) -> Option<Resolved<'a>> {
+    let from_sheets = project
+        .styles
+        .iter()
+        .filter(|sheet| sheet_covers(sheet, project, tree.path()))
+        .flat_map(|sheet| {
+            sheet
+                .doc
+                .rules
+                .iter()
+                .filter(|rule| {
+                    rule.selectors.iter().any(|selector| {
+                        tree.matches(element, selector.text.trim(), Dialect::Skyline) == Tri::Yes
+                    })
+                })
+                .flat_map(move |rule| {
+                    rule.declarations
+                        .iter()
+                        .filter(|decl| decl.name.eq_ignore_ascii_case(property))
+                        .map(move |decl| (sheet, decl))
+                })
+        })
+        .last()
+        .map(|(sheet, declaration)| Resolved {
+            value: declaration.value.trim().to_string(),
+            sheet: Some(sheet),
+            declaration: Some(declaration),
+        });
+
+    let inline = structure::find_attr(element, "style")
+        .and_then(|attr| attr.value.as_deref())
+        .and_then(|style| inline_value(style, property));
+    match inline {
+        Some(value) => Some(Resolved {
+            value,
+            sheet: None,
+            declaration: None,
+        }),
+        None => from_sheets,
+    }
+}
+
+/// 内联 `style` 里某个属性的最后一个取值。
+fn inline_value(style: &str, property: &str) -> Option<String> {
+    style
+        .split(';')
+        .filter_map(|declaration| {
+            let (name, value) = declaration.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case(property)
+                .then(|| value.trim().to_string())
+        })
+        .next_back()
 }
 
 fn inline_displays(style: &str) -> impl Iterator<Item = String> + '_ {

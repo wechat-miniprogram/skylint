@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 40 条：error 11 条、warning 28 条、info 1 条。
+共 41 条：error 11 条、warning 29 条、info 1 条。
 
 | 规则 | 级别 | 说明 |
 |---|---|---|
@@ -18,6 +18,7 @@
 | `skyline/no-pseudo` | warning | Skyline 不支持该伪类/伪元素，选择器不会命中 |
 | `skyline/box-sizing` | error | box-sizing 的值在 Skyline 下不受支持，声明会被忽略 |
 | `skyline/flex-direction` | warning | display: flex 未声明 flex-direction，迁移后默认方向会从 row 变为 column |
+| `skyline/fixed-layer` | warning | `position: fixed` 在 Skyline 下被提升成独立层，会盖住 z-index 更高的浮层 |
 | `skyline/text-overflow-ellipsis` | warning | text-overflow: ellipsis 在 Skyline 下只对 `<text>` 生效 |
 | `skyline/attribute-selector` | warning | 属性选择器在 Skyline 下不参与匹配：主体只有属性时整条声明失效，否则命中范围被放宽 |
 | `skyline/tag-selector-isolation` | warning | 标签 / id 选择器在 Skyline 下不跨组件匹配，WebView 上生效的样式会静默失效 |
