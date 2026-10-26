@@ -64,6 +64,7 @@ impl Registry {
             Box::new(wxss::ShorthandPartial),
             Box::new(wxss::TransitionProperty),
             Box::new(wxss::GradientLimit),
+            Box::new(wxss::MediaQuery),
             Box::new(wxss::MultiValueLimit),
             Box::new(wxss::FilterLimit),
             Box::new(wxss::TextDecorationLine),
