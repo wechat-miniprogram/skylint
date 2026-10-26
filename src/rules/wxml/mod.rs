@@ -31,7 +31,8 @@ use glass_easel_template_compiler::parse::Position;
 
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{self, WxmlDoc, WxmlElement, WxmlNode};
-use crate::project::Project;
+use crate::project::{Project, Scope, StyleSheet};
+use crate::rules::wxss::selector::{Match, SimpleSelector};
 
 /// 页面与组件的 WXML + 被 import / include 的模板，按路径去重。
 ///
@@ -100,6 +101,68 @@ pub(crate) fn walk(doc: &WxmlDoc, mut visit: impl FnMut(&WxmlElement, &[&WxmlEle
 
     let mut ancestors = Vec::new();
     recurse(&doc.nodes, &mut ancestors, &mut visit);
+}
+
+/// 元素自身在样式层里的全部 `display` 取值（内联 `style` 在前）。
+///
+/// 只统计能静态判定的部分：动态 class、组合符选择器一律看不见，所以调用方要把
+/// 「一无所获」当成未知而不是「不是 flex」。同一元素命中多份互相矛盾的 `display`
+/// 时全部返回，由调用方决定怎么解释。
+pub(crate) fn display_values(
+    project: &Project,
+    doc: &WxmlDoc,
+    element: &WxmlElement,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(value) =
+        structure::find_attr(element, "style").and_then(|attr| attr.value.as_deref())
+    {
+        out.extend(inline_displays(value));
+    }
+    out.extend(
+        project
+            .styles
+            .iter()
+            .filter(|sheet| sheet_covers(sheet, project, doc.path()))
+            .flat_map(|sheet| &sheet.doc.rules)
+            .filter(|rule| {
+                rule.selectors.iter().any(|selector| {
+                    SimpleSelector::parse(selector)
+                        .is_some_and(|simple| simple.matches(element) == Match::Yes)
+                })
+            })
+            .filter_map(|rule| {
+                rule.declarations
+                    .iter()
+                    .rev()
+                    .find(|decl| decl.name.eq_ignore_ascii_case("display"))
+                    .map(|decl| decl.value.trim().to_string())
+            }),
+    );
+    out
+}
+
+fn inline_displays(style: &str) -> impl Iterator<Item = String> + '_ {
+    style.split(';').filter_map(|declaration| {
+        let (name, value) = declaration.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("display")
+            .then(|| value.trim().to_string())
+    })
+}
+
+/// 这份样式表是否作用于 `path` 这份 WXML 所属的单元。
+fn sheet_covers(sheet: &StyleSheet, project: &Project, path: &str) -> bool {
+    sheet.scopes.iter().any(|scope| match scope {
+        Scope::Global => true,
+        _ => project.scope_wxml(scope) == Some(path),
+    })
+}
+
+/// `display: flex` / `inline-flex`：文本与元素在 WebView 与 Skyline 下都是 flex item。
+pub(crate) fn is_flex_value(value: &str) -> bool {
+    let value = value.trim();
+    value.eq_ignore_ascii_case("flex") || value.eq_ignore_ascii_case("inline-flex")
 }
 
 /// Skyline 组件支持表。

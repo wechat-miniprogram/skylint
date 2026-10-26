@@ -5,14 +5,12 @@
 //! （`wxapplib/src/wx-component/src/wx-scroll-view/`），不是「只要用了 `scroll-x` 就必须写」。
 
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxml::WxmlDoc;
 use crate::input::wxml::WxmlElement;
-use crate::project::{Project, Scope, StyleSheet};
-use crate::rules::wxss::selector::{Match, SimpleSelector};
+use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
 use super::structure::find_attr;
-use super::{span_diagnostic, visit, walk};
+use super::{display_values, is_flex_value, span_diagnostic, visit, walk};
 
 pub const HORIZONTAL_FLEX_ID: &str = "skyline/horizontal-scroll-enable-flex";
 
@@ -33,7 +31,9 @@ impl Rule for HorizontalScrollEnableFlex {
                 if element.tag != "scroll-view"
                     || flag(element, "scroll-x") != Some(true)
                     || flag(element, "enable-flex") != Some(false)
-                    || !display_flex(project, doc, element)
+                    || !display_values(project, doc, element)
+                        .iter()
+                        .any(|value| is_flex_value(value))
                 {
                     return;
                 }
@@ -73,51 +73,6 @@ fn flag(element: &WxmlElement, name: &str) -> Option<bool> {
                 .is_none_or(|value| !value.trim().is_empty()),
         ),
     }
-}
-
-/// 这个 `scroll-view` 自身是不是 `display: flex`：内联 `style` 或命中它的样式声明。
-fn display_flex(project: &Project, doc: &WxmlDoc, element: &WxmlElement) -> bool {
-    let inline = find_attr(element, "style")
-        .and_then(|attr| attr.value.as_deref())
-        .is_some_and(declares_flex_display);
-    inline
-        || project
-            .styles
-            .iter()
-            .filter(|sheet| sheet_covers(sheet, project, doc.path()))
-            .flat_map(|sheet| &sheet.doc.rules)
-            .any(|rule| {
-                rule.selectors.iter().any(|selector| {
-                    SimpleSelector::parse(selector)
-                        .is_some_and(|simple| simple.matches(element) == Match::Yes)
-                }) && rule
-                    .declarations
-                    .iter()
-                    .rev()
-                    .find(|decl| decl.name.eq_ignore_ascii_case("display"))
-                    .is_some_and(|decl| is_flex_value(&decl.value))
-            })
-}
-
-/// 这份样式表是否作用于 `path` 这份 WXML 所属的单元。
-fn sheet_covers(sheet: &StyleSheet, project: &Project, path: &str) -> bool {
-    sheet.scopes.iter().any(|scope| match scope {
-        Scope::Global => true,
-        _ => project.scope_wxml(scope) == Some(path),
-    })
-}
-
-fn declares_flex_display(style: &str) -> bool {
-    style.split(';').any(|declaration| {
-        declaration.split_once(':').is_some_and(|(name, value)| {
-            name.trim().eq_ignore_ascii_case("display") && is_flex_value(value)
-        })
-    })
-}
-
-fn is_flex_value(value: &str) -> bool {
-    let value = value.trim();
-    value.eq_ignore_ascii_case("flex") || value.eq_ignore_ascii_case("inline-flex")
 }
 
 #[cfg(test)]

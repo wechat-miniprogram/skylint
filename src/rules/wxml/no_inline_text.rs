@@ -1,11 +1,16 @@
 //! 文本与元素混排时 Skyline 会把文本当成独立 flex item，需用 `<text>` 包裹。
+//!
+//! 差异只发生在**块级容器**里：WebView 下裸文本是 inline 内容（与相邻的 `<image>`
+//! 同一行），Skyline 下裸文本是独立节点、另起一行。容器本身是 flex 时两边都把文本
+//! 当作 flex item，没有差异（真实工程里这类误报占多数），所以先看元素自己的
+//! `display`：判明是 flex 就跳过；判不出来仍按块级报，宁可漏报不放过。
 
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode, WxmlText};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::{span_diagnostic, visit, walk};
+use super::{display_values, is_flex_value, span_diagnostic, visit, walk};
 
 pub const ID: &str = "skyline/no-inline-text";
 
@@ -29,7 +34,7 @@ impl Rule for NoInlineText {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
             walk(doc, |element, _ancestors| {
-                check_element(doc, element, doc.path(), out);
+                check_element(project, doc, element, out);
             });
         })
     }
@@ -37,8 +42,18 @@ impl Rule for NoInlineText {
 
 /// 只有「文本与元素混排」在 Skyline 下会静默错位：纯文本子节点仍按 inline 流渲染。
 /// 文本根组件内部允许文本与子节点混排，整棵子树豁免。
-fn check_element(doc: &WxmlDoc, element: &WxmlElement, path: &str, out: &mut Vec<Diagnostic>) {
+fn check_element(
+    project: &Project,
+    doc: &WxmlDoc,
+    element: &WxmlElement,
+    out: &mut Vec<Diagnostic>,
+) {
     if TEXT_TAGS.contains(&element.tag.as_str()) {
+        return;
+    }
+    // flex 容器里文本与元素在两种渲染器下都是 flex item，不存在错位。
+    let displays = display_values(project, doc, element);
+    if !displays.is_empty() && displays.iter().all(|value| is_flex_value(value)) {
         return;
     }
     let elements: Vec<&WxmlElement> = element
@@ -66,7 +81,7 @@ fn check_element(doc: &WxmlDoc, element: &WxmlElement, path: &str, out: &mut Vec
                 doc,
                 text.start,
                 text.end,
-                path,
+                doc.path(),
                 Severity::Warning,
                 format!(
                     "`<{}>` 内文本与元素混排，Skyline 会把文本当成独立 flex item，导致错位",
@@ -235,6 +250,40 @@ mod tests {
         // `<text>` 内只能嵌 `<text>` 是另一条规则（text-only-children），这里不报。
         let diagnostics = check(&project("text-exempt", "<text>a<image/></text>"));
         assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn flex_container_is_not_reported() {
+        // 容器是 row flex 时文本与 `<image>` 在 WebView / Skyline 下都是 flex item
+        // （`official-heart-popup.less` 的 `.title` 就是这种写法），不存在错位。
+        let fixture = Fixture::wxml(
+            "flex-row",
+            r#"<view class="title">{{n}}个朋友<image/></view>"#,
+        );
+        fixture.write("pages/index/index.wxss", ".title { display: flex; }");
+        let diagnostics = check(&fixture);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn inline_flex_is_not_reported() {
+        let diagnostics = check(&project(
+            "flex-inline",
+            r#"<view style="display:flex">{{n}}个朋友<image/></view>"#,
+        ));
+        assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn explicit_block_container_is_still_reported() {
+        // 判明是块级容器时差异成立：WebView 里文本与 `<image>` 同一行，Skyline 另起一行。
+        let fixture = Fixture::wxml(
+            "block-container",
+            r#"<view class="tip">文案<image/></view>"#,
+        );
+        fixture.write("pages/index/index.wxss", ".tip { display: block; }");
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1);
     }
 
     #[test]
