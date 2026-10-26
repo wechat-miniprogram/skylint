@@ -72,6 +72,8 @@ pub struct PageUnit {
     pub route: String,
     /// 该页是否走 Skyline 渲染（页面级 `renderer` 优先，缺省回落 app.json）。
     pub is_skyline: bool,
+    /// 页面 json 自己写了 `renderer`（任何取值）。
+    pub declares_renderer: bool,
     /// 页面 json 显式声明了 `"renderer": "webview"`。
     ///
     /// 和 `!is_skyline` 不是一回事：这里是「这页永远不迁 Skyline」的明确决定
@@ -339,6 +341,15 @@ impl Project {
         }
     }
 
+    /// 工程里是否出现过任何 `renderer` 声明（app/plugin.json 或任一页面 json）。
+    ///
+    /// 没有声明时规则按「未迁移、将被迁到 Skyline」检查，这正是迁移前该做的事，
+    /// 但读者容易把它误读成当前渲染器下的 bug，所以报告里要说明这个前提。
+    pub fn declares_renderer(&self) -> bool {
+        self.app_json.contains_key("renderer")
+            || self.pages.iter().any(|page| page.declares_renderer)
+    }
+
     /// app 级 `defaultDisplayBlock` 是否开启。运行时两种写法都认，见 [`renderer_flag`]。
     pub fn app_display_block(&self) -> bool {
         self.app_json
@@ -444,6 +455,7 @@ impl Project {
             "wxml" => project.pages.push(PageUnit {
                 route: name.trim_end_matches(".wxml").to_string(),
                 is_skyline: true,
+                declares_renderer: true,
                 opted_out: false,
                 files: UnitFiles {
                     wxml: Some(name),
@@ -636,6 +648,7 @@ impl Loaded {
                 PageUnit {
                     route: route.clone(),
                     is_skyline: is_skyline_page(&app_value, page),
+                    declares_renderer: page.get("renderer").is_some(),
                     opted_out: page.get("renderer").and_then(Value::as_str) == Some("webview"),
                     files: resolve_unit(exts, fs, base, route),
                 }

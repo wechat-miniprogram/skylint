@@ -43,6 +43,9 @@ pub struct Summary {
     pub errors: usize,
     pub warnings: usize,
     pub infos: usize,
+    /// 工程里是否出现过任何 `renderer` 声明；`false` 表示整份结果是在
+    /// 「按 Skyline 默认检查」的前提下得出的。
+    pub renderer_declared: bool,
 }
 
 impl Report {
@@ -74,6 +77,7 @@ impl Report {
                 errors: count(Severity::Error),
                 warnings: count(Severity::Warning),
                 infos: count(Severity::Info),
+                renderer_declared: projects.iter().any(|p| p.declares_renderer()),
             },
             diagnostics,
         }
@@ -138,6 +142,12 @@ impl Report {
             "{} error, {} warning, {} info ({} pages, {} skyline, {} components)",
             s.errors, s.warnings, s.infos, s.pages, s.skyline_pages, s.components
         );
+        if !s.renderer_declared {
+            let _ = writeln!(
+                out,
+                "note: 工程里没有任何 renderer 声明，以上按 Skyline 默认口径检查；WebView 页面请显式写 \"renderer\": \"webview\""
+            );
+        }
         out
     }
 
@@ -223,9 +233,28 @@ mod tests {
                 errors: 0,
                 warnings: 1,
                 infos: 0,
+                renderer_declared: true,
             },
             diagnostics: vec![d],
         }
+    }
+
+    /// 工程里没有任何 `renderer` 声明时，结果是在「按 Skyline 默认」前提下得出的，
+    /// 报告必须把这个前提说出来，否则读者会当成当前渲染器下的 bug。
+    #[test]
+    fn missing_renderer_declaration_adds_a_note() {
+        let mut r = report(Diagnostic::new(
+            "skyline/x",
+            Severity::Warning,
+            "m",
+            "a.wxml",
+            2,
+            4,
+        ));
+        assert!(!r.to_text(|_| None, Style::default()).contains("note:"));
+        r.summary.renderer_declared = false;
+        let text = r.to_text(|_| None, Style::default());
+        assert!(text.contains("没有任何 renderer 声明"), "{text}");
     }
 
     #[test]
