@@ -75,6 +75,9 @@ fn compile_worklet_enabled(project: &Project) -> bool {
 }
 
 /// 工程里是否出现 worklet：脚本里的 `'worklet'` 指令，或 WXML 上的 `worklet:` 属性。
+///
+/// `<import>` / `<include>` 的片段也是工程的一部分：手势绑定常写在被复用的模板里，
+/// 只看单元自己的 WXML 会把「用到了 worklet」判成没用到，`compileWorklet` 就漏报。
 fn uses_worklet(project: &Project) -> bool {
     let in_scripts = project.scripts.iter().any(|file| {
         file.doc
@@ -83,16 +86,20 @@ fn uses_worklet(project: &Project) -> bool {
             .any(|function| function.has_worklet)
     });
     in_scripts
-        || unit_wxml(project).into_iter().any(|(path, _)| {
-            load_doc(project, path).is_some_and(|doc| {
-                doc.elements().any(|element| {
-                    element
-                        .attributes
-                        .iter()
-                        .any(|attribute| attribute.name.starts_with("worklet:"))
+        || unit_wxml(project)
+            .into_iter()
+            .map(|(path, _)| path)
+            .chain(project.template_files.iter().map(String::as_str))
+            .any(|path| {
+                load_doc(project, path).is_some_and(|doc| {
+                    doc.elements().any(|element| {
+                        element
+                            .attributes
+                            .iter()
+                            .any(|attribute| attribute.name.starts_with("worklet:"))
+                    })
                 })
             })
-        })
 }
 
 #[cfg(test)]
@@ -233,6 +240,35 @@ mod tests {
             r#"{"miniprogramRoot":""}"#,
             r#"<pan-gesture-handler worklet:ongesture="onPan"/>"#,
             "Behavior({});",
+        );
+        assert_eq!(messages(&WorkletCompileSetting, &project).len(), 1);
+    }
+
+    #[test]
+    fn worklet_attribute_in_an_imported_template_counts_as_usage() {
+        // 手势绑定写在被 `<import>` 复用的模板里，页面自己的 wxml 是干净的。
+        let f = Fixture::new("worklet-imported-template");
+        f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<import src="/templates/pan"/><view/>"#,
+            )
+            .write("pages/index/index.js", "Page({});")
+            .write(
+                "templates/pan.wxml",
+                r#"<pan-gesture-handler worklet:ongesture="onPan"/>"#,
+            );
+        let project = f.project();
+        assert!(
+            project
+                .template_files
+                .iter()
+                .any(|p| p.contains("templates/pan"))
         );
         assert_eq!(messages(&WorkletCompileSetting, &project).len(), 1);
     }

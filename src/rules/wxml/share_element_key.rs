@@ -70,8 +70,20 @@ fn check_file(doc: &WxmlDoc, out: &mut Vec<Diagnostic>) {
             Some(attr) if !attr.is_static => return,
             Some(attr) => attr.value.as_deref().unwrap_or("").trim(),
         };
-        // 空 key（`key=""` 或裸属性）无法参与配对，静态阶段不判。
+        // 空 key（`key=""` 或裸属性）等同于没写：引擎按 `tag.isNotEmpty` 决定是否
+        // 建立 hero 关系（`package/skyline/lib/widgets/hero.dart:400`），空串直接失效。
         if key.is_empty() {
+            out.push(
+                element_diagnostic(
+                    ID,
+                    doc,
+                    element,
+                    doc.path(),
+                    Severity::Error,
+                    "`<share-element>` 的 `key` 为空，共享元素动画靠 key 在两个页面之间配对，空值不会生效",
+                )
+                .help("给每个 `<share-element>` 声明页面内唯一的 `key`，通常拼上数据 id"),
+            );
             return;
         }
         let duplicates = seen
@@ -213,10 +225,12 @@ mod tests {
     }
 
     #[test]
-    fn empty_key_is_not_reported() {
-        // 静态阶段无法判断 `key=""` 的实际含义，按「宁可漏报」跳过。
+    fn empty_key_is_reported_like_a_missing_one() {
+        // 引擎按 `tag.isNotEmpty` 决定是否建立 hero 关系（hero.dart:400），
+        // 空串等同于没写。
         let diagnostics = check(&project("share-empty", r#"<share-element key=""/>"#));
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("为空"), "{diagnostics:#?}");
     }
 
     // ---- 互斥分支 ----
