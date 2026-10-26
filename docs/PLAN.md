@@ -474,14 +474,15 @@ A 页失效、B 页正常时要报）、`no_pseudo` 的转义冒号（`.hover\:b
 | 插件视图的配置规则（含 `plugin.json` 路径） | 配置族 | skit-player +6 |
 | `renderer` 取值 / 版本区间校验、`ohosVersion*` 键 | `renderer-options` | 0（项目本身写对） |
 | `<text>` 里的块级子节点 | `component-children` | skit_1 +1、plugin_1/2 各 +2 |
+| `position: fixed` 遮罩被提升成独立层 | `fixed-layer` | plugin_1 +1（真问题） |
 
 评估后不做（附理由）：
 
-- `skyline/fixed-layer`：证据只到「fixed 节点被移到 root container」
-  （`shadow/shadow_tree.cc:697-706`、`shadow_node.h:140`），而命中它需要知道 root container
-  内 fixed 节点与页面节点的合成顺序与 z-index 是否还参与比较——现有源码读不出这一步，
-  没有它写出来的规则就是猜。历史上四处踩坑（255<260、999<1000、0<250、105<200）只能作为
-  待验证的场景清单。
+- `skyline/fixed-layer` 的两条限制（详情见规则模块注释）：只判铺满视口的遮罩，只判同一
+  父节点下的兄弟浮层。前者是因为固定边条 / 底栏 / 离屏挂载的 canvas 同样被提升，但重叠
+  静态不可知（放开后六工程立刻多出离屏快照类噪音）；后者是因为组件里的 fixed 提升到的是
+  组件自己的 root container，页面浮层仍在它之上——历史 bug `8fc12686`（fixed 在组件、
+  被盖的 z-250 在页面，靠抬高 z-index 才盖住）正是这个证据。
 - `<span>` 被 WebView 页面复用：这是反向差异（WebView 坏、Skyline 好），与本工具
   #1443 的口径相反；且 WebView 对未知标签的处理未在源码里确证。
 - `.a .a` 这类退化选择器（本意是同类却写成后代）：属于 #1443 排除的 dead-code 检查。
