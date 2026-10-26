@@ -291,30 +291,22 @@ impl<'a> Tree<'a> {
                         dynamic = true;
                     }
                 }
-                Component::AttributeInNoNamespaceExists { local_name, .. } => match dialect {
-                    Dialect::Skyline => {}
-                    Dialect::WebView => {
-                        if self.has_dynamic(Some(local_name.0.as_str()), element) {
-                            dynamic = true;
-                        }
+                // `[foo]` 只看存在性，动态绑定同样确定存在，静态可判。
+                Component::AttributeInNoNamespaceExists { .. } => {}
+                Component::AttributeInNoNamespace { local_name, .. } => {
+                    if dialect == Dialect::WebView
+                        && self.attr_condition_unresolved(local_name.0.as_str(), element)
+                    {
+                        dynamic = true;
                     }
-                },
-                Component::AttributeInNoNamespace { local_name, .. } => match dialect {
-                    Dialect::Skyline => {}
-                    Dialect::WebView => {
-                        if self.has_dynamic(Some(local_name.0.as_str()), element) {
-                            dynamic = true;
-                        }
+                }
+                Component::AttributeOther(other) => {
+                    if dialect == Dialect::WebView
+                        && self.attr_condition_unresolved(other.local_name.0.as_str(), element)
+                    {
+                        dynamic = true;
                     }
-                },
-                Component::AttributeOther(other) => match dialect {
-                    Dialect::Skyline => {}
-                    Dialect::WebView => {
-                        if self.has_dynamic(Some(other.local_name.0.as_str()), element) {
-                            dynamic = true;
-                        }
-                    }
-                },
+                }
                 Component::Empty => {
                     if element.unknown_children {
                         dynamic = true;
@@ -334,10 +326,13 @@ impl<'a> Tree<'a> {
                                         dynamic = true;
                                     }
                                 }
-                                Component::AttributeInNoNamespaceExists { local_name, .. }
-                                | Component::AttributeInNoNamespace { local_name, .. } => {
+                                Component::AttributeInNoNamespaceExists { .. } => {}
+                                Component::AttributeInNoNamespace { local_name, .. } => {
                                     dynamic |= dialect == Dialect::WebView
-                                        && self.has_dynamic(Some(local_name.0.as_str()), element);
+                                        && self.attr_condition_unresolved(
+                                            local_name.0.as_str(),
+                                            element,
+                                        );
                                 }
                                 _ => {}
                             }
@@ -373,6 +368,15 @@ impl<'a> Tree<'a> {
     fn has_dynamic(&self, name: Option<&str>, element: &WxmlElement) -> bool {
         name.and_then(|name| self.attribute(element, name))
             .is_some_and(|attr| !attr.is_static)
+    }
+
+    /// 属性取值条件静态判不了：动态绑定且候选集枚举不出来。
+    ///
+    /// 枚举得出候选时交给真正的匹配去判——全命中 / 全不命中都能定论，
+    /// 只有混合候选才是 `Unknown`（由 `element::attr_verdict` 补标记）。
+    fn attr_condition_unresolved(&self, name: &str, element: &WxmlElement) -> bool {
+        self.attribute(element, name)
+            .is_some_and(|attr| !attr.is_static && attr.candidates.is_none())
     }
 
     /// 动态 class 上这个 token 是否不可判定。
@@ -672,6 +676,23 @@ mod tests {
         assert_eq!(check(&d, 0, ".btn-idle", Dialect::WebView), Tri::Unknown);
         assert_eq!(check(&d, 0, ".btn-disabled", Dialect::WebView), Tri::No);
         assert_eq!(check(&d, 0, ".other", Dialect::WebView), Tri::No);
+    }
+
+    #[test]
+    fn enumerable_attribute_values_narrow_equality() {
+        let d = doc(r#"<view mode="{{ok ? 'cover' : 'fill'}}"/>"#);
+        // 候选里既有 cover 也有 fill：两种取值都可能，判不了。
+        assert_eq!(
+            check(&d, 0, "[mode='cover']", Dialect::WebView),
+            Tri::Unknown
+        );
+        // 不在候选里的值一定不等。
+        assert_eq!(
+            check(&d, 0, "[mode='aspectFit']", Dialect::WebView),
+            Tri::No
+        );
+        // 属性存在性与取值无关。
+        assert_eq!(check(&d, 0, "[mode]", Dialect::WebView), Tri::Yes);
     }
 
     #[test]

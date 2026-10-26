@@ -113,12 +113,25 @@ impl<'a> selectors::Element for Node<'a> {
         }
         match self.attribute(&local_name.0) {
             None => false,
-            // 动态属性：值由运行时决定，本轮判不了。
-            Some(attr) if !attr.is_static => {
-                self.tree.unresolved.set(true);
+            Some(attr) if attr.is_static => operation.eval_str(attr.value.as_deref().unwrap_or("")),
+            // 属性存在性与取值无关：动态绑定下 `[foo]` 同样确定存在。
+            Some(_) if matches!(operation, AttrSelectorOperation::Exists) => true,
+            Some(attr) => {
+                let Some(candidates) = attr.candidates.as_deref().filter(|list| !list.is_empty())
+                else {
+                    // 值由运行时决定，本轮判不了。
+                    self.tree.unresolved.set(true);
+                    return false;
+                };
+                // 所有候选都命中原样算命中（取值唯一时就是确定命中）。
+                if candidates.iter().all(|value| operation.eval_str(value)) {
+                    return true;
+                }
+                if candidates.iter().any(|value| operation.eval_str(value)) {
+                    self.tree.unresolved.set(true);
+                }
                 false
             }
-            Some(attr) => operation.eval_str(attr.value.as_deref().unwrap_or("")),
         }
     }
 

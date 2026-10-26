@@ -91,6 +91,9 @@ pub struct WxmlAttribute {
     /// 动态绑定的 class 词元信息：确定出现 / 可能出现的词，是否还可能出现任意词。
     /// 只有 `class` 且取值动态时才有值。
     pub class_tokens: Option<crate::input::expr::ClassTokens>,
+    /// 动态绑定的可能取值（`class` 之外）。`None` 表示取值依赖运行时数据、
+    /// 或候选太多枚举不出来；只有表达式由字面量 / 三元 / 与或 / 拼接构成时才有值。
+    pub candidates: Option<Vec<String>>,
     /// 属性名（含前缀）到值结尾的范围。
     pub start: Position,
     pub end: Position,
@@ -507,6 +510,7 @@ fn value_attribute(name: String, range: &Range<Position>, value: Option<&Value>)
             value: Some(value.to_string()),
             is_static: true,
             class_tokens: None,
+            candidates: None,
             start: range.start,
             end: location.end,
             value_start: Some(location.start),
@@ -515,6 +519,7 @@ fn value_attribute(name: String, range: &Range<Position>, value: Option<&Value>)
             class_tokens: name
                 .eq_ignore_ascii_case("class")
                 .then(|| crate::input::expr::class_tokens(expression)),
+            candidates: crate::input::expr::candidates(expression),
             name,
             value: None,
             is_static: false,
@@ -528,6 +533,7 @@ fn value_attribute(name: String, range: &Range<Position>, value: Option<&Value>)
             value: None,
             is_static: false,
             class_tokens: None,
+            candidates: None,
             start: range.start,
             end: range.end,
             value_start: None,
@@ -537,6 +543,7 @@ fn value_attribute(name: String, range: &Range<Position>, value: Option<&Value>)
             value: None,
             is_static: true,
             class_tokens: None,
+            candidates: None,
             start: range.start,
             end: range.end,
             value_start: None,
@@ -570,6 +577,7 @@ fn static_attribute(attr: &StaticAttribute, source: &str) -> WxmlAttribute {
         value: Some(attr.value.name.to_string()),
         is_static: true,
         class_tokens: None,
+        candidates: None,
         start,
         end: attr.value.location.end,
         value_start: Some(attr.value.location.start),

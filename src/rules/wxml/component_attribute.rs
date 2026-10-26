@@ -8,9 +8,11 @@
 //! 同步方式：只收录文档明确写「Skyline 不支持 / 仅 WebView 支持 / 取值范围」的属性取值；
 //!   枚举值以文档表格为准，条目行尾注释写 references 相对路径与行号。组件不能拆成多条规则。
 //!
-//! 只判静态属性：`{{}}` 插值（`WxmlAttribute::is_static == false`）一律跳过，
-//! 静态阶段无法确定它们的实际取值。`[requires]` 除外：无值属性视为布尔 true，
-//! 这足以确认 `circular=*` 这类触发条件。
+//! 静态值直接判；动态绑定先按表达式推导候选集（`WxmlAttribute::candidates`），
+//! 只有**所有候选都非法**（或 `[requires]` 里所有候选都命中触发条件）时才报——
+//! 「无论运行时走哪条分支都错」这个结论不依赖运行时数据，因此不会误报。
+//! 候选枚举不出来（取值来自数据字段、成员访问、函数调用）时一律跳过。
+//! 无值属性视为布尔 true，足以确认 `circular=*` 这类触发条件。
 //! 已知未覆盖：textarea 的 placeholder-class 同为 WebView-only，但知识库无 textarea
 //!   证据文件，按不确定不报处理。
 
@@ -468,20 +470,11 @@ impl Rule for ComponentAttribute {
         visit(project, |doc, out| {
             walk(doc, |element, _ancestors| {
                 for attr in &element.attributes {
-                    if !attr.is_static {
-                        continue;
-                    }
                     let name = attr.name.to_ascii_lowercase();
                     let Some(entries) = table.lookup(&element.tag, &name) else {
                         continue;
                     };
-                    // 无值属性是布尔 true：`[unsupported]` 只看属性是否存在，
-                    // 取值类约束（枚举 / 区间）无法判定，跳过。
-                    let value = attr.value.as_deref().map(str::trim).unwrap_or("");
-                    let Some(entry) = entries.iter().find(|entry| match entry.constraint {
-                        Constraint::Unsupported => true,
-                        _ => !value.is_empty() && entry.constraint.rejects(value),
-                    }) else {
+                    let Some((entry, value)) = judge_attribute(entries, attr) else {
                         continue;
                     };
                     out.push(
@@ -504,9 +497,6 @@ impl Rule for ComponentAttribute {
                     let Some(attr) = find_attr(element, rule.trigger.attr()) else {
                         continue;
                     };
-                    if !attr.is_static {
-                        continue;
-                    }
                     let Some(value) = trigger_value(attr, &rule.trigger) else {
                         continue;
                     };
@@ -535,16 +525,84 @@ impl Rule for ComponentAttribute {
     }
 }
 
+/// 属性取值空间的判定结果：命中的约束，以及用于展示的取值。
+///
+/// 静态值直接判；动态绑定只在**所有候选都非法**时报——「无论运行时取哪个值都错」，
+/// 这是任何执行路径都成立的结论，不会误报。候选枚举不出来时放过。
+fn judge_attribute<'a>(
+    entries: &'a [Entry],
+    attr: &'a WxmlAttribute,
+) -> Option<(&'a Entry, Value<'a>)> {
+    match (attr.is_static, attr.candidates.as_deref()) {
+        (true, _) => {
+            // 无值属性是布尔 true：`[unsupported]` 只看属性是否存在，
+            // 取值类约束（枚举 / 区间）无法判定，跳过。
+            let value = attr.value.as_deref().map(str::trim).unwrap_or("");
+            let entry = entries.iter().find(|entry| match entry.constraint {
+                Constraint::Unsupported => true,
+                _ => !value.is_empty() && entry.constraint.rejects(value),
+            })?;
+            Some((entry, Value::Static(value)))
+        }
+        (false, Some(candidates)) => {
+            if candidates.is_empty() {
+                return None;
+            }
+            let entry = entries.iter().find(|entry| match entry.constraint {
+                // 属性本身不支持与取值无关，存在即可报。
+                Constraint::Unsupported => true,
+                _ => candidates
+                    .iter()
+                    .all(|value| entry.constraint.rejects(value)),
+            })?;
+            Some((entry, Value::AllInvalid(candidates)))
+        }
+        (false, None) => None,
+    }
+}
+
+/// 属性可能的取值：静态值一个；动态绑定是候选集（枚举不出时为空）。
+fn values(attr: &WxmlAttribute) -> Vec<&str> {
+    match (attr.is_static, attr.candidates.as_deref()) {
+        (true, _) => vec![attr.value.as_deref().map(str::trim).unwrap_or_default()],
+        (false, Some(candidates)) => candidates.iter().map(String::as_str).collect(),
+        (false, None) => Vec::new(),
+    }
+}
+
+/// 用于构造消息的取值：静态值，或「全部候选都非法」时的候选列表。
+enum Value<'a> {
+    Static(&'a str),
+    AllInvalid(&'a [String]),
+}
+
 /// 触发条件命中时返回用于展示的取值，无值属性返回空串。
+///
+/// 动态绑定只在**所有候选都命中触发条件**时才算触发：`overflow="{{a ? 'ellipsis' : 'clip'}}"`
+/// 有两半概率不触发，不能按触发处理。
 fn trigger_value(attr: &WxmlAttribute, trigger: &Trigger) -> Option<String> {
-    let value = attr.value.as_deref().map(str::trim).unwrap_or_default();
+    if attr.is_static {
+        let value = attr.value.as_deref().map(str::trim).unwrap_or_default();
+        let hit = match trigger {
+            // 无值属性（`<swiper circular>`）等于布尔 true，必须能触发。
+            Trigger::Present(_) => attr.value.is_none() || !value.is_empty(),
+            Trigger::Equals(_, expected) => {
+                !value.is_empty() && value.eq_ignore_ascii_case(expected)
+            }
+            Trigger::NotAny(_, banned) => !value.is_empty() && !contains(banned, value),
+        };
+        return hit.then(|| value.to_string());
+    }
+    let candidates = attr.candidates.as_deref()?;
     let hit = match trigger {
-        // 无值属性（`<swiper circular>`）等于布尔 true，必须能触发。
-        Trigger::Present(_) => attr.value.is_none() || !value.is_empty(),
-        Trigger::Equals(_, expected) => !value.is_empty() && value.eq_ignore_ascii_case(expected),
-        Trigger::NotAny(_, banned) => !value.is_empty() && !contains(banned, value),
+        // 布尔属性的取值决定是否生效（`circular="{{cond}}"`），存在不等于 true。
+        Trigger::Present(_) => false,
+        Trigger::Equals(_, expected) => candidates
+            .iter()
+            .all(|value| value.eq_ignore_ascii_case(expected)),
+        Trigger::NotAny(_, banned) => candidates.iter().all(|value| !contains(banned, value)),
     };
-    hit.then(|| value.to_string())
+    hit.then(|| candidates.join(" / "))
 }
 
 enum Verdict {
@@ -561,14 +619,19 @@ fn judge(element: &WxmlElement, requirement: &Requirement) -> Verdict {
                 // 缺失即走默认值，按「不存在」处理：要求 `=v` 不成立。
                 return Verdict::Violated(None);
             };
-            if !attr.is_static {
+            let values = values(attr);
+            if values.is_empty() {
+                // 动态绑定枚举不出取值：判不了。
                 return Verdict::Ok;
             }
-            let value = attr.value.as_deref().map(str::trim).unwrap_or_default();
-            if value.eq_ignore_ascii_case(expected) {
+            // 要求成立需要「任一可能取值都等于期望值」；全都不等才算确定不成立。
+            if values
+                .iter()
+                .any(|value| value.eq_ignore_ascii_case(expected))
+            {
                 Verdict::Ok
             } else {
-                Verdict::Violated(Some(value.to_string()))
+                Verdict::Violated(Some(values.join(" / ")))
             }
         }
         Requirement::Present(name) => match find_attr(element, name) {
@@ -582,12 +645,10 @@ fn judge(element: &WxmlElement, requirement: &Requirement) -> Verdict {
                 // 所以不报。
                 return Verdict::Ok;
             };
-            if !attr.is_static {
-                return Verdict::Ok;
-            }
-            let value = attr.value.as_deref().map(str::trim).unwrap_or_default();
-            if contains(banned, value) {
-                Verdict::Violated(Some(value.to_string()))
+            let values = values(attr);
+            // 只有所有可能取值都被禁才算确定违规（`layout-type="{{a ? 'tinder' : 'normal'}}"` 不算）。
+            if !values.is_empty() && values.iter().all(|value| contains(banned, value)) {
+                Verdict::Violated(Some(values.join(" / ")))
             } else {
                 Verdict::Ok
             }
@@ -631,26 +692,41 @@ fn severity(tag: &str, attr: &str, constraint: &Constraint) -> Severity {
     }
 }
 
-fn message(tag: &str, attr: &str, value: &str, constraint: &Constraint) -> String {
-    match constraint {
+fn message(tag: &str, attr: &str, value: Value<'_>, constraint: &Constraint) -> String {
+    // 静态值写进属性里；候选集只写属性名，候选列在句末——`mode="{{a ? 'x' : 'y'}}"`
+    // 展开成 `mode="x / y"` 会读成「写了一个带斜杠的值」。
+    let (subject, note) = match value {
+        Value::Static(value) => (format!("`<{tag} {attr}=\"{value}\">`"), String::new()),
+        Value::AllInvalid(candidates) => (
+            format!("`<{tag} {attr}>`"),
+            format!(
+                "（动态取值的候选只有 {}，全部非法）",
+                candidates
+                    .iter()
+                    .map(|candidate| format!("`{candidate}`"))
+                    .collect::<Vec<_>>()
+                    .join("、")
+            ),
+        ),
+    };
+    let body = match constraint {
         Constraint::Unsupported => {
             format!("`<{tag}>` 的 `{attr}` 属性在 Skyline 下不支持，会被静默忽略")
         }
-        Constraint::Number(NumberRange::NonNegative) => {
-            format!("`<{tag} {attr}=\"{value}\">` 必须是非负整数")
-        }
+        Constraint::Number(NumberRange::NonNegative) => format!("{subject} 必须是非负整数"),
         Constraint::Number(NumberRange::Between(min, max)) => {
-            format!("`<{tag} {attr}=\"{value}\">` 必须是 {min}~{max} 的数值")
+            format!("{subject} 必须是 {min}~{max} 的数值")
         }
         // `<image mode>` 命中这里说明它既不是 Skyline 的值、也不是 WebView 的裁剪模式：
         // 两个渲染器都不认这个取值，不是迁移差异而是取值本身写错了。
         Constraint::Enum(_) if tag == "image" && attr == "mode" => format!(
-            "`<{tag} {attr}=\"{value}\">` 不是合法的 mode：WebView 与 Skyline 都不识别，两个渲染器都会回退成拉伸填满"
+            "{subject} 不是合法的 mode：WebView 与 Skyline 都不识别，两个渲染器都会回退成拉伸填满"
         ),
         Constraint::Enum(_) | Constraint::WebviewOnly(_) => {
-            format!("`<{tag} {attr}=\"{value}\">` 不是 Skyline 支持的值，会被忽略")
+            format!("{subject} 不是 Skyline 支持的值，会被忽略")
         }
-    }
+    };
+    format!("{body}{note}")
 }
 
 fn help(entry: &Entry) -> String {
@@ -782,6 +858,53 @@ mod tests {
             &ComponentAttribute,
         );
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 候选全非法：无论运行时取哪个值都错，这条结论成立，可以报。
+    #[test]
+    fn all_candidates_invalid_is_reported() {
+        let diagnostics = check_rule(
+            &project(
+                "attr-dynamic-all-invalid",
+                r#"<image mode="{{ok ? 'aspectX' : 'foo'}}"/>"#,
+            ),
+            &ComponentAttribute,
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0].message.contains("候选只有 `aspectX`、`foo`"),
+            "{}",
+            diagnostics[0].message
+        );
+        assert!(diagnostics[0].message.contains("aspectX"));
+    }
+
+    /// 候选里有一个合法值就不报：运行时换个分支就对了。
+    #[test]
+    fn mixed_candidates_are_skipped() {
+        let diagnostics = check_rule(
+            &project(
+                "attr-dynamic-mixed",
+                r#"<image mode="{{ok ? 'aspectFit' : 'foo'}}"/>"#,
+            ),
+            &ComponentAttribute,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 触发条件只有「所有候选都命中」时才算触发。
+    #[test]
+    fn dynamic_trigger_needs_every_candidate() {
+        let diagnostics = check_rule(
+            &project(
+                "attr-dynamic-trigger",
+                r#"<text overflow="{{a ? 'ellipsis' : 'clip'}}"/>
+<text overflow="{{'ellipsis'}}"/>"#,
+            ),
+            &ComponentAttribute,
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].line, 2);
     }
 
     #[test]

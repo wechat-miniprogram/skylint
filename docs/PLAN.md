@@ -459,15 +459,21 @@ A 页失效、B 页正常时要报）、`no_pseudo` 的转义冒号（`.hover\:b
 动态 class（33 处直接含 renderer），`has_class` 对非静态 class 一律返回 false，于是
 `.novel .container …`（根节点 `class="novel {{PLATFORM}}-font"`）整条判不命中，
 该页 272/396 条规则失效——**恰好在专门为迁移改过的元素上失明**。
-修复取「确定 token」口径（`matcher::certain_tokens`）：插值之外的直属文本词一定出现在
-运行时 class 列表里，`a-{{b}}` 整词丢弃，表达式内部的字面量不算；判不出的动态属性置
-`Tree.unresolved` 让 `match_one` 返回 `Unknown` 而不是 `No`。
+修复分两步。第一步取「确定 token」口径：插值之外的直属文本词一定出现在运行时 class
+列表里，`a-{{b}}` 整词丢弃；判不出的动态属性置 `Tree.unresolved` 让 `match_one` 返回
+`Unknown` 而不是 `No`。第二步改成读表达式 AST：glass-easel 的 `Attribute.value` 本来就
+是 `Value::Dynamic { expression }`，之前只留原文、把 AST 扔掉，才不得不用「按 `{{` 切文本」
+的启发。现在 `input/expr.rs` 把表达式拆成静态文本 + 动态段，由字面量 / 三元 / 与或 / `??`
+/ `+` 拼接构成的枚举出有限候选集（上限 16 个，超限退化成「任意」），判据从「词是不是写死
+的」变成「这个词在候选里吗」：不在候选里 → 确定不命中。`class="btn-{{type}}"` 也不再被
+误算成有个 `btn-` 类（插值可能是 `"a foo"`，拼出来 `btn-a foo`）。
 
 已落地（六工程 9 字段 diff 逐条核过）：
 
 | 项 | 规则 | 六工程新增 |
 |---|---|---|
-| 动态 class 的确定 token | 全部 class 匹配型规则 | plugin_1 +9 / plugin_2 +12 / skit-player +4，另 −6 条 `no-inline-text` 误报 |
+| 动态 class 的候选词元（表达式 AST） | 全部 class 匹配型规则 | plugin_1 +9 / plugin_2 +12 / skit-player +4，另 −6 条 `no-inline-text` 误报 |
+| 动态属性值的候选集（`mode="{{a ? 'x' : 'y'}}"`） | `component-attribute`、`[attr=v]` 匹配 | 0（六个工程的动态取值候选都合法；fixture 覆盖全候选非法 / 混合 / 动态触发） |
 | `<text overflow="ellipsis">` 缺 `max-lines` | `component-attribute` | plugin_1/2 各 +31 |
 | 标准 `line-clamp`（引擎只认私有 `_wx_line_clamp`） | `unsupported-property` | 0（条目补齐） |
 | 媒体查询条件被丢弃 | `media-query` | businessview +11、plugin_1/2 各 +4、skit-player +2 |
@@ -565,7 +571,9 @@ worklet」）用一次过滤算出来，不做增量缓存。
 
 三态（`Tri::Yes/No/Unknown`）由我们自己产生，引擎只返回 bool：动态属性（`class="{{x}}"`）、
 运行时状态伪类、以及「选择器用到 `+`/`~`/`:nth-*` 但兄弟区含 `wx:if`/`wx:for`/模板片段」
-三类提前判成 `Unknown`。Skyline 按运行时 shadow tree 计数兄弟（假分支不占位、`wx:for` 每份
+三类提前判成 `Unknown`。动态属性只在候选集判不了时才算 `Unknown`：`[mode='cover']` 在
+`mode="{{a ? 'cover' : 'fill'}}"` 上是 `Unknown`（两分支都可能），在 `[mode='x']` 上是
+`No`（不在候选里），`[mode]` 是 `Yes`（存在性与取值无关）。Skyline 按运行时 shadow tree 计数兄弟（假分支不占位、`wx:for` 每份
 是真兄弟），静态模板算不出序号，只能承认未知。
 
 消费者与方言归属：`display_values`（`no-inline-text`、`horizontal-scroll-enable-flex`）

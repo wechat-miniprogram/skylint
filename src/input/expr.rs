@@ -50,20 +50,29 @@ enum Piece {
     Value(Option<Vec<String>>),
 }
 
-/// 推导一个 class 绑定的词元信息。
-pub fn class_tokens(expression: &Expression) -> ClassTokens {
+/// 表达式可能取到的字符串；`None` 表示取值依赖运行时数据，枚举不出来。
+pub fn candidates(expression: &Expression) -> Option<Vec<String>> {
     let mut pieces = Vec::new();
     collect(expression, &mut pieces);
+    enumerate(&pieces)
+}
 
-    let lists: Option<Vec<Vec<String>>> = pieces
+fn enumerate(pieces: &[Piece]) -> Option<Vec<String>> {
+    let lists: Vec<Vec<String>> = pieces
         .iter()
         .map(|piece| match piece {
             Piece::Text(text) => Some(vec![text.clone()]),
             Piece::Value(values) => values.clone(),
         })
-        .collect();
-    let enumerable = lists.and_then(|lists| product(&lists));
-    match enumerable {
+        .collect::<Option<_>>()?;
+    product(&lists)
+}
+
+/// 推导一个 class 绑定的词元信息。
+pub fn class_tokens(expression: &Expression) -> ClassTokens {
+    let mut pieces = Vec::new();
+    collect(expression, &mut pieces);
+    match enumerate(&pieces) {
         Some(values) => {
             let mut seen: Vec<Vec<&str>> = values
                 .iter()
