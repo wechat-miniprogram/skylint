@@ -855,21 +855,23 @@ skit_1 的 8 条落在同组件 stylesheet 里定义的 `.ellipsis`（`slide-tip
 |---|---|
 | G2 `skyline/page-scroll`（Skyline 页面没有 `scroll-view` 靠页面滚动） | Skyline 页会被编译器注入 `disableScroll: true` + `navigationStyle: custom`（`mutate.rs:470-475`），但「这一页内容会不会超过一屏」静态判不出；实测 14 页只有 1 页真有问题，做成 info 也是噪音 |
 | S1 的另一版判据（动态 class 候选 + `any`） | 在 businessview 上 9 条全是误报：`class="… {{extClass}}"` 让 `any` 为真，`extClass` 里什么词都可能出现。已整块回退，改用下面基于 `renderer` 取值词汇的语义判据 |
-| F5 `legacy-flexbox` 在 `<text max-lines>` 上的降级 | `official-cover` 的 `book_name` 带 `.skyline` 分支把老式子句 `unset` 掉，已被覆盖块豁免；`genre-shelf` 的 `book-intro` 分支写了但元素 class 里从没带 `skyline`，属真缺陷（见验收），需要保留 error |
+| F5 的「降级为 warning」 | 不需要降级：改成按宿主要求——命中节点全是带**同一行数** `max-lines` 的 `<text>`/`<span>` 时整块跳过（`truncation_by_max_lines`），其余维持 error。见验收里的 genre-shelf / more-recommend |
 
 **验收**（六工程，两个方向逐字段 diff，`abb110c` → 本轮）
 
 正向：novel 23 → 23、skit_1 27 → 28（+1 `fit-content`）、businessview 411 → 411（+3 `fit-content`、−1 text-overflow、−2 media-query）、
-plugin_1 173 → 152、plugin_2 168 → 150（各 −30/−28 text-overflow，−18 unsupported-property、−8 legacy-flexbox、−2 media-query，+4 `fit-content`、+2 root-scope、+4 genre-shelf 真阳性）、
+plugin_1 173 → 144、plugin_2 168 → 142（各 −30/−28 text-overflow，−18 unsupported-property、−8 legacy-flexbox、−2 media-query，+4 `fit-content`、+2 root-scope，−8 clamp 堆叠噪音）、
 skit-player 170 → 180（+10 `fit-content`）。
 
-那 4 条新报（plugin_1/2 各 2 对）是豁免闸门收紧后冒出来的**真缺陷**：`genre-shelf` / `official-genre-shelf` 写了 `.book-intro.skyline { display: block; -webkit-line-clamp: unset }`，但 `book-intro` 节点的 `class="book-intro {{lightMode?'':'dark'}}"` 从未带上 `skyline`，所以基础块的老式堆叠在 Skyline 下仍是生效的那一份（`display` 与 `-webkit-line-clamp` 都被丢弃 → 两行截断失效），而这个组件正被 `skylinenovel` 使用。
+豁免闸门收紧后一度多出 4 条（`genre-shelf` / `official-genre-shelf` 的 `.book-intro`），回源码核对后判定是**噪音、不是缺陷**：那两处写了 `.book-intro.skyline { display: block; -webkit-line-clamp: unset }`，而 `book-intro` 节点的 `class="book-intro {{lightMode?'':'dark'}}"` 从未带 `skyline`，那段分支确实永不生效——但同一节点上已经写了 `<text max-lines="2" overflow="ellipsis">`，截断由属性完成，两端视觉一致。所以修的是判据而不是报告：`legacy-flexbox` / `unsupported-property` 在「命中节点全是带同一行数 `max-lines` 的 `<text>`」时整块跳过（`more-recommend` 的 `.book-intro` 是同一形态，也一并消音）。
+
+`.book-intro.skyline` 这种死分支属于「写了但永不生效」，**不单开规则**：静态上无法区分「忘了加 class」和「留作以后用」，而渲染结果无差异——按既定的「只报渲染差异」边界不做。
 
 反向：plugin_1 25 → 27、plugin_2 33 → 35（root-scope 双向规则），其余不变。
 
 消失的 30 条 text-overflow 逐条回源码确认过：全是 `display:-webkit-box` + `-webkit-line-clamp` 的多行省略族（无 `nowrap`），同一文件仍由 `legacy-flexbox` / `unsupported-property` 报出，不是信号丢失。
 
-测试 733 + 30 + 3 全绿，clippy 0，`docs/RULES.md` 54 条（error 15）。
+测试 735 + 30 + 3 全绿，clippy 0，`docs/RULES.md` 54 条（error 15）。
 
 ## 5. 五个视图与规则族
 

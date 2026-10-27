@@ -86,15 +86,21 @@ impl Rule for LegacyFlexbox {
                 return;
             };
             let clamp = rule
-                .declarations
-                .iter()
-                .any(|decl| decl.name.eq_ignore_ascii_case("-webkit-line-clamp"));
+                .declaration("-webkit-line-clamp")
+                .map(|decl| &decl.value);
+            // 命中节点全是带同一行数的 `<text max-lines>`：截断由属性完成，
+            // 这套堆叠只是 WebView 那一份，两端结果一致。
+            if let Some(lines) = clamp
+                && super::truncation_by_max_lines(project, sheet, &rule.selectors, &mut docs, lines)
+            {
+                return;
+            }
             let names = legacy
                 .iter()
                 .map(|(label, _)| format!("`{label}`"))
                 .collect::<Vec<_>>()
                 .join("、");
-            let (message, help) = if clamp {
+            let (message, help) = if clamp.is_some() {
                 (
                     format!(
                         "这块的多行省略用了老式 `-webkit-box`：{} 处声明（{names}）在 Skyline 下全部被丢弃，`-webkit-line-clamp` 不起作用，文本会完整铺开",
@@ -260,6 +266,41 @@ mod tests {
             "{}",
             diags[0].message
         );
+    }
+
+    #[test]
+    fn clamp_stack_on_text_with_same_max_lines_is_not_reported() {
+        // 两端各写一份：WebView 用 clamp 堆叠，Skyline 用 `max-lines`，结果一致。
+        let (_f, project) = page(
+            "legacy-text-max-lines",
+            r#"<text class="intro" max-lines="2" overflow="ellipsis">x</text>"#,
+            r#"
+            .intro {
+              display: -webkit-box;
+              -webkit-box-orient: vertical;
+              -webkit-line-clamp: 2;
+              overflow: hidden;
+            }
+            "#,
+        );
+        assert_eq!(messages(&LegacyFlexbox, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn clamp_stack_with_different_max_lines_is_still_reported() {
+        // 行数对不上：Skyline 会截三行，WebView 截两行，是真实差异。
+        let (_f, project) = page(
+            "legacy-text-max-lines-mismatch",
+            r#"<text class="intro" max-lines="3" overflow="ellipsis">x</text>"#,
+            r#"
+            .intro {
+              display: -webkit-box;
+              -webkit-box-orient: vertical;
+              -webkit-line-clamp: 2;
+            }
+            "#,
+        );
+        assert_eq!(messages(&LegacyFlexbox, &project).len(), 1);
     }
 
     #[test]

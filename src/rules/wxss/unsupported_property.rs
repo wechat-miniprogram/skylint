@@ -42,6 +42,19 @@ impl Rule for UnsupportedProperty {
                 if super::is_css_wide_keyword(&decl.value) {
                     continue;
                 }
+                // `-webkit-line-clamp` 被丢弃，但宿主是带同一行数的 `<text max-lines>` 时，
+                // 截断由属性完成，两端结果一致。
+                if name == "-webkit-line-clamp"
+                    && super::truncation_by_max_lines(
+                        project,
+                        sheet,
+                        &rule.selectors,
+                        &mut docs,
+                        &decl.value,
+                    )
+                {
+                    continue;
+                }
                 if super::overridden_in_renderer_branch(
                     project,
                     sheet,

@@ -368,6 +368,56 @@ pub(crate) fn broken_selectors(
         .collect()
 }
 
+/// 命中节点是不是全都靠 `<text max-lines="N">` 自己完成截断（且 N 与老式
+/// `-webkit-line-clamp` 一致）。
+///
+/// 老式 clamp 堆叠（`display: -webkit-box` + `-webkit-line-clamp`）在被命中的
+/// 节点都是 `<text>` / `<span>` 且带同一行数的 `max-lines` 时属于**两端各写一份**：
+/// WebView 用堆叠、Skyline 用属性，结果一致。这时报「声明被丢弃」是噪音。
+pub(crate) fn truncation_by_max_lines(
+    project: &Project,
+    sheet: &StyleSheet,
+    selectors: &[WxssSelector],
+    docs: &mut HashMap<String, Option<WxmlDoc>>,
+    clamp: &str,
+) -> bool {
+    let Some(lines) = clamp.trim().parse::<u32>().ok() else {
+        return false;
+    };
+    let mut matched = false;
+    let mut all = true;
+    for scope in &sheet.scopes {
+        for path in scope_wxml(project, scope) {
+            let Some(doc) = docs
+                .entry(path.to_string())
+                .or_insert_with(|| crate::rules::wxml::load_doc(project, path))
+                .as_ref()
+            else {
+                return false;
+            };
+            let tree = Tree::new(doc);
+            for selector in selectors {
+                for element in doc.elements() {
+                    if tree.matches(element, selector.text.trim(), Dialect::WebView) != Tri::Yes {
+                        continue;
+                    }
+                    matched = true;
+                    let text_like = matches!(element.tag.as_str(), "text" | "span");
+                    let same_lines = element
+                        .attributes
+                        .iter()
+                        .find(|attr| attr.name == "max-lines")
+                        .and_then(|attr| attr.value.as_deref())
+                        .and_then(|value| value.trim().parse::<u32>().ok())
+                        .is_some_and(|value| value == lines);
+                    all &= text_like && same_lines;
+                }
+            }
+        }
+    }
+    matched && all
+}
+
 /// 遍历全部样式文件的每一条规则。
 ///
 /// `.wxss` / `.less` / `.scss` 一视同仁：预处理器在 `input::wxss` 里已按同一套
