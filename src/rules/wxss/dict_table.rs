@@ -9,6 +9,7 @@
 //!     一格多属性拆成多条；表外补充的属性以行尾注释标注 references 出处。
 //!   [`UNSUPPORTED_VALUES`] 按 references 中各属性的「支持值」表与 ⚠️ 标注更新，
 //!     只收录文档明确写「不支持 / 不可用 / 映射为其他值」的整值，不从语法推断。
+//!   [`LENGTH_VALUED_PROPERTIES`] 收录「只接受关键字、写了长度值整条声明就会被丢弃」的属性。
 
 /// Skyline 完全不支持的属性 → 建议。
 ///
@@ -178,9 +179,22 @@ const UNSUPPORTED_VALUES: &[(&[&str], &str, &str)] = &[
 // background-repeat/mask-repeat 的 space / round 被降级为 repeat；will-change 的
 // scroll-position 与自定义 ident 不生效。三者都由 skyline/value-degraded 按 warning 报，不在本表。
 
+/// 只接受关键字、写了长度值整条声明就被丢弃的属性 → 建议。
+///
+/// `vertical-align` 在 fp 的值语法里只有关键字分支
+/// （float-pigment-css property.rs:426-433），长度值直接解析失败，整条声明被丢弃
+/// （float-pigment-css parser/mod.rs:1768-1781 会回滚该属性）；即便能到引擎，
+/// ParseValue 也只映射 baseline/top/middle/bottom，其余走 default → `CSSUnsetValue`
+/// （skyline/css/css_properties/vertical_align.cc:12-43）。
+const LENGTH_VALUED_PROPERTIES: &[(&str, &str)] = &[(
+    "vertical-align",
+    "Skyline 的 vertical-align 只认 baseline/top/middle/bottom，长度值会让整条声明被丢弃；需要偏移改用 margin/padding 或 line-height",
+)];
+
 pub(crate) struct Table {
     properties: &'static [(&'static str, &'static str)],
     values: &'static [(&'static [&'static str], &'static str, &'static str)],
+    length_valued: &'static [(&'static str, &'static str)],
 }
 
 impl Table {
@@ -196,6 +210,14 @@ impl Table {
             .iter()
             .find(|(names, candidate, _)| *candidate == value && names.contains(&name))
             .map(|(_, _, advice)| *advice)
+    }
+
+    /// 属性只接受关键字、而这里写了长度值时返回建议。
+    pub(crate) fn length_valued(&self, name: &str, value: &str) -> Option<&'static str> {
+        self.length_valued
+            .iter()
+            .find(|(property, _)| *property == name && is_length(value))
+            .map(|(_, advice)| *advice)
     }
 
     /// 多值形态里逐项判：`overflow: hidden auto`、`border-style: solid double` 这类
@@ -222,6 +244,7 @@ pub(crate) fn table() -> &'static Table {
     static TABLE: Table = Table {
         properties: UNSUPPORTED_PROPERTIES,
         values: UNSUPPORTED_VALUES,
+        length_valued: LENGTH_VALUED_PROPERTIES,
     };
     &TABLE
 }
@@ -234,4 +257,43 @@ pub(crate) fn normalize_value(value: &str) -> Option<String> {
         return None;
     }
     Some(text.to_ascii_lowercase())
+}
+
+/// 单个长度值：`<number><unit>` 或百分比。入参须已 [`normalize_value`]（trim + 小写）。
+///
+/// 单位取 fp `<length>` 接受的集合（float-pigment-css parser/property_value/mod.rs:150-163）。
+fn is_length(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut i = usize::from(matches!(bytes.first(), Some(b'+') | Some(b'-')));
+    let mut seen_digit = false;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'0'..=b'9' => {
+                seen_digit = true;
+                i += 1;
+            }
+            b'.' => i += 1,
+            _ => break,
+        }
+    }
+    seen_digit
+        && matches!(
+            &value[i..],
+            "%" | "px" | "rpx" | "rem" | "em" | "vw" | "vh" | "vmin" | "vmax"
+        )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_length;
+
+    #[test]
+    fn is_length_matches_number_with_unit_or_percentage() {
+        for value in ["4px", "-2px", "+1.5em", ".5rem", "50%", "4rpx", "2vmin"] {
+            assert!(is_length(value), "{value}");
+        }
+        for value in ["0", "4", "4pxx", "px", "auto", "4 px", "4deg", "calc(4px)"] {
+            assert!(!is_length(value), "{value}");
+        }
+    }
 }

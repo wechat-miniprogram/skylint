@@ -31,30 +31,33 @@ impl Rule for UnsupportedValue {
                 return;
             };
             let raw = decl.value.trim();
-            let (message, advice) = match table.value(&name, &value) {
-                Some(advice) => (
+            let (message, advice) = if let Some(advice) = table.value(&name, &value) {
+                (
                     format!("`{name}: {raw}` 在 Skyline 下不受支持，该值会被静默忽略"),
                     advice,
-                ),
-                None => {
-                    // 多值形态：引擎按项解析（分轴 overflow、分边 border-style），
-                    // 不支持的项被丢弃，其余项照常生效。
-                    let items = table.unsupported_items(&name, &value);
-                    let Some((_, advice)) = items.first().copied() else {
-                        return;
-                    };
-                    let names = items
-                        .iter()
-                        .map(|(item, _)| format!("`{item}`"))
-                        .collect::<Vec<_>>()
-                        .join("、");
-                    (
-                        format!(
-                            "`{name}: {raw}` 里的 {names} 在 Skyline 下不受支持，这些项会被丢弃"
-                        ),
-                        advice,
-                    )
-                }
+                )
+            } else if let Some(advice) = table.length_valued(&name, &value) {
+                // 该属性只认关键字：长度值连解析都过不了，整条声明被丢弃。
+                (
+                    format!("`{name}: {raw}` 使用了长度值，Skyline 下该值不支持，整条声明会被丢弃"),
+                    advice,
+                )
+            } else {
+                // 多值形态：引擎按项解析（分轴 overflow、分边 border-style），
+                // 不支持的项被丢弃，其余项照常生效。
+                let items = table.unsupported_items(&name, &value);
+                let Some((_, advice)) = items.first().copied() else {
+                    return;
+                };
+                let names = items
+                    .iter()
+                    .map(|(item, _)| format!("`{item}`"))
+                    .collect::<Vec<_>>()
+                    .join("、");
+                (
+                    format!("`{name}: {raw}` 里的 {names} 在 Skyline 下不受支持，这些项会被丢弃"),
+                    advice,
+                )
             };
             out.push(at_declaration(
                 Self::ID,
@@ -163,6 +166,55 @@ mod tests {
             .l { --grid: 1; }
             .m { border-style: hidden; }
             .n { border-top-style: hidden; }
+            "#,
+        );
+        assert_eq!(messages(&UnsupportedValue, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn value_reports_length_values_of_vertical_align() {
+        // fp 的 vertical-align 值语法只有关键字分支（property.rs:426-433），长度值
+        // 解析失败后属性被回滚（parser/mod.rs:1768-1781）；引擎 ParseValue 也只认关键字。
+        let (_f, project) = single(
+            "value-vertical-align-length",
+            r#"
+            .a { vertical-align: 4px; }
+            .b { vertical-align: -2px; }
+            .c { vertical-align: 50%; }
+            .d { vertical-align: 1.5em; }
+            .e { VERTICAL-ALIGN: 4rpx !important; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 5, "{diags:?}");
+        assert!(diags.iter().all(|d| d.severity == crate::Severity::Error));
+        assert!(diags.iter().all(|d| d.message.contains("长度值")));
+        assert!(diags[0].message.contains("vertical-align: 4px"));
+        assert!(diags[2].message.contains("50%"));
+        assert!(
+            diags[0]
+                .help
+                .as_deref()
+                .unwrap()
+                .contains("baseline/top/middle/bottom")
+        );
+    }
+
+    #[test]
+    fn length_values_of_other_properties_and_keywords_stay_silent() {
+        let (_f, project) = single(
+            "value-vertical-align-length-negative",
+            r#"
+            .a { vertical-align: middle; }
+            .b { vertical-align: baseline; }
+            .c { vertical-align: top; }
+            .d { vertical-align: bottom; }
+            .e { vertical-align: var(--align); }
+            .f { vertical-align: env(safe-area-inset-bottom); }
+            .g { padding: 4px; }
+            .h { margin-top: -2px; }
+            .i { line-height: 1.5em; }
+            .j { width: 50%; }
             "#,
         );
         assert_eq!(messages(&UnsupportedValue, &project), Vec::<String>::new());
