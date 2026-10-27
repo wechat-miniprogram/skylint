@@ -15,11 +15,13 @@ pub mod config_ignored;
 pub mod default_layout_drift;
 pub mod lib_version;
 pub mod renderer_options;
+pub mod webview_tabbar_renderer;
 
 pub use config_ignored::ConfigIgnored;
 pub use default_layout_drift::DefaultLayoutDrift;
 pub use lib_version::LibVersion;
 pub use renderer_options::RendererOptions;
+pub use webview_tabbar_renderer::TabBarRenderer;
 
 use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
@@ -45,6 +47,29 @@ pub(crate) fn warn(
     message: String,
     help: &str,
 ) {
+    push(out, id, Severity::Warning, path, at, message, help);
+}
+
+pub(crate) fn error(
+    out: &mut Vec<Diagnostic>,
+    id: &'static str,
+    path: &str,
+    at: Option<(u32, u32)>,
+    message: String,
+    help: &str,
+) {
+    push(out, id, Severity::Error, path, at, message, help);
+}
+
+fn push(
+    out: &mut Vec<Diagnostic>,
+    id: &'static str,
+    severity: Severity,
+    path: &str,
+    at: Option<(u32, u32)>,
+    message: String,
+    help: &str,
+) {
     let (line, column) = at.unwrap_or((1, 1));
-    out.push(Diagnostic::new(id, Severity::Warning, message, path, line, column).help(help));
+    out.push(Diagnostic::new(id, severity, message, path, line, column).help(help));
 }

@@ -72,7 +72,7 @@ impl Rule for DefaultLayoutDrift {
                 "app.json",
                 line,
                 column,
-                "app 级未开启 defaultDisplayBlock：Skyline 下 display 默认 flex、flex-direction 默认 column、align-items 默认 stretch，与 WebView 的 block 布局不同，子元素都按 flex item 计算（垂直外边距不再折叠，宽高与对齐语义都变）；position 默认 relative、text-align 默认 start，这两项没有开关能对齐",
+                "app 级未开启 defaultDisplayBlock：Skyline 下 display 默认 flex、flex-direction 默认 column、align-items 默认 stretch，与 WebView 的 block 布局不同，子元素都按 flex item 计算（垂直外边距不再折叠，宽高与对齐语义都变）；此外 position 默认 relative（WebView 是 static），没有开关能对齐",
                 "在 app.json 的 rendererOptions.skyline 里开启 defaultDisplayBlock: true 可让这三项对齐 WebView",
             ));
         }
@@ -143,9 +143,10 @@ mod tests {
         assert!(diags[0].message.contains("defaultDisplayBlock"));
         assert!(diags[0].message.contains("flex-direction 默认 column"));
         assert!(diags[0].message.contains("align-items 默认 stretch"));
-        // position / text-align 没有开关，并进第一条消息，不再单独报。
-        assert!(diags[0].message.contains("position"));
-        assert!(diags[0].message.contains("text-align"));
+        // `position` 没有开关（Skyline 初值 relative、CSS 初值 static），并进第一条消息；
+        // `text-align` 两边初值都是 start，不构成差异。
+        assert!(diags[0].message.contains("position 默认 relative"));
+        assert!(!diags[0].message.contains("text-align"));
         assert!(diags[1].message.contains("defaultContentBox"));
         assert!(diags[1].message.contains("border-box"));
     }
