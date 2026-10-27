@@ -602,6 +602,40 @@ A 页失效、B 页正常时要报）、`no_pseudo` 的转义冒号（`.hover\:b
   autoprefixer 的 `display:-webkit-box → -webkit-flex → flex` 兜底栈会让它命中 139 个块、
   其中 133 个最后一条 display 是 flex、根本没有差异；逐条报就是纯噪音。
 
+### P9 模板常量环境与「硬换行省略号」
+
+`renderer` 这类绑定挂在 `data` / `properties` 上，模板里的 `wx:if="{{renderer === 'skyline'}}"`
+以前两条分支都当「可能渲染」。现在从数据来源注入一份常量环境（`Project.envs`，每个 WXML
+一份），在 `input/expr.rs` 的推导链上做 JS 里无副作用的折叠，不可达分支直接从树里摘掉。
+
+来源与保守方向：
+
+| 来源 | 采纳条件 |
+|---|---|
+| 组件 `properties` 默认值 | 该键没在 `setData` / `this.data.x = ...` 里被写过（`data` 不收：初始化后会被反复改写） |
+| 父级静态属性传值 | 同一组件**所有**使用处都传同一个静态值 |
+
+缺省、动态传值、任意一处不一致 → 该键从环境消失。折叠错了会删掉可达分支，是最难发现的
+漏报，所以默认方向偏保守。六工程 9 字段 diff：novel / businessview / skit_1 / skit-player
+零变化；plugin_1、plugin_2 各 −5 +1，消失的 5 条全部核过为落在被摘掉的不可达分支里
+（`official-heart-popup` 由 skylinenovel 静态传 `renderer="skyline"`，`heart-popup` 只在旧
+novel 页用、默认 `webview`）。
+
+`skyline/text-hard-break-ellipsis`（新，Info）：`<text overflow="ellipsis" max-lines>` 的静态文本
+含 `\n` 时报。依据是 `show_hard_line_break_ellipsis` 默认关（`feature_toggle.cc:20-22`），
+`widgets/text.cc:435-437` 只在开启时 `SetShowHardLineBreakEllipsis(true)`。六工程 0 命中——
+347 处 `overflow="ellipsis"` 的 `<text>` 里没有静态换行，而真实工程里的硬换行基本来自数据
+（`{{item.desc}}` 里的 `\n`），静态看不见。这条只当提示留着。
+
+同一批被源码否掉的两条，不再做：
+
+- **`word-break: break-all` + CJK/emoji**：旧路径 `MakeWordsBreakable`（`widgets/text_span.cc:23-35`）
+  逐**字节**遍历，只对 `<= 0x7F` 的 ASCII 字节插 U+200B——多字节字符根本不会被插入断点，
+  所以不存在「按 ASCII 逐字符切 CJK/emoji」这回事，与 WebView 的 `break-all` 无差异。
+- **`mask-image` + `border-radius`**：开关关时遮罩不向外扩 0.5px（`paint/mask_image_painter.cc:46-56`），
+  接缝只在亚像素边界可见。原本打算只在和 `border-radius` 同时出现时报，但 businessview
+  239 个含 `mask-image` 的块里 **0 个**带 `border-radius`；不设这道门就等于报所有 `mask-image`，是纯噪音。
+
 ### 不做
 
 autofix；14 条只能运行时判定的条目；`app.json` 自动改写。

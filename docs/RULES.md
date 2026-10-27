@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 45 条：error 12 条、warning 31 条、info 2 条。
+共 46 条：error 12 条、warning 31 条、info 3 条。
 
 | 规则 | 级别 | 说明 |
 |---|---|---|
@@ -15,6 +15,7 @@
 | `skyline/component-children` | error | 组件对直接子节点的结构约束（只允许某类子节点 / 必须唯一子节点 / 条件必需的子节点） |
 | `skyline/share-element-key` | error | `<share-element>` 的 key 必填且同一文件内唯一 |
 | `skyline/horizontal-scroll-enable-flex` | warning | 横向滚动的 `<scroll-view>` 需开启 `enable-flex` 以兼容 WebView |
+| `skyline/text-hard-break-ellipsis` | info | 多行省略里含硬换行时，Skyline 默认不给末行省略号 |
 | `skyline/no-pseudo` | warning | Skyline 不支持该伪类/伪元素，选择器不会命中 |
 | `skyline/box-sizing` | error | box-sizing 的值在 Skyline 下不受支持，声明会被忽略 |
 | `skyline/flex-direction` | warning | display: flex 未声明 flex-direction，迁移后默认方向会从 row 变为 column |

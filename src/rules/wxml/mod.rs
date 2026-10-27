@@ -13,6 +13,7 @@ pub mod scroll_view_family;
 pub mod scroll_view_type;
 pub mod share_element_key;
 pub(crate) mod structure;
+pub mod text_hard_break_ellipsis;
 pub mod unsupported_component;
 
 pub use component_attribute::ComponentAttribute;
@@ -22,6 +23,7 @@ pub use no_inline_text::NoInlineText;
 pub use scroll_view_family::ScrollViewFamily;
 pub use scroll_view_type::ScrollViewType;
 pub use share_element_key::ShareElementKey;
+pub use text_hard_break_ellipsis::TextHardBreakEllipsis;
 pub use unsupported_component::UnsupportedComponent;
 
 use std::collections::HashSet;
