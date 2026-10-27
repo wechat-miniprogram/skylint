@@ -372,6 +372,15 @@ impl Project {
             .is_some_and(truthy)
     }
 
+    /// app 级 `rendererOptions.skyline.enableScrollViewAutoSize` 是否开启。
+    /// 开启后 scroll-view 变成 measurable 节点，尺寸来自内容而不是 flex 分配。
+    pub fn scroll_view_auto_size(&self) -> bool {
+        self.app_json
+            .get("rendererOptions")
+            .and_then(Value::as_object)
+            .is_some_and(|options| renderer_flag(options, "enableScrollViewAutoSize"))
+    }
+
     /// app.json 顶层的开关（JS 真值语义，如 `convertRpxToVw`）。
     pub fn app_flag(&self, key: &str) -> bool {
         self.app_json.get(key).is_some_and(truthy)

@@ -538,6 +538,8 @@ A 页失效、B 页正常时要报）、`no_pseudo` 的转义冒号（`.hover\:b
 | `skyline/fixed-layer`（重写） | `position: fixed` 且解析不出整数 `z-index`（无声明 / `auto` / 变量 / 插值） | 18（biz 4 / p1 7 / p2 6 / player 1） |
 | `skyline/dead-selector`（新） | 主体带 class + 每个 class 名在文档里确定出现 + 全作用域求值皆 `No` | 9（skit_1 2 / p1 2 / p2 2 / player 3） |
 | `skyline/unsupported-value`（扩） | 只接受关键字的属性写了长度值（当前 `vertical-align`） | 0（六个工程里没有消费中的写法） |
+| `skyline/scroll-view-height`（新） | `scroll-view` + `flex-grow > 0` + 自己没有确定高度 + 父是纵向 flex 容器且同样没有确定高度 | 8（p1 3 / p2 3 / player 2） |
+| `skyline/implicit-color`（新，Info） | 省略颜色的 `border*` / `text-decoration` / 阴影 + 元素有效 `color` 非黑 | 8（biz 5 / player 3） |
 
 两条判据的取舍值得记下来：
 
@@ -556,6 +558,27 @@ A 页失效、B 页正常时要报）、`no_pseudo` 的转义冒号（`.hover\:b
    `vertical-align` 的值语法只有 6 个关键字分支（`float-pigment-css-0.7.0/src/property.rs:426-433`），
    解析失败后整条属性被回滚（`parser/mod.rs:1768-1781`）；引擎 `ParseValue` 也只映射
    baseline/top/middle/bottom。`text-top`/`text-bottom` 在 fp 语法里有、引擎不认，两边都已报。
+
+4. **D1（`flex:1` 的 scroll-view 塔高）不能靠 fp 布局引擎判。** fp-layout 是「纯算法 +
+   纯 trait」，没有 `overflow` 字段，scroll-view 与普通节点在布局上同构；塔高发生在
+   Skyline 的 widget/measure 层（`enableScrollViewAutoSize` 关时它不是 measurable 节点，
+   `scroll_view_shadow_node.cc:1098`）。又是负向结论：静态树只有 1 个 item、文本高度未知，
+   真跑一次布局会给出「看起来精确的错误答案」。落地改为「样式事实 + 父主轴不确定性」：
+   `scroll-view` + `flex-grow > 0` + 自己没有确定高度 + 父是纵向 flex 容器且同样无确定高度。
+   不带「父主轴不定」这条的话，命中集合就是「所有 `flex:1` 的 scroll-view」。
+
+5. **`min-width: 0` / `min-height: 0` 在 Skyline 是 no-op。** Skyline 的 `min-*` 初值是
+   `auto`，但 fp 的 `DefLength::Auto` 解析成 `OptionNum::none()`，`maybe_max` 对 None
+   直接返回自身，所以「`min-width:auto` ≡ `min-width:0`」（`layout/src/types.rs:222,418`、
+   `unit.rs:503`）。WebView 上「flex 子项需要 `min-width:0` 才能收缩」的经验不能直搬，
+   写这条规则会全是误报。历史提交 `7a79e81d` 里真正起作用的是 `<text overflow=max-lines>`。
+
+6. **feature toggle 一类的做法**：`space` / `decode` 不是实验开关（`feature_toggle.cc:45-46`
+   建时无条件置 true），不必报；真正开关控制、且静态可判的是 `current_color`——省略颜色的
+   `border` / `text-decoration` / 阴影在开关关闭（默认）时取黑色，而 WebView 取元素 `color`。
+   规则只报「省略颜色 + 元素有效 color 非黑」，显式 `currentColor` 不受影响。开关状态运行时
+   才可知，所以按 Info 报；其余 toggle（text layout 重构、`native_border`、`new_selection` 等）
+   要么是 perf，要么没有 WebView 基线，不做规则。
 
 评估后不做（附理由）：
 
