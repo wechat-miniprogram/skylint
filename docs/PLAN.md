@@ -636,6 +636,38 @@ novel 页用、默认 `webview`）。
   接缝只在亚像素边界可见。原本打算只在和 `border-radius` 同时出现时报，但 businessview
   239 个含 `mask-image` 的块里 **0 个**带 `border-radius`；不设这道门就等于报所有 `mask-image`，是纯噪音。
 
+### P10 行内 run：兄弟文本级元素
+
+`skyline/inline-run`（新，Info）：WebView 里 `<text>` 是 inline、`<image>` / `<span>` 是 inline-block，
+block 容器里并列的文本级元素走同一个行内流；Skyline 里它们默认是 block，各自占一行。
+
+判据：同一父节点下连续 ≥ 2 个文本级元素、没有裸文本（那一半归 `no-inline-text`）、
+没显式写 `display`，且父级不是 flex/grid。三条闸门（全部基于实测误报添加）：
+
+| 闸门 | 误报形态 |
+|---|---|
+| 父级 flex/grid | 两边都按 flex item 排，无差异（`recent-read.wxml:99` 的 `.oval-btn`） |
+| 成员显式 `display` | 作者自己指定了行内/块级，两端一致 |
+| 成员绝对定位 | `book.wxml:125` 的 `.finished-tag{position:absolute}` 两种渲染器都脱离文档流 |
+| 成员有 `width` / 纵向 `margin` | `bookshelf.wxml:47` 的 `.title{width:100%}` + `.status{margin-top:2px}`：作者用纵向间距表达「各占一行」 |
+| 同 `wx:if` 不同分支 | `comment-dialog` 的 like 图标三选一 |
+| 元素在 `<template name>` 定义体内 | 见下 |
+
+误报面：第一版 36 条 → 加闸后 10 条，逐条核过均为真：businessview 6（`auth.wxml:29` 的
+「我已阅读并接受+链接」，`.comment-info text{margin-right:8px}` 这类横向间距、`-amount{margin-left:2px}`），
+plugin 4（`comment-dialog` / `seg-comment-dialog` 的「未精选/置顶/作者赞过」三连，×2 组件 ×2 工程）。
+
+**顺手发现的结构性缺口**：`display_values` 在 `<template name>` 定义体里一律返回空——
+模板体实例化时才接上外层祖先，样式表里的后代选择器（本工程 LESS 嵌套几乎都是这种）在那里
+匹配不到，于是模板体内的样式类判定全部失明。`inline_run` 直接跳过模板体；
+`no-inline-text` 的「flex 容器跳过」闸门同样失效（可能在模板体里误报），待评估。
+
+**D3 / P1-2 的结论修正**：源头上「TextShadowNode 的非文本子节点需要 `display:inline`」是不成立的
+——`shadow_node.cc:205-209` 按**节点类型**分派，与 CSS `display` 无关；`inline-block` 只影响
+WidgetSpan 内部排版。因此原先计划的「`<text>` 子节点 display 收窄」规则撤销。
+文本里要放 `view` / 自定义组件时它们自动变原子 WidgetSpan；历史提交里的
+`display:inline-block` 是给 WebView 侧用的（WebView 里 `<view>` 是块级），属于反向适配那一类。
+
 ### 不做
 
 autofix；14 条只能运行时判定的条目；`app.json` 自动改写。
