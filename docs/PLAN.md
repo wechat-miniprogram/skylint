@@ -680,9 +680,9 @@ WidgetSpan 内部排版。因此原先计划的「`<text>` 子节点 display 收
 同一条 `max-lines`，正向的修法是「补 `overflow`」、反向是「补 `-webkit-line-clamp`」，
 合并会让 help 自相矛盾。
 
-**50 → 51 条的归属**：42 条是纯正向（引擎能力边界，反向时 WebView 用浏览器实现，不存在同类问题）；
+**51 → 52 条的归属**：42 条是纯正向（引擎能力边界，反向时 WebView 用浏览器实现，不存在同类问题）；
 5 条双向（`dead-selector`、`inline-run`、`flex-direction`、`renderer-options`、`lib-version`）；
-4 条反向。
+5 条反向。
 
 已落的反向规则：
 
@@ -690,6 +690,7 @@ WidgetSpan 内部排版。因此原先计划的「`<text>` 子节点 display 收
 |---|---|---|
 | `webview/text-truncation`（warning） | `<text>` 上的 `max-lines` / `overflow` | 静默忽略：`wx-text` 只声明 `selectable / user-select / decode / space`（`wxapplib/src/wx-component/src/wx-text/wx-text.js:131-173`），`overflow` 也不是 HTML 表现属性 |
 | `webview/nested-scroll`（warning） | `scroll-view type="nested"` / `nested-scroll-header` / `nested-scroll-body` | `type` 从不被读（`wx-scroll-view.js:239`）；后两个标签**不在** WebView 的 `globalUsingComponents` 表里（`glass-easel-adapter/src/render/webview.ts:166-254`）→ 默认组件（只有默认 slot）+ inline 显示，头部不联动 |
+| `webview/text-children`（error） | `<text>` 下的元素子节点（非嵌套 `<text>`） | `wx-text` 的 `TextPseudoSlot` 只放行文本节点、`__wxElement.is === 'wx-text'` 的子元素与文档片段（`wxapplib/src/wx-component/src/wx-text/wx-text.js:15-62`），`<view>` / `<image>` / `<span>` / 任何自定义组件直接消失、不报错 |
 | `webview/worklet-binding`（error） | WXML 的 `worklet:` 前缀属性 | 模板编成 `wl()`，DOM wrapper 里它就是 `noop()`（`glass-easel/src/tmpl/proc_gen_wrapper_dom.ts:249-251`）——连 Skyline 的 `worklet-handler` behavior 都轮不到，回调不触发也不报错 |
 | `webview/tabbar-renderer`（error） | `app.json` 的 `tabBar.custom: true` + `tabBar.renderer: "skyline"` | tabBar 渲染器与页面分开取（`onAppRoute.js:672` 的 `WXConfig.tabBar.renderer \|\| res.renderer`），钉成 skyline 后回退时 `WebviewAdapterTabBar.getInstance` **直接 `throw`**（`render/webview.ts:1071-1075`），不是降级 |
 
@@ -722,9 +723,24 @@ WidgetSpan 内部排版。因此原先计划的「`<text>` 子节点 display 收
 
 **顺手修正的一处旧文案**：`skyline/default-layout-drift` 原来说「position 默认 relative、text-align 默认 start 这两项没有开关能对齐」。`text-align` 两边初值都是 `start`（`skyline/css/css_properties/text_align.cc:44-47` 的 `ApplyInitial` 就是 `Start`），木有差异；只有 `position`（Skyline `Relative`、`position.cc:39-42` vs CSS `static`）成立。
 
-实测命中（`--target webview`）：plugin_2 62（59 + 2 inline-run + 1 dead-selector）、
-novel 19、skit_1 22、plugin_1 52、businessview 12。正向方向逐字段 diff 五个工程**零变化**
-（170 / 23 / 27 / 326 / 175）。
+实测命中（`--target webview`）：plugin_2 63、novel 19、skit_1 23、plugin_1 53、businessview 12。
+正向方向逐字段 diff 五个工程**零变化**（170 / 23 / 27 / 326 / 175）。
+
+`text-children` 的验收来自真实修复：`weapp-novel-plugin_1` 的分支 `feat-glass-easel-webview`
+（`c8944057`）把段评气泡（`<selection-disabled>` + `<seg-comment-badge>`）与
+`<inline-content>` 从 `<text>` 里挑出来，按 `renderer === 'skyline'` 分两支。未适配的
+`weapp-novel-plugin_2` 里那 1 条命中就是这个 `<text>`（消息列出 `<inline-content>`、`<selection-disabled>`）；
+`miniprogram-skit_1` 的 `components/index-head/index-head.wxml:54` 是第二例（`<text>` 包 `<comment-content>`）。
+novel / businessview / plugin_1 都是 0——它们已经做过这个分支。
+
+同一分支里另三件事**不做规则**：
+
+| 分支里的修改 | 不做的理由 |
+|---|---|
+| `data.renderer` 从 `'skyline'` 改成 `'webview'` + `onLoad` 里 `setData({ renderer: this.renderer })` | 未适配状态下这个字面量是死值（同一 WXML 不用它分支），静态报就是噪音；而适配后它就变成 dirty 键，常量化自动失效，`webview` 分支也就不会被错误折叠 |
+| 静态传 `renderer="skyline"` 给子组件（分支里 6 处照旧保留） | 作者自己保留了，说明子组件两分支在 WebView 下都能用；真正的后果（`<text max-lines>`、`<text>` 内自定义组件）已由别的规则单独报，不重复报 |
+| `rendererOptions` 的 `iosVersionBegin/End` 收窄到 `15.255.254`、`glassEaselWebview: true` | 前者是「停掉 Skyline」的开关，`skyline/renderer-options` 已校验区间形态与合法性；后者是让 PC/老版本走 glass-easel+WebView 兼容模式，不开也不报错、只是回退到老 exparser 引擎，“该不该开”取决于发版策略，不是代码缺陷 |
+| `.content { flex: 1; min-height: 0 }`（`half-screen-dialog.less`） | WebView（浏览器 flex）默认 `min-height: auto`，溢出子项不收缩；Skyline 的 `min-*` 初值解析成 `none`，不需要它。但「这个容器会溢出」静态判不出，做成规则就是给所有 flex 子项报一条 |
 
 ### 不做
 

@@ -17,6 +17,7 @@ pub(crate) mod structure;
 pub mod text_hard_break_ellipsis;
 pub mod unsupported_component;
 pub mod webview_nested_scroll;
+pub mod webview_text_children;
 pub mod webview_text_truncation;
 pub mod webview_worklet_binding;
 
@@ -31,6 +32,7 @@ pub use share_element_key::ShareElementKey;
 pub use text_hard_break_ellipsis::TextHardBreakEllipsis;
 pub use unsupported_component::UnsupportedComponent;
 pub use webview_nested_scroll::NestedScroll;
+pub use webview_text_children::TextChildren;
 pub use webview_text_truncation::TextTruncation;
 pub use webview_worklet_binding::WorkletBinding;
 
