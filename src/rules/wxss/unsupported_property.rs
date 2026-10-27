@@ -5,7 +5,7 @@ use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
 use super::dict_table::table;
-use super::visit_declarations;
+use super::visit_rules;
 
 pub struct UnsupportedProperty;
 
@@ -24,29 +24,38 @@ impl Rule for UnsupportedProperty {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let table = table();
-        visit_declarations(project, |doc, rule, decl, out| {
-            let name = decl.name.to_ascii_lowercase();
-            let Some(advice) = table.property(&name) else {
-                return;
-            };
-            if name == "line-clamp" && rule.declaration("-webkit-line-clamp").is_some() {
-                // 同一块里两条都写时只报一次（autoprefixer 产物很常见）。
-                return;
+        visit_rules(project, |sheet, rule, out| {
+            let doc = &sheet.doc;
+            for decl in &rule.declarations {
+                let name = decl.name.to_ascii_lowercase();
+                let Some(advice) = table.property(&name) else {
+                    continue;
+                };
+                if name == "line-clamp" && rule.declaration("-webkit-line-clamp").is_some() {
+                    // 同一块里两条都写时只报一次（autoprefixer 产物很常见）。
+                    continue;
+                }
+                if super::is_css_wide_keyword(&decl.value) {
+                    continue;
+                }
+                if super::overridden_by_renderer_class(sheet, rule, &name, self.target()) {
+                    continue;
+                }
+                let (line, column) = doc.position(decl.offset);
+                let (end_line, end_column) = doc.position(decl.offset + decl.name.len());
+                out.push(
+                    Diagnostic::new(
+                        Self::ID,
+                        Severity::Error,
+                        format!("`{name}` 属性在 Skyline 下不生效，该声明会被忽略"),
+                        doc.path(),
+                        line,
+                        column,
+                    )
+                    .end(end_line, end_column)
+                    .help(advice),
+                );
             }
-            let (line, column) = doc.position(decl.offset);
-            let (end_line, end_column) = doc.position(decl.offset + decl.name.len());
-            out.push(
-                Diagnostic::new(
-                    Self::ID,
-                    Severity::Error,
-                    format!("`{name}` 属性在 Skyline 下不生效，该声明会被忽略"),
-                    doc.path(),
-                    line,
-                    column,
-                )
-                .end(end_line, end_column)
-                .help(advice),
-            );
         })
     }
 }
@@ -134,6 +143,39 @@ mod tests {
             r#"
             .a { animation-play-state: paused; }
             .b { animation-play-state: running; }
+            "#,
+        );
+        assert_eq!(
+            messages(&UnsupportedProperty, &project),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn css_wide_keyword_is_not_reported() {
+        // `unset` 是迁移工程关掉 WebView 侧写法的手段，不是「用了不支持的值」。
+        let (_f, project) = single(
+            "property-wide-keyword",
+            r#"
+            .a { float: unset; }
+            .b { -webkit-line-clamp: unset; }
+            .c { writing-mode: initial; }
+            .d { text-indent: revert; }
+            "#,
+        );
+        assert_eq!(
+            messages(&UnsupportedProperty, &project),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn skyline_branch_override_exempts_the_base_declaration() {
+        let (_f, project) = single(
+            "property-skyline-branch",
+            r#"
+            .name { -webkit-line-clamp: 2; float: left; }
+            .name.skyline { -webkit-line-clamp: unset; float: unset; }
             "#,
         );
         assert_eq!(

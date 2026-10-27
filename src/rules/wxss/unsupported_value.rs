@@ -10,6 +10,36 @@ use super::visit_declarations;
 
 pub struct UnsupportedValue;
 
+/// 尺寸类属性在 fp 里都是 `<length_percentage_auto>`：只接受 number / percentage /
+/// dimension / `auto` / `env()` / `calc()` / `min()` / `max()` / `clamp()`
+/// （`float-pigment-css/src/property.rs:781-786`、`parser/property_value/mod.rs:141-146,215-249`）。
+/// 内在尺寸关键字不在其中，解析失败后整条声明被回滚（`parser/mod.rs:1075`）。
+const INTRINSIC_SIZE_PROPERTIES: &[&str] = &[
+    "width",
+    "height",
+    "min-width",
+    "min-height",
+    "max-width",
+    "max-height",
+    "flex-basis",
+];
+
+/// `stretch` 与 `-webkit-fill-available` 同样不在语法里，但 WebView 的支持面也随版本变，
+/// 两个渲染器一起失效就不构成迁移差异，故不报。
+const INTRINSIC_SIZE_KEYWORDS: &[&str] = &["fit-content", "min-content", "max-content"];
+
+fn intrinsic_size_keyword(name: &str, value: &str) -> Option<&'static str> {
+    if !INTRINSIC_SIZE_PROPERTIES.contains(&name) {
+        return None;
+    }
+    INTRINSIC_SIZE_KEYWORDS.iter().copied().find(|keyword| {
+        value == *keyword
+            || value
+                .strip_prefix(keyword)
+                .is_some_and(|rest| rest.starts_with('('))
+    })
+}
+
 impl UnsupportedValue {
     pub const ID: &'static str = "skyline/unsupported-value";
 }
@@ -31,7 +61,14 @@ impl Rule for UnsupportedValue {
                 return;
             };
             let raw = decl.value.trim();
-            let (message, advice) = if let Some(advice) = table.value(&name, &value) {
+            let (message, advice) = if let Some(keyword) = intrinsic_size_keyword(&name, &value) {
+                (
+                    format!(
+                        "`{name}: {raw}` 用了内在尺寸关键字 `{keyword}`：Skyline 的 `{name}` 只接受长度 / 百分比 / `auto`，整条声明会被丢弃"
+                    ),
+                    "换成明确长度或 `auto`；要按内容宽度收缩可用 `display: inline-flex`（父级是 flex 时用 `align-items: flex-start`）",
+                )
+            } else if let Some(advice) = table.value(&name, &value) {
                 (
                     format!("`{name}: {raw}` 在 Skyline 下不受支持，该值会被静默忽略"),
                     advice,
@@ -166,6 +203,47 @@ mod tests {
             .l { --grid: 1; }
             .m { border-style: hidden; }
             .n { border-top-style: hidden; }
+            "#,
+        );
+        assert_eq!(messages(&UnsupportedValue, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn value_reports_intrinsic_size_keywords() {
+        // fp 的 width/height/min/max/flex-basis 都是 `<length_percentage_auto>`，
+        // `fit-content` 一类关键字解析失败 → 整条声明回滚。
+        let (_f, project) = single(
+            "value-intrinsic-size",
+            r#"
+            .a { width: fit-content; }
+            .b { height: fit-content; }
+            .c { min-width: min-content; }
+            .d { max-height: max-content; }
+            .e { flex-basis: fit-content(200px); }
+            .f { WIDTH: FIT-CONTENT !important; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 6, "{diags:?}");
+        assert!(diags.iter().all(|d| d.severity == crate::Severity::Error));
+        assert!(diags[0].message.contains("width: fit-content"));
+        assert!(diags[2].message.contains("min-content"));
+        assert!(diags[4].message.contains("fit-content(200px)"));
+        assert!(diags[0].help.as_deref().unwrap().contains("inline-flex"));
+    }
+
+    #[test]
+    fn intrinsic_size_keywords_stay_silent_outside_size_properties() {
+        let (_f, project) = single(
+            "value-intrinsic-size-negative",
+            r#"
+            .a { width: 100%; }
+            .b { height: auto; }
+            .c { min-width: calc(100% - 24px); }
+            .d { max-width: var(--w); }
+            .e { width: fit-content-grid; }
+            .f { line-height: max-content; }
+            .g { padding: 0 fit-content; }
             "#,
         );
         assert_eq!(messages(&UnsupportedValue, &project), Vec::<String>::new());

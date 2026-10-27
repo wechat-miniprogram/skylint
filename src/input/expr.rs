@@ -28,6 +28,11 @@ pub struct ClassTokens {
     pub possible: Vec<String>,
     /// 除上面两类之外，任意词都可能出现（取值依赖运行时数据）。
     pub any: bool,
+    /// 静态片段的原文（按空白切开，含被动态值截断的半截词）。
+    ///
+    /// 匹配不能用它（`~banner-{{i}}` 的 `~banner-` 不是完整类名），但规则可以靠
+    /// 它认出「这个类以某个前缀开头」这种形态，例如作用域前缀 `~` / `^`。
+    pub fragments: Vec<String>,
 }
 
 impl ClassTokens {
@@ -111,6 +116,7 @@ pub fn class_tokens(expression: &Expression, env: &Env) -> ClassTokens {
                 definite: definite.iter().map(|word| word.to_string()).collect(),
                 possible: possible.iter().map(|word| word.to_string()).collect(),
                 any: false,
+                fragments: static_fragments(&pieces),
             }
         }
         // 有任一段取值不可知：只能保住静态段里被空格完整包住的词，其余任意。
@@ -118,8 +124,23 @@ pub fn class_tokens(expression: &Expression, env: &Env) -> ClassTokens {
             definite: delimited_words(&pieces),
             possible: Vec::new(),
             any: true,
+            fragments: static_fragments(&pieces),
         },
     }
+}
+
+/// 静态文本段里的词（含被动态值截断的半截词），去重保序。
+fn static_fragments(pieces: &[Piece]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for piece in pieces {
+        let Piece::Text(text) = piece else { continue };
+        for word in text.split_ascii_whitespace() {
+            if !out.iter().any(|seen| seen == word) {
+                out.push(word.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// 拼接链里「两侧都被空格包住」的词——只有这些词在任何取值下都独立成词。

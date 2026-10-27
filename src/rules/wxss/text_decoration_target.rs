@@ -66,7 +66,7 @@ impl crate::rules::Rule for TextDecorationTarget {
                     sheet,
                     &rule.selectors,
                     &mut docs,
-                    can_decorate,
+                    |_, element| can_decorate(element),
                 );
                 if offenders.is_empty() {
                     continue;

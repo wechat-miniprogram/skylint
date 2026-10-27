@@ -66,6 +66,11 @@ impl Rule for LegacyFlexbox {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit_rules(project, |sheet, rule, out| {
             let doc = &sheet.doc;
+            // `.x.skyline { display: unset }` 这种渲染器分支已经把这块关掉了：
+            // 基础块只服务 WebView，在 Skyline 下本来就不生效。
+            if super::overridden_by_renderer_class(sheet, rule, "display", self.target()) {
+                return;
+            }
             let Some(legacy) = legacy_block(rule) else {
                 return;
             };
@@ -244,6 +249,39 @@ mod tests {
             "{}",
             diags[0].message
         );
+    }
+
+    #[test]
+    fn skyline_branch_disables_the_legacy_block() {
+        // 迁移工程的常见写法：基础块服务 WebView，`.skyline` 分支把 display 关掉，
+        // 截断交给 `<text max-lines>`。基础块在 Skyline 下本来就不生效。
+        let (_f, project) = single(
+            "legacy-skyline-branch",
+            r#"
+            .name {
+              display: -webkit-box;
+              -webkit-box-orient: vertical;
+              -webkit-line-clamp: 2;
+            }
+            .name.skyline {
+              display: unset;
+              -webkit-line-clamp: unset;
+            }
+            "#,
+        );
+        assert_eq!(messages(&LegacyFlexbox, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn other_class_branch_does_not_disable_the_block() {
+        let (_f, project) = single(
+            "legacy-other-branch",
+            r#"
+            .name { display: -webkit-box; -webkit-box-orient: vertical; }
+            .other.skyline { display: unset; }
+            "#,
+        );
+        assert_eq!(messages(&LegacyFlexbox, &project).len(), 1);
     }
 
     #[test]

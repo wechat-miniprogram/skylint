@@ -9,8 +9,10 @@
 //!
 //! 唯一被识别的是 `prefers-color-scheme`，这类块跳过。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
+use crate::input::wxml::WxmlDoc;
+use crate::input::wxss::WxssSelector;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
@@ -33,7 +35,19 @@ impl Rule for MediaQuery {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut out = Vec::new();
         let mut reported: HashSet<(String, usize)> = HashSet::new();
+        let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
         for sheet in &project.styles {
+            // 块内选择器在作用域里一个节点都命不中时，条件丢失不产生可见差异。
+            let matched = |at_offset: usize, docs: &mut HashMap<String, Option<WxmlDoc>>| {
+                let selectors: Vec<WxssSelector> = sheet
+                    .doc
+                    .rules
+                    .iter()
+                    .filter(|rule| rule.at_rules.iter().any(|at| at.offset == at_offset))
+                    .flat_map(|rule| rule.selectors.iter().cloned())
+                    .collect();
+                super::any_selector_matches(project, sheet, &selectors, docs)
+            };
             for rule in &sheet.doc.rules {
                 for at in &rule.at_rules {
                     if at.name != "media" || is_theme_query(&at.prelude) {
@@ -41,6 +55,9 @@ impl Rule for MediaQuery {
                     }
                     // 同一个 @media 块里的每条规则都带同一个 prelude，只报一次。
                     if !reported.insert((sheet.doc.path().to_string(), at.offset)) {
+                        continue;
+                    }
+                    if !matched(at.offset, &mut docs) {
                         continue;
                     }
                     let (line, column) = sheet.doc.position(at.offset);
@@ -79,15 +96,31 @@ fn is_theme_query(prelude: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use crate::project::Project;
     use crate::rules::Rule;
-    use crate::rules::testutil::wxss::single;
+    use crate::rules::testutil::wxss::Fixture;
 
     use super::MediaQuery;
 
+    fn check(name: &str, wxml: &str, wxss: &str) -> Vec<crate::Diagnostic> {
+        let fixture = Fixture::new(name);
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", wxml)
+            .write("pages/index/index.wxss", wxss);
+        MediaQuery.check(&Project::load(fixture.root()).unwrap())
+    }
+
     #[test]
     fn reports_media_blocks_with_ignored_conditions() {
-        let (_f, project) = single(
+        let diagnostics = check(
             "media-query",
+            r#"<view class="dialog"/><view class="page"/>"#,
             r#"
 @media (max-device-height: 558px) {
   .dialog { height: calc(100% - 16px); }
@@ -98,16 +131,32 @@ mod tests {
 .page { color: red; }
 "#,
         );
-        let diagnostics = MediaQuery.check(&project);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(diagnostics[0].message.contains("max-device-height"));
         assert_eq!((diagnostics[0].line, diagnostics[0].column), (2, 8));
     }
 
     #[test]
+    fn blocks_whose_selectors_match_nothing_are_skipped() {
+        // 条件被丢弃但块内选择器在本作用域的 WXML 上一个节点都命不中：没有可见差异。
+        let diagnostics = check(
+            "media-query-dead-block",
+            r#"<view class="real"/>"#,
+            r#"
+@media (max-device-height: 558px) {
+  .container { height: 100%; }
+}
+.real { color: red; }
+"#,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
     fn reports_each_block_once() {
-        let (_f, project) = single(
+        let diagnostics = check(
             "media-query-once",
+            r#"<view class="a"/><view class="b"/>"#,
             r#"
 @media screen and (min-width: 600px) {
   .a { color: red; }
@@ -115,6 +164,6 @@ mod tests {
 }
 "#,
         );
-        assert_eq!(MediaQuery.check(&project).len(), 1);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     }
 }

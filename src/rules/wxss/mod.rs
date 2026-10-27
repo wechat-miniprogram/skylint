@@ -66,6 +66,7 @@ use crate::input::wxml::{WxmlDoc, WxmlElement};
 use crate::input::wxss::{WxssDeclaration, WxssDoc, WxssRule, WxssSelector};
 use crate::matcher::{Dialect, Tree, Tri};
 use crate::project::{Project, Scope, StyleSheet};
+use crate::rules::Target;
 
 /// 这条声明的作用域里需要一起看的 WXML。
 pub(crate) fn scope_wxml<'a>(project: &'a Project, scope: &Scope) -> Vec<&'a str> {
@@ -75,6 +76,120 @@ pub(crate) fn scope_wxml<'a>(project: &'a Project, scope: &Scope) -> Vec<&'a str
         Scope::Loose(_) => Vec::new(),
         _ => project.scope_wxml(scope).into_iter().collect(),
     }
+}
+
+/// CSS 全局关键字是「恢复默认」，不是「用了不支持的值」：属性在 Skyline 下本来
+/// 就不存在，`unset` 只是把 WebView 侧写的那份清掉，报出来是噪音。
+pub(crate) fn is_css_wide_keyword(value: &str) -> bool {
+    let value = value.trim();
+    ["unset", "initial", "revert", "revert-layer"]
+        .iter()
+        .any(|keyword| value.eq_ignore_ascii_case(keyword))
+}
+
+/// 目标渲染器的覆盖块：同一 sheet 里存在「本选择器 + `.skyline`（或 `.webview`）」
+/// 的规则又声明了同一个属性时，基础声明在该渲染器下并不生效。
+///
+/// 迁移工程常用 `.x.skyline { display: unset; -webkit-line-clamp: unset }` 关掉
+/// 只给 WebView 写的那套写法，把这些基础声明报成「Skyline 不支持」等于反着看。
+pub(crate) fn overridden_by_renderer_class(
+    sheet: &StyleSheet,
+    rule: &WxssRule,
+    property: &str,
+    target: Target,
+) -> bool {
+    let class = match target {
+        Target::Skyline => "skyline",
+        Target::Webview => "webview",
+        Target::Both => return false,
+    };
+    let mine: Vec<String> = rule
+        .selectors
+        .iter()
+        .map(|selector| normalize_selector(&selector.text))
+        .collect();
+    sheet.doc.rules.iter().any(|other| {
+        !std::ptr::eq(other, rule)
+            && other
+                .declarations
+                .iter()
+                .any(|decl| decl.name.eq_ignore_ascii_case(property))
+            && other.selectors.iter().any(|selector| {
+                strip_class(&selector.text, class)
+                    .is_some_and(|base| mine.contains(&normalize_selector(&base)))
+            })
+    })
+}
+
+fn normalize_selector(text: &str) -> String {
+    text.split_ascii_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// 把选择器里指定的类去掉（`.a .b.skyline` → `.a .b`）；没出现该类时返回 `None`。
+fn strip_class(text: &str, class: &str) -> Option<String> {
+    let mut out = String::with_capacity(text.len());
+    let mut found = false;
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '.' {
+            out.push(ch);
+            continue;
+        }
+        let mut name = String::new();
+        while let Some(&next) = chars.peek() {
+            if next.is_alphanumeric() || next == '-' || next == '_' {
+                name.push(next);
+                chars.next();
+            } else {
+                break;
+            }
+        }
+        if name == class {
+            found = true;
+        } else {
+            out.push('.');
+            out.push_str(&name);
+        }
+    }
+    found.then_some(out)
+}
+
+/// 这批选择器在作用域里是否有任何可能命中（`Yes` 或 `Unknown`）。
+///
+/// 用于「条件被丢弃、块内声明对所有设备生效」这类判定：块内选择器一个节点都
+/// 对不上时，条件丢失不产生任何可见差异。看不到 WXML 时保守返回 `true`。
+pub(crate) fn any_selector_matches(
+    project: &Project,
+    sheet: &StyleSheet,
+    selectors: &[WxssSelector],
+    docs: &mut HashMap<String, Option<WxmlDoc>>,
+) -> bool {
+    let mut seen_doc = false;
+    for scope in &sheet.scopes {
+        for path in scope_wxml(project, scope) {
+            let Some(doc) = docs
+                .entry(path.to_string())
+                .or_insert_with(|| crate::rules::wxml::load_doc(project, path))
+                .as_ref()
+            else {
+                return true;
+            };
+            seen_doc = true;
+            let tree = Tree::new(doc);
+            for selector in selectors {
+                let text = selector.text.trim();
+                // 伪元素的承载者是生成的文本节点，匹配器一律给 `No`（见
+                // `dead-selector` 的豁免说明），不能据此断定块内没有生效。
+                if crate::matcher::shape(text).is_none_or(|shape| shape.pseudo_element) {
+                    return true;
+                }
+                if tree.any_match(text, Dialect::WebView) != Tri::No {
+                    return true;
+                }
+            }
+        }
+    }
+    !seen_doc
 }
 
 /// 命中节点是否全都承载不了这条声明；返回「在某处失效」的选择器原文。
@@ -89,7 +204,7 @@ pub(crate) fn broken_selectors(
     sheet: &StyleSheet,
     selectors: &[WxssSelector],
     docs: &mut HashMap<String, Option<WxmlDoc>>,
-    can_host: impl Fn(&WxmlElement) -> bool,
+    can_host: impl Fn(&Tree, &WxmlElement) -> bool,
 ) -> Vec<String> {
     // (选择器, 作用域) → (是否静态命中, 命中里是否有能承载的节点)
     let mut tallies = vec![vec![(false, false); sheet.scopes.len()]; selectors.len()];
@@ -109,7 +224,7 @@ pub(crate) fn broken_selectors(
                 for element in doc.elements() {
                     if tree.matches(element, text, Dialect::WebView) == Tri::Yes {
                         tally.0 = true;
-                        tally.1 |= can_host(element);
+                        tally.1 |= can_host(&tree, element);
                     }
                 }
             }

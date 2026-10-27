@@ -818,6 +818,51 @@ skit_1 的 8 条落在同组件 stylesheet 里定义的 `.ellipsis`（`slide-tip
 
 测试 710 + 30 + 3 全绿，clippy 0，`docs/RULES.md` 已重生成（53 条，error 15）。
 
+### P12 novel plugin 迁移审计：基线成色与「他们改了、我们报不出」
+
+对 `weapp-novel-plugin_1` 迁移前的基线（`0404c098` 的 `dist`，1.1.44）与迁移后（`ee57ed23`，1.1.78）做三方对照：基线 214 条的成色、迁移 diff（194 个源文件）的规则覆盖空白、前后 delta。产物在 `.tmp/novel-audit/REPORT.md`（分线 `laneA/B/C.md`）。
+
+基线 214 条 = **99 条同因配置**（97 `flex-direction` + 2 `default-layout-drift`，根因是没开 `rendererOptions.skyline.defaultDisplayBlock` / `defaultContentBox`；只往 json 加这两个开关跑受控实验，214 → 115 且其余规则逐项不变）+ **82 条真渲染差异**（多行省略一族：`component-attribute` 15 + `unsupported-property` 13 + `legacy-flexbox` 12，去重后约 16 个选择器）+ **8 条跨渲染器同错**（`<image mode="aspectFit|…">`，两端都不识别）+ **25 条误报/非缺陷**。
+
+迁移只做了 17 处适配（已覆盖 6 / 空白 3 / 判错形态 1 / 排除 7）：v1.1.78 的 168 条里只有 12 条是真改，99 条是配置消解、16 条是页面 opt-out，其中 12 条（`mode`×6、`:active::after`×4、fixed canvas、`will-change`）原样搬到了新页 `skylinenovel`；另有 61/168（36%）落在只被 WebView 页面引用的组件上。
+
+**本轮落地（按判据修正，不是按命中数调参）**
+
+| 规则 | 原判据的问题 | 现在 |
+|---|---|---|
+| `skyline/unsupported-value` | `fit-content` / `min-content` / `max-content` 漏报 | 七个尺寸属性（width/height/min/max-width/height/flex-basis）上的内在尺寸关键字报 error。证据：fp 里它们都是 `<length_percentage_auto>`（`float-pigment-css/src/property.rs:781-786`，取值只收 number/%/dimension/auto/env/calc/min/max/clamp，见 `parser/property_value/mod.rs:141-146,215-249`），解析失败整条回滚（`parser/mod.rs:1075`）。`stretch` / `-webkit-fill-available` 不报：WebView 侧的支持面随版本变，两个渲染器一起失效不构成迁移差异 |
+| `skyline/text-overflow-ellipsis` | 报在「WebView 下根本不省略」的块上：flex 容器的子节点、只有 `max-height` 的多行块 | 命中的宿主必须**在 WebView 下真的能省略**：`<text>`/`<span>`/`<navigator>`/自定义组件放行，其余要求 `white-space: nowrap` 生效（新增的 `can_host` 回调带 `Tree`，走 `resolved_property` 取级联后的值）。多行 clamp 由 `legacy-flexbox` / `unsupported-property` 报，不重复 |
+| `skyline/unsupported-property`、`skyline/legacy-flexbox` | 报被 `.skyline` 分支 `unset` 掉的基础声明，也报 `-webkit-line-clamp: unset` 本身 | 新增 `overridden_by_renderer_class`：同 sheet 里存在「本选择器 + `.skyline`」的规则又声明了同属性时，基础声明在 Skyline 下不生效，跳过；`unset`/`initial`/`revert` 一律不报 |
+| `skyline/media-query` | 块内选择器在本作用域 WXML 上一个节点都命不中时仍报 | `any_selector_matches` 先行：全 `No` 即跳过（伪元素按「判不了」保留）。证据：`ad-bookmarks.wxss:43` 的块写 `.container` 而组件根是 `.novel-force-container`；`student-check/styles/weui.wxss:2614,2645` 是整库 vendored 样式 |
+
+**新规则 `skyline/root-scope-class`（warning，双向）**
+
+`~foo` / `^foo` 是 glass-easel **承认**的作用域类前缀：`~` 登记根作用域、`^` 登记父级作用域（`glass-easel/src/class_list.ts:131-142`，老渲染器同实现 `global-console/src/lib/exparser.js:3008-3023`），用来把节点绑到页面（或父级）的样式表、绕开组件样式隔离。代价是**本单元样式表里的同名规则同时失效**。
+
+真实样本：`ad-banner.wxml:2,5` 在 4.13 的迁移提交 `ba303412` 里被加上 `~novel-bottom-banner-{{…}}`，而组件自己的 `ad-banner.less:16-53` 定义了 `.novel-bottom-banner-0..5 { background-color: … }`——banner 的背景色就这么丢了（页面侧 `skylinenovel/index.less:2349-2415` 只写子节点的文字颜色），v1.1.78 仍在。
+
+判据要求同时满足：① 类词元带 `~` / `^` 前缀；② **本单元**样式表里确实声明了这个类（全局样式表不受作用域前缀影响，不算）。动态 class 靠 `ClassTokens` 新增的 `fragments`（静态片段原文，含被动态值截断的半截词）识别前缀形态；半截词只匹配数字后缀，否则 `~novel-force-` 会把 `novel-force-container` 一起算进来。
+
+**明确不做的**
+
+| 候选 | 理由 |
+|---|---|
+| G2 `skyline/page-scroll`（Skyline 页面没有 `scroll-view` 靠页面滚动） | Skyline 页会被编译器注入 `disableScroll: true` + `navigationStyle: custom`（`mutate.rs:470-475`），但「这一页内容会不会超过一屏」静态判不出；实测 14 页只有 1 页真有问题，做成 info 也是噪音 |
+| S1 `dead-selector` 增强：「`.a.b` 写成 `.a .b`」 | 试过一版（动态 class 候选 + 带前缀的那个节点自己也带候选），在 businessview 上 9 条全是误报（父节点 `class="… {{extClass}}"` 让 `any` 为真，`extClass` 里当然可能出现任何词）；而且真实工程里 `official-cover.less:30` 写的是正确的 `&.skyline`，代码里不存在这个形态——整块回退 |
+| F5 `legacy-flexbox` 在 `<text max-lines>` 上的降级 | 那类块（`official-cover` 的 `book_name` / `genre-shelf` 的 `book-intro`）都带 `.skyline` 分支把老式子句 `unset` 掉，已被覆盖块豁免；剩下的 clamp 块宿主是 `view`，维持 error |
+
+**验收**（六工程，两个方向逐字段 diff，`abb110c` → 本轮）
+
+正向：novel 23 → 23、skit_1 27 → 28（+1 `fit-content`）、businessview 411 → 411（+3 `fit-content`、−1 text-overflow、−2 media-query）、
+plugin_1 173 → 148、plugin_2 168 → 146（各 −30/−28 text-overflow，−18 unsupported-property、−8 legacy-flexbox、−2 media-query，+4 `fit-content`、+2 root-scope）、
+skit-player 170 → 180（+10 `fit-content`）。
+
+反向：plugin_1 25 → 27、plugin_2 33 → 35（root-scope 双向规则），其余不变。
+
+消失的 30 条 text-overflow 逐条回源码确认过：全是 `display:-webkit-box` + `-webkit-line-clamp` 的多行省略族（无 `nowrap`），同一文件仍由 `legacy-flexbox` / `unsupported-property` 报出，不是信号丢失。
+
+测试 730 + 30 + 3 全绿，clippy 0，`docs/RULES.md` 54 条（error 15）。
+
 ## 5. 五个视图与规则族
 
 | 视图 | 来源 | 服务哪族规则 |

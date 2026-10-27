@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 53 条：error 15 条、warning 34 条、info 4 条。
+共 54 条：error 15 条、warning 35 条、info 4 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
@@ -59,6 +59,7 @@
 | `webview/text-truncation` | warning | webview | `<text>` 的 max-lines / overflow 在 WebView 下被忽略，截断与省略失效 |
 | `webview/nested-scroll` | warning | webview | 嵌套滚动只在 Skyline 下生效，WebView 下头部不联动、常驻顶部 |
 | `webview/worklet-binding` | error | webview | `worklet:` 事件绑定在 WebView 下不触发回调，且不报错 |
+| `skyline/root-scope-class` | warning | both | `~` / `^` 作用域类前缀会让本单元样式表里的同名规则失效 |
 | `webview/text-children` | error | webview | `<text>` 里的元素子节点在 WebView 下被丢弃（只保留文本与嵌套 text） |
 | `webview/pinned-renderer` | warning | webview | 单元的 renderer 被固定成常量，回退 WebView 后所有按它分叉的地方都判错 |
 | `webview/tabbar-renderer` | error | webview | 自定义 tabBar 声明 renderer: "skyline"，退回 WebView 时抛异常 |
