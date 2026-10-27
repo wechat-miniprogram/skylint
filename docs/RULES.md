@@ -54,8 +54,8 @@
 | `skyline/route-type` | warning | skyline | routeType 必须是 wx.router.addRouteBuilder 注册过的类型或 wx:// 预设 |
 | `skyline/config-ignored` | warning | skyline | 配置写在不被读取的位置或类型上，静默无效 |
 | `skyline/default-layout-drift` | info | skyline | app.json 未开启 defaultDisplayBlock / defaultContentBox，Skyline 的默认布局与盒模型仍与 WebView 不同 |
-| `skyline/lib-version` | error | both | 项目配置的 libVersion 低于所用 Skyline 特性的最低要求 |
-| `skyline/renderer-options` | warning | both | rendererOptions 的写法或类型不会被运行时读取，配置静默失效 |
+| `skyline/lib-version` | error | skyline | 项目配置的 libVersion 低于所用 Skyline 特性的最低要求 |
+| `skyline/renderer-options` | warning | skyline | rendererOptions 的写法或类型不会被运行时读取，配置静默失效 |
 | `webview/text-truncation` | warning | webview | `<text>` 的 max-lines / overflow 在 WebView 下被忽略，截断与省略失效 |
 | `webview/nested-scroll` | warning | webview | 嵌套滚动只在 Skyline 下生效，WebView 下头部不联动、常驻顶部 |
 | `webview/worklet-binding` | error | webview | `worklet:` 事件绑定在 WebView 下不触发回调，且不报错 |

@@ -154,23 +154,69 @@ fn collect(expression: &Expression, env: &Env, out: &mut Vec<Piece>) {
     match expression {
         Expression::ToStringWithoutUndefined { value, .. } => collect(value, env, out),
         Expression::LitStr { value, .. } => out.push(Piece::Text(value.to_string())),
-        _ => match concat_operands(expression) {
-            Some(operands) => operands
-                .into_iter()
-                .for_each(|operand| collect(operand, env, out)),
-            None => out.push(Piece::Value(eval(expression, env))),
-        },
+        // `+` 只有在链上出现字符串字面量时才是模板拼接；纯算术的 `1 + 2` 不是。
+        Expression::Plus { .. } if is_concat(expression) => collect_concat(expression, env, out),
+        _ => out.push(Piece::Value(eval(expression, env))),
     }
 }
 
-/// `+` 只有在链上出现字符串字面量时才是模板拼接；纯算术的 `1 + 2` 不是。
-fn concat_operands(expression: &Expression) -> Option<Vec<&Expression>> {
+fn is_concat(expression: &Expression) -> bool {
     let mut operands = Vec::new();
     flatten_plus(expression, &mut operands);
-    let is_concat = operands
+    operands
         .iter()
-        .any(|operand| matches!(operand, Expression::LitStr { .. }));
-    is_concat.then_some(operands)
+        .any(|operand| matches!(operand, Expression::LitStr { .. }))
+}
+
+/// JS 的 `+` 左结合：开头的纯数字串先求和，遇到第一个非数字之后逐个拼接。
+///
+/// `1 + 2 + 'px'` 是 `"3px"`，不是 `"12px"`；`'a' + 1 + 2` 是 `"a12"`。
+fn collect_concat(expression: &Expression, env: &Env, out: &mut Vec<Piece>) {
+    let mut operands = Vec::new();
+    flatten_plus(expression, &mut operands);
+    let mut sum: Option<f64> = None;
+    let mut concatenating = false;
+    for operand in operands {
+        if !concatenating {
+            if let Some(number) = number_literal(operand) {
+                sum = Some(sum.unwrap_or(0.0) + number);
+                continue;
+            }
+            if let Some(total) = sum.take() {
+                out.push(Piece::Text(js_number(total)));
+            }
+            concatenating = true;
+        }
+        match operand {
+            Expression::LitStr { value, .. } => out.push(Piece::Text(value.to_string())),
+            _ if number_literal(operand).is_some() => {
+                out.push(Piece::Text(js_number(number_literal(operand).unwrap())))
+            }
+            other => out.push(Piece::Value(eval(other, env))),
+        }
+    }
+    if let Some(total) = sum {
+        out.push(Piece::Text(js_number(total)));
+    }
+}
+
+fn number_literal(expression: &Expression) -> Option<f64> {
+    match expression {
+        Expression::LitInt { value, .. } => Some(*value as f64),
+        Expression::LitFloat { value, .. } => Some(*value),
+        _ => None,
+    }
+}
+
+/// JS 的 `String(number)` 在常见范围内与 `{:.0}` 一致；`-0` 与 `1e21` 以上单独处理。
+fn js_number(value: f64) -> String {
+    if value == 0.0 {
+        "0".to_string()
+    } else if value.fract() == 0.0 && value.abs() < 1e21 {
+        format!("{value:.0}")
+    } else {
+        value.to_string()
+    }
 }
 
 fn flatten_plus<'a>(expression: &'a Expression, out: &mut Vec<&'a Expression>) {
@@ -461,6 +507,22 @@ mod tests {
         // `1 + 2` 是 3 而不是 "12"：两边都是数字就按算术求值。
         let tokens = tokens("{{1 + 2}}");
         assert_eq!(tokens.definite, ["3"]);
+        assert!(!tokens.any);
+    }
+
+    #[test]
+    fn plus_chain_follows_js_left_associativity() {
+        // `1 + 2 + 'px'` 在 JS 里是 "3px"，不是 "12px"。
+        let tokens = tokens("{{1 + 2 + 'px'}}");
+        assert_eq!(tokens.definite, ["3px"]);
+        assert!(!tokens.any);
+    }
+
+    #[test]
+    fn plus_chain_after_a_string_operand_concatenates_numbers() {
+        // `'a' + 1 + 2` 是 "a12"。
+        let tokens = tokens("{{'a' + 1 + 2}}");
+        assert_eq!(tokens.definite, ["a12"]);
         assert!(!tokens.any);
     }
 

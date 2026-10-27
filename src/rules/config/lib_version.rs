@@ -35,7 +35,8 @@ impl Rule for LibVersion {
     }
 
     fn target(&self) -> Target {
-        Target::Both
+        // `libVersion` 低于 Skyline 要求只会让页面继续用 WebView——那正是反向的目标环境。
+        Target::Skyline
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {

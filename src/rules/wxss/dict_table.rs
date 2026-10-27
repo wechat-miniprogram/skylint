@@ -259,9 +259,11 @@ pub(crate) fn normalize_value(value: &str) -> Option<String> {
     Some(text.to_ascii_lowercase())
 }
 
-/// 单个长度值：`<number><unit>` 或百分比。入参须已 [`normalize_value`]（trim + 小写）。
+/// 单个长度值：`<number><unit>`、百分比，或无单位零。入参须已 [`normalize_value`]
+/// （trim + 小写）。
 ///
-/// 单位取 fp `<length>` 接受的集合（float-pigment-css parser/property_value/mod.rs:150-163）。
+/// 单位取 fp `<length>` 接受的集合（float-pigment-css parser/property_value/mod.rs:150-163）；
+/// 无单位零是合法 `<length>`（CSS 只允许零省略单位）。
 fn is_length(value: &str) -> bool {
     let bytes = value.as_bytes();
     let mut i = usize::from(matches!(bytes.first(), Some(b'+') | Some(b'-')));
@@ -276,11 +278,18 @@ fn is_length(value: &str) -> bool {
             _ => break,
         }
     }
-    seen_digit
-        && matches!(
-            &value[i..],
-            "%" | "px" | "rpx" | "rem" | "em" | "vw" | "vh" | "vmin" | "vmax"
-        )
+    if !seen_digit {
+        return false;
+    }
+    let unit = &value[i..];
+    if unit.is_empty() {
+        // `0` / `0.0` / `-0` 都是合法 `<length>`。
+        return value.bytes().filter(u8::is_ascii_digit).all(|b| b == b'0');
+    }
+    matches!(
+        unit,
+        "%" | "px" | "rpx" | "rem" | "em" | "vw" | "vh" | "vmin" | "vmax"
+    )
 }
 
 #[cfg(test)]
@@ -289,10 +298,12 @@ mod tests {
 
     #[test]
     fn is_length_matches_number_with_unit_or_percentage() {
-        for value in ["4px", "-2px", "+1.5em", ".5rem", "50%", "4rpx", "2vmin"] {
+        for value in [
+            "4px", "-2px", "+1.5em", ".5rem", "50%", "4rpx", "2vmin", "0", "0.0",
+        ] {
             assert!(is_length(value), "{value}");
         }
-        for value in ["0", "4", "4pxx", "px", "auto", "4 px", "4deg", "calc(4px)"] {
+        for value in ["4", "04", "4pxx", "px", "auto", "4 px", "4deg", "calc(4px)"] {
             assert!(!is_length(value), "{value}");
         }
     }

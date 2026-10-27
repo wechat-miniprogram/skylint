@@ -6,12 +6,13 @@
 //! `display`：判明是 flex 就跳过；判不出来仍按块级报，宁可漏报不放过。
 
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode, WxmlText};
+use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
 use crate::matcher::Tree;
 
+use super::branch::exclusive_branches;
 use super::{display_values, is_flex_value, span_diagnostic, visit, walk};
 
 pub const ID: &str = "skyline/no-inline-text";
@@ -76,7 +77,10 @@ fn check_element(
         _ => None,
     }) {
         // 互斥分支里的文本与元素永远不会同时渲染。
-        if elements.iter().all(|element| exclusive_text(text, element)) {
+        if elements
+            .iter()
+            .all(|element| exclusive_branches(&text.branches, &element.branches))
+        {
             continue;
         }
         out.push(
@@ -95,16 +99,6 @@ fn check_element(
             .help("把文本包进 `<text>`；里面还要放 `<text>` 或元素时改用 `<span>`（同为文本节点容器）"),
         );
     }
-}
-
-/// 这段文本与这个元素是否分属同一个 `wx:if` 的不同分支。
-fn exclusive_text(text: &WxmlText, element: &WxmlElement) -> bool {
-    text.branches.iter().any(|left| {
-        element
-            .branches
-            .iter()
-            .any(|right| left.group == right.group && left.arm != right.arm)
-    })
 }
 
 #[cfg(test)]

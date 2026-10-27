@@ -37,6 +37,19 @@ const LEGACY_PROPERTIES: &[&str] = &[
     "-webkit-box-lines",
 ];
 
+/// fp 的 `display` 能解析的取值（`float-pigment-css/src/property.rs:203-212`）。
+/// 其余取值（`box` / `-webkit-box` / `-webkit-flex`）整条声明被丢弃。
+const PARSEABLE_DISPLAY: &[&str] = &[
+    "none",
+    "block",
+    "inline",
+    "inline-block",
+    "flex",
+    "inline-flex",
+    "grid",
+    "flow-root",
+];
+
 impl LegacyFlexbox {
     pub const ID: &'static str = "skyline/legacy-flexbox";
 }
@@ -56,21 +69,39 @@ impl Rule for LegacyFlexbox {
             let Some(legacy) = legacy_block(rule) else {
                 return;
             };
+            let clamp = rule
+                .declarations
+                .iter()
+                .any(|decl| decl.name.eq_ignore_ascii_case("-webkit-line-clamp"));
             let names = legacy
                 .iter()
                 .map(|(label, _)| format!("`{label}`"))
                 .collect::<Vec<_>>()
                 .join("、");
+            let (message, help) = if clamp {
+                (
+                    format!(
+                        "这块的多行省略用了老式 `-webkit-box`：{} 处声明（{names}）在 Skyline 下全部被丢弃，`-webkit-line-clamp` 不起作用，文本会完整铺开",
+                        legacy.len()
+                    ),
+                    "Skyline 用 `<text max-lines=\"N\" overflow=\"ellipsis\">` 截断；要两端都兼容就另加 WebView 兜底（`-webkit-line-clamp` 保留在独立的 `.webview` 分支里）",
+                )
+            } else {
+                (
+                    format!(
+                        "这块用了老式 `-webkit-box` 弹性盒：{} 处声明（{names}）在 Skyline 下全部被丢弃，整块布局退回默认 display",
+                        legacy.len()
+                    ),
+                    "改用 flex 布局（`display: flex` 配 `flex-direction` / `align-items` / `justify-content` / `flex: 1`）",
+                )
+            };
             out.push(at_declaration(
                 Self::ID,
                 doc,
                 legacy[0].1,
                 Severity::Error,
-                format!(
-                    "这块用了老式 `-webkit-box` 弹性盒：{} 处声明（{names}）在 Skyline 下全部被丢弃，整块布局退回默认 display",
-                    legacy.len()
-                ),
-                "改用 flex 布局（`display: flex` 配 `flex-direction` / `align-items` / `justify-content` / `flex: 1`）；多行省略另用 `<text max-lines>`",
+                message,
+                help,
             ));
         })
     }
@@ -78,7 +109,8 @@ impl Rule for LegacyFlexbox {
 
 /// 这条规则块依赖老式弹性盒时，返回块内的老式声明（按出现顺序）；否则 `None`。
 ///
-/// `display` 只看最后一条：后面的 `display: flex` 会把前面的 `-webkit-box` 覆盖掉。
+/// `display` 只看**最后一条 Skyline 能解析的**：`display: flex; display: box;
+/// display: -webkit-box` 里后两条都被引擎丢弃，真正生效的仍是 `flex`。
 fn legacy_block(
     rule: &crate::input::wxss::WxssRule,
 ) -> Option<Vec<(String, &crate::input::wxss::WxssDeclaration)>> {
@@ -86,7 +118,13 @@ fn legacy_block(
         .declarations
         .iter()
         .rev()
-        .find(|decl| decl.name.eq_ignore_ascii_case("display"))
+        .find(|decl| {
+            if !decl.name.eq_ignore_ascii_case("display") {
+                return false;
+            }
+            let value = decl.value.trim();
+            value.eq_ignore_ascii_case("-webkit-box") || PARSEABLE_DISPLAY.contains(&value)
+        })
         .filter(|decl| decl.value.trim().eq_ignore_ascii_case("-webkit-box"))?;
     let mut legacy: Vec<(String, &crate::input::wxss::WxssDeclaration)> = rule
         .declarations
@@ -131,8 +169,32 @@ mod tests {
         assert!(message.contains("`display: -webkit-box`"), "{message}");
         assert!(message.contains("`-webkit-box-orient`"), "{message}");
         assert!(message.contains("`-webkit-box-flex`"), "{message}");
-        // 行内省略仍归 unsupported-property，不在这条规则里重复。
-        assert!(!message.contains("line-clamp"), "{message}");
+        // 同时有 `-webkit-line-clamp` 时讲清真实后果：多行省略失效，而不是整块布局坏掉。
+        assert!(
+            message.contains("`-webkit-line-clamp` 不起作用"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn layout_block_without_clamp_gets_layout_message() {
+        let (_f, project) = single(
+            "legacy-layout-only",
+            r#"
+            .a {
+              display: -webkit-box;
+              -webkit-box-orient: vertical;
+              -webkit-box-pack: center;
+            }
+            "#,
+        );
+        let diags = LegacyFlexbox.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert!(
+            diags[0].message.contains("整块布局退回默认 display"),
+            "{}",
+            diags[0].message
+        );
     }
 
     #[test]

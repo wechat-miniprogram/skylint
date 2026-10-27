@@ -60,13 +60,6 @@ pub struct Subject {
     pub has_host: bool,
 }
 
-impl Subject {
-    /// 主体是否有 Skyline 能认的定位条件。
-    pub fn has_locator(&self) -> bool {
-        self.has_tag || self.has_id || self.has_class
-    }
-}
-
 /// 这条选择器在 Skyline 下会不会被收进某个规则桶。
 ///
 /// 主体 compound 要有 id / 标签 / class；`:host` 走宿主桶（`rule_set.cc:150-158`），
@@ -356,18 +349,9 @@ impl<'a> Tree<'a> {
         if unknown { Tri::Unknown } else { Tri::No }
     }
 
-    pub fn doc(&self) -> &'a WxmlDoc {
-        self.doc
-    }
-
     /// 这份文档的路径。
     pub fn path(&self) -> &'a str {
         self.doc.path()
-    }
-
-    /// 选择器文本是否能被解析（用于诊断「我们看不见这条选择器」）。
-    pub fn parseable(&self, selector: &str) -> bool {
-        self.parse(selector).is_some()
     }
 
     fn parse(&self, selector: &str) -> Option<SelectorList<SelImpl>> {

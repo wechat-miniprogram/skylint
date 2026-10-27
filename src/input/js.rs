@@ -429,6 +429,20 @@ impl<'a> Visit<'a> for Collector {
                 self.literals.remove(&key);
                 self.dirty_data.insert(key);
             }
+            // `this.data['x'] =`：键是字面量时当静态键，否则整份 data 不可信。
+            AssignmentTarget::ComputedMemberExpression(member) if is_this_data(&member.object) => {
+                match &member.expression {
+                    Expression::StringLiteral(literal) => {
+                        if let Some(key) = literal.value.as_str().map(str::to_string) {
+                            self.literals.remove(&key);
+                            self.dirty_data.insert(key);
+                        } else {
+                            self.dirty_all = true;
+                        }
+                    }
+                    _ => self.dirty_all = true,
+                }
+            }
             _ => {}
         }
         walk::walk_assignment_expression(self, it);
@@ -449,6 +463,15 @@ impl<'a> Visit<'a> for Collector {
                 Some(_) => self.dirty_all = true,
                 None => {}
             }
+        } else if callee == "Object.assign"
+            && it
+                .arguments
+                .first()
+                .and_then(arg_expression)
+                .is_some_and(is_this_data)
+        {
+            // `Object.assign(this.data, …)` 拿不到键名，按整份 data 不可信处理。
+            self.dirty_all = true;
         }
         self.calls.push(CallInfo {
             callee: callee_name(&it.callee).unwrap_or_default(),

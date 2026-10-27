@@ -45,8 +45,16 @@ impl Rule for TabBarRenderer {
             return Vec::new();
         };
         let custom = tab_bar.get("custom").and_then(Value::as_bool) == Some(true);
-        let skyline = tab_bar.get("renderer").and_then(Value::as_str) == Some("skyline");
-        if !custom || !skyline {
+        // 适配器要求 `renderer` 恰好是 `webview`：其他任何值（含大小写写错）都会
+        // 落到 `WebviewAdapterTabBar.getInstance` 的抛异常分支。
+        let pinned = tab_bar
+            .get("renderer")
+            .and_then(Value::as_str)
+            .filter(|renderer| !renderer.eq_ignore_ascii_case("webview"));
+        let Some(pinned) = pinned else {
+            return Vec::new();
+        };
+        if !custom {
             return Vec::new();
         }
         let mut out = Vec::new();
@@ -55,7 +63,9 @@ impl Rule for TabBarRenderer {
             "webview/tabbar-renderer",
             &project.app_json_path,
             JsonPositions::new(&project.app_json_source).key("tabBar"),
-            "自定义 tabBar 钉死 `renderer: \"skyline\"`：退回 WebView 时 `WebviewAdapterTabBar.getInstance` 会抛 `Invalid tab-bar renderer`，tabBar 整体不可用".to_string(),
+            format!(
+                "自定义 tabBar 钉死 `renderer: \"{pinned}\"`：退回 WebView 时 `WebviewAdapterTabBar.getInstance` 会抛 `Invalid tab-bar renderer`，tabBar 整体不可用"
+            ),
             "删掉 `tabBar.renderer`，让它随页面渲染器走；只有确定不会回退时才保留该键",
         );
         out

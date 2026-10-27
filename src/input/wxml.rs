@@ -170,11 +170,14 @@ impl WxmlDoc {
         let mut nodes = flatten(&template.content, source, env, &mut next_group, &[], false);
         // 内联 `<template name="x">` 的定义体只存在 `globals.sub_templates` 里，不在
         // `content` 中：不摊平的话其中的元素对所有规则都不可见。
+        // 定义体的数据作用域是 `<template is data="…">` 新传的对象，看不到组件的
+        // data / properties（proc_gen/tag.rs:1275-1287），因此这里不能代入单元 env。
+        let empty = Env::default();
         for definition in &template.globals.sub_templates {
             nodes.extend(flatten(
                 &definition.content,
                 source,
-                env,
+                &empty,
                 &mut next_group,
                 &[],
                 true,
@@ -384,11 +387,14 @@ fn element_nodes(
         } => {
             let group = *next_group;
             *next_group += 1;
-            // 整条分支链都算「按 renderer 分支」：`else` 也是另一个渲染器的分支。
-            let guarded = arms
+            // 只有**自己这一支的条件**引用了 renderer，这一支才算按 renderer 分叉；
+            // `wx:if="{{a}}"` 与 `wx:elif="{{renderer === 'skyline'}}"` 同链时，前者
+            // 在两个渲染器下都会渲染，不能因为同链有 renderer 就被一起消音。
+            // `else` 是「前面都不成立」的补集：链上有 renderer 条件时它必然是另一侧。
+            let chain_guarded = arms
                 .iter()
                 .any(|(_, condition, _)| condition_mentions_renderer(condition));
-            let inner = |arm: u32| {
+            let inner = |arm: u32, guarded: bool| {
                 let mut stack = branches.to_vec();
                 stack.push(Branch {
                     group,
@@ -416,7 +422,7 @@ fn element_nodes(
                     source,
                     env,
                     next_group,
-                    &inner(arm as u32),
+                    &inner(arm as u32, condition_mentions_renderer(condition)),
                     in_template,
                 ));
             }
@@ -426,7 +432,7 @@ fn element_nodes(
                     source,
                     env,
                     next_group,
-                    &inner(arms.len() as u32),
+                    &inner(arms.len() as u32, chain_guarded),
                     in_template,
                 ));
             }
@@ -453,7 +459,10 @@ fn element_nodes(
 fn condition_truthy(condition: &Value, env: &Env) -> Option<bool> {
     match condition {
         Value::Dynamic { expression, .. } => crate::input::expr::truthy(expression, env),
-        Value::Static { value, .. } => Some(!value.is_empty() && value.as_str() != "false"),
+        // 静态条件在编译产物里是**字符串字面量**：`wx:if="false"` 编成 `"false" ? 1 : 0`，
+        // 字符串为真，分支会渲染（proc_gen/tag.rs:1016-1019 的 `gen_lit_str`）。
+        // 只有空值等价于「没写这个属性」。
+        Value::Static { value, .. } => Some(!value.is_empty()),
         _ => None,
     }
 }
@@ -991,6 +1000,46 @@ mod tests {
             .collect();
         // 只剩可达的那一支，另外一支里的元素不进树。
         assert_eq!(tags, [("view", "a")]);
+    }
+
+    #[test]
+    fn static_false_condition_still_renders() {
+        // `wx:if="false"` 编成 `"false" ? 1 : 0`，字符串为真——分支会渲染。
+        // 只有空值等价于「没写这个属性」（`parse/tag.rs:4386-4387`）。
+        let doc = doc_of(r#"<view wx:if="false" class="a"/><view wx:else class="b"/>"#);
+        let classes: Vec<&str> = doc
+            .elements()
+            .filter_map(|element| {
+                element
+                    .attributes
+                    .iter()
+                    .find(|attr| attr.name == "class")
+                    .and_then(|attr| attr.value.as_deref())
+            })
+            .collect();
+        assert_eq!(classes, ["a"], "`else` 分支不参与渲染");
+    }
+
+    #[test]
+    fn guard_flag_belongs_to_the_arm_that_mentions_renderer() {
+        // `wx:if="{{a}}"` 两支在不同渲染器下都会渲染，不能因为同链有 renderer 条件
+        // 就被一起当成「按 renderer 分叉」。
+        let doc = doc_of(
+            r#"<view wx:if="{{a}}" class="a"/><view wx:elif="{{renderer === 'skyline'}}" class="b"/><view wx:else class="c"/>"#,
+        );
+        let guarded: Vec<(&str, bool)> = doc
+            .elements()
+            .map(|element| {
+                let class = element
+                    .attributes
+                    .iter()
+                    .find(|attr| attr.name == "class")
+                    .and_then(|attr| attr.value.as_deref())
+                    .unwrap_or("");
+                (class, element.renderer_guarded())
+            })
+            .collect();
+        assert_eq!(guarded, [("a", false), ("b", true), ("c", true)]);
     }
 
     #[test]

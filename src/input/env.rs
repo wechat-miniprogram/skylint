@@ -69,8 +69,4 @@ impl Env {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &Lit)> {
-        self.0.iter()
-    }
 }

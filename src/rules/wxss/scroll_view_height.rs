@@ -25,10 +25,13 @@ use std::collections::HashMap;
 
 use crate::input::wxml::{WxmlDoc, WxmlElement};
 use crate::matcher::Tree;
-use crate::project::{Project, Scope};
+use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{Resolved, load_doc, resolved_property, walk};
+use crate::rules::wxml::structure::find_attr;
+use crate::rules::wxml::{
+    Resolved, element_diagnostic, load_doc, page_wxml_groups, resolved_property, walk,
+};
 use crate::rules::wxss::value_util::at_declaration;
 use crate::{Diagnostic, Severity};
 
@@ -54,40 +57,21 @@ impl Rule for ScrollViewHeight {
         let mut out = Vec::new();
         let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
 
-        for page in &project.pages {
-            if page.opted_out {
-                continue;
-            }
-            let Some(page_wxml) = page.files.wxml.as_deref() else {
-                continue;
-            };
-            let mut paths = vec![page_wxml.to_string()];
-            paths.extend(project.page_components(&page.route).into_iter().filter_map(
-                |component| {
-                    project
-                        .components
-                        .iter()
-                        .find(|unit| unit.path == component)
-                        .and_then(|unit| unit.files.wxml.clone())
-                },
-            ));
+        for (_page_wxml, paths) in page_wxml_groups(project) {
             for path in &paths {
                 if !docs.contains_key(path) {
                     docs.insert(path.clone(), load_doc(project, path));
                 }
             }
-            let loaded: Vec<&WxmlDoc> = paths
-                .iter()
-                .filter_map(|path| docs.get(path).and_then(Option::as_ref))
-                .collect();
-
-            for doc in loaded {
-                let tree = Tree::new(doc);
-                let scope = match doc.path() == page_wxml {
-                    true => Scope::Page(page.route.clone()),
-                    false => Scope::Component(doc.path().to_string()),
+            for path in &paths {
+                let Some(doc) = docs.get(path).and_then(Option::as_ref) else {
+                    continue;
                 };
-                let default_block = project.renders_as_block(&scope);
+                let tree = Tree::new(doc);
+                let default_block = project.scope_of(doc.path()).map_or_else(
+                    || project.app_display_block(),
+                    |scope| project.renders_as_block(&scope),
+                );
                 walk(doc, |element, ancestors| {
                     if element.tag != "scroll-view" {
                         return;
@@ -97,7 +81,7 @@ impl Rule for ScrollViewHeight {
                     if !grows(grow.as_ref(), flex.as_ref()) {
                         return;
                     }
-                    if determinate(project, &tree, element, "height") {
+                    if determinate(project, &tree, element) {
                         return;
                     }
                     let Some(parent) = ancestors.last() else {
@@ -106,7 +90,13 @@ impl Rule for ScrollViewHeight {
                     if !is_column_flex(project, &tree, parent, default_block) {
                         return;
                     }
-                    if determinate(project, &tree, parent, "height") {
+                    if determinate_height(
+                        project,
+                        &tree,
+                        parent,
+                        &ancestors[..ancestors.len() - 1],
+                        default_block,
+                    ) {
                         return;
                     }
 
@@ -125,9 +115,15 @@ impl Rule for ScrollViewHeight {
                                 message,
                                 help,
                             ),
-                            None => {
-                                at_element(Self::ID, doc, element, Severity::Warning, message, help)
-                            }
+                            None => element_diagnostic(
+                                Self::ID,
+                                doc,
+                                element,
+                                doc.path(),
+                                Severity::Warning,
+                                message,
+                            )
+                            .help(help),
                         },
                     );
                 });
@@ -137,18 +133,28 @@ impl Rule for ScrollViewHeight {
     }
 }
 
-/// `flex-grow` 是否大于 0，考虑 `flex` 简写。
+/// `flex-grow` 是否大于 0，考虑 `flex` 简写与两条声明的先后（后者覆盖前者）。
 ///
 /// `flex: <number>` 与 `flex: auto` 都让 grow 为正；`flex: none` / `flex: 0 …` / `initial` 为 0。
 fn grows(grow: Option<&Resolved<'_>>, flex: Option<&Resolved<'_>>) -> bool {
-    if let Some(grow) = grow
-        && let Ok(value) = grow.value.trim().parse::<f32>()
-    {
-        return value > 0.0;
-    }
-    let Some(flex) = flex else {
-        return false;
+    // 内联 `style` 没有声明位置，优先级最高。
+    let offset =
+        |resolved: &Resolved<'_>| resolved.declaration.map_or(u64::MAX, |d| d.offset as u64);
+    let flex_wins = match (grow, flex) {
+        (Some(grow), Some(flex)) => offset(flex) > offset(grow),
+        (None, Some(_)) => true,
+        _ => false,
     };
+    if flex_wins {
+        return flex.is_some_and(flex_grows);
+    }
+    match grow.and_then(|grow| grow.value.trim().parse::<f32>().ok()) {
+        Some(value) => value > 0.0,
+        None => flex.is_some_and(flex_grows),
+    }
+}
+
+fn flex_grows(flex: &Resolved<'_>) -> bool {
     let text = flex.value.trim().to_ascii_lowercase();
     match text.split_ascii_whitespace().next() {
         Some("auto") => true,
@@ -160,8 +166,11 @@ fn grows(grow: Option<&Resolved<'_>>, flex: Option<&Resolved<'_>>) -> bool {
 /// 属性的取值是否为「确定尺寸」：写了 `auto` / `inherit` 之外的值就算。
 ///
 /// 不对百分比追父链：真实工程里 `height: 100%` 基本都配着确定父高，按确定处理可少报。
-fn determinate(project: &Project, tree: &Tree<'_>, element: &WxmlElement, property: &str) -> bool {
-    let Some(resolved) = resolved_property(project, tree, element, property) else {
+fn determinate(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
+    if dynamic_inline_style(element) {
+        return true;
+    }
+    let Some(resolved) = resolved_property(project, tree, element, "height") else {
         return false;
     };
     let value = resolved.value.trim().to_ascii_lowercase();
@@ -169,6 +178,47 @@ fn determinate(project: &Project, tree: &Tree<'_>, element: &WxmlElement, proper
         value.as_str(),
         "" | "auto" | "inherit" | "initial" | "unset"
     )
+}
+
+/// 容器的高度是否确定：自己写了 `height`，或者作为 flex 子项被上一级列容器分配。
+///
+/// 标准「整页固定 + 中间滚动」是 `.outer{height:100vh} > .mid{flex:1} > scroll-view`，
+/// `.mid` 自己没写高度，只看一层会把它当不定高。
+fn determinate_height(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    ancestors: &[&WxmlElement],
+    default_block: bool,
+) -> bool {
+    if determinate(project, tree, element) {
+        return true;
+    }
+    let flex = resolved_property(project, tree, element, "flex");
+    let grow = resolved_property(project, tree, element, "flex-grow");
+    if !grows(grow.as_ref(), flex.as_ref()) {
+        return false;
+    }
+    let Some(parent) = ancestors.last() else {
+        return false;
+    };
+    is_column_flex(project, tree, parent, default_block)
+        && determinate_height(
+            project,
+            tree,
+            parent,
+            &ancestors[..ancestors.len() - 1],
+            default_block,
+        )
+}
+
+/// 带 `{{…}}` 或纯动态的内联 `style`：运行时的尺寸静态判不出，按确定处理（宁可漏报）。
+fn dynamic_inline_style(element: &WxmlElement) -> bool {
+    find_attr(element, "style").is_some_and(|attr| {
+        attr.value
+            .as_deref()
+            .is_none_or(|value| value.contains("{{"))
+    })
 }
 
 /// 元素是否为「主轴纵向的 flex 容器」。
@@ -206,18 +256,6 @@ fn is_column_flex(
 }
 
 /// 诊断落在元素开始标签上（没有可落的声明时）。
-fn at_element(
-    rule: &'static str,
-    doc: &WxmlDoc,
-    element: &WxmlElement,
-    severity: Severity,
-    message: &str,
-    help: &str,
-) -> Diagnostic {
-    let (line, column) = doc.position(element.tag_start);
-    Diagnostic::new(rule, severity, message, doc.path(), line, column).help(help)
-}
-
 #[cfg(test)]
 mod tests {
     use crate::Diagnostic;

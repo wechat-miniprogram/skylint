@@ -68,14 +68,15 @@ impl Rule for TextChildren {
 
 /// `<text>` 下会被 WebView 丢掉的直接子元素（去重、保持出现顺序）。
 ///
-/// 只看直接子节点：被丢的那棵子树整块消失，逐层报只是噪音。
+/// 只看直接子节点：被丢的那棵子树整块消失，逐层报只是噪音。带 renderer 守卫的子节点
+/// 只会在 Skyline 分支里出现，WebView 下本来就不渲染，不算缺陷。
 fn dropped_children(element: &WxmlElement) -> Vec<String> {
     let mut tags: Vec<String> = Vec::new();
     for node in &element.children {
         let WxmlNode::Element(child) = node else {
             continue;
         };
-        if child.tag.eq_ignore_ascii_case("text") {
+        if child.tag.eq_ignore_ascii_case("text") || child.renderer_guarded() {
             continue;
         }
         let tag = format!("`<{}>`", child.tag);

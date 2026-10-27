@@ -23,7 +23,7 @@ use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{load_doc, resolved_property, walk};
+use crate::rules::wxml::{load_doc, page_wxml_groups, resolved_property, sheet_covers, walk};
 use crate::rules::wxss::value_util::at_declaration;
 use crate::{Diagnostic, Severity};
 
@@ -85,34 +85,16 @@ impl Rule for ImplicitColor {
         let mut reported: HashSet<(String, usize)> = HashSet::new();
         let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
 
-        for page in &project.pages {
-            if page.opted_out {
-                continue;
-            }
-            let Some(page_wxml) = page.files.wxml.as_deref() else {
-                continue;
-            };
-            let mut paths = vec![page_wxml.to_string()];
-            paths.extend(project.page_components(&page.route).into_iter().filter_map(
-                |component| {
-                    project
-                        .components
-                        .iter()
-                        .find(|unit| unit.path == component)
-                        .and_then(|unit| unit.files.wxml.clone())
-                },
-            ));
+        for (_, paths) in page_wxml_groups(project) {
             for path in &paths {
                 if !docs.contains_key(path) {
                     docs.insert(path.clone(), load_doc(project, path));
                 }
             }
-            let loaded: Vec<&WxmlDoc> = paths
-                .iter()
-                .filter_map(|path| docs.get(path).and_then(Option::as_ref))
-                .collect();
-
-            for doc in loaded {
+            for path in &paths {
+                let Some(doc) = docs.get(path).and_then(Option::as_ref) else {
+                    continue;
+                };
                 let tree = Tree::new(doc);
                 walk(doc, |element, ancestors| {
                     if effective_color(project, &tree, element, ancestors).is_none() {
@@ -129,6 +111,9 @@ impl Rule for ImplicitColor {
                             continue;
                         };
                         if !lacks_color(declaration) {
+                            continue;
+                        }
+                        if invisible(project, &tree, element, declaration) {
                             continue;
                         }
                         if !reported.insert((sheet.doc.path().to_string(), declaration.offset)) {
@@ -153,6 +138,64 @@ impl Rule for ImplicitColor {
     }
 }
 
+/// 页面的基色：`page { color: … }` / `:host { color: … }`。
+///
+/// 页面根不在元素树里，`resolved_property` 看不到它；后写的声明生效。
+fn page_color(project: &Project, tree: &Tree<'_>) -> Option<String> {
+    project
+        .styles
+        .iter()
+        .filter(|sheet| sheet_covers(sheet, project, tree.path()))
+        .flat_map(|sheet| &sheet.doc.rules)
+        .filter(|rule| {
+            rule.selectors.iter().any(|selector| {
+                let text = selector.text.trim();
+                text.eq_ignore_ascii_case("page") || text.eq_ignore_ascii_case(":host")
+            })
+        })
+        .flat_map(|rule| &rule.declarations)
+        .filter(|declaration| declaration.name.eq_ignore_ascii_case("color"))
+        .map(|declaration| declaration.value.clone())
+        .last()
+}
+
+/// 声明本身不可见（宽度 0 / `none` / 颜色由 longhand 给出）：省略颜色不会产生可见差异。
+fn invisible(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    declaration: &WxssDeclaration,
+) -> bool {
+    let name = declaration.name.to_ascii_lowercase();
+    let has = |word: &str| {
+        declaration.tokens.iter().any(
+            |token| matches!(token, ValueToken::Ident(ident) if ident.eq_ignore_ascii_case(word)),
+        )
+    };
+    if name == "text-decoration" {
+        return has("none");
+    }
+    if !name.starts_with("border") {
+        return false;
+    }
+    // 宽度为 0 或边框样式为 none：没有可见边框。
+    let zero = declaration.tokens.iter().any(|token| match token {
+        ValueToken::Number(value)
+        | ValueToken::Dimension { value, .. }
+        | ValueToken::Percentage(value) => value.parse::<f64>().is_ok_and(|number| number == 0.0),
+        _ => false,
+    });
+    if zero || has("none") {
+        return true;
+    }
+    // 颜色写在了 longhand 里：简写只是没重复它。
+    let longhand = match name.as_str() {
+        "border" => "border-color".to_string(),
+        other => format!("{other}-color"),
+    };
+    resolved_property(project, tree, element, &longhand).is_some()
+}
+
 /// 元素的有效 `color`：自身或最近祖先上的声明；黑色不算（那种情况两端都是黑色）。
 ///
 /// `color` 是继承属性，而 `resolved_property` 只看元素自身，所以这里手动向上找。
@@ -166,12 +209,21 @@ fn effective_color<'a>(
         .chain(ancestors.iter().rev().copied())
         .find_map(|candidate| {
             resolved_property(project, tree, candidate, "color").map(|resolved| resolved.value)
-        })?;
+        })
+        .or_else(|| page_color(project, tree))?;
     let value = value.trim().to_ascii_lowercase();
-    match value.as_str() {
-        "black" | "#000" | "#000000" | "#000000ff" => None,
-        other => Some(other.to_string()),
+    // 变量与函数求解不了：运行时可能是黑色，也可能是任意色，按「判不了」跳过。
+    if value.contains("var(") || value.contains("env(") || value.contains("{{") {
+        return None;
     }
+    let compact: String = value
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .collect();
+    let black = matches!(compact.as_str(), "black" | "#000" | "#000000" | "#000000ff")
+        || compact.starts_with("rgb(0,0,0")
+        || compact.starts_with("rgba(0,0,0");
+    if black { None } else { Some(value) }
 }
 
 /// 声明是否「省略了颜色」：没有任何颜色、也没有显式 `currentColor`。

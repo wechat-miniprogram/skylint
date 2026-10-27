@@ -12,16 +12,17 @@
 //! Skyline 不支持这个 `display`，正好互相忽略。同一元素上已有这类兜底时不再报。
 
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxml::{WxmlDoc, WxmlElement};
+use crate::input::wxml::WxmlElement;
+use crate::matcher::Tree;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta, Target};
+use crate::rules::Rule;
+use crate::rules::RuleMeta;
+use crate::rules::Target;
+use crate::rules::wxml::resolved_property;
 
-use super::{element_diagnostic, sheet_covers, structure::find_attr, visit, walk};
+use super::{element_diagnostic, structure::find_attr, visit, walk};
 
 pub const ID: &str = "webview/text-truncation";
-
-/// WebView 分支常用的截断兜底标记。
-const CLAMP_FALLBACK: &str = "-webkit-line-clamp";
 
 pub struct TextTruncation;
 
@@ -40,15 +41,19 @@ impl Rule for TextTruncation {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
-            walk(doc, |element, _| {
-                if !element.tag.eq_ignore_ascii_case("text") || element.renderer_guarded() {
+            let tree = Tree::new(doc);
+            walk(doc, |element, ancestors| {
+                if !element.tag.eq_ignore_ascii_case("text") {
                     return;
                 }
-                let attributes: Vec<&str> = ["max-lines", "overflow"]
-                    .into_iter()
-                    .filter(|name| find_attr(element, name).is_some())
-                    .collect();
-                if attributes.is_empty() || has_clamp_fallback(project, doc, element) {
+                if element.renderer_guarded() {
+                    return;
+                }
+                // 只看真正起截断作用的写法：`overflow="visible"`、`max-lines="0"`
+                // 在两个渲染器下表现一致，报出来是噪音。
+                let attributes = truncating_attributes(element);
+                if attributes.is_empty() || has_webview_fallback(project, &tree, element, ancestors)
+                {
                     return;
                 }
                 let written = attributes
@@ -74,54 +79,76 @@ impl Rule for TextTruncation {
     }
 }
 
-/// 元素上是否已经有一处 `-webkit-line-clamp` 兜底（样式表按 class 文本命中的，
-/// 或内联 `style` 里写的）。
-fn has_clamp_fallback(project: &Project, doc: &WxmlDoc, element: &WxmlElement) -> bool {
-    if find_attr(element, "style").is_some_and(|attr| {
-        attr.value
-            .as_deref()
-            .is_some_and(|style| style.contains(CLAMP_FALLBACK))
-    }) {
-        return true;
+/// 元素上真正会起截断作用的属性。
+///
+/// `max-lines="0"` / `overflow="visible"` / `overflow="scroll"` 在两个渲染器下
+/// 表现一致，不算截断。动态值（`max-lines="{{n}}"`）按可能截断处理。
+fn truncating_attributes(element: &WxmlElement) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if let Some(attr) = find_attr(element, "max-lines") {
+        let meaningful = match attr.value.as_deref() {
+            Some(value) => value.trim().parse::<u32>().is_ok_and(|lines| lines > 0),
+            // 动态取值：可能是任何行数。
+            None => true,
+        };
+        if meaningful {
+            out.push("max-lines");
+        }
     }
-    let classes = classes_of(element);
-    if classes.is_empty() {
-        return false;
+    if let Some(attr) = find_attr(element, "overflow") {
+        let meaningful = match attr.value.as_deref() {
+            Some(value) => matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "ellipsis" | "hidden" | "clip"
+            ),
+            None => true,
+        };
+        if meaningful {
+            out.push("overflow");
+        }
     }
-    project.styles.iter().any(|sheet| {
-        sheet_covers(sheet, project, doc.path())
-            && sheet.doc.rules.iter().any(|rule| {
-                rule.declarations
-                    .iter()
-                    .any(|decl| decl.name.eq_ignore_ascii_case(CLAMP_FALLBACK))
-                    && rule.selectors.iter().any(|selector| {
-                        classes
-                            .iter()
-                            .any(|class| selector.text.contains(class.as_str()))
-                    })
-            })
-    })
+    out
 }
 
-/// 元素 `class` 里静态可知的词。
-fn classes_of(element: &WxmlElement) -> Vec<String> {
-    let Some(attribute) = find_attr(element, "class") else {
-        return Vec::new();
+/// WebView 侧是否已经自己实现了截断：多行用 `-webkit-line-clamp`，单行用
+/// `white-space: nowrap` + `overflow: hidden` + `text-overflow: ellipsis`。
+///
+/// 自身与任一祖先都算：祖先被 clamp 时内层文本同样被裁掉。选择器匹配走 `Tree`，
+/// 不用类名字串比——`class="title"` 不能因为存在 `.subtitle` 就静音。
+fn has_webview_fallback(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    ancestors: &[&WxmlElement],
+) -> bool {
+    std::iter::once(element)
+        .chain(ancestors.iter().rev().copied())
+        .any(|candidate| {
+            let clamped = resolved_property(project, tree, candidate, "-webkit-line-clamp")
+                .is_some_and(|resolved| {
+                    resolved
+                        .value
+                        .trim()
+                        .parse::<u32>()
+                        .is_ok_and(|lines| lines > 0)
+                });
+            clamped || single_line_ellipsis(project, tree, candidate)
+        })
+}
+
+fn single_line_ellipsis(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
+    let is = |property: &str, expected: &str| {
+        resolved_property(project, tree, element, property)
+            .is_some_and(|resolved| resolved.value.trim().eq_ignore_ascii_case(expected))
     };
-    let mut classes: Vec<String> = attribute
-        .class_tokens
-        .as_ref()
-        .map(|tokens| tokens.definite.clone())
-        .unwrap_or_default();
-    classes.extend(
-        attribute
-            .value
-            .as_deref()
-            .unwrap_or_default()
-            .split_whitespace()
-            .map(str::to_string),
-    );
-    classes
+    is("white-space", "nowrap")
+        && matches!(
+            resolved_property(project, tree, element, "overflow")
+                .as_ref()
+                .map(|resolved| resolved.value.trim().to_ascii_lowercase()),
+            Some(value) if value == "hidden" || value == "clip"
+        )
+        && is("text-overflow", "ellipsis")
 }
 
 #[cfg(test)]
@@ -166,9 +193,45 @@ mod tests {
         );
         fixture.write(
             "pages/index/index.wxss",
-            ".webview .desc { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }",
+            ".desc { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }",
         );
         assert!(check(&fixture).is_empty());
+    }
+
+    #[test]
+    fn single_line_fallback_silences() {
+        let fixture = project(
+            "webview/single-line",
+            "<view><text class=\"desc\" overflow=\"ellipsis\">a</text></view>",
+        );
+        fixture.write(
+            "pages/index/index.wxss",
+            ".desc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }",
+        );
+        assert!(check(&fixture).is_empty());
+    }
+
+    #[test]
+    fn similar_class_name_does_not_silence() {
+        // 旧实现用类名字串包含：`.subtitle` 会把 `class="title"` 误消音。
+        let fixture = project(
+            "webview/prefix-class",
+            "<view><text class=\"title\" max-lines=\"2\">a</text></view>",
+        );
+        fixture.write(
+            "pages/index/index.wxss",
+            ".subtitle { -webkit-line-clamp: 2; }",
+        );
+        assert_eq!(check(&fixture).len(), 1);
+    }
+
+    #[test]
+    fn non_truncating_values_are_fine() {
+        let diagnostics = check(&project(
+            "webview/visible",
+            "<view><text overflow=\"visible\">a</text><text max-lines=\"0\">b</text></view>",
+        ));
+        assert!(diagnostics.is_empty());
     }
 
     #[test]

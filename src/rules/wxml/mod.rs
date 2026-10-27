@@ -71,10 +71,46 @@ pub(crate) fn wxml_files(project: &Project) -> impl Iterator<Item = &str> {
         .filter(move |path| seen.insert(*path))
 }
 
+/// 每个（未 opt-out 的）页面的 WXML 路径集合：首项是该页面自己，其后是它可达组件的 WXML。
+///
+/// 跨文件的元素级检查（fixed / scroll-view 高度 / 隐含颜色）都要这一份扇出；
+/// 解析结果由调用方按路径缓存，多个页面共用组件时只解析一次。
+pub(crate) fn page_wxml_groups(project: &Project) -> Vec<(&str, Vec<String>)> {
+    project
+        .pages
+        .iter()
+        .filter(|page| !page.opted_out)
+        .filter_map(|page| {
+            let page_wxml = page.files.wxml.as_deref()?;
+            let mut paths = vec![page_wxml.to_string()];
+            paths.extend(project.page_components(&page.route).into_iter().filter_map(
+                |component| {
+                    project
+                        .components
+                        .iter()
+                        .find(|unit| unit.path == component)
+                        .and_then(|unit| unit.files.wxml.clone())
+                },
+            ));
+            Some((page_wxml, paths))
+        })
+        .collect()
+}
+
 pub(crate) fn load_doc(project: &Project, path: &str) -> Option<WxmlDoc> {
     let source = fs::read_to_string(project.abs(path)).ok()?;
     let empty = crate::input::env::Env::default();
     let mut doc = wxml::parse(path, &source, project.env(path).unwrap_or(&empty)).ok()?;
+    doc.fragment = project.template_files.iter().any(|file| file == path);
+    Some(doc)
+}
+
+/// 用空常量环境解析：保留所有 `wx:if` 分支，用于「只数引用、不看可达」的检查。
+///
+/// 位置与折叠后的文档完全一致（折叠只丢分支，不移动元素）。
+pub(crate) fn load_doc_unfolded(project: &Project, path: &str) -> Option<WxmlDoc> {
+    let source = fs::read_to_string(project.abs(path)).ok()?;
+    let mut doc = wxml::parse(path, &source, &crate::input::env::Env::default()).ok()?;
     doc.fragment = project.template_files.iter().any(|file| file == path);
     Some(doc)
 }

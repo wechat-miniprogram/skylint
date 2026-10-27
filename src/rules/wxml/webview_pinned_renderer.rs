@@ -21,10 +21,10 @@
 use crate::diag::Severity;
 use crate::input::env::Lit;
 use crate::input::wxml::WxmlElement;
-use crate::project::{Project, Scope};
+use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, Target};
 
-use super::{element_diagnostic, load_doc, walk, wxml_files};
+use super::{element_diagnostic, load_doc, load_doc_unfolded, walk, wxml_files};
 
 pub const ID: &str = "webview/pinned-renderer";
 
@@ -53,7 +53,12 @@ impl Rule for PinnedRenderer {
             let Some(Lit::Str(pinned)) = env.get("renderer") else {
                 continue;
             };
-            let Some(doc) = load_doc(project, path) else {
+            // `renderer` 只可能是这两个值；业务自己的同名属性不当成渲染后端。
+            if pinned != "skyline" && pinned != "webview" {
+                continue;
+            }
+            // 数「按它分叉」的引用要用未折叠的文档：折叠后另一侧分支就不在了。
+            let Some(doc) = load_doc_unfolded(project, path) else {
                 continue;
             };
             let mut mentions = Vec::new();
@@ -70,7 +75,7 @@ impl Rule for PinnedRenderer {
             if pinned != "skyline" && !reached_from_skyline_page(project, path) {
                 continue;
             }
-            let own = own_script_pins(project, path);
+            let own = script_pin(project, path).as_deref() == Some(pinned);
             let source = if own {
                 "单元的 `properties` 默认值"
             } else {
@@ -82,6 +87,12 @@ impl Rule for PinnedRenderer {
             } else {
                 format!("，调用处：{callers}")
             };
+            let consequence = if pinned == "skyline" {
+                "回退到 WebView 时这些分支会全部判错".to_string()
+            } else {
+                "被 Skyline 页面使用时，它仍按 WebView 分支渲染，Skyline 侧的布局与截断都不会生效"
+                    .to_string()
+            };
             out.push(
                 element_diagnostic(
                     ID,
@@ -90,7 +101,7 @@ impl Rule for PinnedRenderer {
                     doc.path(),
                     Severity::Warning,
                     format!(
-                        "本单元的 `renderer` 被固定成 `{pinned}`（{source}{where_}），共有 {} 处按它分叉；回退到 WebView 时这些分支会全部判错",
+                        "本单元的 `renderer` 被固定成 `{pinned}`（{source}{where_}），共有 {} 处按它分叉；{consequence}",
                         mentions.len()
                     ),
                 )
@@ -103,30 +114,20 @@ impl Rule for PinnedRenderer {
     }
 }
 
-/// 单元自己的脚本里是否有 `renderer` 的字面量（`properties` 默认值）。
+/// 单元自己的脚本里 `renderer` 的常量值（`properties` 默认值）。
 ///
-/// 用来区分「常量来自本单元脚本」与「来自父级静态传值」——两者的修法不同。
-fn own_script_pins(project: &Project, wxml_path: &str) -> bool {
-    let scope = unit_scope(project, wxml_path);
-    project.scripts.iter().any(|file| {
-        Some(&file.scope) == scope.as_ref()
-            && matches!(file.doc.constants().get("renderer"), Some(Lit::Str(_)))
-    })
-}
-
-fn unit_scope(project: &Project, wxml_path: &str) -> Option<Scope> {
-    if let Some(page) = project
-        .pages
-        .iter()
-        .find(|page| page.files.wxml.as_deref() == Some(wxml_path))
-    {
-        return Some(Scope::Page(page.route.clone()));
-    }
+/// 用来区分「常量来自本单元脚本」与「来自父级静态传值」——两者的修法不同：
+/// 脚本默认值 `webview` 被父级改成 `skyline` 时，该改的是调用处。
+fn script_pin(project: &Project, wxml_path: &str) -> Option<String> {
+    let scope = project.scope_of(wxml_path);
     project
-        .components
+        .scripts
         .iter()
-        .find(|component| component.files.wxml.as_deref() == Some(wxml_path))
-        .map(|component| Scope::Component(component.path.clone()))
+        .find(|file| Some(&file.scope) == scope.as_ref())
+        .and_then(|file| match file.doc.constants().get("renderer") {
+            Some(Lit::Str(value)) => Some(value.clone()),
+            _ => None,
+        })
 }
 
 /// 全工程静态写死 `renderer` 的属性位置，按「父 WXML 路径」归组，带标签名。

@@ -94,7 +94,8 @@ impl Rule for RendererOptions {
     }
 
     fn target(&self) -> Target {
-        Target::Both
+        // `rendererOptions.skyline.*` 只有 Skyline 运行时读取；对齐开关对 WebView 无意义。
+        Target::Skyline
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {

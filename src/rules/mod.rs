@@ -43,8 +43,10 @@ pub enum Target {
 
 impl Target {
     /// 本方向是否要跑属于 `rule` 方向的规则。
+    ///
+    /// `Both` 作为检查方向表示「两个方向都跑」，不是一种规则归属。
     pub fn includes(self, rule: Target) -> bool {
-        rule == Target::Both || rule == self
+        self == Target::Both || rule == Target::Both || rule == self
     }
 
     pub fn as_str(self) -> &'static str {

@@ -20,6 +20,7 @@ use crate::rules::{Rule, RuleMeta};
 
 use crate::matcher::Tree;
 
+use super::branch::exclusive;
 use super::{display_values, element_diagnostic, is_flex_value, visit, walk};
 
 pub const ID: &str = "skyline/inline-run";
@@ -133,15 +134,7 @@ fn has_dynamic_style(element: &WxmlElement) -> bool {
 }
 
 /// 两个元素是否分属同一个 `wx:if` 的不同分支（不会同时渲染）。
-fn exclusive(left: &WxmlElement, right: &WxmlElement) -> bool {
-    left.branches.iter().any(|a| {
-        right
-            .branches
-            .iter()
-            .any(|b| a.group == b.group && a.arm != b.arm)
-    })
-}
-
+/// 与 `no_inline_text` 共用同一份判定。
 fn flush(
     doc: &WxmlDoc,
     run: &mut Vec<&WxmlElement>,

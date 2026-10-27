@@ -764,6 +764,60 @@ WidgetSpan 内部排版。因此原先计划的「`<text>` 子节点 display 收
 
 autofix；14 条只能运行时判定的条目；`app.json` 自动改写。
 
+### P12 评审收口：输入层与规则判据的一轮修正
+
+对 `54a69f5..HEAD` 的 13 个提交做了四条 lane 评审（基础层 / 正向 WXSS / 反向 webview / 重复与死代码），
+结论逐条回源码核对后落地。基线二进制是 `49b7c9c` 的 release 产物，六个参考工程正反两个方向逐字段 diff。
+
+**输入层（会影响全部规则 → 只允许「修错」不允许「改口径」）**
+
+| 问题 | 证据 | 修法 |
+|---|---|---|
+| `wx:if="false"` 被当成假 | 静态条件编成**字符串字面量**（`proc_gen/tag.rs:1016-1019` 的 `gen_lit_str`），`"false" ? 1 : 0` 为真；只有空值等价于没写属性（`parse/tag.rs:4386-4387`） | `condition_truthy` 只看 `!value.is_empty()` |
+| `renderer_guarded` 是整条链的并集 | `wx:if="{{a}}"` + `wx:elif="{{renderer==='skyline'}}"` 时，前者两支都会渲染，却被一起消音 | 每个 arm 只按**自己**的条件标；`else` 仅在链上有 renderer 条件时标 |
+| 内联 `<template name>` 定义体继承单元 env | 定义体的数据作用域是 `<template is data="…">` 新建的对象（`proc_gen/tag.rs:1275-1287`），看不到 data / properties | 定义体一律用空 env 解析（`load_doc_unfolded` 同源） |
+| `this.data['x'] =` / `Object.assign(this.data, …)` 不置脏 | `js.rs` 只匹配 `this.data =` 与 `this.data.x =`，注释声称处理了前者 | 补 computed member（字面量键置脏、其余置 `dirty_all`）与 `Object.assign` |
+| `+` 展平丢左结合 | `1 + 2 + 'px'` 得 `"12px"`，JS 是 `"3px"` | 常量拼接按 JS 语义：先求和纯数字前缀再逐段拼接 |
+
+同时删掉四个零调用的 pub API（`Tree::doc` / `Tree::parseable` / `Subject::has_locator` / `Env::iter`），
+把「page → 可达组件 → load_doc」三段逐字重复的扇出循环收成 `rules/wxml::page_wxml_groups`，
+把「WXML 路径 → 单元」的两份查找收成 `Project::scope_of`，`inline_run` / `no_inline_text` 的互斥判定
+合并到 `branch::exclusive_branches`。
+
+**规则判据**
+
+| 规则 | 原判据的问题 | 现在 |
+|---|---|---|
+| `webview/text-truncation` | ① 只要 `max-lines` / `overflow` 存在就报，`overflow="visible"`、`max-lines="0"` 两端一致；② 消音用 `selector.text.contains(class)` 子串匹配（`.btn` 命中 `.btn-primary`），且不看级联；③ 单行 `white-space: nowrap + overflow: hidden + text-overflow` 兜底不认 | ① 按取值筛；② 走 `resolved_property`（选择器匹配 + 后写覆盖）；③ 单行三件套与祖先的 `-webkit-line-clamp` 都算兜底 |
+| `skyline/scroll-view-height` | ① 只看元素自身 `height`，`100vh > flex:1 > scroll-view` 这种标准布局被误报；② 内联 `style="height: {{panelHeight}}px"` 读不到值，把运行时高度读成没有 | ① 沿祖先上溯（父子项 `flex-grow > 0` + 列容器）；② 动态内联 `style` 一律按确定高度（宁可漏报） |
+| `skyline/implicit-color` | `border: 0` / `border: none` / longhand 已给 `color` / `page { color }` / `var()` 都判错 | 跳过不可见声明与 longhand 覆盖；`page`/`:host` 基色参与；`var()`/`env()` 视为判不了 |
+| `skyline/legacy-flexbox` | ① 取**最后一条** `display` 而不看能否解析（`flex` 后跟 `-webkit-box` 时按后者报）；② 文案与等级把多行省略惯用法说成「整块布局坏掉」 | ① 取最后一条**可解析**的 `display`；② 带 `-webkit-line-clamp` 时改讲「多行省略失效」并给 `<text max-lines>` 修法 |
+| `skyline/dead-selector` | 逐文档独立求值，`app.wxss` 里 `.page-cell .cell-bd`（一半在页面、一半在组件）必判死 | 多文档时若没有任何一份同时含全部类名，则不判死 |
+| `skyline/unsupported-value` | `vertical-align: 0` 漏报（`is_length("0")` 为假），而 fp 只有关键字分支 | 无单位零算 `<length>` |
+| `webview/tabbar-renderer` | 只认精确小写 `"skyline"` | 只要不是 `"webview"` 都报（适配器就是按不等判断抛异常） |
+| `skyline/lib-version` / `skyline/renderer-options` | 标 `Both` 但判据只对 Skyline 有意义，反向是噪音 | 改回 `Skyline`（同时修了 `Target::includes`：`Both` 作为检查方向时也要跑单方向规则） |
+
+**明确不做的**
+
+| 候选 | 理由 |
+|---|---|
+| `.write-comment.skyline` 这类「修饰类只在动态 class 里出现」的死选择器 | 它在 Skyline 那一支是活的；要报必须先按 target 求值，否则就是把渲染器差异当写错 |
+| `hover-class` 上的复合选择器 | 悬停时才挂类，静态判不出它能否与其余条件同时成立——维持「不算确定存在」 |
+| `fixed-layer` 的离屏画布豁免 | 用户口径是「有 fixed 无整数 z-index 就报」，离屏海报画布（`top: -9999px`）仍照报，属已接受的噪音 |
+
+**验收**（六工程，两个方向逐字段 diff，`49b7c9c` → 本轮）
+
+正向：novel 23 → 23、skit_1 27 → 27（仅文案）、businessview 326 → 326（+3 legacy、+2 `vertical-align: 0`、−5 `implicit-color` 误报）、
+plugin_1 175 → 173、plugin_2 170 → 168（各 −2 条动态内联 `height` 的 scroll-view 误报）、skit-player 175 → 170（−3 implicit-color 误报、−2 scroll-view 误报）。
+
+反向：novel 19 → 16、businessview 6 → 0、skit_1 23 → 15、plugin_1 56 → 25（+1 为 `book_name` 的 clamp 被 `.skyline` `unset` 掉的真实漏报）、
+plugin_2 65 → 33、skit-player 3 → 3。每一条消失都回源码确认过兜底真实存在：
+plugin_1/2 的 32/33 条落在 `cover` / `contents` / `recommend` 系列的 `-webkit-line-clamp` 或单行三件套上；
+skit_1 的 8 条落在同组件 stylesheet 里定义的 `.ellipsis`（`slide-tips.less:1` 等）上；
+唯一保留的 `logout-dialog.wxml:9` 同样写 `class="username ellipsis"`，但 `logout-dialog` 自己没有 `.ellipsis` 定义——组件样式隔离下它是真缺陷。
+
+测试 710 + 30 + 3 全绿，clippy 0，`docs/RULES.md` 已重生成（53 条，error 15）。
+
 ## 5. 五个视图与规则族
 
 | 视图 | 来源 | 服务哪族规则 |

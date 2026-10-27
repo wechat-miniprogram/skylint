@@ -153,9 +153,11 @@ fn dead(
     }
 
     let mut unknown = false;
-    // 选择器里的类名在文档里「确定出现」的集合：只在动态 class / `hover-class` 里
-    // 可能出现的类不算。
+    // 选择器里的类名「确定出现」的集合：只在动态 class / `hover-class` 里可能出现的
+    // 类不算（静态判不出那个状态什么时候成立）。
     let mut present: HashSet<String> = HashSet::new();
+    // 一个文档里同时出现全部类名的路径：跨文档的同名类不算「可能命中同一棵子树」。
+    let mut together: Vec<&str> = Vec::new();
     for path in &paths {
         if declares_generics(project, path) {
             return None;
@@ -168,7 +170,12 @@ fn dead(
             // WXML 读不到 / 解析失败：这份文档里可能命中。
             return None;
         };
-        absorb_classes(doc, &mut present);
+        let mut local: HashSet<String> = HashSet::new();
+        absorb_classes(doc, &mut local);
+        if classes.iter().all(|name| local.contains(name)) {
+            together.push(path);
+        }
+        present.extend(local);
         match Tree::new(doc).any_match(selector, Dialect::WebView) {
             Tri::Yes => return None,
             Tri::Unknown => unknown = true,
@@ -178,28 +185,34 @@ fn dead(
     if unknown {
         return None;
     }
-    // 类名一个都不命中不值得报：完全没用到的 CSS 属于 dead code（#1443 排除），
-    // 只在动态 class / `hover-class` 里出现的类静态判不出。只有「类名都确定存在、
-    // 关系却对不上」才是选择器写错。
+    // 类名一个都不命中不值得报：完全没用到的 CSS 属于 dead code（#1443 排除）。
+    // 只有「类名都确定存在、关系却对不上」才是选择器写错。
     if !classes.iter().all(|name| present.contains(name)) {
+        return None;
+    }
+    // 全局样式表可以跨组件命中（`.page-cell .cell-bd` 一半在页面、一半在组件里）：
+    // 这类选择器的各段分散在不同文档时，单文档求值必然不命中，不能据此判死。
+    if together.is_empty() && paths.len() > 1 {
         return None;
     }
     Some(paths.len())
 }
 
-/// 收集文档里「确定出现」的 class 名：静态 `class` 的字面词，以及动态 `class`
-/// 表达式在任何取值下都会出现的词。
-fn absorb_classes(doc: &WxmlDoc, out: &mut HashSet<String>) {
+/// 收集文档里「确定出现」的 class 名：任何取值下都在的词。
+///
+/// 动态 class 的候选词与 `hover-class` 的类都不算：它们只在某些状态下才挂上，
+/// 静态判不出那个状态会不会与选择器的其余条件同时成立。
+fn absorb_classes(doc: &WxmlDoc, definite: &mut HashSet<String>) {
     walk(doc, |element, _| {
         for attr in &element.attributes {
             if attr.name != "class" {
                 continue;
             }
             match &attr.class_tokens {
-                Some(tokens) => out.extend(tokens.definite.iter().cloned()),
+                Some(tokens) => definite.extend(tokens.definite.iter().cloned()),
                 None => {
                     if let Some(value) = &attr.value {
-                        out.extend(value.split_ascii_whitespace().map(str::to_owned));
+                        definite.extend(value.split_ascii_whitespace().map(str::to_owned));
                     }
                 }
             }
@@ -300,6 +313,42 @@ mod tests {
             "dead-unused",
             r#"<view class="a"/>"#,
             ".a .nowhere { color: red; }\n.nothing { color: red; }",
+        );
+        assert!(DeadSelector.check(&project).is_empty());
+    }
+
+    #[test]
+    fn global_selector_split_across_units_is_not_dead() {
+        // `app.wxss` 的选择器可以跨组件命中：`.cell` 在页面、`.cell-bd` 在组件里。
+        let fixture = Fixture::new("dead-global-split");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("app.wxss", ".cell .cell-bd { color: red; }")
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"card":"/components/card/index"}}"#,
+            )
+            .write("pages/index/index.wxml", r#"<view class="cell"/><card/>"#)
+            .write("pages/index/index.wxss", "")
+            .write("components/card/index.json", "{}")
+            .write("components/card/index.wxml", r#"<view class="cell-bd"/>"#)
+            .write("components/card/index.wxss", "");
+        let project = fixture.project();
+        assert!(DeadSelector.check(&project).is_empty());
+    }
+
+    #[test]
+    fn modifier_only_on_one_renderer_branch_is_not_dead() {
+        // `skyline` 类只在 `renderer` 分叉的一支里挂上：在那一支里它是活的，
+        // 静态断言「永不命中」等于把渲染器差异当成写错。
+        let (_f, project) = page(
+            "dead-dynamic-modifier",
+            r#"<view class="write-comment {{renderer==='skyline'?'skyline':''}}"/>"#,
+            ".write-comment.skyline { color: red; }",
         );
         assert!(DeadSelector.check(&project).is_empty());
     }

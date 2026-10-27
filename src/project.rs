@@ -333,6 +333,21 @@ impl Project {
     /// `rendererOptions.skyline.defaultDisplayBlock: true` 时 Skyline 的默认值与 WebView
     /// 对齐（`display: block`、`flex-direction: row`、`align-items: normal`），所以「依赖
     /// Skyline 默认 flex/column」这类规则在这个作用域下不成立。页面级配置优先于 app 级。
+    /// WXML 文件所属单元；被 `@import` / `@include` 的模板片段不属于任何单元。
+    pub fn scope_of(&self, wxml: &str) -> Option<Scope> {
+        if let Some(page) = self
+            .pages
+            .iter()
+            .find(|page| page.files.wxml.as_deref() == Some(wxml))
+        {
+            return Some(Scope::Page(page.route.clone()));
+        }
+        self.components
+            .iter()
+            .find(|component| component.files.wxml.as_deref() == Some(wxml))
+            .map(|component| Scope::Component(component.path.clone()))
+    }
+
     pub fn renders_as_block(&self, scope: &Scope) -> bool {
         let app = self.app_display_block();
         match scope {

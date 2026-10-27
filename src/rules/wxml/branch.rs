@@ -5,18 +5,20 @@
 //! 与「互斥分支里的两个候选」，口径必须一致，否则同一个写法会在不同规则里得出
 //! 相反结论。
 
-use crate::input::wxml::{WxmlElement, WxmlNode};
+use crate::input::wxml::{Branch, WxmlElement, WxmlNode};
 
 /// 两个元素是否分属同一个 `wx:if` 的不同分支：互斥，运行时不会同时渲染。
 ///
 /// 只要有一层 `wx:if` 把两者分到不同分支就不可能同时渲染；嵌套时靠分支栈逐层
 /// 比对，任一层互斥即互斥。
 pub(crate) fn exclusive(a: &WxmlElement, b: &WxmlElement) -> bool {
-    a.branches.iter().any(|left| {
-        b.branches
-            .iter()
-            .any(|right| left.group == right.group && left.arm != right.arm)
-    })
+    exclusive_branches(&a.branches, &b.branches)
+}
+
+/// 同上，但直接比分支栈——`WxmlText` 与 `WxmlElement` 都能用。
+pub(crate) fn exclusive_branches(left: &[Branch], right: &[Branch]) -> bool {
+    left.iter()
+        .any(|a| right.iter().any(|b| a.group == b.group && a.arm != b.arm))
 }
 
 pub(crate) fn element_children(element: &WxmlElement) -> impl Iterator<Item = &WxmlElement> {

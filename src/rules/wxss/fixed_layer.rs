@@ -28,7 +28,7 @@ use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{load_doc, resolved_property, walk};
+use crate::rules::wxml::{load_doc, page_wxml_groups, resolved_property, walk};
 use crate::rules::wxss::value_util::at_declaration;
 use crate::{Diagnostic, Severity};
 
@@ -57,24 +57,7 @@ impl Rule for FixedLayer {
         let mut reported: HashSet<(String, usize, usize)> = HashSet::new();
         let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
 
-        for page in &project.pages {
-            if page.opted_out {
-                continue;
-            }
-            let Some(page_wxml) = page.files.wxml.as_deref() else {
-                continue;
-            };
-            let mut paths = vec![page_wxml.to_string()];
-            paths.extend(project.page_components(&page.route).into_iter().filter_map(
-                |component| {
-                    project
-                        .components
-                        .iter()
-                        .find(|unit| unit.path == component)
-                        .and_then(|unit| unit.files.wxml.clone())
-                },
-            ));
-
+        for (_, paths) in page_wxml_groups(project) {
             for path in &paths {
                 if !docs.contains_key(path) {
                     docs.insert(path.clone(), load_doc(project, path));
