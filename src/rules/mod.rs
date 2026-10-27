@@ -58,6 +58,7 @@ impl Registry {
             Box::new(wxss::FixedLayer),
             Box::new(wxss::TextOverflowEllipsis),
             Box::new(wxss::AttributeSelector),
+            Box::new(wxss::DeadSelector),
             Box::new(wxss::TagSelectorIsolation),
             Box::new(wxss::UnsupportedProperty),
             Box::new(wxss::UnsupportedValue),

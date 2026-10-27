@@ -1,26 +1,25 @@
-//! `skyline/fixed-layer`：`position: fixed` 元素在 Skyline 下被提升成独立一层，
-//! 盖住 z-index 更高的普通定位元素。
+//! `skyline/fixed-layer`：`position: fixed` 元素在 Skyline 下被提升成独立层，
+//! 没有有效 `z-index` 时它和页面内容的先后不可控。
 //!
 //! 引擎把 fixed 节点从原位换成一个 replacer，把节点本身 append 到 root container
 //! （`shadow/shadow_tree.cc:683-706` 收集、`widgets/widget_operation.cc:492-546`
 //! 的 `UpdatePositionFixedWidgetOperation::Apply` 里 `InsertBefore(replacer)` +
-//! `root_container_widget->AppendChild(widget)`）。root container 的绘制顺序按子节点
-//! z-index 稳定排序（`package/skyline/lib/rendering/stacking.dart:44-60`），而整个页面
-//! 是它的**一个**子节点——fixed 节点的 z-index 因此只和「页面根」这一层比较，页面内部
-//! 那些 z-index 200 / 999 的浮层全在它之下。
+//! `root_container_widget->AppendChild(widget)`）。root container 内按子节点的
+//! z-index 稳定排序（`package/skyline/lib/rendering/stacking.dart:44-60`），而整个
+//! 页面只是它的**一个**子节点：fixed 节点与页面根平级，页面内部的层级关系整体压在
+//! 页面根之下。它只有写了自己的 z-index 才能和页面根分出先后；两者都是 `auto` 时
+//! 顺序由引擎的 append 时机决定，静态不可控——页面里 z-index 200 / 999 的浮层既可能
+//! 盖住它，也可能被它盖住。这就是本规则报的点。
 //!
-//! WebView 里两者在同一个 stacking context 里按 z-index 比较，所以「fixed 盖住
-//! z-index 更高的浮层」只在 Skyline 发生。真实适配里四处踩过这个坑，修法都是把遮罩
-//! 从 fixed 改成 absolute（见 weapp-novel-plugin 的
-//! `skylinenovel/index.less:960,2132,2882` 三处注释与「返回按钮点不动」）。
+//! 判据只有一条：解析后的 `position` 是 `fixed`，且解析不出有效的 `z-index`
+//! （无声明 / `auto` / 非整数 / 变量或插值都算没有）。用户明确要求误报优于漏报，
+//! 所以这里不做任何额外收窄。
 //!
-//! 误报边界（两条都要满足才报）：
-//! - 只判铺满视口的 fixed 遮罩（`top: 0` + `left: 0` 且另一维撑满）。固定边条、底栏、
-//!   离屏挂载的画布/快照同样会被提升，但是否与更高 z-index 的浮层重叠静态判不了，
-//!   报出来全是噪音——真实工程里这几类占绝大多数。
-//! - 只判同一个父节点下的兄弟浮层。跨文档（页面 ↔ 组件）不判：组件里的 fixed 提升到
-//!   的是组件自己的 root container，页面浮层仍在它之上（历史 bug `8fc12686` 正是
-//!   「fixed 在组件、被盖的 z-250 在页面」，当时要靠抬高 z-index 才盖住）。
+//! 为什么不再做层比较：旧实现试图找出「被这个 fixed 盖住的、z-index 更高的同父兄弟
+//! 浮层」，为此要求 fixed 铺满视口（`top`/`left: 0` 且另一维撑满）。实测六个工程
+//! 0 命中——真实工程里 fixed 很少写成这种严格形态（多用 `inset`、`100%`、安全区偏移），
+//! 收窄后等于没有覆盖；跨文档比较同样不可靠（组件里的 fixed 提升到组件自己的 root
+//! container，页面浮层仍在它之上，见历史 bug `8fc12686`）。
 
 use std::collections::{HashMap, HashSet};
 
@@ -33,24 +32,14 @@ use crate::rules::wxml::{load_doc, resolved_property, walk};
 use crate::rules::wxss::value_util::at_declaration;
 use crate::{Diagnostic, Severity};
 
+const MESSAGE: &str = "`position: fixed` 在 Skyline 下被提升成独立层、与页面根平级；这里没有有效的 `z-index`，它和整页内容的先后不可控";
+
+const HELP: &str = "需要它固定在最上层时显式给一个足够大的 `z-index`（例如 `z-index: 999`），否则它的层级取决于引擎把节点挂到 root container 的时机";
+
 pub struct FixedLayer;
 
 impl FixedLayer {
     pub const ID: &'static str = "skyline/fixed-layer";
-}
-
-/// 参与比较的一层：定位元素、它的 z-index、它的祖先链（判断层关系用）。
-struct Layer<'a> {
-    doc: &'a WxmlDoc,
-    element: &'a WxmlElement,
-    parent: Option<*const WxmlElement>,
-    z: i64,
-    fixed: bool,
-    /// fixed 层的 `position: fixed` 声明（内联 `style` 时为空，报在元素上）。
-    origin: Option<(
-        &'a crate::project::StyleSheet,
-        &'a crate::input::wxss::WxssDeclaration,
-    )>,
 }
 
 impl Rule for FixedLayer {
@@ -58,13 +47,14 @@ impl Rule for FixedLayer {
         RuleMeta {
             id: FixedLayer::ID,
             severity: Severity::Warning,
-            description: "`position: fixed` 在 Skyline 下被提升成独立层，会盖住 z-index 更高的浮层",
+            description: "`position: fixed` 在 Skyline 下被提升成与页面根平级的独立层，没有有效 `z-index` 时先后不可控",
         }
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut out = Vec::new();
-        let mut reported: HashSet<(String, usize)> = HashSet::new();
+        // 同一个位置只报一次：样式表按声明偏移，内联 `style` 按元素起始位置。
+        let mut reported: HashSet<(String, usize, usize)> = HashSet::new();
         let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
 
         for page in &project.pages {
@@ -95,281 +85,237 @@ impl Rule for FixedLayer {
                 .filter_map(|path| docs.get(path).and_then(Option::as_ref))
                 .collect();
 
-            let mut layers: Vec<Layer<'_>> = Vec::new();
-            for doc in loaded.iter().copied() {
+            for doc in loaded {
                 let tree = Tree::new(doc);
-                walk(doc, |element, ancestors| {
+                walk(doc, |element, _| {
                     let Some(position) = resolved_property(project, &tree, element, "position")
-                        .map(|resolved| resolved.value.trim().to_ascii_lowercase())
                     else {
                         return;
                     };
-                    let fixed = position == "fixed";
-                    // `static` 上的 z-index 在两种渲染器下都不参与层叠。
-                    if !fixed && !matches!(position.as_str(), "absolute" | "relative" | "sticky") {
+                    if !clean_value(&position.value).eq_ignore_ascii_case("fixed") {
                         return;
                     }
-                    let resolved = resolved_property(project, &tree, element, "z-index");
-                    let z = resolved
-                        .as_ref()
-                        .and_then(|resolved| resolved.value.trim().parse().ok())
-                        .unwrap_or(0);
-                    if fixed && !covers_viewport(project, &tree, element) {
+                    if has_z_index(project, &tree, element) {
                         return;
                     }
-                    // 被盖的那一层必须静态可见：它和遮罩是否同时出现，静态只有这一种判法。
-                    if !fixed && !statically_visible(element, ancestors) {
-                        return;
-                    }
-                    layers.push(Layer {
-                        doc,
-                        element,
-                        parent: ancestors.last().map(|a| *a as *const _),
-                        z,
-                        fixed,
-                        origin: fixed
-                            .then(|| {
-                                resolved_property(project, &tree, element, "position").and_then(
-                                    |resolved| Some((resolved.sheet?, resolved.declaration?)),
-                                )
-                            })
-                            .flatten(),
-                    });
-                });
-            }
 
-            for (index, fixed) in layers.iter().enumerate().filter(|(_, l)| l.fixed) {
-                let Some(above) = layers
-                    .iter()
-                    .enumerate()
-                    .filter(|(other, layer)| *other != index && !layer.fixed && layer.z > fixed.z)
-                    .filter(|(_, layer)| !related(layer, fixed))
-                    .max_by_key(|(_, layer)| layer.z)
-                    .map(|(_, layer)| layer)
-                else {
-                    continue;
-                };
-                let message = format!(
-                    "`position: fixed` 在 Skyline 下被提升成独立层，会盖住 z-index 为 {} 的 {}；WebView 下两者在同一层按 z-index 比较，是它盖住这个 fixed 元素",
-                    above.z,
-                    describe(above.element)
-                );
-                let help = "遮罩 / 弹层顶层改用 `position: absolute` 放进页面的 relative 容器，才能与其它浮层比较 z-index；必须 fixed 时把它和浮层放在同一父节点下并给最高 z-index";
-                let diagnostic = match fixed.origin {
-                    Some((sheet, declaration)) => {
-                        if !reported.insert((sheet.doc.path().to_string(), declaration.offset)) {
-                            continue;
+                    let diagnostic = match position.sheet.zip(position.declaration) {
+                        Some((sheet, declaration)) => {
+                            if !reported.insert((
+                                sheet.doc.path().to_string(),
+                                declaration.offset,
+                                0,
+                            )) {
+                                return;
+                            }
+                            at_declaration(
+                                Self::ID,
+                                &sheet.doc,
+                                declaration,
+                                Severity::Warning,
+                                MESSAGE,
+                                HELP,
+                            )
                         }
-                        at_declaration(
-                            Self::ID,
-                            &sheet.doc,
-                            declaration,
-                            Severity::Warning,
-                            message,
-                            help,
-                        )
-                    }
-                    None => {
-                        if !reported.insert((fixed.doc.path().to_string(), 0)) {
-                            continue;
+                        // 内联 `style`：没有声明可落，报在元素开始标签上。
+                        None => {
+                            let (line, column) = doc.position(element.tag_start);
+                            if !reported.insert((
+                                doc.path().to_string(),
+                                line as usize,
+                                column as usize,
+                            )) {
+                                return;
+                            }
+                            Diagnostic::new(
+                                Self::ID,
+                                Severity::Warning,
+                                MESSAGE,
+                                doc.path(),
+                                line,
+                                column,
+                            )
+                            .help(HELP)
                         }
-                        Diagnostic::new(
-                            Self::ID,
-                            Severity::Warning,
-                            message,
-                            fixed.doc.path(),
-                            fixed.element.tag_start.line,
-                            fixed.element.tag_start.utf16_col,
-                        )
-                        .help(help)
-                    }
-                };
-                out.push(diagnostic);
+                    };
+                    out.push(diagnostic);
+                });
             }
         }
         out
     }
 }
 
-/// 元素在静态视角下始终可见：不在条件分支里，自己与祖先都没有运行时改写的 `class`。
+/// 元素是否有一个能参与层叠的 `z-index`：解析出整数才算。
 ///
-/// 浮层几乎都由 `class` 或 `wx:if` 驱动显隐（`.option {{showOption ? 'show' : ''}}`），
-/// 这种层和遮罩是否同时出现静态判不了——`showContents` 与 `showOption` 互斥这类事实
-/// 写在 JS 里。只有「始终可见」的层（顶栏、导航栏）能确定会被遮罩盖住。
-fn statically_visible(element: &WxmlElement, ancestors: &[&WxmlElement]) -> bool {
-    std::iter::once(element)
-        .chain(ancestors.iter().copied())
-        .all(|node| {
-            node.branches.is_empty()
-                && node.attributes.iter().all(|attr| {
-                    // `hidden` 是显隐开关；`class` 一旦含插值就可能被运行时改写。
-                    let toggles =
-                        matches!(attr.name.to_ascii_lowercase().as_str(), "hidden" | "class");
-                    !toggles || attr.is_static
-                })
-        })
+/// 无声明、`auto`、`calc(...)`、变量与插值一律视为没有。
+fn has_z_index(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
+    resolved_property(project, tree, element, "z-index")
+        .is_some_and(|resolved| clean_value(&resolved.value).parse::<i64>().is_ok())
 }
 
-/// fixed 元素是否铺满视口（遮罩层）。
+/// 去掉取值末尾的 `!important`。
 ///
-/// 只有遮罩层真正依赖 z-index 去和别的浮层分先后；装饰性的 fixed 元素
-/// （离屏挂载、固定边条）被提升一层也不会改变可见结果，报出来是噪音。
-fn covers_viewport(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
-    let value = |property: &str| {
-        resolved_property(project, tree, element, property)
-            .map(|resolved| resolved.value.trim().to_ascii_lowercase())
-            .unwrap_or_default()
-    };
-    let zero = |text: &str| matches!(text, "0" | "0px" | "0rpx" | "0%");
-    let full_width = zero(&value("left"))
-        && (zero(&value("right")) || value("width") == "100vw" || value("width") == "100%");
-    let full_height = zero(&value("top"))
-        && (zero(&value("bottom")) || value("height") == "100vh" || value("height") == "100%");
-    full_width && full_height
-}
-
-/// 只有同一个父节点下的兄弟浮层才按同一个 stacking context 比较。
-///
-/// 跨文档（页面 ↔ 组件）不判：组件里的 fixed 节点提升到的是组件自己的 root
-/// container，页面里的浮层仍然在它之上——历史 bug `8fc12686` 就是「fixed 在组件、
-/// 被盖的 z-250 在页面」，当时必须靠抬高 z-index 才盖住，说明跨文档并不发生提升。
-fn related(layer: &Layer<'_>, fixed: &Layer<'_>) -> bool {
-    !std::ptr::eq(layer.doc, fixed.doc) || layer.parent != fixed.parent
-}
-
-/// 诊断里指代一个元素：优先给类名，其次标签。
-fn describe(element: &WxmlElement) -> String {
-    let class = element
-        .attributes
-        .iter()
-        .find(|attr| attr.name == "class")
-        .and_then(|attr| attr.value.as_deref())
-        .map(str::trim)
-        .filter(|value| !value.is_empty() && !value.contains("{{"));
-    match class {
-        Some(class) => format!("<{} class=\"{class}\">", element.tag),
-        None => format!("<{}>", element.tag),
+/// 样式表解析器已在 `WxssDeclaration::value` 里剥掉它，内联 `style` 走的是纯文本
+/// 切分（`inline_value`），所以这里统一再剥一次。
+fn clean_value(value: &str) -> &str {
+    let value = value.trim();
+    let lower = value.to_ascii_lowercase();
+    match lower.strip_suffix("!important") {
+        Some(head) => value[..head.len()].trim_end(),
+        None => value,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::Diagnostic;
-    use crate::project::Project;
     use crate::rules::Rule;
     use crate::rules::testutil::Fixture;
 
     use super::FixedLayer;
 
-    /// 页面结构：一个容器里放遮罩与一个更高 z-index 的浮层。
-    const PAGE: &str = r#"<view class="page">
-  <view class="mask"/>
-  <view class="panel"/>
-</view>"#;
-
-    fn check(name: &str, wxss: &str) -> (Fixture, Project, Vec<Diagnostic>) {
-        let fixture = Fixture::wxml(name, PAGE);
+    fn check(name: &str, wxml: &str, wxss: &str) -> Vec<Diagnostic> {
+        let fixture = Fixture::wxml(name, wxml);
         fixture.write("pages/index/index.wxss", wxss);
         let project = fixture.project();
-        let diagnostics = FixedLayer.check(&project);
-        (fixture, project, diagnostics)
+        FixedLayer.check(&project)
+    }
+
+    const PAGE: &str = r#"<view class="page">
+  <view class="mask"/>
+</view>"#;
+
+    #[test]
+    fn fixed_without_z_index_is_reported() {
+        let diagnostics = check(
+            "fixed-layer-no-z",
+            PAGE,
+            ".mask { position: fixed; top: 0; left: 0; }",
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!((diagnostics[0].line, diagnostics[0].column), (1, 9));
+        assert!(diagnostics[0].message.contains("z-index"));
+        assert!(diagnostics[0].help.as_deref().unwrap_or("").contains("999"));
     }
 
     #[test]
-    fn fixed_mask_covering_higher_panel_is_reported() {
-        let (_f, _p, diagnostics) = check(
-            "fixed-layer-mask",
-            ".mask { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1; }
-             .panel { position: absolute; bottom: 0; z-index: 2; }",
+    fn fixed_with_numeric_z_index_is_not_reported() {
+        let diagnostics = check(
+            "fixed-layer-numeric-z",
+            PAGE,
+            ".mask { position: fixed; z-index: 999; }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn auto_z_index_counts_as_missing() {
+        let diagnostics = check(
+            "fixed-layer-auto-z",
+            PAGE,
+            ".mask { position: fixed; z-index: auto; }",
         );
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-        assert!(diagnostics[0].message.contains("z-index 为 2"));
-        assert!(diagnostics[0].message.contains("panel"));
+    }
+
+    #[test]
+    fn dynamic_z_index_counts_as_missing() {
+        // WXSS 里 `{{}}` 是语法错误（整个样式表解析失败），动态值只可能出现在内联
+        // `style` 里，见下面的用例。
+        let diagnostics = check(
+            "fixed-layer-dynamic-z",
+            PAGE,
+            ".mask { position: fixed; z-index: var(--layer); }",
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn inline_mustache_z_index_counts_as_missing() {
+        // `{{}}` 出现在 WXSS 里是语法错误（整个样式表解析失败），出现在内联 `style`
+        // 里时 WXML 解析器不提供字符串值；两种情况都只能当成「没有 z-index」。
+        let wxml = r#"<view class="page">
+  <view class="mask" style="z-index: {{layer}}"/>
+</view>"#;
+        let diagnostics = check(
+            "fixed-layer-inline-mustache",
+            wxml,
+            ".mask { position: fixed; }",
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert_eq!((diagnostics[0].line, diagnostics[0].column), (1, 9));
     }
 
     #[test]
-    fn fixed_mask_above_everything_is_not_reported() {
-        let (_f, _p, diagnostics) = check(
-            "fixed-layer-highest",
-            ".mask { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 9; }
-             .panel { position: absolute; bottom: 0; z-index: 2; }",
+    fn inline_fixed_style_is_reported_at_the_element() {
+        let wxml = r#"<view class="page">
+  <view style="position: fixed"/>
+</view>"#;
+        let diagnostics = check("fixed-layer-inline", wxml, "");
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!((diagnostics[0].line, diagnostics[0].column), (2, 4));
+        assert!(diagnostics[0].path.ends_with("pages/index/index.wxml"));
+    }
+
+    #[test]
+    fn inline_style_is_normalized_for_important() {
+        // 两个元素：一个带有效 z-index，一个没有；`!important` 不能影响判定。
+        let wxml = r#"<view class="page">
+  <view style="position: fixed !important; z-index: 10 !important"/>
+  <view style="position: fixed !important"/>
+</view>"#;
+        let diagnostics = check("fixed-layer-inline-important", wxml, "");
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!((diagnostics[0].line, diagnostics[0].column), (3, 4));
+    }
+
+    #[test]
+    fn non_fixed_positions_are_not_reported() {
+        let wxml = r#"<view class="page">
+  <view class="absolute"/>
+  <view class="relative"/>
+  <view class="sticky"/>
+  <view class="static"/>
+</view>"#;
+        let diagnostics = check(
+            "fixed-layer-other-positions",
+            wxml,
+            ".absolute { position: absolute; }
+             .relative { position: relative; }
+             .sticky { position: sticky; }
+             .static { z-index: 1; }",
         );
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     #[test]
-    fn non_fullscreen_fixed_element_is_skipped() {
-        // 离屏挂载 / 固定边条：同样被提升，但静态判不出是否与浮层重叠。
-        let (_f, _p, diagnostics) = check(
-            "fixed-layer-offscreen",
-            ".mask { position: fixed; left: -9999px; top: -9999px; width: 500px; height: 400px; }
-             .panel { position: absolute; bottom: 0; z-index: 2; }",
+    fn every_fixed_element_is_reported_once() {
+        // 同一文档里多个 fixed（含内联）不能被去重吞掉。
+        let wxml = r#"<view class="page">
+  <view class="mask"/>
+  <view class="toast" style="position: fixed"/>
+</view>"#;
+        let diagnostics = check(
+            "fixed-layer-multiple",
+            wxml,
+            ".mask { position: fixed; }
+             .toast { top: 0; }",
         );
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+        let mut positions = diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.path.clone(), diagnostic.line, diagnostic.column))
+            .collect::<Vec<_>>();
+        positions.sort();
+        positions.dedup();
+        assert_eq!(positions.len(), 2, "{diagnostics:#?}");
     }
 
     #[test]
-    fn static_z_index_does_not_create_a_layer() {
-        // `static` 元素上的 z-index 在两种渲染器下都不参与层叠。
-        let (_f, _p, diagnostics) = check(
-            "fixed-layer-static",
-            ".mask { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1; }
-             .panel { z-index: 2; }",
-        );
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
-    }
-
-    #[test]
-    fn class_toggled_panel_is_not_reported() {
-        // 浮层由 class 驱动显隐时，它和遮罩是否同时出现静态判不了（互斥写在 JS 里）。
-        let fixture = Fixture::wxml(
-            "fixed-layer-toggled",
-            r#"<view class="page"><view class="mask"/><view class="panel {{open ? 'show' : ''}}"/></view>"#,
-        );
-        fixture.write(
-            "pages/index/index.wxss",
-            ".mask { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1; }
-             .panel { position: absolute; bottom: 0; z-index: 2; }",
-        );
-        let project = fixture.project();
-        assert!(FixedLayer.check(&project).is_empty());
-    }
-
-    #[test]
-    fn conditional_panel_is_not_reported() {
-        let fixture = Fixture::wxml(
-            "fixed-layer-conditional",
-            r#"<view class="page"><view class="mask"/><view wx:if="{{open}}" class="panel"/></view>"#,
-        );
-        fixture.write(
-            "pages/index/index.wxss",
-            ".mask { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1; }
-             .panel { position: absolute; bottom: 0; z-index: 2; }",
-        );
-        let project = fixture.project();
-        assert!(FixedLayer.check(&project).is_empty());
-    }
-
-    #[test]
-    fn fixed_inside_the_panel_is_not_reported() {
-        let fixture = Fixture::wxml(
-            "fixed-layer-nested",
-            r#"<view class="panel"><view class="mask"/></view><view class="other" style="z-index: 5"/>"#,
-        );
-        fixture.write(
-            "pages/index/index.wxss",
-            ".mask { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1; }
-             .panel { position: relative; z-index: 2; }",
-        );
-        let project = fixture.project();
-        // 遮罩在 panel 的子树里，两种渲染器都由父级决定层叠；页面上没有别的同父兄弟。
-        assert!(FixedLayer.check(&project).is_empty());
-    }
-
-    #[test]
-    fn fixed_in_component_is_not_compared_with_page_layers() {
-        // 组件里的 fixed 提升到的是组件自己的 root container，页面浮层仍在它之上。
+    fn fixed_inside_a_component_is_still_reported() {
+        // 组件里的 fixed 提升到的是组件自己的 root container，与组件根同样不可控；
+        // 按「误报优于漏报」不做跨文档豁免。
         let fixture = Fixture::new("fixed-layer-component");
         fixture
             .write("project.config.json", r#"{"miniprogramRoot":""}"#)
@@ -377,22 +323,17 @@ mod tests {
                 "app.json",
                 r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
             )
-            .write("pages/index/index.json", r#"{"usingComponents":{"mask-layer":"/components/mask/mask"}}"#)
             .write(
-                "pages/index/index.wxml",
-                r#"<mask-layer/><view class="panel"/>"#,
+                "pages/index/index.json",
+                r#"{"usingComponents":{"mask-layer":"/components/mask/mask"}}"#,
             )
-            .write(
-                "pages/index/index.wxss",
-                ".panel { position: absolute; z-index: 999; }",
-            )
+            .write("pages/index/index.wxml", r#"<mask-layer/>"#)
             .write("components/mask/mask.json", r#"{"component":true}"#)
             .write("components/mask/mask.wxml", r#"<view class="mask"/>"#)
-            .write(
-                "components/mask/mask.wxss",
-                ".mask { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1; }",
-            );
+            .write("components/mask/mask.wxss", ".mask { position: fixed; }");
         let project = fixture.project();
-        assert!(FixedLayer.check(&project).is_empty());
+        let diagnostics = FixedLayer.check(&project);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].path, "components/mask/mask.wxss");
     }
 }

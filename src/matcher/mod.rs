@@ -125,6 +125,81 @@ pub fn subject(selector: &str) -> Option<Subject> {
     Some(subject)
 }
 
+/// 选择器里影响「静态能不能判」的形状。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Shape {
+    /// 含伪元素：声明的承载者是生成的文本节点，不是宿主元素。
+    pub pseudo_element: bool,
+    /// 含运行时伪类（`:hover` / `:active` / `:checked` …）。
+    pub dynamic_pseudo: bool,
+    /// 含组合符（祖先 / 兄弟关系）。
+    pub combinator: bool,
+    /// 指向运行时根节点（`page` 标签 / `:host`）：它们不在 WXML 文档的元素树里。
+    pub runtime_root: bool,
+}
+
+/// 解析选择器并取出形状；解析失败返回 `None`。
+pub fn shape(selector: &str) -> Option<Shape> {
+    let list = imp::parse(selector)?;
+    let mut shape = Shape::default();
+    for one in list.slice() {
+        for component in one.iter_raw_match_order() {
+            walk_component(component, &mut shape);
+        }
+    }
+    Some(shape)
+}
+
+/// 选择器里出现的全部 class 名（含 `:not()` / `:is()` 内的）；解析失败返回 `None`。
+pub fn class_names(selector: &str) -> Option<Vec<String>> {
+    let list = imp::parse(selector)?;
+    let mut names = Vec::new();
+    for one in list.slice() {
+        for component in one.iter_raw_match_order() {
+            collect_classes(component, &mut names);
+        }
+    }
+    Some(names)
+}
+
+fn collect_classes(component: &Component<SelImpl>, out: &mut Vec<String>) {
+    match component {
+        Component::Class(name) => out.push(name.0.to_string()),
+        Component::Negation(list) | Component::Is(list) => {
+            for inner in list.slice() {
+                for component in inner.iter_raw_match_order() {
+                    collect_classes(component, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn walk_component(component: &Component<SelImpl>, shape: &mut Shape) {
+    match component {
+        Component::Combinator(_) => shape.combinator = true,
+        Component::PseudoElement(_) => shape.pseudo_element = true,
+        // `page` 是页面根节点，WXML 文档里没有对应元素。
+        Component::LocalName(local) if local.name.0 == "page" => shape.runtime_root = true,
+        Component::NonTSPseudoClass(pseudo) => {
+            if pseudo.name == "host" {
+                shape.runtime_root = true;
+            } else if !STRUCTURAL_PSEUDO_CLASSES.contains(&pseudo.name.as_str()) {
+                shape.dynamic_pseudo = true;
+            }
+        }
+        Component::Negation(list) | Component::Is(list) => {
+            for inner in list.slice() {
+                for component in inner.iter_raw_match_order() {
+                    walk_component(component, shape);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 /// 三值判定：`Unknown` 表示静态阶段无法确定（动态属性 / 运行时状态 / 非线性兄弟区）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tri {
@@ -140,6 +215,11 @@ pub enum Tri {
 pub struct Tree<'a> {
     doc: &'a WxmlDoc,
     elems: Vec<&'a WxmlElement>,
+    /// slot / `<template is>` 引出的静态未知占位节点：真实文档里没有对应元素，
+    /// 但运行时这里可能出现任意节点。下标接在 `elems` 之后。
+    synthetic: Vec<WxmlElement>,
+    /// 与 `synthetic` 对齐：该占位来自 `<slot/>`（内容由父级提供，写在别的文件里）。
+    synthetic_slot: Vec<bool>,
     parent: Vec<Option<usize>>,
     /// 在父节点里的「元素序号」（跳过文本 / 注释）。
     pos: Vec<usize>,
@@ -155,6 +235,8 @@ impl<'a> Tree<'a> {
         let mut tree = Self {
             doc,
             elems: Vec::new(),
+            synthetic: Vec::new(),
+            synthetic_slot: Vec::new(),
             parent: Vec::new(),
             pos: Vec::new(),
             by_ptr: HashMap::new(),
@@ -162,13 +244,103 @@ impl<'a> Tree<'a> {
             unresolved: Cell::new(false),
         };
         collect(doc, &doc.nodes, None, &mut tree);
+        tree.synthesize();
         tree
+    }
+
+    /// 给「静态未知」的区域补占位节点：`<slot/>` 与含 `<template is>` / `<include>`
+    /// 的元素。
+    ///
+    /// 每个区域补 [`UNKNOWN_DEPTH`] 层父子链：投影 / 展开的内容自身可以任意嵌套，
+    /// 一层只能覆盖「直接子节点」，多层才能让 `.a .b .c` 这类选择器在未知区域里
+    /// 走到足够深的位置。
+    fn synthesize(&mut self) {
+        let mut hosts: Vec<(Option<usize>, bool)> = Vec::new();
+        for idx in 0..self.elems.len() {
+            let element = self.elems[idx];
+            let host = if element.is_slot {
+                // slot 会被父级内容替换：投影内容的父节点是 slot 的父节点。
+                (self.parent[idx], true)
+            } else if element.unknown_children {
+                (Some(idx), false)
+            } else {
+                continue;
+            };
+            if !hosts.contains(&host) {
+                hosts.push(host);
+            }
+        }
+        let Some(donor) = self.elems.first().copied() else {
+            return;
+        };
+        for (host, slot) in hosts {
+            let mut parent = host;
+            for _ in 0..UNKNOWN_DEPTH {
+                let idx = self.elems.len() + self.synthetic.len();
+                self.synthetic.push(WxmlElement {
+                    tag: String::new(),
+                    start: donor.start,
+                    end: donor.end,
+                    tag_start: donor.tag_start,
+                    tag_end: donor.tag_end,
+                    attributes: Vec::new(),
+                    children: Vec::new(),
+                    branches: Vec::new(),
+                    in_template: false,
+                    unknown_children: true,
+                    is_slot: false,
+                });
+                self.synthetic_slot.push(slot);
+                self.parent.push(parent);
+                self.pos.push(0);
+                parent = Some(idx);
+            }
+        }
     }
 
     pub fn matches(&self, element: &WxmlElement, selector: &str, dialect: Dialect) -> Tri {
         let Some(&idx) = self.by_ptr.get(&(element as *const WxmlElement as usize)) else {
             return Tri::No;
         };
+        self.match_at(idx, selector, dialect)
+    }
+
+    /// 整份文档范围内的求值：真实元素 + slot / `<template is>` 引出的静态未知占位。
+    ///
+    /// 任一元素 `Yes` 就是 `Yes`；没有 `Yes` 但有 `Unknown` 就是 `Unknown`。
+    /// 只有「每个真实元素都确定不命中、且未知区域也不可能命中」才是 `No`。
+    pub fn any_match(&self, selector: &str, dialect: Dialect) -> Tri {
+        let Some(shape) = shape(selector) else {
+            return Tri::Unknown;
+        };
+        let mut unknown = false;
+        for idx in 0..self.elems.len() + self.synthetic.len() {
+            if idx >= self.elems.len() {
+                let synthetic = idx - self.elems.len();
+                // slot 的内容属于父级文档：单 compound 选择器问的是「本文件里有没有
+                // 这个节点」，不该把投影内容算进来；只有跨过 slot 的祖先 / 兄弟关系
+                // 才静态判不了。
+                if self.synthetic_slot[synthetic] && !shape.combinator {
+                    continue;
+                }
+            }
+            match self.match_at(idx, selector, dialect) {
+                Tri::Yes => return Tri::Yes,
+                Tri::Unknown => unknown = true,
+                Tri::No => {}
+            }
+        }
+        if unknown {
+            return Tri::Unknown;
+        }
+        // 内联 `<template name>` 的定义体只在实例化处渲染，真实祖先静态不可知。
+        if shape.combinator && self.elems.iter().any(|element| element.in_template) {
+            return Tri::Unknown;
+        }
+        Tri::No
+    }
+
+    fn match_at(&self, idx: usize, selector: &str, dialect: Dialect) -> Tri {
         let Some(list) = self.parse(selector) else {
             // 解析失败：这条选择器我们看不见，比「不命中」更接近事实。
             return Tri::Unknown;
@@ -247,7 +419,7 @@ impl<'a> Tree<'a> {
             // `[foo]` 不是等价 `*`，而是整条声明从不生效。
             return Some(Tri::No);
         }
-        let element = self.elems[idx];
+        let element = self.element_at(idx);
         let mut positional = false;
         let mut dynamic = false;
         for component in selector.iter_raw_match_order() {
@@ -398,15 +570,15 @@ impl<'a> Tree<'a> {
 
     /// 兄弟区是否线性：含条件分支 / 循环 / 模板片段时序号不可静态确定。
     fn nonlinear_siblings(&self, idx: usize) -> bool {
-        let element = self.elems[idx];
+        let element = self.element_at(idx);
         if element.in_template || self.doc.fragment {
             return true;
         }
         let siblings: &[WxmlNode] = match self.parent[idx] {
-            Some(parent) => &self.elems[parent].children,
+            Some(parent) => &self.element_at(parent).children,
             None => &self.doc.nodes,
         };
-        if self.parent[idx].is_some_and(|p| self.elems[p].unknown_children) {
+        if self.parent[idx].is_some_and(|p| self.element_at(p).unknown_children) {
             return true;
         }
         siblings.iter().any(|node| match node {
@@ -420,9 +592,17 @@ impl<'a> Tree<'a> {
         })
     }
 
+    /// 元素的子节点。占位节点没有真实子节点，返回空切片。
+    fn children_at(&self, idx: usize) -> &'a [WxmlNode] {
+        match self.elems.get(idx) {
+            Some(element) => &element.children,
+            None => &[],
+        }
+    }
+
     fn sibling(&self, idx: usize, forward: bool) -> Option<&'a WxmlElement> {
         let parent = self.parent[idx]?;
-        let children = &self.elems[parent].children;
+        let children = self.children_at(parent);
         let here = self.pos[idx];
         let range: Box<dyn Iterator<Item = usize>> = if forward {
             Box::new(here + 1..children.len())
@@ -438,7 +618,7 @@ impl<'a> Tree<'a> {
     }
 
     fn first_child(&self, idx: usize) -> Option<&'a WxmlElement> {
-        self.elems[idx].children.iter().find_map(|node| match node {
+        self.children_at(idx).iter().find_map(|node| match node {
             WxmlNode::Element(el) => Some(el),
             _ => None,
         })
@@ -450,8 +630,16 @@ impl<'a> Tree<'a> {
             .copied()
     }
 
-    pub(crate) fn element_at(&self, idx: usize) -> &'a WxmlElement {
-        self.elems[idx]
+    pub(crate) fn element_at(&self, idx: usize) -> &WxmlElement {
+        match self.elems.get(idx) {
+            Some(element) => element,
+            None => &self.synthetic[idx - self.elems.len()],
+        }
+    }
+
+    /// 下标是否指向静态未知占位节点（真实文档里没有这个元素）。
+    pub(crate) fn is_synthetic(&self, idx: usize) -> bool {
+        idx >= self.elems.len()
     }
 
     pub(crate) fn parent_idx(&self, idx: usize) -> Option<usize> {
@@ -466,6 +654,9 @@ impl<'a> Tree<'a> {
         self.first_child(idx).and_then(|el| self.index_of(el))
     }
 }
+
+/// 每个静态未知区域补的占位层数：覆盖投影 / 展开内容里最右几层嵌套。
+const UNKNOWN_DEPTH: usize = 3;
 
 /// Skyline 认识的结构伪类（`css/selector.h:67-76` 的 7 个 + `:is`/`:where` 走结构化组件）。
 const SKYLINE_PSEUDO_CLASSES: &[&str] = &[
@@ -720,6 +911,32 @@ mod tests {
         );
         // 纯后代关系不受影响。
         assert_eq!(check(&d, 1, ".card .t", Dialect::WebView), Tri::Yes);
+    }
+
+    #[test]
+    fn slot_projection_is_unknown_only_across_relations() {
+        let d = doc(r#"<view class="list"><slot/></view>"#);
+        let tree = Tree::new(&d);
+        // 后代关系穿过 slot：投影内容静态看不到。
+        assert_eq!(
+            tree.any_match(".list .item", Dialect::WebView),
+            Tri::Unknown
+        );
+        // 单 compound 选择器不算投影内容，只看本文档。
+        assert_eq!(tree.any_match(".item", Dialect::WebView), Tri::No);
+        assert_eq!(tree.any_match(".list", Dialect::WebView), Tri::Yes);
+    }
+
+    #[test]
+    fn unknown_children_make_every_descendant_unknown() {
+        let d = doc(r#"<view class="list"><template is="row"/></view>"#);
+        let tree = Tree::new(&d);
+        assert_eq!(
+            tree.any_match(".list .item", Dialect::WebView),
+            Tri::Unknown
+        );
+        assert_eq!(tree.any_match(".item", Dialect::WebView), Tri::Unknown);
+        assert_eq!(tree.any_match(".list", Dialect::WebView), Tri::Yes);
     }
 
     #[test]

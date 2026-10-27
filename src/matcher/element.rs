@@ -30,6 +30,11 @@ impl<'a> Node<'a> {
         self.tree.element_at(self.idx)
     }
 
+    /// 静态未知占位节点：可能是任意元素，任何「是否具备某特征」的判定都不可靠。
+    fn unknown(&self) -> bool {
+        self.tree.is_synthetic(self.idx)
+    }
+
     fn at(&self, idx: Option<usize>) -> Option<Self> {
         idx.map(|idx| Self {
             tree: self.tree,
@@ -89,6 +94,10 @@ impl<'a> selectors::Element for Node<'a> {
     }
 
     fn has_local_name(&self, local_name: &str) -> bool {
+        if self.unknown() {
+            self.tree.unresolved.set(true);
+            return false;
+        }
         self.element().tag == local_name
     }
 
@@ -110,6 +119,10 @@ impl<'a> selectors::Element for Node<'a> {
             // Skyline 的 `CompoundSelector` 没有 attribute 字段，属性条件在转换时被丢弃
             // （`skyline/css/selector.h:78`）——即 `[foo]` 等价 `*`。
             return true;
+        }
+        if self.unknown() {
+            self.tree.unresolved.set(true);
+            return false;
         }
         match self.attribute(&local_name.0) {
             None => false,
@@ -164,6 +177,10 @@ impl<'a> selectors::Element for Node<'a> {
     }
 
     fn has_id(&self, id: &super::imp::Ident, case_sensitivity: CaseSensitivity) -> bool {
+        if self.unknown() {
+            self.tree.unresolved.set(true);
+            return false;
+        }
         match self.attribute("id") {
             Some(attr) if attr.is_static => case_sensitivity.eq(
                 attr.value.as_deref().unwrap_or("").trim().as_bytes(),
@@ -178,6 +195,10 @@ impl<'a> selectors::Element for Node<'a> {
     }
 
     fn has_class(&self, name: &super::imp::Ident, case_sensitivity: CaseSensitivity) -> bool {
+        if self.unknown() {
+            self.tree.unresolved.set(true);
+            return false;
+        }
         let Some(attr) = self.attribute("class") else {
             return false;
         };
@@ -219,6 +240,10 @@ impl<'a> selectors::Element for Node<'a> {
     }
 
     fn is_empty(&self) -> bool {
+        if self.unknown() {
+            self.tree.unresolved.set(true);
+            return false;
+        }
         !self.element().children.iter().any(|node| match node {
             crate::input::wxml::WxmlNode::Element(_) => true,
             crate::input::wxml::WxmlNode::Text(text) => text.is_meaningful(),

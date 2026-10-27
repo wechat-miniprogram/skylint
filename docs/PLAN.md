@@ -525,9 +525,37 @@ A 页失效、B 页正常时要报）、`no_pseudo` 的转义冒号（`.hover\:b
 - `-webkit-box-flex` / `-webkit-box-align` / `-webkit-box-pack` 等在 `display` 已生效为
   flex 的块里同样是死声明，但静态判不出它是不是无害兜底（autoprefixer 栈、或父级才是
   老式容器），按宁可漏报跳过。判据细节写进 `legacy_flexbox.rs` 模块注释。
-- C3（`flex:1` 的 `scroll-view` 塌高）、C4（`<text>` 的 `max-width: calc()`）、C5
-  （`vertical-align` 长度值）都还缺引擎证据，未立项。
+- C3（`flex:1` 的 `scroll-view` 塌高）、C4（`<text>` 的 `max-width: calc()`）还缺引擎证据，
+  调研中。
 - JS 逻辑重写、WXML 重排、`wx:if` 里的 `renderer` 条件求值：静态判定的边界外。
+
+### P8 `fixed` / 死选择器 / `vertical-align` 长度值
+
+三条按「误报优于漏报」落地的判定：
+
+| 规则 | 判据 | 六工程新增 |
+|---|---|---|
+| `skyline/fixed-layer`（重写） | `position: fixed` 且解析不出整数 `z-index`（无声明 / `auto` / 变量 / 插值） | 18（biz 4 / p1 7 / p2 6 / player 1） |
+| `skyline/dead-selector`（新） | 主体带 class + 每个 class 名在文档里确定出现 + 全作用域求值皆 `No` | 9（skit_1 2 / p1 2 / p2 2 / player 3） |
+| `skyline/unsupported-value`（扩） | 只接受关键字的属性写了长度值（当前 `vertical-align`） | 0（六个工程里没有消费中的写法） |
+
+两条判据的取舍值得记下来：
+
+1. **fixed 不再做层比较。** 旧实现要求 fixed 铺满视口、且同父下存在 z-index 更高的静态可见兄弟，
+   实测六工程 0 命中——等于没覆盖。现在只看「有没有 z-index」。代价是离屏挂载的画布
+   （`position: fixed; top: -9999px`）也会报，这是「误报优于漏报」明知的代价。
+2. **死选择器必须先过两道门，否则全是噪音。** 只看「0 命中」时 businessview 多出 **879** 条，
+   其中 606 条来自 vendored `weui.wxss`（类名在工程里根本不存在 = 未使用 CSS，#1443 排除），
+   其余是 `@keyframes` 的 `from`/`to`（不是选择器）与 `hover-class` 运行时类。加门后降到 9 条，
+   逐条核实全为真：`.heart.skyline`（修饰类挂错节点，正是历史 `101872e4` 那类）、
+   `.black.color`（LESS 自嵌套产出不可能命中的复合）、weui 里 `.menu`/`.simple` 分组写的
+   防御性选择器（其中一组永不命中）。
+   代价：**含 `<slot>` 的组件里带组合符的选择器一律判不出**（投影内容可任意嵌套），这是保守
+   方向，写进 `dead_selector.rs` 模块注释。
+3. **`vertical-align` 的长度值在 fp 层就死了**：fp 的 `<length>` 解析接受百分比，但
+   `vertical-align` 的值语法只有 6 个关键字分支（`float-pigment-css-0.7.0/src/property.rs:426-433`），
+   解析失败后整条属性被回滚（`parser/mod.rs:1768-1781`）；引擎 `ParseValue` 也只映射
+   baseline/top/middle/bottom。`text-top`/`text-bottom` 在 fp 语法里有、引擎不认，两边都已报。
 
 评估后不做（附理由）：
 

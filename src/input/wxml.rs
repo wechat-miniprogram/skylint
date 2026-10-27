@@ -67,6 +67,9 @@ pub struct WxmlElement {
     pub in_template: bool,
     /// 子节点里有被摊平掉的 `<template is>` / `<include>`：展开后的内容静态不可知。
     pub unknown_children: bool,
+    /// 元素是 `<slot/>`：运行时的子节点由父级提供，写在使用它的文件里，
+    /// 静态看不到。匹配层据此把 slot 位置当成「子节点未知」的区域。
+    pub is_slot: bool,
 }
 
 /// 一个条件分支的标识：同一个 `wx:if` 节点的所有分支共享 `group`，`arm` 是分支序号
@@ -338,6 +341,7 @@ fn element_nodes(
             children: flatten(children, source, next_group, branches, in_template),
             branches: branches.to_vec(),
             in_template,
+            is_slot: false,
         })],
         // 透明容器：不产生条件组，但把外层的分支栈透传下去。
         ElementKind::Pure { children, .. } | ElementKind::For { children, .. } => {
@@ -387,6 +391,7 @@ fn element_nodes(
             unknown_children: false,
             branches: branches.to_vec(),
             in_template,
+            is_slot: true,
         })],
         _ => Vec::new(),
     }
