@@ -668,6 +668,60 @@ WidgetSpan 内部排版。因此原先计划的「`<text>` 子节点 display 收
 文本里要放 `view` / 自定义组件时它们自动变原子 WidgetSpan；历史提交里的
 `display:inline-block` 是给 WebView 侧用的（WebView 里 `<view>` 是块级），属于反向适配那一类。
 
+### P11 反向：Skyline 代码退回 WebView
+
+工具原本只有「WebView → Skyline」一个方向。存量按 Skyline 写的小程序跑在不支持 Skyline
+的环境（PC 端等）时，**整页退回 WebView**、不报错不白屏（`skyline-overview/references/introduction/overview.md:108-110`；
+能力位由宿主给，PC adapter 直接 `isLibSupportSkyline: false`），页面里所有 Skyline 专属能力
+整体变成「未知能力」，逐个静默失效。
+
+方向用 `Target` 表达（`Rule::target()`，默认 `Skyline`；`Both` 两侧都跑），CLI 是
+`--target skyline|webview`（默认 `skyline`，正向行为不变）。两个方向不做同一套判据的复用：
+同一条 `max-lines`，正向的修法是「补 `overflow`」、反向是「补 `-webkit-line-clamp`」，
+合并会让 help 自相矛盾。
+
+**47 → 50 条的归属**：42 条是纯正向（引擎能力边界，反向时 WebView 用浏览器实现，不存在同类问题）；
+5 条双向（`dead-selector`、`inline-run`、`flex-direction`、`renderer-options`、`lib-version`）；
+3 条反向。
+
+已落的反向规则：
+
+| 规则 | 判据 | WebView 下的实际行为 |
+|---|---|---|
+| `webview/text-truncation`（warning） | `<text>` 上的 `max-lines` / `overflow` | 静默忽略：`wx-text` 只声明 `selectable / user-select / decode / space`（`wxapplib/src/wx-component/src/wx-text/wx-text.js:131-173`），`overflow` 也不是 HTML 表现属性 |
+| `webview/nested-scroll`（warning） | `scroll-view type="nested"` / `nested-scroll-header` / `nested-scroll-body` | `type` 从不被读（`wx-scroll-view.js:239`）；后两个标签**不在** WebView 的 `globalUsingComponents` 表里（`glass-easel-adapter/src/render/webview.ts:166-254`）→ 默认组件（只有默认 slot）+ inline 显示，头部不联动 |
+| `webview/worklet-binding`（error） | WXML 的 `worklet:` 前缀属性 | 模板编成 `wl()` 只挂 lifetime，消费方只有 Skyline 组件的 `worklet-handler` behavior，WebView 侧零实现 → 回调不触发、不报错 |
+
+消音机制：`WxmlElement::renderer_guarded()`——元素（或祖先）处在条件里引用 `renderer` 的分支里
+就跳过。识别靠 `input/expr.rs::references` 走表达式 AST，能认出
+`wx:if="{{renderer === 'skyline'}}"` / `wx:elif` / `{{!!renderer}}` 各种写法。
+实测有效：`miniprogram-novel/pages/recent-read/recent-read.wxml:19` 的 `wx:elif="{{renderer === 'skyline'}}"`
+下三个 `worklet:` 绑定被正确跳过，而同工程 `rank-center.wxml:189,339` 的无守卫写法照报。
+
+明确不做的（源码否掉了「看起来该报」的候选）：
+
+| 候选 | 否掉的理由 |
+|---|---|
+| `scroll-view type="list"` | WebView 不读 `type`，但**仍能滚动**（滚动由 `scroll-x/y` 的 CSS `overflow` 决定），只丢虚拟化 |
+| `list-view` / `grid-view` / `sticky-*` / `snapshot` / 手势组件 | 它们**在** WebView 的 `globalUsingComponents` 表里（`render/webview.ts:166-254`），不是未知标签，各有一套 WebView 实现 |
+| `grid-builder` 的 `slot:item` 内容丢失 | 确属丢失（未知标签只保留默认 slot），但两个参考工程都没用，等有真实使用再加 |
+| `<text space>` / `decode` | WebView 真的支持（`_htmlDecode`），两端都有 |
+| `<page-meta>` 全部属性 | 两端都支持；`screen-orientation` 两端都不存在（与 `page-orientation` 混淆） |
+| `wx.worklet.shared` / `timing` / `applyAnimatedStyle` | WebView 有完整 JS 模拟（逻辑线程 rAF + 每帧回写内联样式），功能可用只降性能；`if (wx.worklet)` 不能当 renderer 守卫 |
+| `this.animate` / `wx.createAnimation` | 方向相反：它们是 **WebView-only**，恰是 worklet 的降级方案（正向 `unsupported-api` 已覆盖） |
+| `fixed` 提升 / `defaultContentBox` | 反向时 WebView 是正常层叠 / 本来就是 content-box |
+| CSS 能力差异（`position:sticky`、`clip-path`、`scroll-snap`、`object-fit`） | 差距几乎全是 WebView 更强，反向无需规则 |
+
+待办（严重度高但两个参考工程零使用，未落）：`wx.router.getRouteContext` 直接解引用
+（纯 WebView 下返回 `undefined` → TypeError 白屏）、`ScrollViewContext.triggerRefresh` 系列
+（只 `publishSync('operateSkylineScrollView')`，WebView 不监听 → 纯 no-op）、
+`NodesRef.ref()`（`res.ref = undefined` + warn）、`node()` 取 `snapshot` / `draggable-sheet` /
+`open-container`（返回 fake 上下文）、`navigateTo({routeType})`（静默降级成默认转场）。
+
+实测命中（`--target webview`）：plugin_2 62（59 + 2 inline-run + 1 dead-selector）、
+novel 19、skit_1 22、plugin_1 52、businessview 12。正向方向逐字段 diff 五个工程**零变化**
+（170 / 23 / 27 / 326 / 175）。
+
 ### 不做
 
 autofix；14 条只能运行时判定的条目；`app.json` 自动改写。

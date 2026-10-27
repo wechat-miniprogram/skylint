@@ -16,6 +16,9 @@ pub mod share_element_key;
 pub(crate) mod structure;
 pub mod text_hard_break_ellipsis;
 pub mod unsupported_component;
+pub mod webview_nested_scroll;
+pub mod webview_text_truncation;
+pub mod webview_worklet_binding;
 
 pub use component_attribute::ComponentAttribute;
 pub use component_children::ComponentChildren;
@@ -27,6 +30,9 @@ pub use scroll_view_type::ScrollViewType;
 pub use share_element_key::ShareElementKey;
 pub use text_hard_break_ellipsis::TextHardBreakEllipsis;
 pub use unsupported_component::UnsupportedComponent;
+pub use webview_nested_scroll::NestedScroll;
+pub use webview_text_truncation::TextTruncation;
+pub use webview_worklet_binding::WorkletBinding;
 
 use std::collections::HashSet;
 use std::fs;
@@ -231,7 +237,7 @@ fn inline_displays(style: &str) -> impl Iterator<Item = String> + '_ {
 }
 
 /// 这份样式表是否作用于 `path` 这份 WXML 所属的单元。
-fn sheet_covers(sheet: &StyleSheet, project: &Project, path: &str) -> bool {
+pub(crate) fn sheet_covers(sheet: &StyleSheet, project: &Project, path: &str) -> bool {
     sheet.scopes.iter().any(|scope| match scope {
         Scope::Global => true,
         _ => project.scope_wxml(scope) == Some(path),
@@ -362,7 +368,7 @@ pub(crate) fn span_diagnostic(
 }
 
 /// 定位在元素标签起止位置上的诊断。
-fn element_diagnostic(
+pub(crate) fn element_diagnostic(
     id: &'static str,
     doc: &WxmlDoc,
     element: &WxmlElement,

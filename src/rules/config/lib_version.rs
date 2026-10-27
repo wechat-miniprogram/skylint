@@ -13,7 +13,7 @@
 
 use crate::input::json::JsonPositions;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, Target};
 use crate::{Diagnostic, Severity};
 
 /// `(major, minor, patch)`，按字典序比较。
@@ -32,6 +32,10 @@ impl Rule for LibVersion {
             severity: Severity::Error,
             description: "项目配置的 libVersion 低于所用 Skyline 特性的最低要求",
         }
+    }
+
+    fn target(&self) -> Target {
+        Target::Both
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {

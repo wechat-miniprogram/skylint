@@ -3,9 +3,27 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use skylint::report::Style;
+use skylint::rules::Target;
 use skylint::{Project, Registry, Report};
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum TargetArg {
+    /// WebView 代码迁到 Skyline 时哪里会坏（默认）
+    Skyline,
+    /// 按 Skyline 写的代码退回 WebView 渲染时哪些能力静默降级
+    Webview,
+}
+
+impl From<TargetArg> for Target {
+    fn from(arg: TargetArg) -> Self {
+        match arg {
+            TargetArg::Skyline => Self::Skyline,
+            TargetArg::Webview => Self::Webview,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "skylint", version, about = "Skyline 小程序迁移检查工具")]
@@ -21,11 +39,15 @@ struct Cli {
     /// 跳过的规则 id（可重复）
     #[arg(long = "ignore", value_name = "RULE")]
     ignore: Vec<String>,
+
+    /// 检查方向
+    #[arg(long, value_enum, default_value = "skyline")]
+    target: TargetArg,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let registry = Registry::builtin();
+    let registry = Registry::builtin().for_target(cli.target.into());
 
     // 传文件时走单文件视图：不要求工程结构，但跨文件规则也没东西可比。
     let loaded = if cli.path.is_file() {

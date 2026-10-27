@@ -16,7 +16,7 @@
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, Target};
 
 use crate::matcher::Tree;
 
@@ -39,6 +39,10 @@ impl Rule for InlineRun {
             severity: Severity::Info,
             description: "WebView 下并排的文本级元素在 Skyline 下会各自换行",
         }
+    }
+
+    fn target(&self) -> Target {
+        Target::Both
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {

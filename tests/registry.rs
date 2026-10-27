@@ -4,22 +4,45 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use skylint::Registry;
+use skylint::rules::Target;
 
 #[test]
 fn rule_ids_are_unique_and_namespaced() {
-    let metas = Registry::builtin().metas();
-    assert!(!metas.is_empty());
+    let entries = Registry::builtin().entries();
+    assert!(!entries.is_empty());
 
     let mut seen = HashSet::new();
-    for meta in &metas {
+    for (meta, target) in &entries {
+        let prefix = match target {
+            Target::Skyline | Target::Both => "skyline/",
+            Target::Webview => "webview/",
+        };
         assert!(
-            meta.id.starts_with("skyline/"),
-            "{} 缺少 skyline/ 前缀",
-            meta.id
+            meta.id.starts_with(prefix),
+            "{} 的前缀与方向 {} 不符，应为 {prefix}",
+            meta.id,
+            target.as_str()
         );
         assert!(seen.insert(meta.id), "{} 重复注册", meta.id);
         assert!(!meta.description.trim().is_empty(), "{} 没有说明", meta.id);
     }
+}
+
+/// 两个方向都必须有规则：只有 Skyline 规则的注册表说明反向接线没生效。
+#[test]
+fn both_targets_have_rules() {
+    assert!(
+        !Registry::builtin()
+            .for_target(Target::Webview)
+            .entries()
+            .is_empty()
+    );
+    assert!(
+        !Registry::builtin()
+            .for_target(Target::Skyline)
+            .entries()
+            .is_empty()
+    );
 }
 
 /// `docs/RULES.md` 必须与注册表一致。漂了就重生成：

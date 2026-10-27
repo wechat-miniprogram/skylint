@@ -17,7 +17,7 @@ use serde_json::{Map, Value};
 
 use crate::input::json::JsonPositions;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, Target};
 use crate::{Diagnostic, Severity};
 
 use super::warn;
@@ -97,6 +97,10 @@ impl Rule for RendererOptions {
             severity: Severity::Warning,
             description: "rendererOptions 的写法或类型不会被运行时读取，配置静默失效",
         }
+    }
+
+    fn target(&self) -> Target {
+        Target::Both
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {

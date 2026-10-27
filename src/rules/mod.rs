@@ -28,8 +28,41 @@ pub struct RuleMeta {
     pub description: &'static str,
 }
 
+/// 检查方向。
+///
+/// - `Skyline`：WebView 代码迁到 Skyline 时哪里会坏（默认方向）。
+/// - `Webview`：按 Skyline 写的代码跑在不支持 Skyline 的环境（PC 等）里，
+///   退回 WebView 渲染后哪些能力会静默降级。
+/// - `Both`：差异本身是双向的，两个方向都要跑。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Skyline,
+    Webview,
+    Both,
+}
+
+impl Target {
+    /// 本方向是否要跑属于 `rule` 方向的规则。
+    pub fn includes(self, rule: Target) -> bool {
+        rule == Target::Both || rule == self
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Skyline => "skyline",
+            Self::Webview => "webview",
+            Self::Both => "both",
+        }
+    }
+}
+
 pub trait Rule {
     fn meta(&self) -> RuleMeta;
+
+    /// 规则所属方向；反向（`webview`）与双向（`both`）规则要显式覆盖。
+    fn target(&self) -> Target {
+        Target::Skyline
+    }
 
     /// 检查整个工程。返回的诊断按文件/位置自治，排序由 `Report` 负责。
     fn check(&self, project: &Project) -> Vec<Diagnostic>;
@@ -91,6 +124,9 @@ impl Registry {
             Box::new(config::DefaultLayoutDrift),
             Box::new(config::LibVersion),
             Box::new(config::RendererOptions),
+            Box::new(wxml::TextTruncation),
+            Box::new(wxml::NestedScroll),
+            Box::new(wxml::WorkletBinding),
         ])
     }
 
@@ -98,33 +134,61 @@ impl Registry {
         Self { rules }
     }
 
+    /// 只保留属于该方向的规则；`--target` 通过这里生效。
+    pub fn for_target(self, target: Target) -> Self {
+        Self {
+            rules: self
+                .rules
+                .into_iter()
+                .filter(|rule| target.includes(rule.target()))
+                .collect(),
+        }
+    }
+
     pub fn metas(&self) -> Vec<RuleMeta> {
         self.rules.iter().map(|r| r.meta()).collect()
+    }
+
+    /// 规则 + 方向；文档生成与方向不变量校验共用它。
+    pub fn entries(&self) -> Vec<(RuleMeta, Target)> {
+        self.rules
+            .iter()
+            .map(|rule| (rule.meta(), rule.target()))
+            .collect()
     }
 
     /// 规则文档的唯一来源：`docs/RULES.md` 由它生成，不手写。
     ///
     /// 刷新方式：`cargo run --example rules_doc`。
     pub fn rules_document(&self) -> String {
-        let metas = self.metas();
-        let count = |severity: Severity| metas.iter().filter(|m| m.severity == severity).count();
+        let rows = self.entries();
+        let count = |severity: Severity| {
+            rows.iter()
+                .filter(|(meta, _)| meta.severity == severity)
+                .count()
+        };
         let mut out = String::from(
             "# 规则一览\n\n\
              > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。\n\
              > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。\n\n",
         );
         out.push_str(&format!(
-            "共 {} 条：error {} 条、warning {} 条、info {} 条。\n\n| 规则 | 级别 | 说明 |\n|---|---|---|\n",
-            metas.len(),
+            "共 {} 条：error {} 条、warning {} 条、info {} 条。\n\n\
+             方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；\
+             `webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；\
+             `both` = 两个方向都跑。\n\n\
+             | 规则 | 级别 | 方向 | 说明 |\n|---|---|---|---|\n",
+            rows.len(),
             count(Severity::Error),
             count(Severity::Warning),
             count(Severity::Info),
         ));
-        for meta in metas {
+        for (meta, target) in rows {
             out.push_str(&format!(
-                "| `{}` | {} | {} |\n",
+                "| `{}` | {} | {} | {} |\n",
                 meta.id,
                 meta.severity.as_str(),
+                target.as_str(),
                 escape_cell(meta.description)
             ));
         }

@@ -218,6 +218,76 @@ fn eval(expression: &Expression, env: &Env) -> Option<Vec<String>> {
     }
 }
 
+/// 表达式里是否引用了某个数据字段（成员访问的基对象也算）。
+///
+/// 只用于判断「这个条件是不是按某个键分支」，不求值。
+pub fn references(expression: &Expression, target: &str) -> bool {
+    use Expression::*;
+    use glass_easel_template_compiler::parse::expr::{ArrayFieldKind, ObjectFieldKind};
+    match expression {
+        DataField { name, .. } => name.as_str() == target,
+        StaticMember { obj, .. } => references(obj, target),
+        DynamicMember {
+            obj, field_name, ..
+        } => references(obj, target) || references(field_name, target),
+        FuncCall { func, args, .. } => {
+            references(func, target) || args.iter().any(|arg| references(arg, target))
+        }
+        LitObj { fields, .. } => fields.iter().any(|field| match field {
+            ObjectFieldKind::Named { value, .. } | ObjectFieldKind::Spread { value, .. } => {
+                references(value, target)
+            }
+        }),
+        LitArr { fields, .. } => fields.iter().any(|field| match field {
+            ArrayFieldKind::Normal { value } | ArrayFieldKind::Spread { value, .. } => {
+                references(value, target)
+            }
+            ArrayFieldKind::EmptySlot => false,
+        }),
+        ToStringWithoutUndefined { value, .. }
+        | Reverse { value, .. }
+        | BitReverse { value, .. }
+        | Positive { value, .. }
+        | Negative { value, .. }
+        | TypeOf { value, .. }
+        | Void { value, .. } => references(value, target),
+        Multiply { left, right, .. }
+        | Divide { left, right, .. }
+        | Remainer { left, right, .. }
+        | Plus { left, right, .. }
+        | Minus { left, right, .. }
+        | LeftShift { left, right, .. }
+        | RightShift { left, right, .. }
+        | UnsignedRightShift { left, right, .. }
+        | Lt { left, right, .. }
+        | Gt { left, right, .. }
+        | Lte { left, right, .. }
+        | Gte { left, right, .. }
+        | InstanceOf { left, right, .. }
+        | Eq { left, right, .. }
+        | Ne { left, right, .. }
+        | EqFull { left, right, .. }
+        | NeFull { left, right, .. }
+        | BitAnd { left, right, .. }
+        | BitXor { left, right, .. }
+        | BitOr { left, right, .. }
+        | LogicAnd { left, right, .. }
+        | LogicOr { left, right, .. }
+        | NullishCoalescing { left, right, .. } => {
+            references(left, target) || references(right, target)
+        }
+        Cond {
+            cond,
+            true_br,
+            false_br,
+            ..
+        } => {
+            references(cond, target) || references(true_br, target) || references(false_br, target)
+        }
+        _ => false,
+    }
+}
+
 fn union(mut left: Vec<String>, right: Vec<String>) -> Option<Vec<String>> {
     left.extend(right);
     (left.len() <= MAX_CANDIDATES).then_some(left)

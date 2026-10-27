@@ -49,7 +49,7 @@ use crate::input::wxml::WxmlDoc;
 use crate::matcher::{self, Dialect, Tree, Tri};
 use crate::project::{Project, StyleSheet};
 use crate::rules::wxml::walk;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, Target};
 use crate::{Diagnostic, Severity};
 
 use super::{scope_wxml, visit_rules};
@@ -67,6 +67,10 @@ impl Rule for DeadSelector {
             severity: Severity::Warning,
             description: "样式表里的选择器在它作用到的所有 WXML 里都不命中任何节点，多半是类名 / 标签名写错",
         }
+    }
+
+    fn target(&self) -> Target {
+        Target::Both
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {

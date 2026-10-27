@@ -74,12 +74,22 @@ pub struct WxmlElement {
     pub is_slot: bool,
 }
 
+impl WxmlElement {
+    /// 元素（或它的任一祖先）处在条件里用到 `renderer` 的分支里。
+    pub fn renderer_guarded(&self) -> bool {
+        self.branches.iter().any(|branch| branch.renderer_guarded)
+    }
+}
+
 /// 一个条件分支的标识：同一个 `wx:if` 节点的所有分支共享 `group`，`arm` 是分支序号
 /// （`wx:if` 为 0，`wx:elif` 依次递增，`else` 排在它们之后）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Branch {
     pub group: u32,
     pub arm: u32,
+    /// 这一支的条件里用到了 `renderer`：整支只在特定渲染器下渲染。
+    /// 反向（WebView）规则据此跳过作者已经做过两端分支的代码。
+    pub renderer_guarded: bool,
 }
 
 /// 元素上的一个属性。
@@ -362,9 +372,17 @@ fn element_nodes(
         } => {
             let group = *next_group;
             *next_group += 1;
+            // 整条分支链都算「按 renderer 分支」：`else` 也是另一个渲染器的分支。
+            let guarded = arms
+                .iter()
+                .any(|(_, condition, _)| condition_mentions_renderer(condition));
             let inner = |arm: u32| {
                 let mut stack = branches.to_vec();
-                stack.push(Branch { group, arm });
+                stack.push(Branch {
+                    group,
+                    arm,
+                    renderer_guarded: guarded,
+                });
                 stack
             };
             let mut out = Vec::new();
@@ -425,6 +443,14 @@ fn condition_truthy(condition: &Value, env: &Env) -> Option<bool> {
         Value::Dynamic { expression, .. } => crate::input::expr::truthy(expression, env),
         Value::Static { value, .. } => Some(!value.is_empty() && value.as_str() != "false"),
         _ => None,
+    }
+}
+
+/// 条件里是否引用了 `renderer`：这是工程里唯一能静态认出的渲染器分支写法。
+fn condition_mentions_renderer(condition: &Value) -> bool {
+    match condition {
+        Value::Dynamic { expression, .. } => crate::input::expr::references(expression, "renderer"),
+        _ => false,
     }
 }
 
