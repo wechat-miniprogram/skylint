@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 41 条：error 11 条、warning 29 条、info 1 条。
+共 42 条：error 12 条、warning 29 条、info 1 条。
 
 | 规则 | 级别 | 说明 |
 |---|---|---|
@@ -28,6 +28,7 @@
 | `skyline/shorthand-partial` | warning | 简写属性在 Skyline 下部分生效：值里属于不受支持子属性的那一段被丢弃 |
 | `skyline/transition-property` | warning | transition 里的属性名不在 Skyline 的可动画属性白名单内，该段过渡不生效 |
 | `skyline/gradient-limit` | warning | 渐变的形状 / 尺寸 / 颜色停止位置超出 Skyline 支持范围 |
+| `skyline/legacy-flexbox` | error | 规则块用了老式 `-webkit-box` 弹性盒，Skyline 不认识这些声明，整块布局会退回默认 display |
 | `skyline/media-query` | warning | 媒体查询条件在 Skyline 下被丢弃，块内声明对全部设备生效 |
 | `skyline/multi-value-limit` | warning | background / mask 的多值数量超出 Skyline 支持范围 |
 | `skyline/filter-limit` | warning | filter / backdrop-filter 使用了不支持的函数或组合 |
