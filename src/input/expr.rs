@@ -7,8 +7,14 @@
 //! 只在有限枚举里出现、其余**任意词都可能**。有了前两档，匹配器才能把
 //! `class="{{ok ? 'active' : ''}}"` 上 `.modal` 这类选择器判成「确定不命中」，
 //! 而不是今天的「不可判定」。
+//!
+//! 有 [`Env`] 时还能把「确定取值的绑定」代入表达式：`{{renderer === 'skyline'}}`
+//! 在 `renderer` 已知时直接折叠成真值，`wx:if` 的不可达分支与 `class` 的另一档
+//! 都因此消失——这是同一条推导链的第二个消费者。
 
 use glass_easel_template_compiler::parse::expr::Expression;
+
+use crate::input::env::{Env, Lit};
 
 /// 枚举出的候选值上限。超过就退化成「任意」，避免拼接的笛卡尔积爆炸。
 const MAX_CANDIDATES: usize = 16;
@@ -51,9 +57,9 @@ enum Piece {
 }
 
 /// 表达式可能取到的字符串；`None` 表示取值依赖运行时数据，枚举不出来。
-pub fn candidates(expression: &Expression) -> Option<Vec<String>> {
+pub fn candidates(expression: &Expression, env: &Env) -> Option<Vec<String>> {
     let mut pieces = Vec::new();
-    collect(expression, &mut pieces);
+    collect(expression, env, &mut pieces);
     enumerate(&pieces)
 }
 
@@ -69,9 +75,9 @@ fn enumerate(pieces: &[Piece]) -> Option<Vec<String>> {
 }
 
 /// 推导一个 class 绑定的词元信息。
-pub fn class_tokens(expression: &Expression) -> ClassTokens {
+pub fn class_tokens(expression: &Expression, env: &Env) -> ClassTokens {
     let mut pieces = Vec::new();
-    collect(expression, &mut pieces);
+    collect(expression, env, &mut pieces);
     match enumerate(&pieces) {
         Some(values) => {
             let mut seen: Vec<Vec<&str>> = values
@@ -144,15 +150,15 @@ fn delimited_words(pieces: &[Piece]) -> Vec<String> {
 }
 
 /// 把表达式拆成「静态文本 + 动态段」的拼接序列。
-fn collect(expression: &Expression, out: &mut Vec<Piece>) {
+fn collect(expression: &Expression, env: &Env, out: &mut Vec<Piece>) {
     match expression {
-        Expression::ToStringWithoutUndefined { value, .. } => collect(value, out),
+        Expression::ToStringWithoutUndefined { value, .. } => collect(value, env, out),
         Expression::LitStr { value, .. } => out.push(Piece::Text(value.to_string())),
         _ => match concat_operands(expression) {
             Some(operands) => operands
                 .into_iter()
-                .for_each(|operand| collect(operand, out)),
-            None => out.push(Piece::Value(eval(expression))),
+                .for_each(|operand| collect(operand, env, out)),
+            None => out.push(Piece::Value(eval(expression, env))),
         },
     }
 }
@@ -178,21 +184,27 @@ fn flatten_plus<'a>(expression: &'a Expression, out: &mut Vec<&'a Expression>) {
 }
 
 /// 一个子表达式的候选取值；`None` 表示取值不可知。
-fn eval(expression: &Expression) -> Option<Vec<String>> {
+fn eval(expression: &Expression, env: &Env) -> Option<Vec<String>> {
+    // 确定取值的绑定直接代入，比字面量分支更细。
+    if let Some(value) = constant(expression, env) {
+        return value.text().map(|text| vec![text]);
+    }
     match expression {
         Expression::LitStr { value, .. } => Some(vec![value.to_string()]),
         Expression::LitInt { value, .. } => Some(vec![value.to_string()]),
         Expression::LitBool { value, .. } => Some(vec![value.to_string()]),
         // 插值里的 `undefined` 被编译器包成 `ToStringWithoutUndefined`，取值是空串。
         Expression::LitUndefined { .. } => Some(vec![String::new()]),
-        Expression::ToStringWithoutUndefined { value, .. } => eval(value),
+        Expression::ToStringWithoutUndefined { value, .. } => eval(value, env),
         Expression::Cond {
             true_br, false_br, ..
-        } => union(eval(true_br)?, eval(false_br)?),
+        } => union(eval(true_br, env)?, eval(false_br, env)?),
         // 逻辑运算与 `??` 返回其中一个操作数。
         Expression::LogicAnd { left, right, .. }
         | Expression::LogicOr { left, right, .. }
-        | Expression::NullishCoalescing { left, right, .. } => union(eval(left)?, eval(right)?),
+        | Expression::NullishCoalescing { left, right, .. } => {
+            union(eval(left, env)?, eval(right, env)?)
+        }
         Expression::Lt { .. }
         | Expression::Gt { .. }
         | Expression::Lte { .. }
@@ -209,6 +221,93 @@ fn eval(expression: &Expression) -> Option<Vec<String>> {
 fn union(mut left: Vec<String>, right: Vec<String>) -> Option<Vec<String>> {
     left.extend(right);
     (left.len() <= MAX_CANDIDATES).then_some(left)
+}
+
+/// 表达式在给定环境下的确定取值；`None` = 依赖运行时数据。
+///
+/// 只做 JS 里无副作用的那部分折叠：字面量、已知绑定、三元、逻辑运算、
+/// 严格相等与数值比较。类型不一致的宽松比较、成员访问、函数调用一律不可知。
+pub fn constant(expression: &Expression, env: &Env) -> Option<Lit> {
+    match expression {
+        Expression::LitStr { value, .. } => Some(Lit::Str(value.to_string())),
+        Expression::LitInt { value, .. } => Some(Lit::Num(*value as f64)),
+        Expression::LitFloat { value, .. } => Some(Lit::Num(*value)),
+        Expression::LitBool { value, .. } => Some(Lit::Bool(*value)),
+        Expression::DataField { name, .. } => env.get(name).cloned(),
+        Expression::ToStringWithoutUndefined { value, .. } => {
+            constant(value, env)?.text().map(Lit::Str)
+        }
+        Expression::Reverse { value, .. } => Some(Lit::Bool(!truthy(value, env)?)),
+        Expression::Cond {
+            cond,
+            true_br,
+            false_br,
+            ..
+        } => match truthy(cond, env)? {
+            true => constant(true_br, env),
+            false => constant(false_br, env),
+        },
+        // 逻辑运算返回其中一个操作数，不是布尔值。
+        Expression::LogicAnd { left, right, .. } => {
+            let left = constant(left, env)?;
+            if left.truthy() {
+                constant(right, env)
+            } else {
+                Some(left)
+            }
+        }
+        Expression::LogicOr { left, right, .. } => {
+            let left = constant(left, env)?;
+            if left.truthy() {
+                Some(left)
+            } else {
+                constant(right, env)
+            }
+        }
+        Expression::Eq { left, right, .. } | Expression::EqFull { left, right, .. } => Some(
+            Lit::Bool(constant(left, env)?.strict_eq(&constant(right, env)?)?),
+        ),
+        Expression::Ne { left, right, .. } | Expression::NeFull { left, right, .. } => Some(
+            Lit::Bool(!constant(left, env)?.strict_eq(&constant(right, env)?)?),
+        ),
+        Expression::Plus { left, right, .. } => {
+            let (left, right) = (constant(left, env)?, constant(right, env)?);
+            match (&left, &right) {
+                // 有一边是字符串就是拼接。
+                (Lit::Str(_), _) | (_, Lit::Str(_)) => {
+                    Some(Lit::Str(left.text()? + &right.text()?))
+                }
+                (Lit::Num(a), Lit::Num(b)) => Some(Lit::Num(a + b)),
+                _ => None,
+            }
+        }
+        Expression::Lt { left, right, .. }
+        | Expression::Gt { left, right, .. }
+        | Expression::Lte { left, right, .. }
+        | Expression::Gte { left, right, .. } => {
+            let (a, b) = (number(left, env)?, number(right, env)?);
+            Some(Lit::Bool(match expression {
+                Expression::Lt { .. } => a < b,
+                Expression::Gt { .. } => a > b,
+                Expression::Lte { .. } => a <= b,
+                _ => a >= b,
+            }))
+        }
+        _ => None,
+    }
+}
+
+/// 表达式在给定环境下是否为真；`None` = 判不了。
+pub fn truthy(expression: &Expression, env: &Env) -> Option<bool> {
+    constant(expression, env).map(|value| value.truthy())
+}
+
+/// 表达式的确定数值。
+fn number(expression: &Expression, env: &Env) -> Option<f64> {
+    match constant(expression, env)? {
+        Lit::Num(value) => Some(value),
+        _ => None,
+    }
 }
 
 fn product(lists: &[Vec<String>]) -> Option<Vec<String>> {
@@ -246,7 +345,7 @@ mod tests {
         let Value::Dynamic { expression, .. } = value else {
             panic!("expected dynamic class");
         };
-        super::class_tokens(expression)
+        super::class_tokens(expression, &crate::input::env::Env::default())
     }
 
     #[test]
@@ -289,10 +388,10 @@ mod tests {
 
     #[test]
     fn arithmetic_plus_is_not_treated_as_concatenation() {
-        // `1 + 2` 是 3 而不是 "12"：拿不到字符串字面量就当任意值。
+        // `1 + 2` 是 3 而不是 "12"：两边都是数字就按算术求值。
         let tokens = tokens("{{1 + 2}}");
-        assert!(tokens.any);
-        assert!(tokens.definite.is_empty());
+        assert_eq!(tokens.definite, ["3"]);
+        assert!(!tokens.any);
     }
 
     #[test]

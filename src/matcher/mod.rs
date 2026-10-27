@@ -730,7 +730,7 @@ mod tests {
     }
 
     fn doc(source: &str) -> WxmlDoc {
-        wxml::parse("x.wxml", source).unwrap()
+        wxml::parse("x.wxml", source, &crate::input::env::Env::default()).unwrap()
     }
 
     // 元素序：0=根 .a.b#root，1=.c，2=.c.d，3=image.c

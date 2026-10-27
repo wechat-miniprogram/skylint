@@ -17,14 +17,19 @@ use std::fmt;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Argument, ArrowFunctionBody, ArrowFunctionExpression, BindingPattern, CallExpression,
-    ChainElement, Expression, Function, FunctionBody, MethodDefinition, ObjectExpression,
-    ObjectProperty, ObjectPropertyKind, PropertyDefinition, PropertyKey, VariableDeclarator,
+    Argument, ArrowFunctionBody, ArrowFunctionExpression, AssignmentExpression, AssignmentTarget,
+    BindingPattern, CallExpression, ChainElement, Expression, Function, FunctionBody,
+    MethodDefinition, ObjectExpression, ObjectProperty, ObjectPropertyKind, PropertyDefinition,
+    PropertyKey, VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
+use std::collections::{BTreeMap, BTreeSet};
+
 use oxc_parser::{ParseOptions, Parser};
 use oxc_span::{GetSpan, SourceType, Span};
 use oxc_syntax::scope::ScopeFlags;
+
+use crate::input::env::{Env, Lit};
 
 /// worklet 函数的标记：函数体指令序言里的 `"worklet"`。
 const WORKLET: &str = "worklet";
@@ -61,6 +66,9 @@ pub struct JsDoc {
     calls: Vec<CallInfo>,
     this_data_destructures: Vec<ThisDataDestructure>,
     object_fns: Vec<ObjectFn>,
+    literals: BTreeMap<String, Lit>,
+    dirty_data: BTreeSet<String>,
+    dirty_all: bool,
 }
 
 impl JsDoc {
@@ -97,6 +105,9 @@ impl JsDoc {
             calls: collector.calls,
             this_data_destructures: collector.this_data_destructures,
             object_fns: collector.object_fns,
+            literals: collector.literals,
+            dirty_data: collector.dirty_data,
+            dirty_all: collector.dirty_all,
         })
     }
 
@@ -106,6 +117,25 @@ impl JsDoc {
 
     pub fn source(&self) -> &str {
         &self.source
+    }
+
+    /// `data` / `properties` 里能确定取值的绑定（已被动态写入的键扣掉）。
+    ///
+    /// 这是模板常量环境的数据来源之一：只有整份文件都没对它做过非字面量写入的
+    /// 键才会留下——`setData({ renderer: 变量 })` 或 `setData(变量)` 会让对应键
+    /// （或全部键）从环境里消失，`wx:if="{{renderer === 'skyline'}}"` 随之不折叠。
+    pub fn constants(&self) -> Env {
+        let mut env = Env::default();
+        if self.dirty_all {
+            return env;
+        }
+        for (name, value) in &self.literals {
+            if self.dirty_data.contains(name) {
+                continue;
+            }
+            env.insert(name.clone(), value.clone());
+        }
+        env
     }
 
     /// 所有函数（函数声明、函数表达式、箭头函数、对象方法、类方法），按遍历顺序。
@@ -267,6 +297,12 @@ struct Collector {
     calls: Vec<CallInfo>,
     this_data_destructures: Vec<ThisDataDestructure>,
     object_fns: Vec<ObjectFn>,
+    /// `Page({data})` / `Component({data, properties})` 里的字面量取值。
+    literals: BTreeMap<String, Lit>,
+    /// 被动态写入过的 data 键：`setData({k: 变量})` 或 `setData` 里出现动态键。
+    dirty_data: BTreeSet<String>,
+    /// 整份文件的 data 都被动态写入（`setData(变量)` / 展开语法），所有键都不再确定。
+    dirty_all: bool,
     /// 下一个函数表达式 / 箭头函数该沿用的名字（变量名或方法名）。
     pending: Option<String>,
     /// 外层函数栈，值为该函数是否 `has_worklet`。取最近的一层。
@@ -378,7 +414,42 @@ impl<'a> Visit<'a> for Collector {
         walk::walk_property_definition(self, it);
     }
 
+    fn visit_assignment_expression(&mut self, it: &AssignmentExpression<'a>) {
+        // `this.data.x = ...` 也改写了绑定；`Object.assign(this.data, ...)` 之类整体写入
+        // 拿不到键名，按「整份 data 不可信」处理。
+        match &it.left {
+            AssignmentTarget::StaticMemberExpression(member)
+                if member.property.name == "data"
+                    && matches!(&member.object, Expression::ThisExpression(_)) =>
+            {
+                self.dirty_all = true;
+            }
+            AssignmentTarget::StaticMemberExpression(member) if is_this_data(&member.object) => {
+                let key = member.property.name.to_string();
+                self.literals.remove(&key);
+                self.dirty_data.insert(key);
+            }
+            _ => {}
+        }
+        walk::walk_assignment_expression(self, it);
+    }
+
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        let callee = callee_name(&it.callee).unwrap_or_default();
+        if matches!(callee.as_str(), "Page" | "Component") {
+            if let Some(Expression::ObjectExpression(object)) =
+                it.arguments.first().and_then(arg_expression)
+            {
+                self.collect_properties_of(object);
+            }
+        } else if callee.ends_with(".setData") {
+            match it.arguments.first().and_then(arg_expression) {
+                Some(Expression::ObjectExpression(object)) => self.collect_set_data(object),
+                // `setData(this.data)` / `setData({...rest})` 这类整体写入：整份 data 不可信。
+                Some(_) => self.dirty_all = true,
+                None => {}
+            }
+        }
         self.calls.push(CallInfo {
             callee: callee_name(&it.callee).unwrap_or_default(),
             start: it.span.start,
@@ -388,6 +459,99 @@ impl<'a> Visit<'a> for Collector {
         });
         walk::walk_call_expression(self, it);
     }
+}
+
+impl Collector {
+    /// `Component({ properties })`：只收默认值里的字面量。
+    fn collect_properties_of<'b>(&mut self, object: &ObjectExpression<'b>) {
+        for property in &object.properties {
+            let ObjectPropertyKind::ObjectProperty(property) = property else {
+                continue;
+            };
+            if property.computed {
+                continue;
+            }
+            // `data` 刻意不参与：它是初始化值，页面/组件随后会反复 `setData`，
+            // 只有 `properties` 的默认值在没有被写入时才是稳定的。
+            if key_name(&property.key).as_deref() == Some("properties")
+                && let Expression::ObjectExpression(properties) = &property.value
+            {
+                self.collect_properties(properties);
+            }
+        }
+    }
+
+    /// `properties: { renderer: { type: String, value: 'skyline' } }`。
+    fn collect_properties<'b>(&mut self, object: &ObjectExpression<'b>) {
+        for property in &object.properties {
+            let ObjectPropertyKind::ObjectProperty(property) = property else {
+                continue;
+            };
+            if property.computed {
+                continue;
+            }
+            let Some(key) = key_name(&property.key) else {
+                continue;
+            };
+            let Expression::ObjectExpression(definition) = &property.value else {
+                continue;
+            };
+            for field in &definition.properties {
+                let ObjectPropertyKind::ObjectProperty(field) = field else {
+                    continue;
+                };
+                if field.computed || key_name(&field.key).as_deref() != Some("value") {
+                    continue;
+                }
+                if let Some(literal) = literal(&field.value) {
+                    self.literals.insert(key.clone(), literal);
+                }
+            }
+        }
+    }
+
+    /// `setData` 里出现过的键一律不再是常量：无论赋的是不是字面量，运行时都会被
+    /// 改写，模板里也就不能再按初始值折叠。
+    fn collect_set_data<'b>(&mut self, object: &ObjectExpression<'b>) {
+        for property in &object.properties {
+            let ObjectPropertyKind::ObjectProperty(property) = property else {
+                self.dirty_all = true;
+                continue;
+            };
+            match key_name(&property.key) {
+                Some(key) if !property.computed => {
+                    self.literals.remove(&key);
+                    self.dirty_data.insert(key);
+                }
+                _ => self.dirty_all = true,
+            }
+        }
+    }
+}
+
+/// 字面量：字符串 / 数字 / 布尔。其余（对象、数组、变量、调用）都算不可知。
+fn literal(expression: &Expression) -> Option<Lit> {
+    match expression {
+        Expression::StringLiteral(value) => Some(Lit::Str(
+            value.value.as_str().unwrap_or_default().to_string(),
+        )),
+        Expression::NumericLiteral(value) => Some(Lit::Num(value.value)),
+        Expression::BooleanLiteral(value) => Some(Lit::Bool(value.value)),
+        // 不含插值的模板串就是普通字符串。
+        Expression::TemplateLiteral(template) if template.expressions.is_empty() => {
+            let quasi = template.quasis.first()?;
+            Some(Lit::Str(match &quasi.value.cooked {
+                Some(cooked) => cooked.as_str().unwrap_or_default().to_string(),
+                None => quasi.value.raw.to_string(),
+            }))
+        }
+        _ => None,
+    }
+}
+
+/// 调用实参的表达式（展开实参不算）。
+fn arg_expression<'a>(argument: &'a Argument<'a>) -> Option<&'a Expression<'a>> {
+    argument.as_expression()
 }
 
 fn is_function(expr: &Expression) -> bool {

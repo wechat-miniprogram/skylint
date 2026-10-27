@@ -67,6 +67,92 @@ fn standard_project(name: &str) -> Fixture {
 }
 
 #[test]
+fn env_folds_a_property_passed_statically_by_the_parent() {
+    let f = Fixture::new("env-static");
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/"}"#,
+    )
+    .write(
+        "miniprogram/app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{"card":"/components/card/card"}}"#,
+    )
+    .write("miniprogram/pages/index/index.json", r#"{}"#)
+    // 唯一的用法把 renderer 写死成 skyline。
+    .write(
+        "miniprogram/pages/index/index.wxml",
+        r#"<card renderer="skyline"/>"#,
+    )
+    .write("miniprogram/pages/index/index.js", "Page({})")
+    .write(
+        "miniprogram/components/card/card.json",
+        r#"{"component":true}"#,
+    )
+    .write("miniprogram/components/card/card.wxml", "<view/>")
+    .write(
+        "miniprogram/components/card/card.js",
+        r#"Component({properties:{renderer:{type:String,value:'webview'}}})"#,
+    );
+    let project = Project::load(f.path()).unwrap();
+    let env = project.env("components/card/card.wxml").expect("env");
+    assert_eq!(
+        env.get("renderer"),
+        Some(&skylint::input::env::Lit::Str("skyline".into()))
+    );
+}
+
+#[test]
+fn env_drops_a_property_when_one_usage_passes_it_dynamically() {
+    let f = Fixture::new("env-dynamic");
+    f.write("project.config.json", r#"{"miniprogramRoot":"miniprogram/"}"#)
+        .write(
+            "miniprogram/app.json",
+            r#"{"pages":["pages/index/index","pages/other/other"],"usingComponents":{"card":"/components/card/card"}}"#,
+        )
+        .write("miniprogram/pages/index/index.json", r#"{}"#)
+        .write(
+            "miniprogram/pages/index/index.wxml",
+            r#"<card renderer="skyline"/>"#,
+        )
+        .write("miniprogram/pages/index/index.js", "Page({})")
+        .write("miniprogram/pages/other/other.json", r#"{}"#)
+        .write(
+            "miniprogram/pages/other/other.wxml",
+            r#"<card renderer="{{renderer}}"/>"#,
+        )
+        .write("miniprogram/pages/other/other.js", "Page({})")
+        .write(
+            "miniprogram/components/card/card.json",
+            r#"{"component":true}"#,
+        )
+        .write("miniprogram/components/card/card.wxml", "<view/>")
+        .write(
+            "miniprogram/components/card/card.js",
+            r#"Component({properties:{renderer:{type:String,value:'webview'}}})"#,
+        );
+    let project = Project::load(f.path()).unwrap();
+    assert!(project.env("components/card/card.wxml").is_none());
+}
+
+#[test]
+fn env_drops_a_property_that_set_data_overwrites() {
+    let f = Fixture::new("env-dirty");
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/"}"#,
+    )
+    .write("miniprogram/app.json", r#"{"pages":["pages/index/index"]}"#)
+    .write("miniprogram/pages/index/index.json", r#"{}"#)
+    .write("miniprogram/pages/index/index.wxml", "<view/>")
+    .write(
+        "miniprogram/pages/index/index.js",
+        r#"Page({data:{renderer:'webview'},onLoad(){this.setData({renderer:'skyline'})}})"#,
+    );
+    let project = Project::load(f.path()).unwrap();
+    assert!(project.env("pages/index/index.wxml").is_none());
+}
+
+#[test]
 fn routes_resolve_to_actual_sources() {
     let f = standard_project("routes");
     let project = Project::load(f.path()).unwrap();

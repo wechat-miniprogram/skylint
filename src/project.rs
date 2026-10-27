@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use crate::input::env::{Env, Lit};
 use crate::input::js::JsDoc;
 use crate::input::wxml;
 use crate::input::wxss::{self, ParseError, WxssDoc};
@@ -164,6 +165,12 @@ pub struct Project {
     /// 模板不属于任何单元：它的样式作用域不可知，但单文件结构规则（不支持组件、
     /// 内联文本等）仍应检查它。
     pub template_files: Vec<String>,
+    /// WXML 路径 → 该文件作用域里能确定取值的绑定。
+    ///
+    /// 来源只有两处静态可证的东西：单元脚本的 `data` / `properties` 字面量（没有被
+    /// 动态 `setData` 改写），以及父级以静态属性传进组件的值。`wx:if` 与 `class`
+    /// 绑定靠它折叠——`{{renderer === 'skyline'}}` 在 `renderer` 已知时只有一支可达。
+    pub envs: BTreeMap<String, Env>,
     /// 建图过程中发现的非阻断问题（如页面声明了但 wxml 缺失）。
     pub warnings: Vec<Diagnostic>,
 }
@@ -195,6 +202,11 @@ impl Project {
             .get(wxml_path)
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// 这份 WXML 的常量环境；没有可折叠的绑定时返回 `None`。
+    pub fn env(&self, wxml_path: &str) -> Option<&Env> {
+        self.envs.get(wxml_path).filter(|env| !env.is_empty())
     }
 
     /// 某个页面（含 app 级声明）**传递**用到的组件。
@@ -454,6 +466,7 @@ impl Project {
             project_private_config_source: String::new(),
             pages: Vec::new(),
             declared_components: BTreeMap::new(),
+            envs: BTreeMap::new(),
             components: Vec::new(),
             deps: BTreeMap::new(),
             page_json: BTreeMap::new(),
@@ -731,6 +744,19 @@ impl Loaded {
         );
         let scripts = collect_scripts(fs, base, exts, &pages, &components);
         let template_files = collect_template_files(fs, base, &pages, &components);
+        let envs = collect_envs(
+            fs,
+            base,
+            EnvView {
+                pages: &pages,
+                components: &components,
+                scripts: &scripts,
+                page_json: &page_json,
+                component_json: &component_json,
+                app: view.app,
+                template_files: &template_files,
+            },
+        );
         record_unparsed_templates(
             fs,
             base,
@@ -771,6 +797,7 @@ impl Loaded {
                 .collect(),
             page_json_source,
             declared_components,
+            envs,
             styles,
             scripts,
             template_files,
@@ -971,6 +998,203 @@ fn app_seeds(fs: &LocalFs, root: &str, app: &Map<String, Value>) -> Vec<String> 
         seeds.push("app-bar/index".to_string());
     }
     seeds
+}
+
+/// 建常量环境需要的工程视图（参数打包成一个结构体，避免超长参数表）。
+struct EnvView<'a> {
+    pages: &'a [PageUnit],
+    components: &'a [ComponentUnit],
+    scripts: &'a [JsFile],
+    page_json: &'a [(String, Option<Map<String, Value>>)],
+    component_json: &'a BTreeMap<String, Map<String, Value>>,
+    app: &'a Map<String, Value>,
+    template_files: &'a [String],
+}
+
+/// 每个 WXML 的常量环境。
+///
+/// 两个来源，都要求「所有用法一致」才采纳：
+/// 1. 单元脚本 `properties` 的默认值（被 `setData` / `this.data.x = ...` 写过的键已剔除）；
+/// 2. 父级以静态属性传给组件的值——同一组件在所有使用处都传同一个静态值时才算常量。
+///
+/// 冲突、缺省、动态传值一律让该键从环境里消失：折叠错了会把可达分支删掉，
+/// 那是最难发现的漏报，所以这里的默认方向是保守。
+fn collect_envs(fs: &LocalFs, base: &str, view: EnvView<'_>) -> BTreeMap<String, Env> {
+    let EnvView {
+        pages,
+        components,
+        scripts,
+        page_json,
+        component_json,
+        app,
+        template_files,
+    } = view;
+    let mut envs: BTreeMap<String, Env> = BTreeMap::new();
+    for page in pages {
+        if let Some(wxml) = page.files.wxml.as_deref() {
+            envs.insert(
+                wxml.to_string(),
+                script_env(scripts, &Scope::Page(page.route.clone())),
+            );
+        }
+    }
+    for component in components {
+        if let Some(wxml) = component.files.wxml.as_deref() {
+            envs.insert(
+                wxml.to_string(),
+                script_env(scripts, &Scope::Component(component.path.clone())),
+            );
+        }
+    }
+
+    // 父级静态传值：按「组件 → 属性」统计全部使用处。
+    #[derive(Default)]
+    struct Usage {
+        total: usize,
+        /// 静态传过这个属性的次数，以及这些取值是否一致。
+        attrs: BTreeMap<String, (usize, Option<Lit>, bool)>,
+    }
+    let mut usages: BTreeMap<String, Usage> = BTreeMap::new();
+    let docs: Vec<(&str, Option<Map<String, Value>>)> = pages
+        .iter()
+        .map(|page| {
+            (
+                page.files.wxml.as_deref(),
+                page_json
+                    .iter()
+                    .find(|(route, _)| route == &page.route)
+                    .and_then(|(_, json)| json.clone()),
+            )
+        })
+        .chain(components.iter().map(|component| {
+            (
+                component.files.wxml.as_deref(),
+                component_json.get(&component.path).cloned(),
+            )
+        }))
+        .chain(
+            template_files
+                .iter()
+                .map(|path| (Some(path.as_str()), None)),
+        )
+        .filter_map(|(wxml, json)| Some((wxml?, json)))
+        .collect();
+
+    for (doc_path, unit_json) in docs {
+        let Some(source) = fs.read_file(base, doc_path) else {
+            continue;
+        };
+        // 这里用的是「无环境」解析：静态属性与常量环境无关，也不需要折叠。
+        let Ok(doc) = wxml::parse(doc_path, &source, &Env::default()) else {
+            continue;
+        };
+        let targets = tag_targets(fs, base, doc_path, app, unit_json.as_ref());
+        if targets.is_empty() {
+            continue;
+        }
+        each_element(&doc.nodes, &mut |element| {
+            let tag = element.tag.to_ascii_lowercase();
+            let Some(target) = targets.get(&tag) else {
+                return;
+            };
+            let usage = usages.entry(target.clone()).or_default();
+            usage.total += 1;
+            for attribute in &element.attributes {
+                if !attribute.is_static {
+                    // 动态传值：这个属性在任何使用处都不可信。
+                    usage
+                        .attrs
+                        .entry(attribute.name.clone())
+                        .or_insert((0, None, false))
+                        .2 = false;
+                    continue;
+                }
+                let Some(value) = attribute.value.clone() else {
+                    continue;
+                };
+                let entry = usage.attrs.entry(attribute.name.clone()).or_insert((
+                    0,
+                    Some(Lit::Str(value.clone())),
+                    true,
+                ));
+                entry.0 += 1;
+                if entry
+                    .1
+                    .as_ref()
+                    .is_some_and(|seen| *seen != Lit::Str(value))
+                {
+                    entry.2 = false;
+                }
+            }
+        });
+    }
+
+    for (component, usage) in usages {
+        let Some(wxml) = components
+            .iter()
+            .find(|unit| unit.path == component)
+            .and_then(|unit| unit.files.wxml.clone())
+        else {
+            continue;
+        };
+        let env = envs.entry(wxml).or_default();
+        for (name, (passed, value, consistent)) in usage.attrs {
+            // 只有「每处使用都传了同一个静态值」才成立；少传一处就等于用了默认值。
+            if consistent
+                && passed == usage.total
+                && let Some(value) = value
+            {
+                env.insert(name, value);
+            } else {
+                env.remove(&name);
+            }
+        }
+    }
+    envs
+}
+
+/// 单元脚本里字面量常量的环境。
+fn script_env(scripts: &[JsFile], scope: &Scope) -> Env {
+    scripts
+        .iter()
+        .find(|file| &file.scope == scope)
+        .map(|file| file.doc.constants())
+        .unwrap_or_default()
+}
+
+/// 这份 WXML 里「标签名 → 组件路径」。`usingComponents` 的写法解析与编译器一致。
+fn tag_targets(
+    fs: &LocalFs,
+    base: &str,
+    doc_path: &str,
+    app: &Map<String, Value>,
+    unit_json: Option<&Map<String, Value>>,
+) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for json in [Some(app), unit_json].into_iter().flatten() {
+        let Some(map) = json.get("usingComponents").and_then(Value::as_object) else {
+            continue;
+        };
+        for (tag, target) in map {
+            let Some(target) = target.as_str() else {
+                continue;
+            };
+            if let Some(route) = resolve_component_route(fs, base, doc_path, target) {
+                out.insert(tag.to_ascii_lowercase(), route);
+            }
+        }
+    }
+    out
+}
+
+/// 深度优先遍历摊平后的 WXML 节点。
+fn each_element<'a>(nodes: &'a [wxml::WxmlNode], f: &mut impl FnMut(&'a wxml::WxmlElement)) {
+    for node in nodes {
+        if let wxml::WxmlNode::Element(element) = node {
+            f(element);
+            each_element(&element.children, f);
+        }
+    }
 }
 
 /// 单元声明的组件**标签名**（key），小写化。
@@ -1251,7 +1475,7 @@ fn collect_template_files(
 
     while let Some(path) = queue.pop() {
         let source = fs.read_file(miniprogram_root, &path).unwrap_or_default();
-        let Ok(doc) = wxml::parse(&path, &source) else {
+        let Ok(doc) = wxml::parse(&path, &source, &Env::default()) else {
             continue;
         };
         for src in doc.template_refs() {
@@ -1354,7 +1578,7 @@ fn record_unparsed_templates<'a>(
         let Some(source) = fs.read_file(miniprogram_root, path) else {
             continue;
         };
-        if let Err(detail) = wxml::parse(path, &source) {
+        if let Err(detail) = wxml::parse(path, &source, &Env::default()) {
             warnings.push(
                 Diagnostic::new(
                     "skylint/unparsed-template",

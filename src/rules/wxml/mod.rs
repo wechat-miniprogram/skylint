@@ -59,7 +59,8 @@ fn wxml_files(project: &Project) -> impl Iterator<Item = &str> {
 
 pub(crate) fn load_doc(project: &Project, path: &str) -> Option<WxmlDoc> {
     let source = fs::read_to_string(project.abs(path)).ok()?;
-    let mut doc = wxml::parse(path, &source).ok()?;
+    let empty = crate::input::env::Env::default();
+    let mut doc = wxml::parse(path, &source, project.env(path).unwrap_or(&empty)).ok()?;
     doc.fragment = project.template_files.iter().any(|file| file == path);
     Some(doc)
 }

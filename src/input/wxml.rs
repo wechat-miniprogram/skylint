@@ -16,9 +16,11 @@ use glass_easel_template_compiler::parse::tag::{
 };
 use glass_easel_template_compiler::parse::{self, ParseErrorLevel, Position, TemplateStructure};
 
-/// 解析一个 WXML 文件。
-pub fn parse(path: &str, source: &str) -> Result<WxmlDoc, String> {
-    WxmlDoc::parse(path, source)
+use crate::input::env::Env;
+
+/// 解析一个 WXML 文件。`env` 是这份文件里确定取值的绑定，用于折叠 `wx:if`。
+pub fn parse(path: &str, source: &str, env: &Env) -> Result<WxmlDoc, String> {
+    WxmlDoc::parse(path, source, env)
 }
 
 /// 一个 WXML 文件的解析结果。
@@ -126,7 +128,7 @@ impl WxmlText {
 
 impl WxmlDoc {
     /// `path` 只用于错误消息，不需要是磁盘上的真实路径。
-    pub fn parse(path: &str, source: &str) -> Result<Self, String> {
+    pub fn parse(path: &str, source: &str, env: &Env) -> Result<Self, String> {
         let source = crate::input::strip_bom(source);
         let (template, state) = parse::parse(path, source);
         if let Some(err) = state
@@ -143,13 +145,14 @@ impl WxmlDoc {
             ));
         }
         let mut next_group = 0;
-        let mut nodes = flatten(&template.content, source, &mut next_group, &[], false);
+        let mut nodes = flatten(&template.content, source, env, &mut next_group, &[], false);
         // 内联 `<template name="x">` 的定义体只存在 `globals.sub_templates` 里，不在
         // `content` 中：不摊平的话其中的元素对所有规则都不可见。
         for definition in &template.globals.sub_templates {
             nodes.extend(flatten(
                 &definition.content,
                 source,
+                env,
                 &mut next_group,
                 &[],
                 true,
@@ -295,26 +298,30 @@ fn slice(source: &str, range: Range<Position>) -> String {
 fn flatten(
     nodes: &[Node],
     source: &str,
+    env: &Env,
     next_group: &mut u32,
     branches: &[Branch],
     in_template: bool,
 ) -> Vec<WxmlNode> {
     nodes
         .iter()
-        .flat_map(|node| node_nodes(node, source, next_group, branches, in_template))
+        .flat_map(|node| node_nodes(node, source, env, next_group, branches, in_template))
         .collect()
 }
 
 fn node_nodes(
     node: &Node,
     source: &str,
+    env: &Env,
     next_group: &mut u32,
     branches: &[Branch],
     in_template: bool,
 ) -> Vec<WxmlNode> {
     match node {
         Node::Text(value) => vec![WxmlNode::Text(text_node(value, source, branches))],
-        Node::Element(element) => element_nodes(element, source, next_group, branches, in_template),
+        Node::Element(element) => {
+            element_nodes(element, source, env, next_group, branches, in_template)
+        }
         Node::Comment(_) => vec![WxmlNode::Comment],
         _ => Vec::new(),
     }
@@ -323,6 +330,7 @@ fn node_nodes(
 fn element_nodes(
     element: &Element,
     source: &str,
+    env: &Env,
     next_group: &mut u32,
     branches: &[Branch],
     in_template: bool,
@@ -336,16 +344,16 @@ fn element_nodes(
             end: element.location().end,
             tag_start: tag_name.location.start,
             tag_end: tag_name.location.end,
-            attributes: attributes(element, source),
+            attributes: attributes(element, source, env),
             unknown_children: has_unknown_children(children),
-            children: flatten(children, source, next_group, branches, in_template),
+            children: flatten(children, source, env, next_group, branches, in_template),
             branches: branches.to_vec(),
             in_template,
             is_slot: false,
         })],
         // 透明容器：不产生条件组，但把外层的分支栈透传下去。
         ElementKind::Pure { children, .. } | ElementKind::For { children, .. } => {
-            flatten(children, source, next_group, branches, in_template)
+            flatten(children, source, env, next_group, branches, in_template)
         }
         ElementKind::If {
             branches: arms,
@@ -360,19 +368,33 @@ fn element_nodes(
                 stack
             };
             let mut out = Vec::new();
-            for (arm, (_, _, children)) in arms.iter().enumerate() {
+            // 条件能折叠时只留下可能渲染的分支：`{{renderer === 'skyline'}}` 在
+            // `renderer` 确定时整条分支链就只剩一支，另一支里的元素不再参与任何规则
+            // （否则「专门为 Skyline 改的分支」和「WebView 守卫分支」都会被当成可能渲染）。
+            let mut decided = false;
+            for (arm, (_, condition, children)) in arms.iter().enumerate() {
+                if decided {
+                    break;
+                }
+                match condition_truthy(condition, env) {
+                    Some(true) => decided = true,
+                    Some(false) => continue,
+                    None => {}
+                }
                 out.extend(flatten(
                     children,
                     source,
+                    env,
                     next_group,
                     &inner(arm as u32),
                     in_template,
                 ));
             }
-            if let Some((_, children)) = else_branch {
+            if !decided && let Some((_, children)) = else_branch {
                 out.extend(flatten(
                     children,
                     source,
+                    env,
                     next_group,
                     &inner(arms.len() as u32),
                     in_template,
@@ -386,7 +408,7 @@ fn element_nodes(
             end: element.location().end,
             tag_start: element.tag_location.start.0.start,
             tag_end: element.tag_location.start.1.end,
-            attributes: attributes(element, source),
+            attributes: attributes(element, source, env),
             children: Vec::new(),
             unknown_children: false,
             branches: branches.to_vec(),
@@ -394,6 +416,15 @@ fn element_nodes(
             is_slot: true,
         })],
         _ => Vec::new(),
+    }
+}
+
+/// `wx:if` 条件在已知环境下的取值；`None` = 判不了（含静态文本条件写法）。
+fn condition_truthy(condition: &Value, env: &Env) -> Option<bool> {
+    match condition {
+        Value::Dynamic { expression, .. } => crate::input::expr::truthy(expression, env),
+        Value::Static { value, .. } => Some(!value.is_empty() && value.as_str() != "false"),
+        _ => None,
     }
 }
 
@@ -425,7 +456,7 @@ fn has_unknown_children(nodes: &[Node]) -> bool {
 
 /// 元素属性。只收集「用户写在开始标签里」的属性：`wx:for`/`wx:if` 被解析成
 /// 包装节点，不在其内；`<block>` 摊平后属性也不会保留。
-fn attributes(element: &Element, source: &str) -> Vec<WxmlAttribute> {
+fn attributes(element: &Element, source: &str, env: &Env) -> Vec<WxmlAttribute> {
     let mut out = Vec::new();
     match &element.kind {
         ElementKind::Normal {
@@ -440,13 +471,17 @@ fn attributes(element: &Element, source: &str) -> Vec<WxmlAttribute> {
             common,
             ..
         } => {
-            out.extend(normal.iter().map(|attr| normal_attribute(attr, source)));
-            out.extend(class_attributes(class, source));
-            out.extend(style_attributes(style, source));
+            out.extend(
+                normal
+                    .iter()
+                    .map(|attr| normal_attribute(attr, source, env)),
+            );
+            out.extend(class_attributes(class, source, env));
+            out.extend(style_attributes(style, source, env));
             out.extend(
                 change_attributes
                     .iter()
-                    .map(|attr| prefixed_attribute(attr, source)),
+                    .map(|attr| prefixed_attribute(attr, source, env)),
             );
             out.extend(
                 worklet_attributes
@@ -455,12 +490,16 @@ fn attributes(element: &Element, source: &str) -> Vec<WxmlAttribute> {
             );
             out.extend(generics.iter().map(|attr| static_attribute(attr, source)));
             out.extend(extra_attr.iter().map(|attr| static_attribute(attr, source)));
-            out.extend(let_vars.iter().map(|attr| prefixed_attribute(attr, source)));
+            out.extend(
+                let_vars
+                    .iter()
+                    .map(|attr| prefixed_attribute(attr, source, env)),
+            );
             if let Some((range, value)) = &common.id {
-                out.push(value_attribute("id".to_string(), range, Some(value)));
+                out.push(value_attribute("id".to_string(), range, Some(value), env));
             }
             if let Some((range, value)) = &common.slot {
-                out.push(value_attribute("slot".to_string(), range, Some(value)));
+                out.push(value_attribute("slot".to_string(), range, Some(value), env));
             }
             out.extend(
                 common
@@ -472,31 +511,35 @@ fn attributes(element: &Element, source: &str) -> Vec<WxmlAttribute> {
                 common
                     .data
                     .iter()
-                    .map(|attr| prefixed_attribute(attr, source)),
+                    .map(|attr| prefixed_attribute(attr, source, env)),
             );
             out.extend(
                 common
                     .marks
                     .iter()
-                    .map(|attr| prefixed_attribute(attr, source)),
+                    .map(|attr| prefixed_attribute(attr, source, env)),
             );
             out.extend(
                 common
                     .event_bindings
                     .iter()
-                    .map(|binding| event_attribute(binding, source)),
+                    .map(|binding| event_attribute(binding, source, env)),
             );
         }
         ElementKind::Slot { values, common, .. } => {
-            out.extend(values.iter().map(|attr| prefixed_attribute(attr, source)));
+            out.extend(
+                values
+                    .iter()
+                    .map(|attr| prefixed_attribute(attr, source, env)),
+            );
             if let Some((range, value)) = &common.id {
-                out.push(value_attribute("id".to_string(), range, Some(value)));
+                out.push(value_attribute("id".to_string(), range, Some(value), env));
             }
             out.extend(
                 common
                     .event_bindings
                     .iter()
-                    .map(|binding| event_attribute(binding, source)),
+                    .map(|binding| event_attribute(binding, source, env)),
             );
         }
         _ => {}
@@ -506,7 +549,12 @@ fn attributes(element: &Element, source: &str) -> Vec<WxmlAttribute> {
     out
 }
 
-fn value_attribute(name: String, range: &Range<Position>, value: Option<&Value>) -> WxmlAttribute {
+fn value_attribute(
+    name: String,
+    range: &Range<Position>,
+    value: Option<&Value>,
+    env: &Env,
+) -> WxmlAttribute {
     match value {
         Some(Value::Static {
             value, location, ..
@@ -523,8 +571,8 @@ fn value_attribute(name: String, range: &Range<Position>, value: Option<&Value>)
         Some(dynamic @ Value::Dynamic { expression, .. }) => WxmlAttribute {
             class_tokens: name
                 .eq_ignore_ascii_case("class")
-                .then(|| crate::input::expr::class_tokens(expression)),
-            candidates: crate::input::expr::candidates(expression),
+                .then(|| crate::input::expr::class_tokens(expression, env)),
+            candidates: crate::input::expr::candidates(expression, env),
             name,
             value: None,
             is_static: false,
@@ -556,21 +604,31 @@ fn value_attribute(name: String, range: &Range<Position>, value: Option<&Value>)
     }
 }
 
-fn normal_attribute(attr: &NormalAttribute, source: &str) -> WxmlAttribute {
+fn normal_attribute(attr: &NormalAttribute, source: &str, env: &Env) -> WxmlAttribute {
     let prefix = match &attr.prefix {
         NormalAttributePrefix::None => None,
         NormalAttributePrefix::Model(range) => Some(range),
     };
     let name = full_name(prefix, &attr.name, source);
     let start = prefix.map_or(attr.name.location.start, |range| range.start);
-    value_attribute(name, &(start..attr.name.location.end), attr.value.as_ref())
+    value_attribute(
+        name,
+        &(start..attr.name.location.end),
+        attr.value.as_ref(),
+        env,
+    )
 }
 
-fn prefixed_attribute(attr: &Attribute, source: &str) -> WxmlAttribute {
+fn prefixed_attribute(attr: &Attribute, source: &str, env: &Env) -> WxmlAttribute {
     let prefix = attr.prefix_location.as_ref();
     let name = full_name(prefix, &attr.name, source);
     let start = prefix.map_or(attr.name.location.start, |range| range.start);
-    value_attribute(name, &(start..attr.name.location.end), attr.value.as_ref())
+    value_attribute(
+        name,
+        &(start..attr.name.location.end),
+        attr.value.as_ref(),
+        env,
+    )
 }
 
 fn static_attribute(attr: &StaticAttribute, source: &str) -> WxmlAttribute {
@@ -589,45 +647,56 @@ fn static_attribute(attr: &StaticAttribute, source: &str) -> WxmlAttribute {
     }
 }
 
-fn event_attribute(binding: &EventBinding, source: &str) -> WxmlAttribute {
+fn event_attribute(binding: &EventBinding, source: &str, env: &Env) -> WxmlAttribute {
     let name = full_name(Some(&binding.prefix_location), &binding.name, source);
     value_attribute(
         name,
         &(binding.prefix_location.start..binding.name.location.end),
         binding.value.as_ref(),
+        env,
     )
 }
 
-fn class_attributes(class: &ClassAttribute, source: &str) -> Vec<WxmlAttribute> {
+fn class_attributes(class: &ClassAttribute, source: &str, env: &Env) -> Vec<WxmlAttribute> {
     match class {
         ClassAttribute::None => Vec::new(),
         ClassAttribute::String(range, value) => {
-            vec![value_attribute("class".to_string(), range, Some(value))]
+            vec![value_attribute(
+                "class".to_string(),
+                range,
+                Some(value),
+                env,
+            )]
         }
         ClassAttribute::Multiple(items) => items
             .iter()
             .map(|(range, name, value)| {
                 let full = full_name(Some(range), name, source);
                 let range = range.start..name.location.end;
-                value_attribute(full, &range, value.as_ref())
+                value_attribute(full, &range, value.as_ref(), env)
             })
             .collect(),
         _ => Vec::new(),
     }
 }
 
-fn style_attributes(style: &StyleAttribute, source: &str) -> Vec<WxmlAttribute> {
+fn style_attributes(style: &StyleAttribute, source: &str, env: &Env) -> Vec<WxmlAttribute> {
     match style {
         StyleAttribute::None => Vec::new(),
         StyleAttribute::String(range, value) => {
-            vec![value_attribute("style".to_string(), range, Some(value))]
+            vec![value_attribute(
+                "style".to_string(),
+                range,
+                Some(value),
+                env,
+            )]
         }
         StyleAttribute::Multiple(items) => items
             .iter()
             .map(|(range, name, value)| {
                 let full = full_name(Some(range), name, source);
                 let range = range.start..name.location.end;
-                value_attribute(full, &range, Some(value))
+                value_attribute(full, &range, Some(value), env)
             })
             .collect(),
         _ => Vec::new(),
@@ -656,6 +725,11 @@ fn full_name(prefix: Option<&Range<Position>>, name: &Ident, source: &str) -> St
 mod tests {
     use super::*;
 
+    /// 测试默认在「没有常量环境」下解析。
+    fn doc_of(source: &str) -> WxmlDoc {
+        WxmlDoc::parse("t.wxml", source, &Env::default()).expect("parse")
+    }
+
     fn text_nodes(doc: &WxmlDoc) -> Vec<&WxmlText> {
         fn walk<'a>(nodes: &'a [WxmlNode], out: &mut Vec<&'a WxmlText>) {
             for node in nodes {
@@ -673,7 +747,7 @@ mod tests {
 
     #[test]
     fn ascii_columns_are_one_based() {
-        let doc = WxmlDoc::parse("t.wxml", "<view>hi</view>").unwrap();
+        let doc = doc_of("<view>hi</view>");
         let text = text_nodes(&doc)[0];
         assert_eq!(doc.position(text.start), (1, 7));
         assert_eq!(doc.position(text.end), (1, 9));
@@ -682,7 +756,7 @@ mod tests {
     #[test]
     fn emoji_columns_count_characters_not_utf16_units() {
         // `<view>` = 6 个 UTF-16 单元；`😀` 占 2 个单元但只算 1 列。
-        let doc = WxmlDoc::parse("t.wxml", "<view>😀hi</view>").unwrap();
+        let doc = doc_of("<view>😀hi</view>");
         let text = text_nodes(&doc)[0];
         assert_eq!(doc.position(text.start), (1, 7));
         assert_eq!(
@@ -697,7 +771,7 @@ mod tests {
 
     #[test]
     fn chinese_columns_are_character_based() {
-        let doc = WxmlDoc::parse("t.wxml", "<view>中文</view>").unwrap();
+        let doc = doc_of("<view>中文</view>");
         let text = text_nodes(&doc)[0];
         assert_eq!(doc.position(text.start), (1, 7));
         assert_eq!(doc.position(text.end), (1, 9));
@@ -705,14 +779,14 @@ mod tests {
 
     #[test]
     fn multiline_positions() {
-        let doc = WxmlDoc::parse("t.wxml", "<view>\n  <text>a</text>\n</view>").unwrap();
+        let doc = doc_of("<view>\n  <text>a</text>\n</view>");
         let text = text_nodes(&doc)[0];
         assert_eq!(doc.position(text.start), (2, 9));
     }
 
     #[test]
     fn interpolation_keeps_source_text() {
-        let doc = WxmlDoc::parse("t.wxml", "<view>{{ a }}</view>").unwrap();
+        let doc = doc_of("<view>{{ a }}</view>");
         let text = text_nodes(&doc)[0];
         assert_eq!(text.text, "{{ a }}");
         assert!(text.is_meaningful());
@@ -720,14 +794,14 @@ mod tests {
 
     #[test]
     fn fatal_parse_error_is_reported_with_position() {
-        let err = WxmlDoc::parse("t.wxml", "<view>{{ a</view>").unwrap_err();
+        let err = WxmlDoc::parse("t.wxml", "<view>{{ a</view>", &Env::default()).unwrap_err();
         assert!(err.starts_with("t.wxml:1:"), "{err}");
     }
 
     #[test]
     fn non_fatal_warnings_do_not_fail() {
         // 缺少结束标签只是 Warn。
-        assert!(WxmlDoc::parse("t.wxml", "<view>").is_ok());
+        assert!(WxmlDoc::parse("t.wxml", "<view>", &Env::default()).is_ok());
     }
 
     fn attributes(doc: &WxmlDoc) -> Vec<&WxmlAttribute> {
@@ -736,11 +810,9 @@ mod tests {
 
     #[test]
     fn attribute_names_keep_hyphens_and_colons() {
-        let doc = WxmlDoc::parse(
-            "t.wxml",
+        let doc = doc_of(
             r#"<view aria-role="button" bind:tap="onTap" catch:tap="onCatch" type="list"/>"#,
-        )
-        .unwrap();
+        );
         let names: Vec<&str> = attributes(&doc).iter().map(|a| a.name.as_str()).collect();
         assert!(names.contains(&"aria-role"), "{names:?}");
         assert!(names.contains(&"bind:tap"), "{names:?}");
@@ -756,11 +828,7 @@ mod tests {
 
     #[test]
     fn worklet_attribute_keeps_its_colon_prefix_and_value_span() {
-        let doc = WxmlDoc::parse(
-            "t.wxml",
-            r#"<view worklet:ongesture="onPan" bind:ongesture="x"/>"#,
-        )
-        .unwrap();
+        let doc = doc_of(r#"<view worklet:ongesture="onPan" bind:ongesture="x"/>"#);
         let attrs = attributes(&doc);
         let worklet = attrs
             .iter()
@@ -775,7 +843,7 @@ mod tests {
 
     #[test]
     fn dynamic_attribute_value_is_not_a_static_string() {
-        let doc = WxmlDoc::parse("t.wxml", r#"<view type="{{t}}"/>"#).unwrap();
+        let doc = doc_of(r#"<view type="{{t}}"/>"#);
         let attr = &attributes(&doc)[0];
         assert_eq!(attr.name, "type");
         assert!(!attr.is_static);
@@ -784,7 +852,7 @@ mod tests {
 
     #[test]
     fn mixed_interpolation_attribute_value_is_not_static() {
-        let doc = WxmlDoc::parse("t.wxml", r#"<view type="a{{t}}"/>"#).unwrap();
+        let doc = doc_of(r#"<view type="a{{t}}"/>"#);
         assert!(!attributes(&doc)[0].is_static);
     }
 
@@ -793,6 +861,7 @@ mod tests {
         let doc = WxmlDoc::parse(
             "t.wxml",
             "<block wx:for=\"{{list}}\"><view>{{item}}</view></block>",
+            &Env::default(),
         )
         .unwrap();
         let tags: Vec<&str> = doc.elements().map(|e| e.tag.as_str()).collect();
@@ -802,11 +871,7 @@ mod tests {
 
     #[test]
     fn if_and_else_branches_share_group_with_distinct_arms() {
-        let doc = WxmlDoc::parse(
-            "t.wxml",
-            r#"<block wx:if="{{a}}"><view/></block><block wx:else><text/></block>"#,
-        )
-        .unwrap();
+        let doc = doc_of(r#"<block wx:if="{{a}}"><view/></block><block wx:else><text/></block>"#);
         let branches: Vec<&Vec<Branch>> = doc.elements().map(|element| &element.branches).collect();
         let (Some(if_branch), Some(else_branch)) = (branches[0].first(), branches[1].first())
         else {
@@ -818,11 +883,9 @@ mod tests {
 
     #[test]
     fn template_refs_expose_the_parsed_src_without_the_wxml_suffix() {
-        let doc = WxmlDoc::parse(
-            "t.wxml",
+        let doc = doc_of(
             r#"<import src="../../templates/pagination" /><include src="../shared/cell.wxml"/>"#,
-        )
-        .unwrap();
+        );
         // 实测：`src="x.wxml"` 会被编译器剥掉后缀，`src="x"` 原样保留。
         assert_eq!(
             doc.template_refs(),
@@ -832,18 +895,16 @@ mod tests {
 
     #[test]
     fn inline_template_definition_body_is_visible() {
-        let doc = WxmlDoc::parse(
-            "t.wxml",
+        let doc = doc_of(
             r#"<template name="card"><view class="c"><web-view src="x"/></view></template>"#,
-        )
-        .unwrap();
+        );
         let tags: Vec<&str> = doc.elements().map(|element| element.tag.as_str()).collect();
         assert_eq!(tags, ["view", "web-view"]);
     }
 
     #[test]
     fn template_instantiation_adds_no_element_of_its_own() {
-        let doc = WxmlDoc::parse("t.wxml", r#"<template is="card" data="{{d}}"/>"#).unwrap();
+        let doc = doc_of(r#"<template is="card" data="{{d}}"/>"#);
         assert_eq!(doc.elements().count(), 0);
     }
 
@@ -852,6 +913,7 @@ mod tests {
         let doc = parse(
             "a.wxml",
             r#"<block wx:if="{{a}}"><block wx:if="{{b}}"><view/></block></block>"#,
+            &Env::default(),
         )
         .unwrap();
         let element = doc
@@ -863,12 +925,67 @@ mod tests {
     }
 
     #[test]
-    fn for_inside_if_branch_inherits_branch() {
+    fn known_condition_prunes_the_unreachable_branch() {
+        let mut env = Env::default();
+        env.insert("renderer", crate::input::env::Lit::Str("skyline".into()));
         let doc = WxmlDoc::parse(
             "t.wxml",
-            r#"<block wx:if="{{a}}"><block wx:for="{{list}}"><view/></block></block>"#,
+            r#"<view wx:if="{{renderer === 'skyline'}}" class="a"/><view wx:else class="b"/>"#,
+            &env,
         )
         .unwrap();
+        let tags: Vec<(&str, &str)> = doc
+            .elements()
+            .map(|element| {
+                let class = element
+                    .attributes
+                    .iter()
+                    .find(|attr| attr.name == "class")
+                    .and_then(|attr| attr.value.as_deref())
+                    .unwrap_or("");
+                (element.tag.as_str(), class)
+            })
+            .collect();
+        // 只剩可达的那一支，另外一支里的元素不进树。
+        assert_eq!(tags, [("view", "a")]);
+    }
+
+    #[test]
+    fn unknown_condition_keeps_every_branch() {
+        let doc = doc_of(
+            r#"<view wx:if="{{renderer === 'skyline'}}" class="a"/><view wx:else class="b"/>"#,
+        );
+        let count = doc.elements().count();
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn known_condition_folds_class_ternary() {
+        let mut env = Env::default();
+        env.insert("renderer", crate::input::env::Lit::Str("skyline".into()));
+        let doc = WxmlDoc::parse(
+            "t.wxml",
+            r#"<view class="heart {{renderer === 'skyline' ? 'skyline' : ''}}"/>"#,
+            &env,
+        )
+        .unwrap();
+        let class = doc
+            .elements()
+            .next()
+            .unwrap()
+            .attributes
+            .iter()
+            .find(|attr| attr.name == "class")
+            .unwrap();
+        let tokens = class.class_tokens.as_ref().expect("dynamic class tokens");
+        assert!(tokens.is_definite("skyline", true));
+        assert!(!tokens.any);
+    }
+
+    #[test]
+    fn for_inside_if_branch_inherits_branch() {
+        let doc =
+            doc_of(r#"<block wx:if="{{a}}"><block wx:for="{{list}}"><view/></block></block>"#);
         let element = doc.elements().next().unwrap();
         assert_eq!(element.branches.first().map(|branch| branch.arm), Some(0));
     }
