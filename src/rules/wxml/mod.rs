@@ -17,7 +17,7 @@ pub(crate) mod structure;
 pub mod text_hard_break_ellipsis;
 pub mod unsupported_component;
 pub mod webview_nested_scroll;
-pub mod webview_static_renderer;
+pub mod webview_pinned_renderer;
 pub mod webview_text_children;
 pub mod webview_text_truncation;
 pub mod webview_worklet_binding;
@@ -33,7 +33,7 @@ pub use share_element_key::ShareElementKey;
 pub use text_hard_break_ellipsis::TextHardBreakEllipsis;
 pub use unsupported_component::UnsupportedComponent;
 pub use webview_nested_scroll::NestedScroll;
-pub use webview_static_renderer::StaticRenderer;
+pub use webview_pinned_renderer::PinnedRenderer;
 pub use webview_text_children::TextChildren;
 pub use webview_text_truncation::TextTruncation;
 pub use webview_worklet_binding::WorkletBinding;
@@ -54,7 +54,7 @@ use crate::project::{Project, Scope, StyleSheet};
 /// Skyline」的明确决定（典型是含 `<web-view>` 的页面），对它讲 Skyline 的
 /// 限制只是误报。app 级 webview / 页面未表态不跳——那只是还没迁，正是要检查的。
 /// 组件的 wxml 没有 renderer 可言，一律检查；模板不属于任何单元，也一律检查。
-fn wxml_files(project: &Project) -> impl Iterator<Item = &str> {
+pub(crate) fn wxml_files(project: &Project) -> impl Iterator<Item = &str> {
     let mut seen = HashSet::new();
     project
         .pages

@@ -60,5 +60,5 @@
 | `webview/nested-scroll` | warning | webview | 嵌套滚动只在 Skyline 下生效，WebView 下头部不联动、常驻顶部 |
 | `webview/worklet-binding` | error | webview | `worklet:` 事件绑定在 WebView 下不触发回调，且不报错 |
 | `webview/text-children` | error | webview | `<text>` 里的元素子节点在 WebView 下被丢弃（只保留文本与嵌套 text） |
-| `webview/static-renderer` | warning | webview | 静态写死 renderer="skyline"：回退 WebView 时子组件仍走 Skyline 分支 |
+| `webview/pinned-renderer` | warning | webview | 单元的 renderer 被固定成常量，回退 WebView 后所有按它分叉的地方都判错 |
 | `webview/tabbar-renderer` | error | webview | 自定义 tabBar 声明 renderer: "skyline"，退回 WebView 时抛异常 |

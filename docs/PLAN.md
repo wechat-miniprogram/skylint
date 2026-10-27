@@ -692,7 +692,7 @@ WidgetSpan 内部排版。因此原先计划的「`<text>` 子节点 display 收
 | `webview/nested-scroll`（warning） | `scroll-view type="nested"` / `nested-scroll-header` / `nested-scroll-body` | `type` 从不被读（`wx-scroll-view.js:239`）；后两个标签**不在** WebView 的 `globalUsingComponents` 表里（`glass-easel-adapter/src/render/webview.ts:166-254`）→ 默认组件（只有默认 slot）+ inline 显示，头部不联动 |
 | `webview/text-children`（error） | `<text>` 下的元素子节点（非嵌套 `<text>`） | `wx-text` 的 `TextPseudoSlot` 只放行文本节点、`__wxElement.is === 'wx-text'` 的子元素与文档片段（`wxapplib/src/wx-component/src/wx-text/wx-text.js:15-62`），`<view>` / `<image>` / `<span>` / 任何自定义组件直接消失、不报错 |
 | `webview/worklet-binding`（error） | WXML 的 `worklet:` 前缀属性 | 模板编成 `wl()`，DOM wrapper 里它就是 `noop()`（`glass-easel/src/tmpl/proc_gen_wrapper_dom.ts:249-251`）——连 Skyline 的 `worklet-handler` behavior 都轮不到，回调不触发也不报错 |
-| `webview/static-renderer`（warning） | 静态写死 `renderer="skyline"` | 回退后子组件仍拿到 `"skyline"`，`wx:if="{{renderer === 'skyline'}}"` 分支照旧成立，里面依赖 Skyline 的结构在 WebView 下失效（`feat-glass-easel-webview: 59a2d74f` 把 6 处改成 `{{renderer}}`） |
+| `webview/pinned-renderer`（warning） | 单元的 `renderer` 被固定成常量 | 判据不是属性名，而是正向折叠用的同一份事实：单元常量环境（`Project::env`）里 `renderer` 能定成 `skyline`（或定成 `webview` 但被 Skyline 页面用到）。环境只收 `properties` 默认值与父级静态传值，任何一处动态传 / 没传都会让它失效；因此命中就意味着「这个单元已把渲染后端当常量在用」——`wx:if` 相应分支在编译期就被折掉。`59a2d74f` 的修法（`data.renderer` 默认值 + `onLoad` 里 `setData({renderer: this.renderer})`、6 处 prop 改成 `{{renderer}}`）完成后两条路径都判不出常量 |
 | `webview/tabbar-renderer`（error） | `app.json` 的 `tabBar.custom: true` + `tabBar.renderer: "skyline"` | tabBar 渲染器与页面分开取（`onAppRoute.js:672` 的 `WXConfig.tabBar.renderer \|\| res.renderer`），钉成 skyline 后回退时 `WebviewAdapterTabBar.getInstance` **直接 `throw`**（`render/webview.ts:1071-1075`），不是降级 |
 
 消音机制：`WxmlElement::renderer_guarded()`——元素（或祖先）处在条件里引用 `renderer` 的分支里
@@ -727,13 +727,13 @@ WidgetSpan 内部排版。因此原先计划的「`<text>` 子节点 display 收
 实测命中（`--target webview`）：plugin_2 63、novel 19、skit_1 23、plugin_1 53、businessview 12。
 正向方向逐字段 diff 五个工程**零变化**（170 / 23 / 27 / 326 / 175）。
 
-`text-children` 与 `static-renderer` 的验收来自真实分支：`weapp-novel-plugin_1` 的 `feat-glass-easel-webview`
+`pinned-renderer` 与 `text-children` 的验收来自真实分支：`weapp-novel-plugin_1` 的 `feat-glass-easel-webview`
 （`41c6ae58` / `c8944057` / `59a2d74f`）。拿 `8c8a9450`（分支前）与 `59a2d74f`（全部修完）两份源码对比，
 同一个 `pages/skylinenovel` 的结果是：
 
-| 状态 | `static-renderer` | `text-children` | `text-truncation` |
+| 状态 | `pinned-renderer` | `text-children` | `text-truncation` |
 |---|---|---|---|
-| 分支前 `8c8a9450` | 6 | 1 | 29 |
+| 分支前 `8c8a9450` | 6（各自标出调用处的 `index.wxml` 行号） | 1 | 29 |
 | 分支后 `59a2d74f` | 0 | 0 | 29 |
 
 7 条正好对应那个分支的两处结构修复（6 处静态 `renderer` + 1 个 `<text>` 包组件），修完归零；
@@ -756,7 +756,7 @@ WidgetSpan 内部排版。因此原先计划的「`<text>` 子节点 display 收
 | 分支里的修改 | 不做的理由 |
 |---|---|
 | `data.renderer` 从 `'skyline'` 改成 `'webview'` + `onLoad` 里 `setData({ renderer: this.renderer })` | 未适配状态下这个字面量是死值（同一 WXML 不用它分支），静态报就是噪音；而适配后它就变成 dirty 键，常量化自动失效，`webview` 分支也就不会被错误折叠 |
-| 静态传 `renderer="skyline"` 给子组件 | 曾是候选，`59a2d74f` 证明它是真缺陷（6 处改成 `{{renderer}}`），已落成 `webview/static-renderer` |
+| 静态传 `renderer="skyline"` 给子组件 | 已落成 `webview/pinned-renderer`（按常量环境判，不按属性名） |
 | `rendererOptions` 的 `iosVersionBegin/End` 收窄到 `15.255.254`、`glassEaselWebview: true` | 前者是「停掉 Skyline」的开关，`skyline/renderer-options` 已校验区间形态与合法性；后者是让 PC/老版本走 glass-easel+WebView 兼容模式，不开也不报错、只是回退到老 exparser 引擎，“该不该开”取决于发版策略，不是代码缺陷 |
 | `.content { flex: 1; min-height: 0 }`（`half-screen-dialog.less`） | WebView（浏览器 flex）默认 `min-height: auto`，溢出子项不收缩；Skyline 的 `min-*` 初值解析成 `none`，不需要它。但「这个容器会溢出」静态判不出，做成规则就是给所有 flex 子项报一条 |
 

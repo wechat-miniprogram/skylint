@@ -79,6 +79,16 @@ impl WxmlElement {
     pub fn renderer_guarded(&self) -> bool {
         self.branches.iter().any(|branch| branch.renderer_guarded)
     }
+
+    /// 这个元素是否会因渲染后端而变：处在按 `renderer` 分支的条件里，或者某个属性的值
+    /// 绑定了 `renderer`（`class="x {{renderer}}"`、`renderer="{{renderer}}"`）。
+    pub fn mentions_renderer(&self) -> bool {
+        self.renderer_guarded()
+            || self
+                .attributes
+                .iter()
+                .any(|attribute| attribute.references_renderer)
+    }
 }
 
 /// 一个条件分支的标识：同一个 `wx:if` 节点的所有分支共享 `group`，`arm` 是分支序号
@@ -109,6 +119,8 @@ pub struct WxmlAttribute {
     /// 动态绑定的可能取值（`class` 之外）。`None` 表示取值依赖运行时数据、
     /// 或候选太多枚举不出来；只有表达式由字面量 / 三元 / 与或 / 拼接构成时才有值。
     pub candidates: Option<Vec<String>>,
+    /// 属性值里引用了 `renderer`：这个属性的取值跟着渲染后端变。
+    pub references_renderer: bool,
     /// 属性名（含前缀）到值结尾的范围。
     pub start: Position,
     pub end: Position,
@@ -590,6 +602,7 @@ fn value_attribute(
             is_static: true,
             class_tokens: None,
             candidates: None,
+            references_renderer: false,
             start: range.start,
             end: location.end,
             value_start: Some(location.start),
@@ -599,6 +612,7 @@ fn value_attribute(
                 .eq_ignore_ascii_case("class")
                 .then(|| crate::input::expr::class_tokens(expression, env)),
             candidates: crate::input::expr::candidates(expression, env),
+            references_renderer: crate::input::expr::references(expression, "renderer"),
             name,
             value: None,
             is_static: false,
@@ -613,6 +627,7 @@ fn value_attribute(
             is_static: false,
             class_tokens: None,
             candidates: None,
+            references_renderer: false,
             start: range.start,
             end: range.end,
             value_start: None,
@@ -623,6 +638,7 @@ fn value_attribute(
             is_static: true,
             class_tokens: None,
             candidates: None,
+            references_renderer: false,
             start: range.start,
             end: range.end,
             value_start: None,
@@ -667,6 +683,7 @@ fn static_attribute(attr: &StaticAttribute, source: &str) -> WxmlAttribute {
         is_static: true,
         class_tokens: None,
         candidates: None,
+        references_renderer: false,
         start,
         end: attr.value.location.end,
         value_start: Some(attr.value.location.start),
