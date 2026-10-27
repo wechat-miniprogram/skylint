@@ -6,6 +6,9 @@ use crate::{Diagnostic, Severity};
 
 use super::dict_table::table;
 use super::visit_rules;
+use crate::input::wxml::WxmlDoc;
+
+use std::collections::HashMap;
 
 pub struct UnsupportedProperty;
 
@@ -24,6 +27,7 @@ impl Rule for UnsupportedProperty {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let table = table();
+        let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
         visit_rules(project, |sheet, rule, out| {
             let doc = &sheet.doc;
             for decl in &rule.declarations {
@@ -38,7 +42,14 @@ impl Rule for UnsupportedProperty {
                 if super::is_css_wide_keyword(&decl.value) {
                     continue;
                 }
-                if super::overridden_by_renderer_class(sheet, rule, &name, self.target()) {
+                if super::overridden_in_renderer_branch(
+                    project,
+                    sheet,
+                    rule,
+                    &name,
+                    self.target(),
+                    &mut docs,
+                ) {
                     continue;
                 }
                 let (line, column) = doc.position(decl.offset);
@@ -65,7 +76,7 @@ mod tests {
     use crate::rules::Rule;
 
     use super::UnsupportedProperty;
-    use crate::rules::testutil::wxss::{messages, single};
+    use crate::rules::testutil::wxss::{messages, page, single};
 
     #[test]
     fn property_reports_unsupported_properties() {
@@ -171,8 +182,9 @@ mod tests {
 
     #[test]
     fn skyline_branch_override_exempts_the_base_declaration() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "property-skyline-branch",
+            r#"<text class="name {{renderer}}">x</text>"#,
             r#"
             .name { -webkit-line-clamp: 2; float: left; }
             .name.skyline { -webkit-line-clamp: unset; float: unset; }
@@ -182,6 +194,20 @@ mod tests {
             messages(&UnsupportedProperty, &project),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn skyline_branch_without_renderer_binding_is_still_reported() {
+        // 元素 class 里没有 renderer：那个分支不会生效，基础声明就是真问题。
+        let (_f, project) = page(
+            "property-skyline-static",
+            r#"<text class="name">x</text>"#,
+            r#"
+            .name { -webkit-line-clamp: 2; }
+            .name.skyline { -webkit-line-clamp: unset; }
+            "#,
+        );
+        assert_eq!(messages(&UnsupportedProperty, &project).len(), 1);
     }
 
     #[test]

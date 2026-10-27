@@ -86,6 +86,28 @@ impl Rule for DeadSelector {
             }
             for selector in &rule.selectors {
                 let text = selector.text.trim();
+                // `.a .skyline`：同一元素的两个类写成了后代关系。这条必须在
+                // `dead` 的「类名确定存在」闸门之前判——`skyline` 这类类名通常只
+                // 出现在 `{{renderer}}` 的候选值里，永远进不了 `present`。
+                if let Some((prefix, branch)) =
+                    super::same_node_renderer_class(project, sheet, text, &mut docs)
+                {
+                    let (line, column) = sheet.doc.position(selector.offset);
+                    out.push(
+                        Diagnostic::new(
+                            Self::ID,
+                            Severity::Warning,
+                            format!("`{text}` 把同一元素上的两个类写成了后代关系：`{branch}` 正是 `renderer` 的取值之一，命中 `{prefix}` 的那个节点 `class` 就是由 `renderer` 拼出来的——本意应是 `{prefix}.{branch}`"),
+                            sheet.doc.path(),
+                            line,
+                            column,
+                        )
+                        .help(
+                            "两个类在同一个节点上时要用连写（`.a.skyline` / LESS 里的 `&.skyline`）；写成空格是后代选择器，永远命不中",
+                        ),
+                    );
+                    continue;
+                }
                 let Some(count) = dead(project, sheet, text, &mut docs) else {
                     continue;
                 };
@@ -303,6 +325,46 @@ mod tests {
         assert_eq!(diags.len(), 1, "{diags:#?}");
         assert!(diags[0].message.contains("`.a .skyline`"), "{diags:#?}");
         assert!(diags[0].message.contains("不命中任何节点"), "{diags:#?}");
+    }
+
+    #[test]
+    fn same_node_renderer_class_written_as_descendant_is_reported() {
+        // 真实形态：`ba303412` 把 `.book_name` 里的 `&.skyline` 提到了外层，
+        // 写成 `.book_name .skyline`，v1.1.78 一直在线上。
+        let (_f, project) = page(
+            "renderer-descendant",
+            r#"<text class="book_name {{renderer}}">书名</text>"#,
+            ".book_name .skyline { display: unset; }",
+        );
+        let diags = DeadSelector.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert!(
+            diags[0].message.contains("后代关系") && diags[0].message.contains("renderer"),
+            "{:#?}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn descendant_of_unrelated_class_is_not_reported_as_same_node() {
+        // `.left` 不是 renderer 的取值，即使父节点 class 里带 `{{extClass}}` 也不猜。
+        let (_f, project) = page(
+            "renderer-unrelated",
+            r#"<view class="common-navbar {{renderer}} {{extClass}}"><view class="{{isIos ? 'left' : 'android-left'}}"/></view>"#,
+            ".common-navbar .left { color: red; }",
+        );
+        assert!(DeadSelector.check(&project).is_empty());
+    }
+
+    #[test]
+    fn renderer_class_without_renderer_binding_is_not_reported() {
+        // 元素 class 是静态的：那个类不可能落在它身上，维持「不命中」结论。
+        let (_f, project) = page(
+            "renderer-static-class",
+            r#"<text class="book_name">书名</text>"#,
+            ".book_name .skyline { display: unset; }",
+        );
+        assert!(DeadSelector.check(&project).is_empty());
     }
 
     #[test]

@@ -64,7 +64,7 @@ use std::collections::HashMap;
 use crate::Diagnostic;
 use crate::input::wxml::{WxmlDoc, WxmlElement};
 use crate::input::wxss::{WxssDeclaration, WxssDoc, WxssRule, WxssSelector};
-use crate::matcher::{Dialect, Tree, Tri};
+use crate::matcher::{self, Dialect, Tree, Tri};
 use crate::project::{Project, Scope, StyleSheet};
 use crate::rules::Target;
 
@@ -87,18 +87,25 @@ pub(crate) fn is_css_wide_keyword(value: &str) -> bool {
         .any(|keyword| value.eq_ignore_ascii_case(keyword))
 }
 
-/// 目标渲染器的覆盖块：同一 sheet 里存在「本选择器 + `.skyline`（或 `.webview`）」
-/// 的规则又声明了同一个属性时，基础声明在该渲染器下并不生效。
+/// 这条声明是否被**同元素的渲染器分支**关掉了。
 ///
-/// 迁移工程常用 `.x.skyline { display: unset; -webkit-line-clamp: unset }` 关掉
-/// 只给 WebView 写的那套写法，把这些基础声明报成「Skyline 不支持」等于反着看。
-pub(crate) fn overridden_by_renderer_class(
+/// 迁移工程常见写法：基础块服务 WebView，另一个分支（`.x.skyline { display: unset;
+/// -webkit-line-clamp: unset }`）在 Skyline 下把它整体重置。把这些基础声明报成
+/// 「Skyline 不支持」等于反着看。
+///
+/// 不猜类名命名：只认 `renderer` 的取值词汇（`skyline` / `webview`），并且要到
+/// WXML 里**验证**那个节点的 `class` 真的由 `renderer` 拼出来——否则一个凑巧叫
+/// `.skyline` 的普通修饰类就会把真问题消音。作者把类叫 `.sky` 或改用 `wx:if`
+/// 分支时认不出来，按漏报处理。
+pub(crate) fn overridden_in_renderer_branch(
+    project: &Project,
     sheet: &StyleSheet,
     rule: &WxssRule,
     property: &str,
     target: Target,
+    docs: &mut HashMap<String, Option<WxmlDoc>>,
 ) -> bool {
-    let class = match target {
+    let branch = match target {
         Target::Skyline => "skyline",
         Target::Webview => "webview",
         Target::Both => return false,
@@ -108,16 +115,135 @@ pub(crate) fn overridden_by_renderer_class(
         .iter()
         .map(|selector| normalize_selector(&selector.text))
         .collect();
-    sheet.doc.rules.iter().any(|other| {
-        !std::ptr::eq(other, rule)
+    let variant = sheet.doc.rules.iter().find(|other| {
+        !std::ptr::eq(*other, rule)
             && other
                 .declarations
                 .iter()
                 .any(|decl| decl.name.eq_ignore_ascii_case(property))
             && other.selectors.iter().any(|selector| {
-                strip_class(&selector.text, class)
+                strip_class(&selector.text, branch)
                     .is_some_and(|base| mine.contains(&normalize_selector(&base)))
             })
+    });
+    let Some(_) = variant else {
+        return false;
+    };
+    // 变异存在还不够：必须证明确实有这个渲染器分支的元素存在。
+    rule.selectors
+        .iter()
+        .any(|selector| class_depends_on_renderer(project, sheet, &selector.text, docs))
+}
+
+/// 选择器主体所在的节点，`class` 是否真的由 `renderer` 拼出来。
+///
+/// 只看**主体的类**（`.a .b` 里的 `.b`）：祖先类对这个判断没有意义，而整条选择器
+/// 求值容易因某个祖先的动态 `class` 变成 `Unknown`。
+///
+/// 不查 `Env` 的词元求值：组件 `properties` 里的 `renderer` 默认值通常是 `'webview'`，
+/// 而运行时的值来自父级传参，拿默认值判会把真分支直接判掉。
+pub(crate) fn class_depends_on_renderer(
+    project: &Project,
+    sheet: &StyleSheet,
+    selector: &str,
+    docs: &mut HashMap<String, Option<WxmlDoc>>,
+) -> bool {
+    let Some(subject) = last_compound(selector) else {
+        return false;
+    };
+    if matcher::shape(subject).is_none_or(|shape| shape.pseudo_element || shape.runtime_root) {
+        return false;
+    }
+    let Some(classes) = matcher::class_names(subject) else {
+        return false;
+    };
+    if classes.is_empty() {
+        return false;
+    }
+    for scope in &sheet.scopes {
+        for path in scope_wxml(project, scope) {
+            let Some(doc) = docs
+                .entry(path.to_string())
+                .or_insert_with(|| crate::rules::wxml::load_doc(project, path))
+                .as_ref()
+            else {
+                continue;
+            };
+            let mut hit = false;
+            crate::rules::wxml::walk(doc, |element, _| {
+                if element.in_template {
+                    return;
+                }
+                let Some(attr) = element.attributes.iter().find(|attr| attr.name == "class") else {
+                    return;
+                };
+                if !attr.references_renderer {
+                    return;
+                }
+                let carries = match &attr.class_tokens {
+                    Some(tokens) => classes.iter().all(|class| tokens.is_definite(class, true)),
+                    None => false,
+                };
+                if carries {
+                    hit = true;
+                }
+            });
+            if hit {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// `.a .skyline`：同一元素的两个类被写成了后代关系时，返回（前缀, 分支类名）。
+///
+/// 只认 `renderer` 的**取值词汇**（`skyline` / `webview`）——它们是平台给定的，
+/// 而类名本身可以是任意拼法（`.is-sky`、`.sky`），那样就认不出来，按漏报处理。
+pub(crate) fn same_node_renderer_class<'a>(
+    project: &Project,
+    sheet: &StyleSheet,
+    selector: &'a str,
+    docs: &mut HashMap<String, Option<WxmlDoc>>,
+) -> Option<(&'a str, &'a str)> {
+    let (prefix, last) = split_last_compound(selector)?;
+    let branch = last.strip_prefix('.')?;
+    if !matches!(branch, "skyline" | "webview") {
+        return None;
+    }
+    if matcher::shape(prefix).is_none_or(|shape| shape.pseudo_element || shape.runtime_root) {
+        return None;
+    }
+    class_depends_on_renderer(project, sheet, prefix, docs).then_some((prefix, branch))
+}
+
+/// 按最后一个顶层组合符拆成（前缀, 最后一段）。
+fn split_last_compound(text: &str) -> Option<(&str, &str)> {
+    let mut depth = 0i32;
+    let mut split = None;
+    for (index, ch) in text.char_indices().rev() {
+        match ch {
+            ')' | ']' => depth += 1,
+            '(' | '[' => depth -= 1,
+            ' ' | '>' | '+' | '~' if depth == 0 => {
+                split = Some(index);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let split = split?;
+    let prefix = text[..split].trim_end();
+    let last = text[split..]
+        .trim_start_matches(|ch: char| ch.is_whitespace() || matches!(ch, '>' | '+' | '~'))
+        .trim_end();
+    (!prefix.is_empty() && !last.is_empty()).then_some((prefix, last))
+}
+
+fn last_compound(text: &str) -> Option<&str> {
+    Some(match split_last_compound(text) {
+        Some((_, last)) => last,
+        None => text.trim(),
     })
 }
 

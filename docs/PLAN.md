@@ -797,6 +797,12 @@ autofix；14 条只能运行时判定的条目；`app.json` 自动改写。
 | `webview/tabbar-renderer` | 只认精确小写 `"skyline"` | 只要不是 `"webview"` 都报（适配器就是按不等判断抛异常） |
 | `skyline/lib-version` / `skyline/renderer-options` | 标 `Both` 但判据只对 Skyline 有意义，反向是噪音 | 改回 `Skyline`（同时修了 `Target::includes`：`Both` 作为检查方向时也要跑单方向规则） |
 
+**`skyline/dead-selector`：同一元素的两个类写成后代**
+
+审计里那条「`.book_name .skyline` 写了但永不生效」是真的，我上一版写错了两处：它在 `ba303412` 里确实以 `.book_name .skyline` 形式存在（`.tmp/novel-audit/src-after` 是修正前快照），是后来的 `101872e4 fix: 标题折行` 改成了 `&.skyline`，而仓库 HEAD 已经是正确的。
+
+判据走语义：选择器最后一段是单个 `.skyline` / `.webview`（`renderer` 的取值词汇），且它前面主体类所在节点的 `class` 真由 `renderer` 拼出来时，报「本意应是 `.a.skyline`」。不看祖先选择器求值（祖先的动态 `class` 会让整条变 `Unknown`），也不猜 `.sky` 这类自定义命名。迁移快照上精确落在 `official-cover.less:28`，四个参考工程零命中。
+
 **明确不做的**
 
 | 候选 | 理由 |
@@ -848,20 +854,22 @@ skit_1 的 8 条落在同组件 stylesheet 里定义的 `.ellipsis`（`slide-tip
 | 候选 | 理由 |
 |---|---|
 | G2 `skyline/page-scroll`（Skyline 页面没有 `scroll-view` 靠页面滚动） | Skyline 页会被编译器注入 `disableScroll: true` + `navigationStyle: custom`（`mutate.rs:470-475`），但「这一页内容会不会超过一屏」静态判不出；实测 14 页只有 1 页真有问题，做成 info 也是噪音 |
-| S1 `dead-selector` 增强：「`.a.b` 写成 `.a .b`」 | 试过一版（动态 class 候选 + 带前缀的那个节点自己也带候选），在 businessview 上 9 条全是误报（父节点 `class="… {{extClass}}"` 让 `any` 为真，`extClass` 里当然可能出现任何词）；而且真实工程里 `official-cover.less:30` 写的是正确的 `&.skyline`，代码里不存在这个形态——整块回退 |
-| F5 `legacy-flexbox` 在 `<text max-lines>` 上的降级 | 那类块（`official-cover` 的 `book_name` / `genre-shelf` 的 `book-intro`）都带 `.skyline` 分支把老式子句 `unset` 掉，已被覆盖块豁免；剩下的 clamp 块宿主是 `view`，维持 error |
+| S1 的另一版判据（动态 class 候选 + `any`） | 在 businessview 上 9 条全是误报：`class="… {{extClass}}"` 让 `any` 为真，`extClass` 里什么词都可能出现。已整块回退，改用下面基于 `renderer` 取值词汇的语义判据 |
+| F5 `legacy-flexbox` 在 `<text max-lines>` 上的降级 | `official-cover` 的 `book_name` 带 `.skyline` 分支把老式子句 `unset` 掉，已被覆盖块豁免；`genre-shelf` 的 `book-intro` 分支写了但元素 class 里从没带 `skyline`，属真缺陷（见验收），需要保留 error |
 
 **验收**（六工程，两个方向逐字段 diff，`abb110c` → 本轮）
 
 正向：novel 23 → 23、skit_1 27 → 28（+1 `fit-content`）、businessview 411 → 411（+3 `fit-content`、−1 text-overflow、−2 media-query）、
-plugin_1 173 → 148、plugin_2 168 → 146（各 −30/−28 text-overflow，−18 unsupported-property、−8 legacy-flexbox、−2 media-query，+4 `fit-content`、+2 root-scope）、
+plugin_1 173 → 152、plugin_2 168 → 150（各 −30/−28 text-overflow，−18 unsupported-property、−8 legacy-flexbox、−2 media-query，+4 `fit-content`、+2 root-scope、+4 genre-shelf 真阳性）、
 skit-player 170 → 180（+10 `fit-content`）。
+
+那 4 条新报（plugin_1/2 各 2 对）是豁免闸门收紧后冒出来的**真缺陷**：`genre-shelf` / `official-genre-shelf` 写了 `.book-intro.skyline { display: block; -webkit-line-clamp: unset }`，但 `book-intro` 节点的 `class="book-intro {{lightMode?'':'dark'}}"` 从未带上 `skyline`，所以基础块的老式堆叠在 Skyline 下仍是生效的那一份（`display` 与 `-webkit-line-clamp` 都被丢弃 → 两行截断失效），而这个组件正被 `skylinenovel` 使用。
 
 反向：plugin_1 25 → 27、plugin_2 33 → 35（root-scope 双向规则），其余不变。
 
 消失的 30 条 text-overflow 逐条回源码确认过：全是 `display:-webkit-box` + `-webkit-line-clamp` 的多行省略族（无 `nowrap`），同一文件仍由 `legacy-flexbox` / `unsupported-property` 报出，不是信号丢失。
 
-测试 730 + 30 + 3 全绿，clippy 0，`docs/RULES.md` 54 条（error 15）。
+测试 733 + 30 + 3 全绿，clippy 0，`docs/RULES.md` 54 条（error 15）。
 
 ## 5. 五个视图与规则族
 

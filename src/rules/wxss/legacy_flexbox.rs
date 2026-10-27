@@ -22,8 +22,11 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
+use std::collections::HashMap;
+
 use super::value_util::at_declaration;
 use super::visit_rules;
+use crate::input::wxml::WxmlDoc;
 
 pub struct LegacyFlexbox;
 
@@ -64,11 +67,19 @@ impl Rule for LegacyFlexbox {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
+        let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
         visit_rules(project, |sheet, rule, out| {
             let doc = &sheet.doc;
             // `.x.skyline { display: unset }` 这种渲染器分支已经把这块关掉了：
             // 基础块只服务 WebView，在 Skyline 下本来就不生效。
-            if super::overridden_by_renderer_class(sheet, rule, "display", self.target()) {
+            if super::overridden_in_renderer_branch(
+                project,
+                sheet,
+                rule,
+                "display",
+                self.target(),
+                &mut docs,
+            ) {
                 return;
             }
             let Some(legacy) = legacy_block(rule) else {
@@ -150,7 +161,7 @@ fn legacy_block(
 #[cfg(test)]
 mod tests {
     use crate::rules::Rule;
-    use crate::rules::testutil::wxss::{messages, single};
+    use crate::rules::testutil::wxss::{messages, page, single};
 
     use super::LegacyFlexbox;
 
@@ -255,8 +266,9 @@ mod tests {
     fn skyline_branch_disables_the_legacy_block() {
         // 迁移工程的常见写法：基础块服务 WebView，`.skyline` 分支把 display 关掉，
         // 截断交给 `<text max-lines>`。基础块在 Skyline 下本来就不生效。
-        let (_f, project) = single(
+        let (_f, project) = page(
             "legacy-skyline-branch",
+            r#"<text class="name {{renderer}}">x</text>"#,
             r#"
             .name {
               display: -webkit-box;
@@ -273,9 +285,24 @@ mod tests {
     }
 
     #[test]
+    fn skyline_branch_without_renderer_binding_is_still_reported() {
+        // 元素 class 是静态的：`.skyline` 分支永远不会生效，基础块就是真问题。
+        let (_f, project) = page(
+            "legacy-skyline-static",
+            r#"<text class="name">x</text>"#,
+            r#"
+            .name { display: -webkit-box; -webkit-box-orient: vertical; }
+            .name.skyline { display: unset; }
+            "#,
+        );
+        assert_eq!(messages(&LegacyFlexbox, &project).len(), 1);
+    }
+
+    #[test]
     fn other_class_branch_does_not_disable_the_block() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "legacy-other-branch",
+            r#"<text class="name {{renderer}}">x</text>"#,
             r#"
             .name { display: -webkit-box; -webkit-box-orient: vertical; }
             .other.skyline { display: unset; }

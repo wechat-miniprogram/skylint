@@ -52,6 +52,21 @@ impl Fixture {
         fixture
     }
 
+    /// 单页 Skyline 工程，页面 WXML + WXSS 都由用例给。
+    pub(crate) fn page(name: &str, wxml: &str, wxss: &str) -> Self {
+        let fixture = Self::new(name);
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", wxml)
+            .write("pages/index/index.wxss", wxss);
+        fixture
+    }
+
     /// 单页 Skyline 工程，页面 JS 即 `js`。
     pub(crate) fn js(name: &str, js: &str) -> Self {
         let fixture = Self::new(name);
@@ -145,6 +160,13 @@ pub(crate) mod wxss {
 
     pub(crate) fn single(name: &str, wxss: &str) -> (Fixture, Project) {
         let fixture = Fixture::wxss(name, wxss);
+        let project = fixture.project();
+        (fixture, project)
+    }
+
+    /// 带 WXML 的单页工程：渲染器分支类要验到节点上时用。
+    pub(crate) fn page(name: &str, wxml: &str, wxss: &str) -> (Fixture, Project) {
+        let fixture = Fixture::page(name, wxml, wxss);
         let project = fixture.project();
         (fixture, project)
     }
