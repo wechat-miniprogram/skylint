@@ -62,16 +62,21 @@ impl Rule for FlexDirection {
             if !is_flex_value(&display.value) {
                 return;
             }
-            out.push(
-                    at_declaration(
-                        Self::ID,
-                        doc,
-                        display,
-                        Severity::Warning,
-                        "display: flex 未显式声明 flex-direction；Skyline 默认 column，WebView 默认 row，迁移后布局方向会翻转",
-                        "为这条规则补上 `flex-direction: row`，或按 column 重新设计布局",
-                    ),
-                );
+            // 未开 `defaultDisplayBlock` 时这类告警通常是一整片（本工程 97 条），
+            // 全部由同一处配置引起，help 先给一次性解法，再说逐条改法。
+            let help = if project.app_display_block() {
+                "为这条规则补上 `flex-direction: row`，或按 column 重新设计布局"
+            } else {
+                "整工程对齐：在 `rendererOptions.skyline` 开启 `defaultDisplayBlock: true`，Skyline 的 flex-direction 默认值就变回 row，同类告警一次性消失；保持关闭则需为这条规则补 `flex-direction: row`，或按 column 重新设计布局"
+            };
+            out.push(at_declaration(
+                Self::ID,
+                doc,
+                display,
+                Severity::Warning,
+                "display: flex 未显式声明 flex-direction；Skyline 默认 column，WebView 默认 row，迁移后布局方向会翻转",
+                help,
+            ));
         })
     }
 }

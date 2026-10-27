@@ -45,6 +45,12 @@ const UNSUPPORTED_PROPERTIES: &[(&str, &str)] = &[
         "line-clamp",
         "多行省略改用 `<text max-lines=\"\">`（引擎只认私有 `_wx_line_clamp`）",
     ),
+    // 老式弹性盒的属性名：`css/css_property_names.h` 的 194 个属性里没有任何 `-webkit-*`，
+    // 声明在解析阶段就查不到 id、整条丢弃。多行省略改用 `<text max-lines>`。
+    (
+        "-webkit-box-orient",
+        "无替代（多行省略改用 `<text max-lines=\"\">`）",
+    ),
     // 引擎里没有这两个属性（css/、style/ 零命中），图片裁剪用 <image mode>。
     (
         "object-fit",
@@ -78,6 +84,11 @@ const UNSUPPORTED_VALUES: &[(&[&str], &str, &str)] = &[
     (&["display"], "grid", "改用 flex 布局替代 grid"), // layout.md「display」、SKILL.md MUST 示例
     (&["display"], "flow-root", "改用 flex 或 block"), // layout.md「display」
     (&["display"], "inline-grid", "改用 inline-flex"), // display.cc 无 InlineGrid case（property.rs:213 可解析）
+    (
+        &["display"],
+        "-webkit-box",
+        "多行省略改用 `<text max-lines=\"\">`：Skyline 的 display 没有 box 分支，声明整条丢弃",
+    ), // display.cc 的 DisplayType::Tag 只有 none/flex/block/inline/inline-block/inline-flex
     (
         &["position"],
         "sticky",

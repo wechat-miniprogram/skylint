@@ -482,6 +482,51 @@ A 页失效、B 页正常时要报）、`no_pseudo` 的转义冒号（`.hover\:b
 | `<text>` 里的块级子节点 | `component-children` | skit_1 +1、plugin_1/2 各 +2 |
 | `position: fixed` 遮罩被提升成独立层 | `fixed-layer` | plugin_1 +1（真问题） |
 
+### P7 用当前规则复扫迁移前基线（`0404c098`）
+
+`.tmp/pre-skyline` 保留着 `ba303412^` 的编译产物，用今天的二进制复扫，看「一次跑完能不能
+给全清单」：
+
+| 规则 | 早期扫描 | 现在 | 说明 |
+|---|---|---|---|
+| flex-direction | 97 | 97 | 全部由 `defaultDisplayBlock` 一处配置引起 |
+| unsupported-property | 15 | 27 | +12 `-webkit-box-orient` |
+| unsupported-value | 3 | 15 | +12 `display:-webkit-box` |
+| component-attribute | 8 | 23 | +15 `<text overflow="ellipsis">` 缺 `max-lines` |
+| text-overflow-ellipsis | 7 | 16 | +9 动态 class 修好后能看到祖先链 |
+| scroll-view-type | 12 | 12 | |
+| no-pseudo | 12 | 12 | |
+| media-query | — | 5 | |
+| value-degraded | 5 | 5 | |
+| no-inline-text | 9 | 3 | −6 误报：祖先 class 动态时匹配不到 `display:flex` |
+| component-children | 2 | 2 | |
+| default-layout-drift | — | 2 | 未声明 renderer 时也报（本轮改） |
+| **合计** | **170** | **219** | |
+
+只补那行 `rendererOptions` 配置（`/tmp/pre-cfg`）后剩 **120** 条，即真实代码清单是 120 条，
+97 + 2 条是同一处工程配置。
+
+本轮复扫顺带查出两处「上一批以为做了、实际没落地」的问题，已修：
+
+1. `display:-webkit-box` / `-webkit-box-orient` 从来没进表（`git log -S` 在源码里查不到这两个
+   字符串，只有 PLAN 文档提过）。依据补正：fp 的 `display` 取值解析只认
+   none/block/inline/inline-block/flex/grid/flow-root/inline-flex
+   （`float-pigment-css-0.7.0/src/property.rs:193-200`），`-webkit-box` 解析失败即整条丢弃；
+   `-webkit-box-orient` 不在 `css/css_property_names.h` 的 194 个属性名里。
+2. `default-layout-drift` 原来只在「存在 Skyline 页面」时报，而**未声明 renderer** 的工程
+   （正是准备迁移的工程）按 Skyline 口径检查时反而不报，导致 97 条 flex-direction 逐条
+   出现在报告里、却没有任何一处说「这一片由一行配置解决」。现在未声明 renderer 也报，
+   `flex-direction` 的 help 也先给整工程解法。
+
+仍在盲区（不在这一轮）：
+
+- 老式弹性盒的其余属性：`-webkit-box-flex` / `-webkit-box-align` / `-webkit-box-pack`
+  （引擎无这些属性名，声明全丢弃）。businessview 扫描范围内就有 171 / 147 / 50 处，
+  按逐个声明报会淹没报告——要做得按「规则块」合并成一条，等定口径。
+- C3（`flex:1` 的 `scroll-view` 塌高）、C4（`<text>` 的 `max-width: calc()`）、C5
+  （`vertical-align` 长度值）都还缺引擎证据，未立项。
+- JS 逻辑重写、WXML 重排、`wx:if` 里的 `renderer` 条件求值：静态判定的边界外。
+
 评估后不做（附理由）：
 
 - `skyline/fixed-layer` 的三条限制（详情见规则模块注释）：只判铺满视口的遮罩；只判同一

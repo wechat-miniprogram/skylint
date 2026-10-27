@@ -7,7 +7,9 @@
 //! 工程整体还按 WebView 的默认值写样式，所以按工程报一条 info，而不是逐个元素/逐条声明报。
 //!
 //! 两个刻意的取舍：
-//! - 只有工程里存在 Skyline 页面时才判。纯 WebView 工程还没开始迁移，这条提示是噪音；
+//! - 工程里存在 Skyline 页面、或**根本没有声明 renderer**（工具按 Skyline 默认口径检查）时判。
+//!   后者是「准备迁移」的工程：97 条 `flex-direction` 之类的告警全都由这一处配置引起，
+//!   不在这里说一句，报告里就只剩逐条改样式的建议。显式声明 WebView 的工程不判；
 //! - 布尔值只认 JSON `true`。字符串 `"true"` 按未开启处理（类型写错由
 //!   `skyline/renderer-options` 负责），不在这条规则里再解析一遍真值。
 
@@ -35,7 +37,9 @@ impl Rule for DefaultLayoutDrift {
         if !super::applicable_project_level(project) {
             return Vec::new();
         }
-        if !project.pages.iter().any(|page| page.is_skyline) {
+        // 显式声明了 renderer 却没有任何 Skyline 页面：纯 WebView 工程，还没开始迁移。
+        // 没声明 renderer 时工具按 Skyline 默认口径检查（报告末尾有那句 note），照报。
+        if project.declares_renderer() && !project.pages.iter().any(|page| page.is_skyline) {
             return Vec::new();
         }
         // `rendererOptions` 或它下面 `skyline` 写成非对象时静默：那是
@@ -175,9 +179,25 @@ mod tests {
 
     #[test]
     fn accepts_webview_projects() {
-        // 纯 WebView 工程还没开始迁移，不报。
-        let (_f, project) = project("drift-webview", r#"{"pages":["pages/index/index"]}"#, "{}");
+        // 显式声明 WebView 的工程还没开始迁移，不报。
+        let (_f, project) = project(
+            "drift-webview",
+            r#"{"pages":["pages/index/index"],"renderer":"webview"}"#,
+            "{}",
+        );
         assert!(DefaultLayoutDrift.check(&project).is_empty());
+    }
+
+    #[test]
+    fn reports_when_the_project_declares_no_renderer() {
+        // 没声明 renderer：工具按 Skyline 默认口径检查，这两个默认值差异同样成立，
+        // 而且报告里 90% 的告警都由这一处配置引起，必须说出来。
+        let (_f, project) = project(
+            "drift-undeclared",
+            r#"{"pages":["pages/index/index"]}"#,
+            "{}",
+        );
+        assert_eq!(DefaultLayoutDrift.check(&project).len(), 2);
     }
 
     #[test]
