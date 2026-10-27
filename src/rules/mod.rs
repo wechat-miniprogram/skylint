@@ -128,6 +128,7 @@ impl Registry {
             Box::new(wxml::NestedScroll),
             Box::new(wxml::WorkletBinding),
             Box::new(wxml::TextChildren),
+            Box::new(wxml::StaticRenderer),
             Box::new(config::TabBarRenderer),
         ])
     }

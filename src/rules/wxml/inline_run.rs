@@ -16,7 +16,7 @@
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta, Target};
+use crate::rules::{Rule, RuleMeta};
 
 use crate::matcher::Tree;
 
@@ -39,10 +39,6 @@ impl Rule for InlineRun {
             severity: Severity::Info,
             description: "WebView 下并排的文本级元素在 Skyline 下会各自换行",
         }
-    }
-
-    fn target(&self) -> Target {
-        Target::Both
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -172,7 +168,7 @@ fn flush(
                     run.len()
                 ),
             )
-            .help("需要共享排版的一段文本时用 `<text>` / `<span>` 当父节点；只需要横向排列时写 `display: flex; flex-direction: row`"),
+            .help("需要共享排版的一段文本时用 `<text>` / `<span>` 当父节点；只需要横向排列时写 `display: flex; flex-direction: row`。若这个页面还要在 WebView 下渲染，别把组件塞进 `<text>`（WebView 只保留文本与嵌套 text），改用 `display: inline` / `inline-block` 的兄弟"),
         );
     }
     run.clear();

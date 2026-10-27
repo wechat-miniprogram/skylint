@@ -29,7 +29,10 @@ impl RendererOptions {
 }
 
 /// 已知键的期望类型（来源：`skyline-config/references/app-config.md` 的配置项表，
-/// 与运行时的取值方式一一对应）。
+/// 与运行时的取值方式一一对应）。每个键在 app.json 与页面 json 里都合法：
+/// 布局类的 6 个键由 Skyline 运行时读（`runtime/index.ts:424-449`），版本区间与
+/// `disableABTest` 由客户端选渲染器时读，官方文档也写明「app.json 或 page.json」
+/// （`skyline-overview/references/migration/release.md:105-145`）。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     /// `boolean`：运行时 `|| false`，非布尔值静默变成默认值。
@@ -40,31 +43,22 @@ enum Kind {
     Text,
 }
 
-/// 该配置项在哪里生效。页面级只读 `_getFeatureFlagsFromRendererOptions`
-/// （`wxapplib/src/skyline/src/runtime/index.ts:424-449`）里那 6 个键；其余键写在页面
-/// json 里没有任何读者。
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Where {
-    Both,
-    AppOnly,
-}
-
-const KNOWN: &[(&str, Kind, Where)] = &[
-    ("defaultDisplayBlock", Kind::Bool, Where::Both),
-    ("defaultContentBox", Kind::Bool, Where::Both),
-    ("enableScrollViewAutoSize", Kind::Bool, Where::Both),
-    ("enableImagePreload", Kind::Bool, Where::Both),
-    ("tagNameStyleIsolation", Kind::Isolation, Where::Both),
-    ("keyframeStyleIsolation", Kind::Isolation, Where::Both),
-    ("disableABTest", Kind::Bool, Where::AppOnly),
-    ("sdkVersionBegin", Kind::Text, Where::AppOnly),
-    ("sdkVersionEnd", Kind::Text, Where::AppOnly),
-    ("iosVersionBegin", Kind::Text, Where::AppOnly),
-    ("iosVersionEnd", Kind::Text, Where::AppOnly),
-    ("androidVersionBegin", Kind::Text, Where::AppOnly),
-    ("androidVersionEnd", Kind::Text, Where::AppOnly),
-    ("ohosVersionBegin", Kind::Text, Where::AppOnly),
-    ("ohosVersionEnd", Kind::Text, Where::AppOnly),
+const KNOWN: &[(&str, Kind)] = &[
+    ("defaultDisplayBlock", Kind::Bool),
+    ("defaultContentBox", Kind::Bool),
+    ("enableScrollViewAutoSize", Kind::Bool),
+    ("enableImagePreload", Kind::Bool),
+    ("tagNameStyleIsolation", Kind::Isolation),
+    ("keyframeStyleIsolation", Kind::Isolation),
+    ("disableABTest", Kind::Bool),
+    ("sdkVersionBegin", Kind::Text),
+    ("sdkVersionEnd", Kind::Text),
+    ("iosVersionBegin", Kind::Text),
+    ("iosVersionEnd", Kind::Text),
+    ("androidVersionBegin", Kind::Text),
+    ("androidVersionEnd", Kind::Text),
+    ("ohosVersionBegin", Kind::Text),
+    ("ohosVersionEnd", Kind::Text),
 ];
 
 /// app 级 `rendererOptions` 顶层**不生效**的键：运行时只读
@@ -204,7 +198,7 @@ fn check_file(
         None => {}
         Some(Value::Object(skyline)) => {
             check_version_pairs(path, &positions, skyline, out);
-            check_skyline(path, &positions, skyline, level, known_keys_only, out)
+            check_skyline(path, &positions, skyline, known_keys_only, out)
         }
         Some(_) => warn(
             out,
@@ -358,7 +352,6 @@ fn check_skyline(
     path: &str,
     positions: &JsonPositions,
     skyline: &Map<String, Value>,
-    level: Level,
     known_keys_only: bool,
     out: &mut Vec<Diagnostic>,
 ) {
@@ -366,7 +359,7 @@ fn check_skyline(
         if key == "convertRpxToVw" {
             continue;
         }
-        let Some((kind, scope)) = kind_of(key) else {
+        let Some(kind) = kind_of(key) else {
             if !known_keys_only {
                 continue;
             }
@@ -380,18 +373,7 @@ fn check_skyline(
             );
             continue;
         };
-        // 页面级只读运行时那 6 个键；其它键写在页面 json 里是死配置。
-        if level == Level::Page && scope == Where::AppOnly {
-            warn(
-                out,
-                RendererOptions::ID,
-                path,
-                positions.key(key),
-                format!("`{key}` 只在 app.json 生效，页面级 rendererOptions 不读取它"),
-                "把该配置移到 app.json 的 rendererOptions.skyline 下",
-            );
-            continue;
-        }
+        // 页面级与 app 级都读：布局类的 6 个键由运行时读，版本区间由客户端选渲染器时读。
         check_value(path, positions, key, value, kind, out);
     }
 }
@@ -455,11 +437,11 @@ fn check_value(
     );
 }
 
-fn kind_of(key: &str) -> Option<(Kind, Where)> {
+fn kind_of(key: &str) -> Option<Kind> {
     KNOWN
         .iter()
-        .find(|(name, _, _)| *name == key)
-        .map(|(_, kind, scope)| (*kind, *scope))
+        .find(|(name, _)| *name == key)
+        .map(|(_, kind)| *kind)
 }
 
 #[cfg(test)]
@@ -676,19 +658,16 @@ mod tests {
         assert!(diags[0].message.contains("defaultDisplayBlock"));
     }
 
-    /// 页面级只读运行时那 6 个键，其余写在页面 json 里是死配置。
+    /// 页面级与 app 级都读：版本区间与 `disableABTest` 由客户端选渲染器时读
+    /// （官方文档写明「app.json 或 page.json」），不能当死配置报。
     #[test]
-    fn reports_app_only_keys_written_on_a_page() {
+    fn page_level_version_ranges_are_legal() {
         let (_f, project) = project(
-            "renderer-options-page-app-only",
+            "renderer-options-page-version-ranges",
             r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
-            r#"{"rendererOptions":{"skyline":{"disableABTest":true,"defaultDisplayBlock":true}}}"#,
+            r#"{"rendererOptions":{"skyline":{"disableABTest":true,"iosVersionBegin":"15.255.254","iosVersionEnd":"15.255.255","ohosVersionBegin":"8.0.18","ohosVersionEnd":"15.255.255"}}}"#,
         );
-        let diags = RendererOptions.check(&project);
-        assert_eq!(diags.len(), 1, "{diags:?}");
-        assert_eq!(diags[0].path, "pages/index/index.json");
-        assert!(diags[0].message.contains("disableABTest"));
-        assert!(diags[0].message.contains("只在 app.json 生效"));
+        assert!(RendererOptions.check(&project).is_empty());
     }
 
     #[test]

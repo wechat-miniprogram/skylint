@@ -10,7 +10,7 @@ use crate::project::Project;
 use crate::{Diagnostic, Severity};
 
 use crate::input::wxss::{WxssDoc, WxssRule, WxssSelector};
-use crate::rules::{Rule, RuleMeta, Target};
+use crate::rules::{Rule, RuleMeta};
 
 use super::value_util::at_declaration;
 use super::visit_rules;
@@ -28,10 +28,6 @@ impl Rule for FlexDirection {
             severity: Severity::Warning,
             description: "display: flex 未声明 flex-direction，迁移后默认方向会从 row 变为 column",
         }
-    }
-
-    fn target(&self) -> Target {
-        Target::Both
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {

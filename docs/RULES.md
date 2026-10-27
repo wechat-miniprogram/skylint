@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 52 条：error 15 条、warning 33 条、info 4 条。
+共 53 条：error 15 条、warning 34 条、info 4 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
@@ -18,10 +18,10 @@
 | `skyline/share-element-key` | error | skyline | `<share-element>` 的 key 必填且同一文件内唯一 |
 | `skyline/horizontal-scroll-enable-flex` | warning | skyline | 横向滚动的 `<scroll-view>` 需开启 `enable-flex` 以兼容 WebView |
 | `skyline/text-hard-break-ellipsis` | info | skyline | 多行省略里含硬换行时，Skyline 默认不给末行省略号 |
-| `skyline/inline-run` | info | both | WebView 下并排的文本级元素在 Skyline 下会各自换行 |
+| `skyline/inline-run` | info | skyline | WebView 下并排的文本级元素在 Skyline 下会各自换行 |
 | `skyline/no-pseudo` | warning | skyline | Skyline 不支持该伪类/伪元素，选择器不会命中 |
 | `skyline/box-sizing` | error | skyline | box-sizing 的值在 Skyline 下不受支持，声明会被忽略 |
-| `skyline/flex-direction` | warning | both | display: flex 未声明 flex-direction，迁移后默认方向会从 row 变为 column |
+| `skyline/flex-direction` | warning | skyline | display: flex 未声明 flex-direction，迁移后默认方向会从 row 变为 column |
 | `skyline/fixed-layer` | warning | skyline | `position: fixed` 在 Skyline 下被提升成与页面根平级的独立层，没有有效 `z-index` 时先后不可控 |
 | `skyline/text-overflow-ellipsis` | warning | skyline | text-overflow: ellipsis 在 Skyline 下只对 `<text>` 生效 |
 | `skyline/attribute-selector` | warning | skyline | 属性选择器在 Skyline 下不参与匹配：主体只有属性时整条声明失效，否则命中范围被放宽 |
@@ -60,4 +60,5 @@
 | `webview/nested-scroll` | warning | webview | 嵌套滚动只在 Skyline 下生效，WebView 下头部不联动、常驻顶部 |
 | `webview/worklet-binding` | error | webview | `worklet:` 事件绑定在 WebView 下不触发回调，且不报错 |
 | `webview/text-children` | error | webview | `<text>` 里的元素子节点在 WebView 下被丢弃（只保留文本与嵌套 text） |
+| `webview/static-renderer` | warning | webview | 静态写死 renderer="skyline"：回退 WebView 时子组件仍走 Skyline 分支 |
 | `webview/tabbar-renderer` | error | webview | 自定义 tabBar 声明 renderer: "skyline"，退回 WebView 时抛异常 |

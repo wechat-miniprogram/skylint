@@ -66,7 +66,7 @@ impl Rule for TextTruncation {
                         format!("{written} 只在 Skyline 的 `<text>` 上生效，WebView 下被忽略：文本不再截断"),
                     )
                     .help(
-                        "保留属性给 Skyline，另加 WebView 分支：`display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: N; overflow: hidden`",
+                        "保留属性给 Skyline，另加 WebView 分支：多行用 `display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: N; overflow: hidden`，单行用 `white-space: nowrap; overflow: hidden; text-overflow: ellipsis`",
                     ),
                 );
             });
