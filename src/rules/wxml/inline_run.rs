@@ -100,17 +100,8 @@ fn is_inline_member(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -
     INLINE_TAGS.contains(&element.tag.as_str())
         && display_values(project, tree, element).is_empty()
         && !has_dynamic_style(element)
-        && !is_out_of_flow(project, tree, element)
+        && !super::is_out_of_flow(project, tree, element)
         && !stacks_vertically(project, tree, element)
-}
-
-fn is_out_of_flow(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
-    super::resolved_property(project, tree, element, "position").is_some_and(|resolved| {
-        matches!(
-            resolved.value.trim().to_ascii_lowercase().as_str(),
-            "fixed" | "absolute"
-        )
-    })
 }
 
 fn stacks_vertically(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {

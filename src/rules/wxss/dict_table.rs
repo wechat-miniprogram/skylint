@@ -56,6 +56,42 @@ const UNSUPPORTED_PROPERTIES: &[(&str, &str)] = &[
     ("object-position", "图片裁剪改用 `<image mode>`"),
 ];
 
+/// 属性在该渲染器下的 CSS 初始值。
+///
+/// 不支持的属性被丢弃后走的就是初始值：声明恰好等于初始值（`object-fit: fill`、
+/// `background-clip: border-box`）时，丢弃与不丢弃渲染结果相同，不算迁移差异。
+const INITIAL_VALUES: &[(&str, &[&str])] = &[
+    ("float", &["none"]),
+    ("contain", &["none"]),
+    ("resize", &["none"]),
+    ("writing-mode", &["horizontal-tb"]),
+    ("text-indent", &["0"]),
+    ("overflow-wrap", &["normal"]),
+    ("text-decoration-thickness", &["auto"]),
+    ("background-attachment", &["scroll"]),
+    ("background-clip", &["border-box"]),
+    ("background-origin", &["padding-box"]),
+    ("mask-origin", &["border-box"]),
+    ("mask-clip", &["border-box"]),
+    ("mask-mode", &["match-source"]),
+    ("justify-items", &["legacy"]),
+    ("list-style-type", &["disc"]),
+    ("list-style-image", &["none"]),
+    ("list-style-position", &["outside"]),
+    ("text-transform", &["none"]),
+    ("user-select", &["auto"]),
+    ("object-fit", &["fill"]),
+    ("object-position", &["50% 50%", "center", "center center"]),
+];
+
+/// 声明的取值是否就是该属性的初始值（即丢弃它不会改变渲染结果）。
+pub(crate) fn is_initial_value(name: &str, value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    INITIAL_VALUES.iter().any(|(property, initial)| {
+        *property == name && initial.iter().any(|candidate| *candidate == value)
+    })
+}
+
 // 已移除 direction / overflow-x / overflow-y：引擎实际接受（css_parser_impl.h:136 映射 kDirection，
 //   direction.cc 实现 ltr/rtl 并由 style_builder.cc:1212 应用到 Text；css_parser_impl.h:40-41 映射
 //   kOverflowX/kOverflowY，overflow_x.cc/overflow_y.cc 的 Parse 把值折叠进 kOverflow，

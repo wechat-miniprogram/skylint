@@ -957,8 +957,25 @@ skit-player 180 → 179（−1 fixed-layer）。反向：businessview 0 → 3（
 `any_selector_matches` 从 `bool`（只认 `Yes`）改成返回 `Tri`：`No` 继续跳过，`Unknown`（块内选择器命中的节点取决于动态 class / 动态属性）报一条 `Info`——
 「条件被丢弃、但块内是否生效静态判不出」。实测六工程只有 businessview 的 4 条（vendor `weui.wxss`），不构成噪音。
 
-**文本插值进入模板作用域**
+**businessview / skit-player 误报审计后的判据修正**
 
+两个从未审过的工程各拉了一条审计 lane（产物在 `.tmp/fp-audit/`）。skit-player 179 条里确认误报 15（8.4%）、
+口径可疑 25；businessview 409 条里确认误报高达 307（75%），其中 254 条是同一个根因（见下）。
+本轮只落「机制明确、零误报面」的几条：
+
+- `max-lines="{{2}}"` 与静态 `max-lines="2"` 等价，抽成 `wxml::max_lines`（剥插值后再解析），
+  供 `truncation_by_max_lines` 用——之前 `{{2}}` 解析失败，带 clamp 的 `<text>` 会被双报。
+- 不支持属性写成的值恰好等于 CSS 初始值（`object-fit: fill`、`background-clip: border-box`、
+  `resize: none`、`object-position: center` …）是 no-op，新增 `dict_table::is_initial_value` 表豁免。
+- `font-family` 里的 `system-ui` 只在**整条只有它**时才是降级（回退链里还有别的 family 时两端同字）；
+- `width` / `height: fit-content` 命中绝对定位元素时豁免：`auto` 在绝对定位下按 CSS 定义就是
+  shrink-to-fit，与 `fit-content` 同解（`min-`/`max-` 不豁免：初始值是 `0`/`none`，丢的是真约束）；
+  新增 `all_matches_satisfy` 共用助手，`visit_declarations` 改为传 `&StyleSheet`。
+- `legacy-flexbox` 的 `display` 改按 **WebView 实际生效的最后一条合法声明** 判定：`-webkit-flex`
+  （= flex）与 `-ms-flexbox`（Chromium 非法）以前被跳过，导致 autoprefixer 那种
+  `flex → -ms-flexbox → -webkit-box → -webkit-flex` 栈被误报成「退回默认 display」。
+
+**文本插值进入模板作用域**
 `WxmlText` 补 `expression`（动态文本保留表达式）与 `template`（定义体归属），`template-data-scope` 的「模板体引用到的字段」
 从「属性表达式 + 分支条件」扩到「属性 + 分支 + 文本插值」（`{{x}}` 写在文本节点里的字段以前看不到）。
 六工程逐字段 diff 零变化——已知的 novel 事故本来就在属性/条件里，这一项是补漏而不是新发现。
@@ -1087,3 +1104,24 @@ worklet」）用一次过滤算出来，不做增量缓存。
 | R4 | 规则噪声 | negative fixture 下限；默认只开 error；inline disable |
 | R5 | `glass-easel-template-compiler` 版本漂移（minidev 锁 1.2.0，crates.io 1.2.1） | 同一 version spec，让 cargo 合并成一份 AST |
 | R6 | 缺 float_pigment 导致值判定漏报 | 一致性语料；实测漏报率不可接受再按 feature 引入 |
+
+**本轮（businessview / skit-player 审计批）验收**（六工程、两个方向逐字段 diff，`7c8b070` → 本轮）
+
+正向：novel 21 → 18（−3 `object-position: center` 是初始值）、skit_1 28 → 27（−1 绝对定位上的 `width: fit-content`）、
+businessview 409 → 403（−3 legacy-flexbox 的 autoprefixer 栈、−3 `resize: none`、−1 `height: fit-content` 在绝对定位上；
+`navbar.wxss:81` 的命中移到 `:82`——现在指的是 `-webkit-flex` 那一条）、
+skit-player 179 → 172（−2 绝对定位的 fit-content、−2 初始值、−3 `system-ui` 回退链）；plugin_1 / plugin_2 零变化。
+反向六工程全部零变化。每条消失项都回源码核过（`.dialog { position:absolute; height: fit-content }`、
+`.current-info { position:absolute; width: fit-content }`、weui 的 `resize: none` 等）。
+测试 755 + 30 + 3 全绿，clippy 0。
+
+**待定：声明级规则的「可达性」前置闸门（P16 候选，已试做并回退）**
+
+两份审计都指到同一个最大噪音源：声明级规则只按「声明 × 选择器」报，不看选择器在该样式表的 scopes 里
+是否真的落在节点上——businessview 254/409 出自 vendored `weui.wxss` 里本工程从未出现的类。试做版把
+`visit_rules` / `visit_declarations` 接上 `any_selector_matches` 闸门后只降到 345（−64），原因是这些
+pages 里有 `class="{{platform}}-font"` 这种**整段动态**的 class 绑定，匹配器对所有类名都给 `Unknown`，
+`Unknown` 必须放行（宁可漏报），于是闸门失效；同时 45 条单元测试因为夹具 WXML 是空 `<view/>` 而全挂。
+结论：这条要真做，得先把 `ClassTokens.any` 细化成「静态片段可约束的任意」——只有证明某个类名不可能由
+声明里的静态片段拼出来时才把 `Unknown` 降为 `No`；并且所有 `single()` 夹具要带真实 markup。
+回退前已确认它不是「改一行就好」的量级，单独作为一批设计。

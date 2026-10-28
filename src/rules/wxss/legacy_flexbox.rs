@@ -129,25 +129,48 @@ impl Rule for LegacyFlexbox {
     }
 }
 
-/// 这条规则块依赖老式弹性盒时，返回块内的老式声明（按出现顺序）；否则 `None`。
+/// 这条规则块依赖老式弹性盒或私有 `display` 值时，返回块内应报的声明（按出现顺序）；
+/// 否则 `None`。
 ///
-/// `display` 只看**最后一条 Skyline 能解析的**：`display: flex; display: box;
-/// display: -webkit-box` 里后两条都被引擎丢弃，真正生效的仍是 `flex`。
+/// `display` 按 **WebView 实际生效的那一条**（最后一条合法的）看，再对比 Skyline
+/// 能解析的最后一条：
+/// - 生效值是 `-webkit-box`：WebView 走老式弹性盒，配套的 `-webkit-box-*` 也生效，
+///   而 Skyline 全部丢弃 → 报。
+/// - 生效值是 `-webkit-flex`（= flex）：WebView 是新式 flex；若块里还有 Skyline 认得的
+///   `display: flex`，两端都是 flex，老式声明在两端都是空转 → 不报。只有整块没有任何
+///   可解析 `display` 时，Skyline 才退回默认 → 报。
+/// - 生效值是普通值（`block` / `none` …）：两端一致 → 不报。
+///
+/// `-ms-flexbox` 在 Chromium 里是非法值，当作没写。
 fn legacy_block(
     rule: &crate::input::wxss::WxssRule,
 ) -> Option<Vec<(String, &crate::input::wxss::WxssDeclaration)>> {
-    let webkit_display = rule
-        .declarations
-        .iter()
-        .rev()
-        .find(|decl| {
-            if !decl.name.eq_ignore_ascii_case("display") {
-                return false;
-            }
-            let value = decl.value.trim();
-            value.eq_ignore_ascii_case("-webkit-box") || PARSEABLE_DISPLAY.contains(&value)
-        })
-        .filter(|decl| decl.value.trim().eq_ignore_ascii_case("-webkit-box"))?;
+    let display =
+        |decl: &&crate::input::wxss::WxssDeclaration| decl.name.eq_ignore_ascii_case("display");
+    let webview = rule.declarations.iter().rev().find(|decl| {
+        if !display(decl) {
+            return false;
+        }
+        let value = decl.value.trim();
+        PARSEABLE_DISPLAY.contains(&value) || is_webkit_flex_display(value)
+    })?;
+    let value = webview.value.trim();
+    let losing = if value.eq_ignore_ascii_case("-webkit-box") {
+        true
+    } else if value.eq_ignore_ascii_case("-webkit-flex")
+        || matches!(value.to_ascii_lowercase().as_str(), "flex" | "inline-flex")
+    {
+        !rule
+            .declarations
+            .iter()
+            .filter(display)
+            .any(|decl| PARSEABLE_DISPLAY.contains(&decl.value.trim()))
+    } else {
+        false
+    };
+    if !losing {
+        return None;
+    }
     let mut legacy: Vec<(String, &crate::input::wxss::WxssDeclaration)> = rule
         .declarations
         .iter()
@@ -156,12 +179,15 @@ fn legacy_block(
             if LEGACY_PROPERTIES.contains(&name.as_str()) {
                 return Some((name, decl));
             }
-            // 值可能是 `{{}}` 之外的其他写法，这里只认生效的那条 display。
-            std::ptr::eq(decl, webkit_display).then(|| ("display: -webkit-box".to_string(), decl))
+            std::ptr::eq(decl, webview).then(|| (format!("display: {value}"), decl))
         })
         .collect();
     legacy.sort_by_key(|(_, decl)| decl.offset);
     Some(legacy)
+}
+
+fn is_webkit_flex_display(value: &str) -> bool {
+    value.eq_ignore_ascii_case("-webkit-box") || value.eq_ignore_ascii_case("-webkit-flex")
 }
 
 #[cfg(test)]
@@ -214,6 +240,44 @@ mod tests {
         assert_eq!(diags.len(), 1, "{diags:#?}");
         assert!(
             diags[0].message.contains("整块布局退回默认 display"),
+            "{}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn autoprefixer_stack_ending_in_webkit_flex_is_not_reported() {
+        // `display: flex` 写在最前面、`-webkit-flex` 写在最后的写法：WebView 生效的是
+        // 最后一条合法的 `-webkit-flex`（= flex），Skyline 保留前面可解析的 `flex`，
+        // 两端都是 flex。
+        let (_f, project) = single(
+            "legacy-stack-webkit-flex-last",
+            r#"
+            .a {
+              display: flex;
+              display: -ms-flexbox;
+              display: -webkit-box;
+              display: -webkit-flex;
+              -webkit-box-align: center;
+            }
+            "#,
+        );
+        assert_eq!(messages(&LegacyFlexbox, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn webkit_flex_without_any_parseable_display_is_reported() {
+        // 整块没有 Skyline 认得的 `display`：WebView 是 flex，Skyline 退回默认。
+        let (_f, project) = single(
+            "legacy-webkit-flex-only",
+            r#"
+            .a { display: -webkit-flex; -webkit-box-align: center; }
+            "#,
+        );
+        let diags = LegacyFlexbox.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert!(
+            diags[0].message.contains("`display: -webkit-flex`"),
             "{}",
             diags[0].message
         );

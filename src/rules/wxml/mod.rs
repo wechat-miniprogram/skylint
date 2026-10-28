@@ -368,6 +368,35 @@ pub(crate) fn webview_truncates(
         })
 }
 
+/// `<text max-lines>` 的行数。
+///
+/// 静态属性与「包着一个数字字面量的插值」（`max-lines="{{2}}"`）等价：引擎拿到的就是 2。
+pub(crate) fn max_lines(element: &WxmlElement) -> Option<u32> {
+    let raw = element
+        .attributes
+        .iter()
+        .find(|attr| attr.name == "max-lines")?
+        .value
+        .as_deref()?
+        .trim();
+    let digits = raw
+        .strip_prefix("{{")
+        .and_then(|rest| rest.strip_suffix("}}"))
+        .unwrap_or(raw)
+        .trim();
+    digits.parse::<u32>().ok()
+}
+
+/// 元素是否脱离文档流（`position: absolute | fixed`）。
+pub(crate) fn is_out_of_flow(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
+    resolved_property(project, tree, element, "position").is_some_and(|resolved| {
+        matches!(
+            resolved.value.trim().to_ascii_lowercase().as_str(),
+            "fixed" | "absolute"
+        )
+    })
+}
+
 /// 元素的 `display` 是否算成 flex 容器（取级联最后一个近似值）。
 ///
 /// 与 [`display_values`] 的区别：这里要的是「最终算出哪个值」，同一元素命中

@@ -36,7 +36,8 @@ impl Rule for FilterLimit {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit_declarations(project, |doc, _, decl, out| {
+        visit_declarations(project, |sheet, _rule, decl, out| {
+            let doc = &sheet.doc;
             if !decl.name.eq_ignore_ascii_case("filter")
                 && !decl.name.eq_ignore_ascii_case("backdrop-filter")
             {

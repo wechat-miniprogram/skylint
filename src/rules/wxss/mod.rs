@@ -63,7 +63,7 @@ use std::collections::HashMap;
 
 use crate::Diagnostic;
 use crate::input::wxml::{WxmlDoc, WxmlElement};
-use crate::input::wxss::{WxssDeclaration, WxssDoc, WxssRule, WxssSelector};
+use crate::input::wxss::{WxssDeclaration, WxssRule, WxssSelector};
 use crate::matcher::{self, Dialect, Tree, Tri};
 use crate::project::{Project, Scope, StyleSheet};
 use crate::rules::Target;
@@ -294,9 +294,11 @@ pub(crate) fn any_selector_matches(
             let tree = Tree::new(doc);
             for selector in selectors {
                 let text = selector.text.trim();
-                // 伪元素的承载者是生成的文本节点，匹配器一律给 `No`（见
-                // `dead-selector` 的豁免说明），不能据此断定块内没有生效。
-                if crate::matcher::shape(text).is_none_or(|shape| shape.pseudo_element) {
+                // 伪元素的承载者是生成的文本节点、`page` / `:host` 指向运行时根节点（不在
+                // WXML 文档树里），匹配器一律给 `No`，不能据此断定块内没有生效。
+                if crate::matcher::shape(text)
+                    .is_none_or(|shape| shape.pseudo_element || shape.runtime_root)
+                {
                     return Tri::Yes;
                 }
                 match tree.any_match(text, Dialect::WebView) {
@@ -367,6 +369,45 @@ pub(crate) fn broken_selectors(
 /// 命中节点是不是全都靠 `<text max-lines="N">` 自己完成截断（且 N 与老式
 /// `-webkit-line-clamp` 一致）。
 ///
+/// 这些选择器命中的元素是否**全都**满足 `predicate`（只看静态命中）。
+///
+/// 与 [`broken_selectors`] 相反的问题：这里问「这条声明落到的节点是不是都属于某一类」，
+/// 用来豁免「落到的节点上本来就等价」的宣告。没有静态命中时返回 `false`（当作没依据，
+/// 不豁免）。
+pub(crate) fn all_matches_satisfy(
+    project: &Project,
+    sheet: &StyleSheet,
+    selectors: &[WxssSelector],
+    docs: &mut HashMap<String, Option<WxmlDoc>>,
+    predicate: impl Fn(&Tree, &WxmlElement) -> bool,
+) -> bool {
+    let mut matched = false;
+    for scope in &sheet.scopes {
+        for path in scope_wxml(project, scope) {
+            let Some(doc) = docs
+                .entry(path.to_string())
+                .or_insert_with(|| crate::rules::wxml::load_doc(project, path))
+                .as_ref()
+            else {
+                return false;
+            };
+            let tree = Tree::new(doc);
+            for selector in selectors {
+                for element in doc.elements() {
+                    if tree.matches(element, selector.text.trim(), Dialect::WebView) != Tri::Yes {
+                        continue;
+                    }
+                    matched = true;
+                    if !predicate(&tree, element) {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    matched
+}
+
 /// 老式 clamp 堆叠（`display: -webkit-box` + `-webkit-line-clamp`）在被命中的
 /// 节点都是 `<text>` / `<span>` 且带同一行数的 `max-lines` 时属于**两端各写一份**：
 /// WebView 用堆叠、Skyline 用属性，结果一致。这时报「声明被丢弃」是噪音。
@@ -399,13 +440,7 @@ pub(crate) fn truncation_by_max_lines(
                     }
                     matched = true;
                     let text_like = matches!(element.tag.as_str(), "text" | "span");
-                    let same_lines = element
-                        .attributes
-                        .iter()
-                        .find(|attr| attr.name == "max-lines")
-                        .and_then(|attr| attr.value.as_deref())
-                        .and_then(|value| value.trim().parse::<u32>().ok())
-                        .is_some_and(|value| value == lines);
+                    let same_lines = crate::rules::wxml::max_lines(element) == Some(lines);
                     all &= text_like && same_lines;
                 }
             }
@@ -439,13 +474,13 @@ pub(crate) fn visit_rules(
 /// 遍历全部样式文件的每一条声明。
 pub(crate) fn visit_declarations(
     project: &Project,
-    mut f: impl FnMut(&WxssDoc, &WxssRule, &WxssDeclaration, &mut Vec<Diagnostic>),
+    mut f: impl FnMut(&StyleSheet, &WxssRule, &WxssDeclaration, &mut Vec<Diagnostic>),
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for sheet in &project.styles {
         for rule in &sheet.doc.rules {
             for declaration in &rule.declarations {
-                f(&sheet.doc, rule, declaration, &mut out);
+                f(sheet, rule, declaration, &mut out);
             }
         }
     }

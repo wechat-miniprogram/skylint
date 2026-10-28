@@ -44,7 +44,8 @@ impl Rule for ValueDegraded {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit_declarations(project, |doc, _, decl, out| {
+        visit_declarations(project, |sheet, _rule, decl, out| {
+            let doc = &sheet.doc;
             if decl.value.trim().is_empty() {
                 return;
             }
@@ -260,7 +261,8 @@ fn check_font_weight(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagno
 }
 
 /// `font-family` 里的 `system-ui`：`font_family.cc:63-67` 的 `SystemUi` 分支只 `Diag`
-/// 不 push，若整条只有它，字体退回默认。
+/// 不 push。回退链里还有别的 family 时（`system-ui, -apple-system, PingFang SC`）
+/// 两端最终用的是同一个字体，只有整条只剩它才会退回默认字体。
 fn check_font_family(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
     if !decl.name.eq_ignore_ascii_case("font-family") || is_dynamic(&decl.tokens) {
         return;
@@ -268,12 +270,25 @@ fn check_font_family(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagno
     if !decl.tokens.iter().any(|token| is_ident(token, "system-ui")) {
         return;
     }
+    let families: Vec<&str> = decl
+        .value
+        .split(',')
+        .map(str::trim)
+        .map(|family| family.strip_suffix("!important").unwrap_or(family).trim())
+        .filter(|family| !family.is_empty())
+        .collect();
+    if families
+        .iter()
+        .any(|family| !family.eq_ignore_ascii_case("system-ui"))
+    {
+        return;
+    }
     out.push(at_value(
         ValueDegraded::ID,
         doc,
         decl,
         format!(
-            "`font-family: {}` 里的 `system-ui` 在 Skyline 下被丢弃，若整条只含它字体会退回默认字体",
+            "`font-family: {}` 只有 `system-ui`，Skyline 丢弃它后字体会退回默认字体",
             decl.value.trim()
         ),
         FONT_FAMILY_HELP,
@@ -572,10 +587,9 @@ mod tests {
             "#,
         );
         let diags = ValueDegraded.check(&project);
-        assert_eq!(diags.len(), 3);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
-        assert!(diags[0].message.contains("`system-ui`"));
-        assert!(diags[1].message.contains("退回默认字体"));
+        assert!(diags[0].message.contains("退回默认字体"));
         assert_eq!(diags[0].help.as_deref(), Some(super::FONT_FAMILY_HELP));
     }
 

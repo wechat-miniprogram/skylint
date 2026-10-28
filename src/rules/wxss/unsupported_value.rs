@@ -1,5 +1,8 @@
 //! 属性可用，但该**整值**在 Skyline 下不支持，声明会被静默忽略。
 
+use std::collections::HashMap;
+
+use crate::input::wxml::WxmlDoc;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
@@ -55,13 +58,30 @@ impl Rule for UnsupportedValue {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let table = table();
-        visit_declarations(project, |doc, _, decl, out| {
+        let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
+        visit_declarations(project, |sheet, rule, decl, out| {
+            let doc = &sheet.doc;
             let name = decl.name.to_ascii_lowercase();
             let Some(value) = normalize_value(&decl.value) else {
                 return;
             };
             let raw = decl.value.trim();
             let (message, advice) = if let Some(keyword) = intrinsic_size_keyword(&name, &value) {
+                // 绝对定位元素的 `width` / `height: auto` 按 CSS 定义就是 shrink-to-fit，
+                // 与 `fit-content` 同解；声明被丢弃不改变渲染。`min-` / `max-` 不行：
+                // 它们的初始值是 `0` / `none`，丢掉的约束是真差异。
+                if matches!(name.as_str(), "width" | "height")
+                    && keyword == "fit-content"
+                    && super::all_matches_satisfy(
+                        project,
+                        sheet,
+                        &rule.selectors,
+                        &mut docs,
+                        |tree, element| crate::rules::wxml::is_out_of_flow(project, tree, element),
+                    )
+                {
+                    return;
+                }
                 (
                     format!(
                         "`{name}: {raw}` 用了内在尺寸关键字 `{keyword}`：Skyline 的 `{name}` 只接受长度 / 百分比 / `auto`，整条声明会被丢弃"

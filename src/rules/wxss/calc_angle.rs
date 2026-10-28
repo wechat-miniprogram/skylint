@@ -24,7 +24,8 @@ impl Rule for CalcAngle {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit_declarations(project, |doc, _, decl, out| {
+        visit_declarations(project, |sheet, _rule, decl, out| {
+            let doc = &sheet.doc;
             let value = decl.value.trim();
             if value.is_empty() || is_dynamic(&decl.tokens) {
                 return;

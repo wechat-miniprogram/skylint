@@ -42,6 +42,10 @@ impl Rule for UnsupportedProperty {
                 if super::is_css_wide_keyword(&decl.value) {
                     continue;
                 }
+                // 声明恰好等于初始值（`object-fit: fill`）：丢弃与不丢弃渲染一致。
+                if super::dict_table::is_initial_value(&name, &decl.value) {
+                    continue;
+                }
                 // `-webkit-line-clamp` 被丢弃，但宿主是带同一行数的 `<text max-lines>` 时，
                 // 截断由属性完成，两端结果一致。
                 if name == "-webkit-line-clamp"
@@ -99,13 +103,13 @@ mod tests {
             .a { float: left; }
             .b { writing-mode: vertical-rl; }
             .c { text-indent: 2em; }
-            .d { mask-clip: border-box; }
+            .d { mask-clip: content-box; }
             .e { justify-items: center; }
             .f { list-style-type: none; }
             .g { FLOAT: left; }
             .h { -webkit-line-clamp: 2; }
             .i { object-fit: cover; }
-            .j { object-position: center; }
+            .j { object-position: left top; }
             "#,
         );
         let diags = UnsupportedProperty.check(&project);
@@ -117,6 +121,27 @@ mod tests {
         assert!(diags.iter().any(|d| d.message.contains("`mask-clip`")));
         assert!(diags.iter().any(|d| d.message.contains("`justify-items`")));
         assert_eq!(diags[0].help.as_deref(), Some("使用 flex 布局"));
+    }
+
+    /// 声明恰好是属性的初始值（`object-fit: fill`、`background-clip: border-box`）时，
+    /// 丢弃与不丢弃渲染结果相同。
+    #[test]
+    fn initial_values_are_not_reported() {
+        let (_f, project) = single(
+            "property-initial-values",
+            r#"
+            .a { object-fit: fill; }
+            .b { background-clip: border-box; }
+            .c { background-origin: padding-box; }
+            .d { mask-clip: border-box; }
+            .e { float: none; }
+            .f { list-style-type: disc; }
+            .g { object-fit: cover; }
+            "#,
+        );
+        let diags = UnsupportedProperty.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert!(diags[0].message.contains("`object-fit`"));
     }
 
     #[test]
