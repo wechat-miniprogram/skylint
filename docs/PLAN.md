@@ -1206,3 +1206,12 @@ flex-direction 收成 2 条：源码 `app.json` 4 处、`dist/plugin/app.json` 9
 **仍缺的（本批没做）**：`fit-content` 只豁免绝对定位，行向 flex item 上 `auto` 与 `fit-content`
 同解，skit-player 里 4 条属误报；要修得让规则拿到命中元素的父节点判父的 `display` +
 `flex-direction`，`Tree` 目前没暴露 parent，属匹配层小改，单独一批。
+
+### P18 补：`fit-content` 在行向 flex 里的豁免
+
+`width: fit-content` 原先只豁免绝对定位元素，行向 flex 里的项被漏掉：`flex-basis: auto`
+下主轴尺寸本来就取内容尺寸，丢弃 `fit-content` 与 `width: auto` 同解。为拿到父节点新增
+`Tree::parent_of`，判定按「父级 flex 且方向是 row / row-reverse 且自身没写 `flex` /
+`flex-grow`」三层。行向但写了 `flex:1` 仍报（元素会按剩余空间拉伸），列向容器也仍报
+（`width` 不是主轴尺寸）。skit-player 因此去掉 4 条（select-drama-dialog、playlet ×2、
+skit-detail），其余五工程两方向零变化。

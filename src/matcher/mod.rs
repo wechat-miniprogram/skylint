@@ -437,6 +437,17 @@ impl<'a> Tree<'a> {
     }
 
     /// 这份文档的路径。
+    /// 元素的父节点：真实元素与合成占位都能回答，根节点返回 `None`。
+    pub fn parent_of<'e>(&'e self, element: &WxmlElement) -> Option<&'e WxmlElement> {
+        let idx = *self.by_ptr.get(&(element as *const WxmlElement as usize))?;
+        let parent = (*self.parent.get(idx)?)?;
+        if parent < self.elems.len() {
+            self.elems.get(parent).copied()
+        } else {
+            self.synthetic.get(parent - self.elems.len())
+        }
+    }
+
     pub fn path(&self) -> &'a str {
         self.doc.path()
     }

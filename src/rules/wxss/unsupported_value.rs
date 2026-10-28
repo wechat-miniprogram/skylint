@@ -67,9 +67,9 @@ impl Rule for UnsupportedValue {
             };
             let raw = decl.value.trim();
             let (message, advice) = if let Some(keyword) = intrinsic_size_keyword(&name, &value) {
-                // 绝对定位元素的 `width` / `height: auto` 按 CSS 定义就是 shrink-to-fit，
-                // 与 `fit-content` 同解；声明被丢弃不改变渲染。`min-` / `max-` 不行：
-                // 它们的初始值是 `0` / `none`，丢掉的约束是真差异。
+                // `auto` 与 `fit-content` 同解时丢弃不改变渲染：`height` 只看脱离文档流，
+                // `width` 还接受行向 flex 里的非拉伸项（见 `width_follows_content`）。
+                // `min-` / `max-` 不行：它们的初始值是 `0` / `none`，丢掉的约束是真差异。
                 if matches!(name.as_str(), "width" | "height")
                     && keyword == "fit-content"
                     && super::all_matches_satisfy(
@@ -77,7 +77,12 @@ impl Rule for UnsupportedValue {
                         sheet,
                         &rule.selectors,
                         &mut docs,
-                        |tree, element| crate::rules::wxml::is_out_of_flow(project, tree, element),
+                        |tree, element| match name.as_str() {
+                            "width" => {
+                                crate::rules::wxml::width_follows_content(project, tree, element)
+                            }
+                            _ => crate::rules::wxml::is_out_of_flow(project, tree, element),
+                        },
                     )
                 {
                     return;
@@ -255,6 +260,36 @@ mod tests {
         assert!(diags[2].message.contains("min-content"));
         assert!(diags[4].message.contains("fit-content(200px)"));
         assert!(diags[0].help.as_deref().unwrap().contains("inline-flex"));
+    }
+
+    /// 行向 flex 里的非拉伸项，主轴尺寸本来就由内容决定，`fit-content` 被丢弃不改变渲染；
+    /// 列向容器、或自己写了 `flex` 会拉伸时，差异仍然成立。
+    #[test]
+    fn intrinsic_size_keywords_follow_row_flex_content_width() {
+        let (_f, project) = page(
+            "value-intrinsic-row-flex",
+            r#"
+            <view class="row"><view class="a"/><view class="b"/></view>
+            <view class="col"><view class="c"/></view>
+            <view class="row"><view class="d"/></view>
+            "#,
+            r#"
+            .row { display: flex; }
+            .col { display: flex; flex-direction: column; }
+            .a { width: fit-content; }
+            .b { width: fit-content; flex: 1; }
+            .c { width: fit-content; }
+            .d { width: fit-content; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        // `.b` 会按剩余空间拉伸、`.c` 在列向容器里不是主轴尺寸。
+        assert_eq!(diags.len(), 2, "{diags:?}");
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.message.contains("width: fit-content"))
+        );
     }
 
     #[test]

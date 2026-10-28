@@ -403,6 +403,36 @@ pub(crate) fn is_out_of_flow(project: &Project, tree: &Tree<'_>, element: &WxmlE
     })
 }
 
+/// 元素的 `width` 是否本来就由内容决定，`fit-content` 被丢弃也不改变渲染。
+///
+/// 两种情况：自身脱离文档流（`position: absolute | fixed`），或父级是行向 flex 容器
+/// 且自己不参与拉伸——`flex-basis: auto` 下主轴尺寸就是内容尺寸，与 `fit-content`
+/// 同解。写了 `flex` / `flex-grow` 就不算：那会让元素按剩余空间拉伸。
+pub(crate) fn width_follows_content(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+) -> bool {
+    if is_out_of_flow(project, tree, element) {
+        return true;
+    }
+    let Some(parent) = tree.parent_of(element) else {
+        return false;
+    };
+    if !flex_container(project, tree, parent) {
+        return false;
+    }
+    let row = resolved_property(project, tree, parent, "flex-direction").is_none_or(|resolved| {
+        matches!(
+            resolved.value.trim().to_ascii_lowercase().as_str(),
+            "row" | "row-reverse"
+        )
+    });
+    row && ["flex", "flex-grow"]
+        .iter()
+        .all(|name| resolved_property(project, tree, element, name).is_none())
+}
+
 /// 元素的 `display` 是否算成 flex 容器（取级联最后一个近似值）。
 ///
 /// 与 [`display_values`] 的区别：这里要的是「最终算出哪个值」，同一元素命中
