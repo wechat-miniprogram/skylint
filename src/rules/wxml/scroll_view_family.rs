@@ -54,7 +54,7 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
 use super::structure::{self, Condition, Constraint, Relation, Target};
-use super::{element_diagnostic, is_builtin, visit, walk};
+use super::{element_diagnostic, is_builtin, visit, walk_skyline};
 
 pub const ID: &str = "skyline/scroll-view-family";
 
@@ -216,7 +216,7 @@ impl Rule for ScrollViewFamily {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
-            walk(doc, |element, ancestors| {
+            walk_skyline(doc, |element, ancestors| {
                 structure::check_element(ID, doc, element, ancestors, CONSTRAINTS, doc.path(), out);
 
                 // nested-scroll.md NEVER 1「不要在 nested-scroll-body 下面放 nested-scroll-header」。

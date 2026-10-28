@@ -22,7 +22,7 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
 use super::structure::find_attr;
-use super::{element_diagnostic, visit, walk};
+use super::{element_diagnostic, visit, walk_skyline};
 
 pub const ID: &str = "skyline/share-element-key";
 
@@ -48,7 +48,7 @@ fn check_file(doc: &WxmlDoc, out: &mut Vec<Diagnostic>) {
     // 已出现的 (key, 分支栈)，按文档顺序；比较时跳过互斥分支。
     // 模板定义体里的 `share-element` 只在实例化处出现，跨定义的重复不一定是错，跳过。
     let mut seen: Vec<(String, Vec<Branch>)> = Vec::new();
-    walk(doc, |element, _ancestors| {
+    walk_skyline(doc, |element, _ancestors| {
         if element.tag != TAG {
             return;
         }

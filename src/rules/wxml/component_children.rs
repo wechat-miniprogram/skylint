@@ -46,7 +46,7 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
 use super::structure::{self, Condition, Constraint, Relation};
-use super::{visit, walk};
+use super::{visit, walk_skyline};
 
 pub const ID: &str = "skyline/component-children";
 
@@ -150,7 +150,7 @@ impl Rule for ComponentChildren {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
-            walk(doc, |element, ancestors| {
+            walk_skyline(doc, |element, ancestors| {
                 structure::check_element(ID, doc, element, ancestors, ROWS, doc.path(), out);
             });
         })

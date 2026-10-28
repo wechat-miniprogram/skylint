@@ -21,16 +21,14 @@
 //! 工程级 `rendererOptions.skyline.enableScrollViewAutoSize` 开启时整条规则跳过：
 //! 那时 scroll-view 变 measurable，尺寸来自内容而不是 flex 分配。
 
-use std::collections::HashMap;
-
-use crate::input::wxml::{WxmlDoc, WxmlElement};
+use crate::input::wxml::WxmlElement;
 use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
 use crate::rules::wxml::structure::find_attr;
 use crate::rules::wxml::{
-    Resolved, element_diagnostic, load_doc, page_wxml_groups, resolved_property, walk,
+    ElementDoc, Resolved, element_diagnostic, element_docs, resolved_property, walk_skyline,
 };
 use crate::rules::wxss::value_util::at_declaration;
 use crate::{Diagnostic, Severity};
@@ -55,79 +53,68 @@ impl Rule for ScrollViewHeight {
             return Vec::new();
         }
         let mut out = Vec::new();
-        let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
 
-        for (_page_wxml, paths) in page_wxml_groups(project) {
-            for path in &paths {
-                if !docs.contains_key(path) {
-                    docs.insert(path.clone(), load_doc(project, path));
+        for ElementDoc { doc, reach } in element_docs(project) {
+            let tree = Tree::new(&doc);
+            let default_block = project.scope_of(doc.path()).map_or_else(
+                || project.app_display_block(),
+                |scope| project.renders_as_block(&scope),
+            );
+            walk_skyline(&doc, |element, ancestors| {
+                if element.tag != "scroll-view" {
+                    return;
                 }
-            }
-            for path in &paths {
-                let Some(doc) = docs.get(path).and_then(Option::as_ref) else {
-                    continue;
+                let flex = resolved_property(project, &tree, element, "flex");
+                let grow = resolved_property(project, &tree, element, "flex-grow");
+                if !grows(grow.as_ref(), flex.as_ref()) {
+                    return;
+                }
+                if determinate(project, &tree, element) {
+                    return;
+                }
+                let Some(parent) = ancestors.last() else {
+                    return;
                 };
-                let tree = Tree::new(doc);
-                let default_block = project.scope_of(doc.path()).map_or_else(
-                    || project.app_display_block(),
-                    |scope| project.renders_as_block(&scope),
-                );
-                walk(doc, |element, ancestors| {
-                    if element.tag != "scroll-view" {
-                        return;
-                    }
-                    let flex = resolved_property(project, &tree, element, "flex");
-                    let grow = resolved_property(project, &tree, element, "flex-grow");
-                    if !grows(grow.as_ref(), flex.as_ref()) {
-                        return;
-                    }
-                    if determinate(project, &tree, element) {
-                        return;
-                    }
-                    let Some(parent) = ancestors.last() else {
-                        return;
-                    };
-                    if !is_column_flex(project, &tree, parent, default_block) {
-                        return;
-                    }
-                    if determinate_height(
-                        project,
-                        &tree,
-                        parent,
-                        &ancestors[..ancestors.len() - 1],
-                        default_block,
-                    ) {
-                        return;
-                    }
+                if !is_column_flex(project, &tree, parent, default_block) {
+                    return;
+                }
+                if determinate_height(
+                    project,
+                    &tree,
+                    parent,
+                    &ancestors[..ancestors.len() - 1],
+                    default_block,
+                ) {
+                    return;
+                }
 
-                    let message = "`scroll-view` 用 `flex` 撑高，但所在列容器没有确定高度：Skyline 下 scroll-view 没有内容高度兜底，flex 分不到高度时会塌成 0";
-                    let help = "给父容器一个确定高度（如 `height: 100vh`），或给这个 scroll-view 补 `height: 0` 让它按 flex 分配";
-                    out.push(
-                        match flex
-                            .or(grow)
-                            .and_then(|resolved| Some((resolved.sheet?, resolved.declaration?)))
-                        {
-                            Some((sheet, declaration)) => at_declaration(
-                                Self::ID,
-                                &sheet.doc,
-                                declaration,
-                                Severity::Warning,
-                                message,
-                                help,
-                            ),
-                            None => element_diagnostic(
-                                Self::ID,
-                                doc,
-                                element,
-                                doc.path(),
-                                Severity::Warning,
-                                message,
-                            )
-                            .help(help),
-                        },
-                    );
-                });
-            }
+                let message = "`scroll-view` 用 `flex` 撑高，但所在列容器没有确定高度：Skyline 下 scroll-view 没有内容高度兜底，flex 分不到高度时会塌成 0";
+                let help = reach.help("给父容器一个确定高度（如 `height: 100vh`），或给这个 scroll-view 补 `height: 0` 让它按 flex 分配");
+                out.push(
+                    match flex
+                        .or(grow)
+                        .and_then(|resolved| Some((resolved.sheet?, resolved.declaration?)))
+                    {
+                        Some((sheet, declaration)) => at_declaration(
+                            Self::ID,
+                            &sheet.doc,
+                            declaration,
+                            Severity::Warning,
+                            message,
+                            help,
+                        ),
+                        None => element_diagnostic(
+                            Self::ID,
+                            &doc,
+                            element,
+                            doc.path(),
+                            Severity::Warning,
+                            message,
+                        )
+                        .help(help),
+                    },
+                );
+            });
         }
         out
     }

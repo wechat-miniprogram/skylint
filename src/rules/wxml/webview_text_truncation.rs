@@ -46,7 +46,7 @@ impl Rule for TextTruncation {
                 if !element.tag.eq_ignore_ascii_case("text") {
                     return;
                 }
-                if element.renderer_guarded() {
+                if element.skyline_only() {
                     return;
                 }
                 // 只看真正起截断作用的写法：`overflow="visible"`、`max-lines="0"`

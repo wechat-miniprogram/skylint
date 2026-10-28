@@ -101,6 +101,78 @@ pub(crate) fn page_wxml_groups(project: &Project) -> Vec<(&str, Vec<String>)> {
         .collect()
 }
 
+/// 一份 WXML 文档与它在 Skyline 下的可达性。
+pub(crate) struct ElementDoc {
+    pub doc: WxmlDoc,
+    pub reach: Reach,
+}
+
+/// 元素级规则能看到的文档：全部页面与组件的 WXML（不只非 opt-out 页面可达的那些）。
+///
+/// 元素级规则曾经只走 [`page_wxml_groups`]，于是只被 `renderer: "webview"` 页面引用的
+/// 组件永远进不了检查，而同一份文件的声明级规则照报——同一个组件一半报一半不报。
+/// 这里对所有文档求值，再用 [`Reach`] 把「WebView 専属」在 `help` 里说明。
+pub(crate) fn element_docs(project: &Project) -> Vec<ElementDoc> {
+    let skyline: HashSet<String> = page_wxml_groups(project)
+        .into_iter()
+        .flat_map(|(_, paths)| paths)
+        .collect();
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for page in &project.pages {
+        let paths: Vec<String> = std::iter::once(page.files.wxml.iter().cloned())
+            .flatten()
+            .chain(
+                project
+                    .page_components(&page.route)
+                    .into_iter()
+                    .filter_map(|component| {
+                        project
+                            .components
+                            .iter()
+                            .find(|unit| unit.path == component)
+                            .and_then(|unit| unit.files.wxml.clone())
+                    }),
+            )
+            .collect();
+        for path in paths {
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            let Some(doc) = load_doc(project, &path) else {
+                continue;
+            };
+            let reach = if skyline.contains(&path) {
+                Reach::Skyline
+            } else {
+                Reach::WebviewOnly
+            };
+            out.push(ElementDoc { doc, reach });
+        }
+    }
+    out
+}
+
+/// 文档能否被按 Skyline 检查的页面渲染到。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reach {
+    Skyline,
+    /// 只被 `renderer: "webview"` 的页面引用（或它自己就是这类页面）。
+    WebviewOnly,
+}
+
+impl Reach {
+    /// 把可达性说明接到 `help` 后面；Skyline 可达时原样返回。
+    pub(crate) fn help(self, base: &str) -> String {
+        match self {
+            Self::Skyline => base.to_string(),
+            Self::WebviewOnly => format!(
+                "{base}（这份 WXML 目前只在 WebView 下渲染：页面声明了 `renderer: \"webview\"` 或只被这类页面引用，迁移到 Skyline 后才全生效）"
+            ),
+        }
+    }
+}
+
 pub(crate) fn load_doc(project: &Project, path: &str) -> Option<WxmlDoc> {
     let source = fs::read_to_string(project.abs(path)).ok()?;
     let empty = crate::input::env::Env::default();
@@ -159,6 +231,18 @@ pub(crate) fn walk<'a>(
 
     let mut ancestors = Vec::new();
     recurse(&doc.nodes, &mut ancestors, &mut visit);
+}
+
+/// Skyline 方向的遍历：跳过只会在 WebView 下渲染的元素。
+///
+/// `wx:if="{{renderer === 'skyline'}}"` 的 `wx:else` 分支只在 WebView 下成立，
+/// 对它讲「Skyline 下会怎样」是误报。WebView 方向用 [`walk`]。
+pub(crate) fn walk_skyline(doc: &WxmlDoc, mut visit: impl FnMut(&WxmlElement, &[&WxmlElement])) {
+    walk(doc, |element, ancestors| {
+        if !element.webview_only() {
+            visit(element, ancestors);
+        }
+    });
 }
 
 /// 元素自身在样式层里的全部 `display` 取值（内联 `style` 在前）。

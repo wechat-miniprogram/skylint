@@ -21,7 +21,7 @@ use crate::rules::{Rule, RuleMeta};
 use crate::matcher::Tree;
 
 use super::branch::exclusive;
-use super::{display_values, element_diagnostic, flex_container, visit, walk};
+use super::{display_values, element_diagnostic, flex_container, visit, walk_skyline};
 
 pub const ID: &str = "skyline/inline-run";
 
@@ -45,7 +45,7 @@ impl Rule for InlineRun {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
             let tree = Tree::new(doc);
-            walk(doc, |element, _ancestors| {
+            walk_skyline(doc, |element, _ancestors| {
                 check_element(project, doc, &tree, element, out);
             });
         })

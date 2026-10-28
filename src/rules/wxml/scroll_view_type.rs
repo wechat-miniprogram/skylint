@@ -5,7 +5,7 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
 use super::structure::find_attr;
-use super::{element_diagnostic, span_diagnostic, visit, walk};
+use super::{element_diagnostic, span_diagnostic, visit, walk_skyline};
 
 pub struct ScrollViewType;
 
@@ -32,7 +32,7 @@ impl Rule for ScrollViewType {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
-            walk(doc, |element, _ancestors| {
+            walk_skyline(doc, |element, _ancestors| {
                 if element.tag != "scroll-view" {
                     return;
                 }

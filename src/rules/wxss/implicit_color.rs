@@ -15,15 +15,15 @@
 //! 开关是运行时灰度，静态判不出，所以这条按 `Info` 报：它说明「若该实验未开启，
 //! 这里的颜色和 WebView 不一致」，而不是断言一定错。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use crate::input::wxml::{WxmlDoc, WxmlElement};
+use crate::input::wxml::WxmlElement;
 use crate::input::wxss::{ValueToken, WxssDeclaration};
 use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{load_doc, page_wxml_groups, resolved_property, sheet_covers, walk};
+use crate::rules::wxml::{ElementDoc, element_docs, resolved_property, sheet_covers, walk_skyline};
 use crate::rules::wxss::value_util::at_declaration;
 use crate::{Diagnostic, Severity};
 
@@ -83,56 +83,44 @@ impl Rule for ImplicitColor {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut out = Vec::new();
         let mut reported: HashSet<(String, usize)> = HashSet::new();
-        let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
 
-        for (_, paths) in page_wxml_groups(project) {
-            for path in &paths {
-                if !docs.contains_key(path) {
-                    docs.insert(path.clone(), load_doc(project, path));
+        for ElementDoc { doc, reach } in element_docs(project) {
+            let tree = Tree::new(&doc);
+            walk_skyline(&doc, |element, ancestors| {
+                if effective_color(project, &tree, element, ancestors).is_none() {
+                    return;
                 }
-            }
-            for path in &paths {
-                let Some(doc) = docs.get(path).and_then(Option::as_ref) else {
-                    continue;
-                };
-                let tree = Tree::new(doc);
-                walk(doc, |element, ancestors| {
-                    if effective_color(project, &tree, element, ancestors).is_none() {
-                        return;
+                for property in PROPERTIES {
+                    let Some(resolved) = resolved_property(project, &tree, element, property)
+                    else {
+                        continue;
+                    };
+                    let (Some(sheet), Some(declaration)) = (resolved.sheet, resolved.declaration)
+                    else {
+                        continue;
+                    };
+                    if !lacks_color(declaration) {
+                        continue;
                     }
-                    for property in PROPERTIES {
-                        let Some(resolved) = resolved_property(project, &tree, element, property)
-                        else {
-                            continue;
-                        };
-                        let (Some(sheet), Some(declaration)) =
-                            (resolved.sheet, resolved.declaration)
-                        else {
-                            continue;
-                        };
-                        if !lacks_color(declaration) {
-                            continue;
-                        }
-                        if invisible(project, &tree, element, declaration) {
-                            continue;
-                        }
-                        if !reported.insert((sheet.doc.path().to_string(), declaration.offset)) {
-                            continue;
-                        }
-                        out.push(at_declaration(
-                            Self::ID,
-                            &sheet.doc,
-                            declaration,
-                            Severity::Info,
-                            format!(
-                                "`{}` 没写颜色：Skyline 下这里默认黑色，WebView 下取元素的 `color`",
-                                declaration.name
-                            ),
-                            "显式写出颜色（含 `currentColor`）即可两端一致",
-                        ));
+                    if invisible(project, &tree, element, declaration) {
+                        continue;
                     }
-                });
-            }
+                    if !reported.insert((sheet.doc.path().to_string(), declaration.offset)) {
+                        continue;
+                    }
+                    out.push(at_declaration(
+                        Self::ID,
+                        &sheet.doc,
+                        declaration,
+                        Severity::Info,
+                        format!(
+                            "`{}` 没写颜色：Skyline 下这里默认黑色，WebView 下取元素的 `color`",
+                            declaration.name
+                        ),
+                        reach.help("显式写出颜色（含 `currentColor`）即可两端一致"),
+                    ));
+                }
+            });
         }
         out
     }

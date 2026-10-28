@@ -26,7 +26,7 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
 use super::structure::find_attr;
-use super::{span_diagnostic, visit, walk};
+use super::{span_diagnostic, visit, walk_skyline};
 
 #[derive(Debug, Clone, Copy)]
 enum Constraint {
@@ -470,7 +470,7 @@ impl Rule for ComponentAttribute {
         let table = table();
         visit(project, |doc, out| {
             let tree = Tree::new(doc);
-            walk(doc, |element, ancestors| {
+            walk_skyline(doc, |element, ancestors| {
                 for attr in &element.attributes {
                     let name = attr.name.to_ascii_lowercase();
                     let Some(entries) = table.lookup(&element.tag, &name) else {

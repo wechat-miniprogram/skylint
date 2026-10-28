@@ -37,7 +37,7 @@ impl Rule for NestedScroll {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
             walk(doc, |element, _| {
-                if element.renderer_guarded() {
+                if element.skyline_only() {
                     return;
                 }
                 let tag = element.tag.to_ascii_lowercase();

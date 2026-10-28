@@ -16,14 +16,14 @@
 //! z-index 时页面级顺序与 WebView 一致（都是文档序），实测五个参考工程这类形态全部
 //! 零差异。早期版本按「有 fixed 无整数 z-index 就报」，在真实工程上 5/5 是噪音。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use crate::input::wxml::{WxmlDoc, WxmlElement};
+use crate::input::wxml::WxmlElement;
 use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{load_doc, page_wxml_groups, resolved_property, walk};
+use crate::rules::wxml::{ElementDoc, element_docs, resolved_property, walk_skyline};
 use crate::rules::wxss::value_util::at_declaration;
 use crate::{Diagnostic, Severity};
 
@@ -50,76 +50,58 @@ impl Rule for FixedLayer {
         let mut out = Vec::new();
         // 同一个位置只报一次：样式表按声明偏移，内联 `style` 按元素起始位置。
         let mut reported: HashSet<(String, usize, usize)> = HashSet::new();
-        let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
 
-        for (_, paths) in page_wxml_groups(project) {
-            for path in &paths {
-                if !docs.contains_key(path) {
-                    docs.insert(path.clone(), load_doc(project, path));
+        for ElementDoc { doc, reach } in element_docs(project) {
+            let tree = Tree::new(&doc);
+            walk_skyline(&doc, |element, ancestors| {
+                let Some(position) = resolved_property(project, &tree, element, "position") else {
+                    return;
+                };
+                if !clean_value(&position.value).eq_ignore_ascii_case("fixed") {
+                    return;
                 }
-            }
-            let loaded: Vec<&WxmlDoc> = paths
-                .iter()
-                .filter_map(|path| docs.get(path).and_then(Option::as_ref))
-                .collect();
+                // 只有祖先形成包含块时，WebView 与 Skyline 的定位基准才不同。
+                if !has_containing_block(project, &tree, ancestors) {
+                    return;
+                }
 
-            for doc in loaded {
-                let tree = Tree::new(doc);
-                walk(doc, |element, ancestors| {
-                    let Some(position) = resolved_property(project, &tree, element, "position")
-                    else {
-                        return;
-                    };
-                    if !clean_value(&position.value).eq_ignore_ascii_case("fixed") {
-                        return;
-                    }
-                    // 只有祖先形成包含块时，WebView 与 Skyline 的定位基准才不同。
-                    if !has_containing_block(project, &tree, ancestors) {
-                        return;
-                    }
-
-                    let diagnostic = match position.sheet.zip(position.declaration) {
-                        Some((sheet, declaration)) => {
-                            if !reported.insert((
-                                sheet.doc.path().to_string(),
-                                declaration.offset,
-                                0,
-                            )) {
-                                return;
-                            }
-                            at_declaration(
-                                Self::ID,
-                                &sheet.doc,
-                                declaration,
-                                Severity::Warning,
-                                MESSAGE,
-                                HELP,
-                            )
+                let diagnostic = match position.sheet.zip(position.declaration) {
+                    Some((sheet, declaration)) => {
+                        if !reported.insert((sheet.doc.path().to_string(), declaration.offset, 0)) {
+                            return;
                         }
-                        // 内联 `style`：没有声明可落，报在元素开始标签上。
-                        None => {
-                            let (line, column) = doc.position(element.tag_start);
-                            if !reported.insert((
-                                doc.path().to_string(),
-                                line as usize,
-                                column as usize,
-                            )) {
-                                return;
-                            }
-                            Diagnostic::new(
-                                Self::ID,
-                                Severity::Warning,
-                                MESSAGE,
-                                doc.path(),
-                                line,
-                                column,
-                            )
-                            .help(HELP)
+                        at_declaration(
+                            Self::ID,
+                            &sheet.doc,
+                            declaration,
+                            Severity::Warning,
+                            MESSAGE,
+                            reach.help(HELP),
+                        )
+                    }
+                    // 内联 `style`：没有声明可落，报在元素开始标签上。
+                    None => {
+                        let (line, column) = doc.position(element.tag_start);
+                        if !reported.insert((
+                            doc.path().to_string(),
+                            line as usize,
+                            column as usize,
+                        )) {
+                            return;
                         }
-                    };
-                    out.push(diagnostic);
-                });
-            }
+                        Diagnostic::new(
+                            Self::ID,
+                            Severity::Warning,
+                            MESSAGE,
+                            doc.path(),
+                            line,
+                            column,
+                        )
+                        .help(reach.help(HELP))
+                    }
+                };
+                out.push(diagnostic);
+            });
         }
         out
     }
@@ -182,6 +164,45 @@ mod tests {
         fixture.write("pages/index/index.wxss", wxss);
         let project = fixture.project();
         FixedLayer.check(&project)
+    }
+
+    #[test]
+    fn webview_only_component_is_reported_with_a_note() {
+        // 组件只被 `renderer: "webview"` 的页面引用：元素级规则也要检查它，
+        // 否则同一份文件的声明级规则报、元素级不报。
+        let fixture = Fixture::new("fixed-webview-only");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index","pages/legacy/legacy"]}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", r#"<view/>"#)
+            .write(
+                "pages/legacy/legacy.json",
+                r#"{"renderer":"webview","usingComponents":{"d":"/components/d/d"}}"#,
+            )
+            .write("pages/legacy/legacy.wxml", r#"<d/>"#)
+            .write("components/d/d.json", "{}")
+            .write(
+                "components/d/d.wxml",
+                r#"<view class="panel"><view class="bar"/></view>"#,
+            )
+            .write(
+                "components/d/d.wxss",
+                ".panel { transform: translate3d(0, 100%, 0); }\n.bar { position: fixed; bottom: 0; }"
+            );
+        let diagnostics = FixedLayer.check(&fixture.project());
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].path, "components/d/d.wxss");
+        assert!(
+            diagnostics[0]
+                .help
+                .as_deref()
+                .is_some_and(|help| help.contains("只在 WebView 下渲染")),
+            "{diagnostics:#?}"
+        );
     }
 
     #[test]

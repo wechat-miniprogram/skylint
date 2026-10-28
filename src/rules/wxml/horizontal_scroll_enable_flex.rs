@@ -12,7 +12,7 @@ use crate::rules::{Rule, RuleMeta};
 use super::structure::find_attr;
 use crate::matcher::Tree;
 
-use super::{display_values, is_flex_value, span_diagnostic, visit, walk};
+use super::{display_values, is_flex_value, span_diagnostic, visit, walk_skyline};
 
 pub const HORIZONTAL_FLEX_ID: &str = "skyline/horizontal-scroll-enable-flex";
 
@@ -30,7 +30,7 @@ impl Rule for HorizontalScrollEnableFlex {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
             let tree = Tree::new(doc);
-            walk(doc, |element, _ancestors| {
+            walk_skyline(doc, |element, _ancestors| {
                 if element.tag != "scroll-view"
                     || flag(element, "scroll-x") != Some(true)
                     || flag(element, "enable-flex") != Some(false)

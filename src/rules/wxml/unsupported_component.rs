@@ -4,7 +4,7 @@ use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::{element_diagnostic, unsupported_replacement, visit, walk};
+use super::{element_diagnostic, unsupported_replacement, visit, walk_skyline};
 
 pub struct UnsupportedComponent;
 
@@ -24,7 +24,7 @@ impl Rule for UnsupportedComponent {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
             let declared = project.declared_components(doc.path());
-            walk(doc, |element, _ancestors| {
+            walk_skyline(doc, |element, _ancestors| {
                 let tag = element.tag.to_ascii_lowercase();
                 // `usingComponents` 里声明了同名标签时用的是自定义组件，不是同名内置组件。
                 if declared.contains(&tag) {

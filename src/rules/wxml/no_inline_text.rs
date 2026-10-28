@@ -13,7 +13,7 @@ use crate::rules::{Rule, RuleMeta};
 use crate::matcher::Tree;
 
 use super::branch::exclusive_branches;
-use super::{flex_container, span_diagnostic, visit, walk};
+use super::{flex_container, span_diagnostic, visit, walk_skyline};
 
 pub const ID: &str = "skyline/no-inline-text";
 
@@ -37,7 +37,7 @@ impl Rule for NoInlineText {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
             let tree = Tree::new(doc);
-            walk(doc, |element, _ancestors| {
+            walk_skyline(doc, |element, _ancestors| {
                 check_element(project, doc, &tree, element, out);
             });
         })

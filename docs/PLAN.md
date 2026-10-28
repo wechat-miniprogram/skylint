@@ -931,6 +931,40 @@ skit-player 180 → 179（−1 fixed-layer）。反向：businessview 0 → 3（
 
 测试 743 + 30 + 3 全绿，clippy 0，`docs/RULES.md` 55 条（error 15）。
 
+### P14 判据精度批次：省略号门控、元素级可达性、按渲染器分支剪枝
+
+审计遗留的「同一组件一半报一半不报」与几处判据缺口，分两批落地。
+
+**第一批（消息与判据）**
+
+- `text-overflow-ellipsis` 的「WebView 真的会省略」原来只要求 `white-space: nowrap`，补上 `overflow` 门控（`hidden` / `clip` / `auto` / `scroll`，含 `overflow-x` / `overflow-y` 任一分轴）：`overflow: visible` 时 `text-overflow` 不生效，两端都不会出省略号。
+- `<text overflow="ellipsis">` 缺 `max-lines` 的消息带上行数来源：祖先 `-webkit-line-clamp: N` → 提示 `max-lines="N"`，单行三件套 → 提示 `max-lines="1"`。
+- `dead-selector` 跳过后端不存在的标签：`a` / `p` 这类 Web 标签在 WXML 里永远不成立，不是「类名写错」（businessview `weui.wxss:3573` 的 `.weui-agree a`），`navigator` 这类真实组件仍照报。
+- `no-inline-text` / `inline-run` 都改成询问级联后的单个 `display`（`wxml::flex_container`），删掉两份 `is_flex_value`。
+- `unsupported-value` 的措辞区分「属性不存在」与「取值不支持」。
+
+**第二批（元素级可达性）**
+
+元素级规则（`fixed-layer` / `implicit-color` / `scroll-view-height`）原来只走 `page_wxml_groups`，只被 `renderer: "webview"` 页面引用的组件进不了检查，而同一份文件的声明级规则照报。
+改为 `wxml::element_docs`：遍历**所有**页面与其组件闭包，按 `Reach::{Skyline, WebviewOnly}` 在 `help` 里标注「这份 WXML 目前只在 WebView 下渲染」。
+
+同一个问题的另一面是**分支级**：`wx:if="{{renderer === 'skyline'}}"` 的 `wx:else` 分支只在 WebView 下渲染，对它讲 Skyline 的规则就是误报（实测 `plugin/components/heart-popup/heart-popup.wxml` 的 webview 分支 `scroll-view` 被判「缺 type」、以及「flex 无高度」）。
+`input/wxml.rs::Branch` 增加 `RendererArm`（`Both` / `Skyline` / `Webview`）：解析时用 `renderer` 的两个取值各求一次条件真值（`else` 按链上补集算），元素按整条分支栈折叠出 `webview_only()` / `skyline_only()`。
+正向规则改用 `walk_skyline`（跳过 WebView 专属元素），反向四条 `webview/*` 从「条件里提到 renderer 就跳过」收成「只有 Skyline 专属才跳过」——WebView 专属分支正是反向规则该看的那一支。
+
+**验收**（六工程、两个方向逐字段 diff，`a82694a` → 本轮）
+
+正向：novel 23 → 21（−2 scroll-view-type：`pages/index/index.wxml:230`、`pages/recent-read/recent-read.wxml:126` 的 `wx:else` webview 分支）、
+plugin_1 117 → 116、plugin_2 117 → 116（−1 scroll-view-type 的 webview 分支；另有 23 条只是消息文案变化），
+skit_1 28 → 28、skit-player 179 → 179、businessview 406 → 405（−1 dead-selector 的 `.weui-agree a`）。
+反向五个工程零变化，businessview 3 → 2（同上 dead-selector）。
+测试 751 + 30 + 3 全绿，clippy 0，`docs/RULES.md` 55 条（error 15）。
+
+**仍未做**（见 P15 候选）
+
+`~foo` / `^foo` 的作用域语义尚未进匹配层（`has_class` 逐词比较，静态 `~foo` 对页面 sheet 里的 `.foo` 判 `No`）；
+`float` 缺 flex/grid item 门控；`media-query` 的 `Unknown` 块既不报也不提示；`overridden_by_renderer_class` 只认「class 由 `renderer` 拼出」这一种证据。
+
 ## 5. 五个视图与规则族
 
 | 视图 | 来源 | 服务哪族规则 |

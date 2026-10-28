@@ -17,7 +17,7 @@ use glass_easel_template_compiler::parse::tag::{
 };
 use glass_easel_template_compiler::parse::{self, ParseErrorLevel, Position, TemplateStructure};
 
-use crate::input::env::Env;
+use crate::input::env::{Env, Lit};
 
 /// 解析一个 WXML 文件。`env` 是这份文件里确定取值的绑定，用于折叠 `wx:if`。
 pub fn parse(path: &str, source: &str, env: &Env) -> Result<WxmlDoc, String> {
@@ -104,6 +104,28 @@ impl WxmlElement {
         self.branches.iter().any(|branch| branch.renderer_guarded)
     }
 
+    /// 这个元素只在某个渲染器下渲染（祖先分支已经把另一侧排除掉）。
+    pub fn renderer_arm(&self) -> RendererArm {
+        self.branches.iter().fold(RendererArm::Both, |acc, branch| {
+            match (acc, branch.renderer) {
+                (RendererArm::Both, arm) => arm,
+                (arm, RendererArm::Both) => arm,
+                // 嵌套条件互相矛盾时静态判不了，保持较窄的那个不一致即可：按「都可能在」处理。
+                _ => acc,
+            }
+        })
+    }
+
+    /// 这个元素在 Skyline 下永远不会渲染。
+    pub fn webview_only(&self) -> bool {
+        self.renderer_arm() == RendererArm::Webview
+    }
+
+    /// 这个元素在 WebView 下永远不会渲染（只存在于 Skyline 分支）。
+    pub fn skyline_only(&self) -> bool {
+        self.renderer_arm() == RendererArm::Skyline
+    }
+
     /// 这个元素是否会因渲染后端而变：处在按 `renderer` 分支的条件里，或者某个属性的值
     /// 绑定了 `renderer`（`class="x {{renderer}}"`、`renderer="{{renderer}}"`）。
     pub fn mentions_renderer(&self) -> bool {
@@ -124,8 +146,21 @@ pub struct Branch {
     /// 这一支的条件里用到了 `renderer`：整支只在特定渲染器下渲染。
     /// 反向（WebView）规则据此跳过作者已经做过两端分支的代码。
     pub renderer_guarded: bool,
+    /// 这一支在哪个渲染器下可能渲染（条件按 `renderer` 取值折叠后）。
+    pub renderer: RendererArm,
     /// 这一支的条件引用的数据字段（模板数据作用域规则需要知道条件吃了哪些键）。
     pub fields: Vec<String>,
+}
+
+/// 一个条件分支在两种渲染器下的可达性。
+///
+/// `wx:if="{{renderer === 'skyline'}}"` 的 `wx:else` 只会在 WebView 下渲染，
+/// 对它讲「Skyline 下会怎样」没有意义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RendererArm {
+    Both,
+    Skyline,
+    Webview,
 }
 
 /// 元素上的一个属性。
@@ -439,12 +474,45 @@ fn element_nodes(
             let chain_guarded = arms
                 .iter()
                 .any(|(_, condition, _)| condition_mentions_renderer(condition));
+            // 用 `renderer` 的两个取值各求一次值：哪些 arm 在该渲染器下可能渲染。
+            // `else` 是「前面都不成立」的补集，按链上结果算。
+            let reachable = |renderer: &str| {
+                let mut probe = env.clone();
+                probe.insert("renderer", Lit::Str(renderer.to_string()));
+                let mut out = Vec::with_capacity(arms.len() + 1);
+                let mut decided = false;
+                for (_, condition, _) in arms {
+                    if decided {
+                        out.push(false);
+                        continue;
+                    }
+                    match condition_truthy(condition, &probe) {
+                        Some(true) => {
+                            decided = true;
+                            out.push(true);
+                        }
+                        Some(false) => out.push(false),
+                        None => out.push(true),
+                    }
+                }
+                out.push(!decided);
+                out
+            };
+            let skyline_arms = reachable("skyline");
+            let webview_arms = reachable("webview");
+            let arm_renderer = |arm: usize| match (skyline_arms[arm], webview_arms[arm]) {
+                (true, true) => RendererArm::Both,
+                (true, false) => RendererArm::Skyline,
+                (false, true) => RendererArm::Webview,
+                (false, false) => RendererArm::Both,
+            };
             let inner = |arm: u32, guarded: bool, fields: Vec<String>| {
                 let mut stack = branches.to_vec();
                 stack.push(Branch {
                     group,
                     arm,
                     renderer_guarded: guarded,
+                    renderer: arm_renderer(arm as usize),
                     fields,
                 });
                 stack
@@ -884,6 +952,42 @@ mod tests {
         let mut out = Vec::new();
         walk(&doc.nodes, &mut out);
         out
+    }
+
+    #[test]
+    fn branches_record_which_renderer_can_reach_them() {
+        let doc = doc_of(
+            r#"<view wx:if="{{renderer === 'skyline'}}"><text/></view><view wx:else><text/></view>"#,
+        );
+        let arms: Vec<RendererArm> = doc
+            .nodes
+            .iter()
+            .filter_map(|node| match node {
+                WxmlNode::Element(element) => Some(element.renderer_arm()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(arms, vec![RendererArm::Skyline, RendererArm::Webview]);
+        let else_element = doc
+            .nodes
+            .iter()
+            .filter_map(|node| match node {
+                WxmlNode::Element(element) => Some(element),
+                _ => None,
+            })
+            .nth(1)
+            .unwrap();
+        assert!(else_element.webview_only());
+    }
+
+    #[test]
+    fn unrelated_condition_reaches_both_renderers() {
+        let doc = doc_of(r#"<view wx:if="{{a}}"><text/></view><view wx:else><text/></view>"#);
+        for node in &doc.nodes {
+            if let WxmlNode::Element(element) = node {
+                assert_eq!(element.renderer_arm(), RendererArm::Both);
+            }
+        }
     }
 
     #[test]
