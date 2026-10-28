@@ -336,6 +336,25 @@ mod tests {
         assert!(diags[0].message.contains("width: fit-content"));
     }
 
+    /// 豁免走的是「父元素的级联」：`.Panel` 命中不了父节点时 `display` 取不到，
+    /// 就当成非 flex → 误报。旧实现把标识符统一小写，所以大写开头的父类名
+    /// 会把这条豁免整个打掉。
+    #[test]
+    fn intrinsic_size_keywords_read_capitalized_parent_class() {
+        let (_f, project) = page(
+            "value-capitalized-parent",
+            r#"<view class="Panel"><view class="btn"/></view>"#,
+            r#"
+            .Panel { display: flex; }
+            .btn { width: fit-content; }
+            "#,
+        );
+        assert!(
+            messages(&UnsupportedValue, &project).is_empty(),
+            "父级是大写开头的类名也要能取到 display"
+        );
+    }
+
     #[test]
     fn intrinsic_size_keywords_stay_silent_outside_size_properties() {
         let (_f, project) = page(

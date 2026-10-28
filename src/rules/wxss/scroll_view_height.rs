@@ -427,6 +427,28 @@ mod tests {
         assert_eq!(top_level.len(), 1, "{top_level:#?}");
     }
 
+    /// `max-height` 是上限不是尺寸：WebView 下内容把它顶到 500px，Skyline 下内容
+    /// 不贡献高度，盒子仍是 0——所以只有 `max-height` 照报。
+    #[test]
+    fn max_height_alone_is_not_a_height() {
+        for (name, css) in [
+            ("svh-max-height", ".list { max-height: 500px; }"),
+            (
+                "svh-max-height-calc",
+                ".list { max-height: calc(75vh - 60px); }",
+            ),
+        ] {
+            let diagnostics = check(name, SKYLINE_APP, css);
+            assert_eq!(diagnostics.len(), 1, "{name}: {diagnostics:#?}");
+        }
+        let bounded = check(
+            "svh-max-height-with-height",
+            SKYLINE_APP,
+            ".list { height: 300px; max-height: 500px; }",
+        );
+        assert!(bounded.is_empty(), "{bounded:#?}");
+    }
+
     #[test]
     fn auto_size_flag_skips_the_rule() {
         let diagnostics = check(
