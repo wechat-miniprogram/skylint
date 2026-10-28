@@ -13,7 +13,7 @@ use crate::rules::{Rule, RuleMeta};
 use crate::matcher::Tree;
 
 use super::branch::exclusive_branches;
-use super::{display_values, is_flex_value, span_diagnostic, visit, walk};
+use super::{flex_container, span_diagnostic, visit, walk};
 
 pub const ID: &str = "skyline/no-inline-text";
 
@@ -57,8 +57,7 @@ fn check_element(
         return;
     }
     // flex 容器里文本与元素在两种渲染器下都是 flex item，不存在错位。
-    let displays = display_values(project, tree, element);
-    if !displays.is_empty() && displays.iter().all(|value| is_flex_value(value)) {
+    if flex_container(project, tree, element) {
         return;
     }
     let elements: Vec<&WxmlElement> = element

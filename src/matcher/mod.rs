@@ -155,6 +155,32 @@ pub fn class_names(selector: &str) -> Option<Vec<String>> {
     Some(names)
 }
 
+/// 选择器里出现的全部标签名（含 `:not()` / `:is()` 内的）；解析失败返回 `None`。
+pub fn tag_names(selector: &str) -> Option<Vec<String>> {
+    let list = imp::parse(selector)?;
+    let mut names = Vec::new();
+    for one in list.slice() {
+        for component in one.iter_raw_match_order() {
+            collect_tags(component, &mut names);
+        }
+    }
+    Some(names)
+}
+
+fn collect_tags(component: &Component<SelImpl>, out: &mut Vec<String>) {
+    match component {
+        Component::LocalName(local) => out.push(local.name.0.to_ascii_lowercase()),
+        Component::Negation(list) | Component::Is(list) => {
+            for inner in list.slice() {
+                for component in inner.iter_raw_match_order() {
+                    collect_tags(component, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn collect_classes(component: &Component<SelImpl>, out: &mut Vec<String>) {
     match component {
         Component::Class(name) => out.push(name.0.to_string()),

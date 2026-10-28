@@ -284,19 +284,54 @@ pub(crate) fn webview_truncates(
         })
 }
 
+/// 元素的 `display` 是否算成 flex 容器（取级联最后一个近似值）。
+///
+/// 与 [`display_values`] 的区别：这里要的是「最终算出哪个值」，同一元素命中
+/// 多份互相矛盾的 `display` 时按样式表顺序取最后一个，让各规则口径一致。
+pub(crate) fn flex_container(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
+    resolved_property(project, tree, element, "display")
+        .is_some_and(|resolved| is_flex_value(&resolved.value))
+}
+
+/// 元素自己是否在 WebView 里裁掉溢出内容（`text-overflow` 生效的前提）。
+///
+/// `visible` / 缺省时不裁，`hidden` / `clip` / `auto` / `scroll` 都会裁。
+pub(crate) fn clips_overflow(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
+    let clips = |property: &str| {
+        resolved_property(project, tree, element, property).is_some_and(|resolved| {
+            matches!(
+                resolved.value.trim().to_ascii_lowercase().as_str(),
+                "hidden" | "clip" | "auto" | "scroll"
+            )
+        })
+    };
+    clips("overflow") || clips("overflow-x") || clips("overflow-y")
+}
+
 fn single_line_ellipsis(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
     let is = |property: &str, expected: &str| {
         resolved_property(project, tree, element, property)
             .is_some_and(|resolved| resolved.value.trim().eq_ignore_ascii_case(expected))
     };
     is("white-space", "nowrap")
-        && matches!(
-            resolved_property(project, tree, element, "overflow")
-                .as_ref()
-                .map(|resolved| resolved.value.trim().to_ascii_lowercase()),
-            Some(value) if value == "hidden" || value == "clip"
-        )
+        && clips_overflow(project, tree, element)
         && is("text-overflow", "ellipsis")
+}
+
+/// 自身或祖先最近的 `-webkit-line-clamp` 行数（多行截断的行数来源）。
+pub(crate) fn clamp_lines(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    ancestors: &[&WxmlElement],
+) -> Option<u32> {
+    std::iter::once(element)
+        .chain(ancestors.iter().rev().copied())
+        .find_map(|candidate| {
+            resolved_property(project, tree, candidate, "-webkit-line-clamp")
+                .and_then(|resolved| resolved.value.trim().parse::<u32>().ok())
+                .filter(|lines| *lines > 0)
+        })
 }
 
 /// 内联 `style` 里某个属性的最后一个取值。

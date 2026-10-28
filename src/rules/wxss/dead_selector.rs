@@ -111,6 +111,13 @@ impl Rule for DeadSelector {
                 let Some(count) = dead(project, sheet, text, &mut docs) else {
                     continue;
                 };
+                // `a` / `p` 这类只有 Web 才有的标签：整条选择器在小程序里就不成立，
+                // 不是「类名写错」，也不属于迁移差异（常见于搬过来的 weui 整库样式）。
+                if matcher::tag_names(text)
+                    .is_some_and(|tags| tags.iter().any(|tag| !is_wxml_tag(project, tag)))
+                {
+                    continue;
+                }
                 let (line, column) = sheet.doc.position(selector.offset);
                 out.push(
                     Diagnostic::new(
@@ -131,6 +138,17 @@ impl Rule for DeadSelector {
             }
         })
     }
+}
+
+/// 这个标签在 WXML 里存在吗：Skyline 支持的内置组件、Skyline 暂不支持但确实是
+/// 小程序组件的、或工程里声明过的自定义组件。
+fn is_wxml_tag(project: &Project, tag: &str) -> bool {
+    crate::rules::wxml::is_builtin(tag)
+        || crate::rules::wxml::unsupported_replacement(tag).is_some()
+        || project
+            .declared_components
+            .values()
+            .any(|declared| declared.contains(tag))
 }
 
 /// 这条选择器是否真的一个节点都不命中；`Some(n)` 里的 `n` 是作用到的文档数。
@@ -311,6 +329,29 @@ mod tests {
             .write("components/card/index.wxss", component_wxss);
         let project = fixture.project();
         (fixture, project)
+    }
+
+    #[test]
+    fn html_only_tag_is_not_reported_as_dead() {
+        // 搬过来的 weui 样式里 `.weui-agree a`：`<a>` 不是 WXML 组件，整条选择器在小程序里
+        // 就不成立，不是「类名写错」，也不属于迁移差异。
+        let (_f, project) = page(
+            "html-tag",
+            r#"<view class="weui-agree"><text>x</text></view>"#,
+            ".weui-agree a { color: red; }",
+        );
+        assert!(DeadSelector.check(&project).is_empty());
+    }
+
+    #[test]
+    fn missing_wxml_tag_is_still_reported() {
+        // `<navigator>` 是真实的小程序组件：`.agree` 下没有它，这条选择器确实永不命中。
+        let (_f, project) = page(
+            "wxml-tag",
+            r#"<view class="agree"><text>x</text></view>"#,
+            ".agree navigator { color: red; }",
+        );
+        assert_eq!(DeadSelector.check(&project).len(), 1);
     }
 
     #[test]

@@ -9,10 +9,10 @@
 //! `<text>` 也不生效。命中节点是自定义组件、或属性带插值时静态判断不了，一律放过
 //! （宁可漏报）。
 //!
-//! 另一半前提是「漏在 WebView 下真的省了」：没有 `white-space: nowrap`（也没有
-//! `-webkit-line-clamp` 那套多行截断）时，WebView 只会换行、不会产生省略号，两边
-//! 表现一致就不算迁移差异（`.book_author` 这类 flex 容器、`.intro_content` 这类靠
-//! `max-height` 裁剪的多行块都属于这种）。多行 clamp 的弱化另由
+//! 另一半前提是「漏在 WebView 下真的省了」：`text-overflow` 要生效还要求
+//! `white-space: nowrap` **且 `overflow` 不是 `visible`**——缺一个，WebView 里文本只会换行
+//! 或溢出显示，不产生省略号，两端一致就不算迁移差异（`.book_author` 这类 flex 容器、
+//! `.intro_content` 这类靠 `max-height` 裁剪的多行块都属于这种）。多行 clamp 的弱化另由
 //! `skyline/unsupported-property` 与 `skyline/legacy-flexbox` 报。
 
 use std::collections::HashMap;
@@ -21,6 +21,7 @@ use crate::input::wxml::{self, WxmlElement};
 use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::RuleMeta;
+use crate::rules::wxml::clips_overflow;
 use crate::rules::wxml::is_builtin;
 use crate::rules::wxml::resolved_property;
 use crate::{Diagnostic, Severity};
@@ -87,14 +88,18 @@ impl crate::rules::Rule for TextOverflowEllipsis {
 /// 这个命中不构成「WebView 能省略、Skyline 不能」的差异。
 ///
 /// - 宿主是 `<text>` / `<span>` / `<navigator>` 或自定义组件：Skyline 下这条声明本来生效；
-/// - 其余宿主在 WebView 里也得要 `white-space: nowrap` 才可能省略，没 nowrap 时文本只
-///   换行、两端一致。`white-space` 从祖先继承的场景静态判不了，按漏报处理。
+/// - 其余宿主在 WebView 里也得要 `white-space: nowrap` **且真的裁掉溢出**（`overflow` 不是
+///   `visible`）才可能省略；两个条件缺一个，文本只是换行或溢出显示，两端一致。
+///   都从祖先继承的场景静态判不了，按漏报处理。
 fn no_divergence(project: &Project, tree: &Tree, element: &WxmlElement) -> bool {
     if !is_builtin(&element.tag) || matches!(element.tag.as_str(), "text" | "span" | "navigator") {
         return true;
     }
-    !resolved_property(project, tree, element, "white-space")
-        .is_some_and(|resolved| resolved.value.eq_ignore_ascii_case("nowrap"))
+    let is = |property: &str, expected: &str| {
+        resolved_property(project, tree, element, property)
+            .is_some_and(|resolved| resolved.value.trim().eq_ignore_ascii_case(expected))
+    };
+    !(is("white-space", "nowrap") && clips_overflow(project, tree, element))
 }
 
 #[cfg(test)]
@@ -140,7 +145,7 @@ mod tests {
             )
             .write(
                 "pages/index/index.scss",
-                ".title { text-overflow: ellipsis; white-space: nowrap; }",
+                ".title { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
             );
         let diagnostics = TextOverflowEllipsis.check(&fixture.project());
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
@@ -152,7 +157,7 @@ mod tests {
         let diagnostics = check(
             "plain",
             r#"<view class="title">标题</view>"#,
-            ".title { text-overflow: ellipsis; white-space: nowrap; }",
+            ".title { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
         );
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
         assert_eq!(diagnostics[0].rule, ID);
@@ -164,7 +169,7 @@ mod tests {
         let diagnostics = check(
             "nested-view",
             r#"<view class="title"><view class="inner">x</view></view>"#,
-            ".title { text-overflow: ellipsis; white-space: nowrap; }",
+            ".title { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
         );
         assert_eq!(diagnostics.len(), 1);
     }
@@ -178,6 +183,28 @@ mod tests {
             ".title { text-overflow: ellipsis; overflow: hidden; max-height: 4.5em; }",
         );
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn nowrap_without_overflow_is_fine() {
+        // `overflow: visible`（默认）时文本只会溢出、不会出现省略号，WebView 也一样。
+        let diagnostics = check(
+            "no-overflow",
+            r#"<view class="title">标题</view>"#,
+            ".title { text-overflow: ellipsis; white-space: nowrap; }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn overflow_on_one_axis_is_enough() {
+        // `overflow-x: hidden` 同样让 `text-overflow` 生效。
+        let diagnostics = check(
+            "axis",
+            r#"<view class="title">标题</view>"#,
+            ".title { text-overflow: ellipsis; white-space: nowrap; overflow-x: hidden; }",
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     }
 
     #[test]
@@ -229,7 +256,7 @@ mod tests {
             .write("components/c/c.wxss", "@import \"/styles/shared.wxss\";")
             .write(
                 "styles/shared.wxss",
-                ".title { text-overflow: ellipsis; white-space: nowrap; }",
+                ".title { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
             );
         let diagnostics = TextOverflowEllipsis.check(&fixture.project());
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
@@ -243,7 +270,7 @@ mod tests {
         let diagnostics = check(
             "text",
             r#"<text class="title">标题</text>"#,
-            ".title { text-overflow: ellipsis; white-space: nowrap; }",
+            ".title { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
         );
         assert!(diagnostics.is_empty());
     }
@@ -254,7 +281,7 @@ mod tests {
         let diagnostics = check(
             "descendant",
             r#"<view class="list"><view class="row"><text>标题</text></view></view>"#,
-            ".list { text-overflow: ellipsis; white-space: nowrap; }",
+            ".list { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
         );
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     }
@@ -264,7 +291,7 @@ mod tests {
         let diagnostics = check(
             "text-nodes",
             r#"<span class="a">x</span><navigator class="b">y</navigator>"#,
-            ".a, .b { text-overflow: ellipsis; white-space: nowrap; }",
+            ".a, .b { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
         );
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
@@ -274,7 +301,7 @@ mod tests {
         let diagnostics = check(
             "custom",
             r#"<my-text class="title"/>"#,
-            ".title { text-overflow: ellipsis; white-space: nowrap; }",
+            ".title { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
         );
         assert!(diagnostics.is_empty());
     }
@@ -284,7 +311,7 @@ mod tests {
         let diagnostics = check(
             "unmatched",
             r#"<view class="other">x</view>"#,
-            ".title { text-overflow: ellipsis; white-space: nowrap; }",
+            ".title { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
         );
         assert!(diagnostics.is_empty());
     }
@@ -305,7 +332,7 @@ mod tests {
         let diagnostics = check(
             "complex",
             r#"<view class="a"><view class="b">x</view></view>"#,
-            ".a .b { text-overflow: ellipsis; white-space: nowrap; }",
+            ".a .b { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
         );
         assert_eq!(diagnostics.len(), 1);
     }
@@ -315,7 +342,7 @@ mod tests {
         let diagnostics = check(
             "complex-text",
             r#"<view class="a"><text class="b">x</text></view>"#,
-            ".a .b { text-overflow: ellipsis; white-space: nowrap; }",
+            ".a .b { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
         );
         assert!(diagnostics.is_empty());
     }
@@ -325,7 +352,7 @@ mod tests {
         let diagnostics = check(
             "dynamic",
             r#"<view class="{{cls}}">x</view>"#,
-            ".title { text-overflow: ellipsis; white-space: nowrap; }",
+            ".title { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
         );
         assert!(diagnostics.is_empty());
     }
@@ -336,7 +363,7 @@ mod tests {
         let diagnostics = check(
             "selector-list",
             r#"<view class="a">x</view><text class="b">y</text>"#,
-            ".a, .b { text-overflow: ellipsis; white-space: nowrap; }",
+            ".a, .b { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
         );
         assert_eq!(diagnostics.len(), 1);
         assert!(
@@ -360,7 +387,7 @@ mod tests {
             .write("pages/index/index.wxml", r#"<view class="title">x</view>"#)
             .write(
                 "app.wxss",
-                ".title { text-overflow: ellipsis; white-space: nowrap; }",
+                ".title { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
             );
         let project = fixture.project();
         assert_eq!(TextOverflowEllipsis.check(&project).len(), 1);

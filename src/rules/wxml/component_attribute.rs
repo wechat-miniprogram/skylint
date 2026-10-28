@@ -523,6 +523,11 @@ impl Rule for ComponentAttribute {
                     {
                         continue;
                     }
+                    // WebView 靠祖先的 `-webkit-line-clamp` 截几行，Skyline 就得补同样行数的
+                    // `max-lines`；行数写进消息，用户能直接照做。
+                    let lines = needs_baseline
+                        .then(|| super::clamp_lines(project, &tree, element, ancestors))
+                        .flatten();
                     out.push(
                         span_diagnostic(
                             Self::ID,
@@ -531,7 +536,7 @@ impl Rule for ComponentAttribute {
                             attr.end,
                             doc.path(),
                             Severity::Warning,
-                            requires_message(&element.tag, rule, &value, current.as_deref()),
+                            requires_message(&element.tag, rule, &value, current.as_deref(), lines),
                         )
                         .help(
                             rule.help
@@ -676,7 +681,13 @@ fn judge(element: &WxmlElement, requirement: &Requirement) -> Verdict {
     }
 }
 
-fn requires_message(tag: &str, rule: &Requires, value: &str, current: Option<&str>) -> String {
+fn requires_message(
+    tag: &str,
+    rule: &Requires,
+    value: &str,
+    current: Option<&str>,
+    lines: Option<u32>,
+) -> String {
     let trigger = match value {
         "" => rule.trigger.attr().to_string(),
         value => format!("{}=\"{value}\"", rule.trigger.attr()),
@@ -692,9 +703,14 @@ fn requires_message(tag: &str, rule: &Requires, value: &str, current: Option<&st
                 rule.trigger.attr()
             )
         }
-        Requirement::Present(name) => {
-            format!("`<{tag} {trigger}>` 缺少 `{name}`，省略号不会生效（文本不限行数）")
-        }
+        Requirement::Present(name) => match lines {
+            Some(lines) => format!(
+                "`<{tag} {trigger}>` 缺少 `{name}`：WebView 靠祖先的 `-webkit-line-clamp: {lines}` 截 {lines} 行，Skyline 下按属性截断，补 `{name}=\"{lines}\"`"
+            ),
+            None => format!(
+                "`<{tag} {trigger}>` 缺少 `{name}`：WebView 靠单行省略（`nowrap` + `overflow`）截断，Skyline 下按属性截断，单行补 `{name}=\"1\"`"
+            ),
+        },
         Requirement::NotAny(name, _) => format!(
             "`<{tag} {trigger}>` 的 `{}` 在 `{name}=\"{}\"` 时不生效，会被忽略",
             rule.trigger.attr(),
@@ -831,7 +847,33 @@ mod tests {
         let diagnostics = check_rule(&fixture, &ComponentAttribute);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(diagnostics[0].message.contains("max-lines"));
+        // 行数来自 WebView 的单行省略，直接写进消息，用户能照做。
+        assert!(
+            diagnostics[0].message.contains("max-lines=\"1\""),
+            "{}",
+            diagnostics[0].message
+        );
         assert_eq!((diagnostics[0].line, diagnostics[0].column), (1, 20));
+    }
+
+    /// 祖先靠 `-webkit-line-clamp` 截几行，就提示补几行。
+    #[test]
+    fn max_lines_hint_follows_ancestor_clamp() {
+        let fixture = project(
+            "attr-ellipsis-clamp",
+            r#"<view class="title"><text overflow="ellipsis">书名</text></view>"#,
+        );
+        fixture.write(
+            "pages/index/index.wxss",
+            ".title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }",
+        );
+        let diagnostics = check_rule(&fixture, &ComponentAttribute);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0].message.contains("max-lines=\"2\""),
+            "{}",
+            diagnostics[0].message
+        );
     }
 
     /// WebView 下也不省略时不报：`<text>` 是行内元素，`max-width` 不生效、文本直接换行。

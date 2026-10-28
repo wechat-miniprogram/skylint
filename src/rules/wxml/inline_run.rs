@@ -21,7 +21,7 @@ use crate::rules::{Rule, RuleMeta};
 use crate::matcher::Tree;
 
 use super::branch::exclusive;
-use super::{display_values, element_diagnostic, is_flex_value, visit, walk};
+use super::{display_values, element_diagnostic, flex_container, visit, walk};
 
 pub const ID: &str = "skyline/inline-run";
 
@@ -72,10 +72,7 @@ fn check_element(
         return;
     }
     // 父级是 flex/grid 时两边都把子节点当 flex/grid item，没有差异。
-    if display_values(project, tree, element)
-        .iter()
-        .any(|value| is_flex_value(value))
-    {
+    if flex_container(project, tree, element) {
         return;
     }
     let mut run: Vec<&WxmlElement> = Vec::new();

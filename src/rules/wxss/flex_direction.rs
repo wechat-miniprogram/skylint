@@ -59,7 +59,7 @@ impl Rule for FlexDirection {
             else {
                 return;
             };
-            if !is_flex_value(&display.value) {
+            if !crate::rules::wxml::is_flex_value(&display.value) {
                 return;
             }
             // 未开 `defaultDisplayBlock` 时这类告警通常是一整片（本工程 97 条），
@@ -121,14 +121,6 @@ fn is_direction(value: &str) -> bool {
 fn shares_selector(selector: &WxssSelector, selectors: &[WxssSelector]) -> bool {
     let key = selector.text.trim();
     selectors.iter().any(|other| other.text.trim() == key)
-}
-
-fn is_flex_value(value: &str) -> bool {
-    let lower = value.trim().to_ascii_lowercase();
-    if super::value_util::text_is_dynamic(&lower) {
-        return false;
-    }
-    matches!(lower.as_str(), "flex" | "inline-flex")
 }
 
 #[cfg(test)]

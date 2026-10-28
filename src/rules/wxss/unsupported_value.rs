@@ -70,7 +70,7 @@ impl Rule for UnsupportedValue {
                 )
             } else if let Some(advice) = table.value(&name, &value) {
                 (
-                    format!("`{name}: {raw}` 在 Skyline 下不受支持，该值会被静默忽略"),
+                    format!("`{name}: {raw}` 这个取值在 Skyline 下不受支持，声明会被忽略"),
                     advice,
                 )
             } else if let Some(advice) = table.length_valued(&name, &value) {
