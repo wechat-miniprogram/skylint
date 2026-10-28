@@ -952,6 +952,11 @@ skit-player 180 → 179（−1 fixed-layer）。反向：businessview 0 → 3（
 `input/wxml.rs::Branch` 增加 `RendererArm`（`Both` / `Skyline` / `Webview`）：解析时用 `renderer` 的两个取值各求一次条件真值（`else` 按链上补集算），元素按整条分支栈折叠出 `webview_only()` / `skyline_only()`。
 正向规则改用 `walk_skyline`（跳过 WebView 专属元素），反向四条 `webview/*` 从「条件里提到 renderer 就跳过」收成「只有 Skyline 专属才跳过」——WebView 专属分支正是反向规则该看的那一支。
 
+**`media-query` 不再静默丢弃 `Unknown` 块**
+
+`any_selector_matches` 从 `bool`（只认 `Yes`）改成返回 `Tri`：`No` 继续跳过，`Unknown`（块内选择器命中的节点取决于动态 class / 动态属性）报一条 `Info`——
+「条件被丢弃、但块内是否生效静态判不出」。实测六工程只有 businessview 的 4 条（vendor `weui.wxss`），不构成噪音。
+
 **验收**（六工程、两个方向逐字段 diff，`a82694a` → 本轮）
 
 正向：novel 23 → 21（−2 scroll-view-type：`pages/index/index.wxml:230`、`pages/recent-read/recent-read.wxml:126` 的 `wx:else` webview 分支）、
@@ -963,7 +968,8 @@ skit_1 28 → 28、skit-player 179 → 179、businessview 406 → 405（−1 dea
 **仍未做**（见 P15 候选）
 
 `~foo` / `^foo` 的作用域语义尚未进匹配层（`has_class` 逐词比较，静态 `~foo` 对页面 sheet 里的 `.foo` 判 `No`）；
-`float` 缺 flex/grid item 门控；`media-query` 的 `Unknown` 块既不报也不提示；`overridden_by_renderer_class` 只认「class 由 `renderer` 拼出」这一种证据。
+`float` 缺 flex/grid item 门控（声明级规则拿不到元素，要先给 `unsupported-property` 加元素证据）；
+`overridden_by_renderer_class` 只认「class 由 `renderer` 拼出」这一种证据（把类叫 `.sky` 或改用 `wx:if` 分支时认不出）。
 
 ## 5. 五个视图与规则族
 

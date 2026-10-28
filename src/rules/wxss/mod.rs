@@ -268,19 +268,19 @@ fn is_same_element_variant(mine: &str, variant: &str, branch: &str) -> bool {
     head == variant_head && *last == format!("{subject}.{branch}")
 }
 
-/// 这批选择器在作用域里是否**确定**命中至少一个节点（只要 `Yes`）。
+/// 这批选择器在作用域里的命中情况（`Yes` / `No` / `Unknown` 聚合）。
 ///
 /// 用于「条件被丢弃、块内声明对所有设备生效」这类判定：块内选择器一个节点都
-/// 对不上时，条件丢失不产生任何可见差异。`Unknown`（动态 class / 动态属性）按不命中
-/// 处理——它只意味着「可能有」，据此报出就把动态 class 多的组件全变成噪音。
-/// 看不到 WXML 时保守返回 `true`。
+/// 对不上时，条件丢失不产生任何可见差异。`Unknown`（动态 class / 动态属性）与 `No`
+/// 不同：它只意味着「可能有」，调用方自己决定是漏掉还是提示。
 pub(crate) fn any_selector_matches(
     project: &Project,
     sheet: &StyleSheet,
     selectors: &[WxssSelector],
     docs: &mut HashMap<String, Option<WxmlDoc>>,
-) -> bool {
+) -> Tri {
     let mut seen_doc = false;
+    let mut unknown = false;
     for scope in &sheet.scopes {
         for path in scope_wxml(project, scope) {
             let Some(doc) = docs
@@ -288,7 +288,7 @@ pub(crate) fn any_selector_matches(
                 .or_insert_with(|| crate::rules::wxml::load_doc(project, path))
                 .as_ref()
             else {
-                return true;
+                return Tri::Yes;
             };
             seen_doc = true;
             let tree = Tree::new(doc);
@@ -297,15 +297,21 @@ pub(crate) fn any_selector_matches(
                 // 伪元素的承载者是生成的文本节点，匹配器一律给 `No`（见
                 // `dead-selector` 的豁免说明），不能据此断定块内没有生效。
                 if crate::matcher::shape(text).is_none_or(|shape| shape.pseudo_element) {
-                    return true;
+                    return Tri::Yes;
                 }
-                if tree.any_match(text, Dialect::WebView) == Tri::Yes {
-                    return true;
+                match tree.any_match(text, Dialect::WebView) {
+                    Tri::Yes => return Tri::Yes,
+                    Tri::Unknown => unknown = true,
+                    Tri::No => {}
                 }
             }
         }
     }
-    !seen_doc
+    match (seen_doc, unknown) {
+        (false, _) => Tri::Yes,
+        (true, true) => Tri::Unknown,
+        (true, false) => Tri::No,
+    }
 }
 
 /// 命中节点是否全都承载不了这条声明；返回「在某处失效」的选择器原文。

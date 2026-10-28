@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::input::wxml::WxmlDoc;
 use crate::input::wxss::WxssSelector;
+use crate::matcher::Tri;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
@@ -57,10 +58,36 @@ impl Rule for MediaQuery {
                     if !reported.insert((sheet.doc.path().to_string(), at.offset)) {
                         continue;
                     }
-                    if !matched(at.offset, &mut docs) {
-                        continue;
-                    }
                     let (line, column) = sheet.doc.position(at.offset);
+                    match matched(at.offset, &mut docs) {
+                        // 块内选择器一个节点都对不上：条件丢失不产生可见差异。
+                        Tri::No => continue,
+                        // 命中取决于运行时 class（动态 class / 动态属性）：静态判不出，
+                        // 但也不能静默——这类块恰恰是最容易在迁移后被漏掉的一类。
+                        Tri::Unknown => {
+                            let (end_line, end_column) =
+                                sheet.doc.position(at.offset + at.prelude.len());
+                            out.push(
+                                Diagnostic::new(
+                                    Self::ID,
+                                    Severity::Info,
+                                    format!(
+                                        "`@media {}` 的条件在 Skyline 下被丢弃；块内选择器命中的节点取决于运行时数据，静态判不出是否生效",
+                                        at.prelude
+                                    ),
+                                    sheet.doc.path(),
+                                    line,
+                                    column,
+                                )
+                                .end(end_line, end_column)
+                                .help(
+                                    "确认块内声明的节点在运行时确实存在；Skyline 只识别 prefers-color-scheme",
+                                ),
+                            );
+                            continue;
+                        }
+                        Tri::Yes => {}
+                    }
                     let (end_line, end_column) = sheet.doc.position(at.offset + at.prelude.len());
                     out.push(
                         Diagnostic::new(
