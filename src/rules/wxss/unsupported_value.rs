@@ -70,6 +70,11 @@ impl Rule for UnsupportedValue {
                 // `auto` 与 `fit-content` 同解时丢弃不改变渲染：`height` 只看脱离文档流，
                 // `width` 还接受行向 flex 里的非拉伸项（见 `width_follows_content`）。
                 // `min-` / `max-` 不行：它们的初始值是 `0` / `none`，丢掉的约束是真差异。
+                //
+                // 还要看级联里同一属性的其它声明：被后面的声明覆盖时本来就没生效；
+                // 生效中时丢弃会落到更早那条上，只有落到 `auto`（或压根没有）才与
+                // 「宽度由内容决定」同解——`.btn { width: 24px }` + `.btn.x { width:
+                // fit-content }` 丢掉后是 24px，属于真差异。
                 if matches!(name.as_str(), "width" | "height")
                     && keyword == "fit-content"
                     && super::all_matches_satisfy(
@@ -77,11 +82,30 @@ impl Rule for UnsupportedValue {
                         sheet,
                         &rule.selectors,
                         &mut docs,
-                        |tree, element| match name.as_str() {
-                            "width" => {
-                                crate::rules::wxml::width_follows_content(project, tree, element)
+                        |tree, element| {
+                            let cascade = crate::rules::wxml::matched_declarations(
+                                project, tree, element, &name,
+                            );
+                            let Some(pos) = cascade
+                                .iter()
+                                .position(|(_, other)| std::ptr::eq(*other, decl))
+                            else {
+                                return false;
+                            };
+                            if pos + 1 < cascade.len() {
+                                return true;
                             }
-                            _ => crate::rules::wxml::is_out_of_flow(project, tree, element),
+                            if !(pos == 0
+                                || cascade[pos - 1].1.value.trim().eq_ignore_ascii_case("auto"))
+                            {
+                                return false;
+                            }
+                            match name.as_str() {
+                                "width" => crate::rules::wxml::width_follows_content(
+                                    project, tree, element,
+                                ),
+                                _ => crate::rules::wxml::is_out_of_flow(project, tree, element),
+                            }
                         },
                     )
                 {
@@ -91,7 +115,7 @@ impl Rule for UnsupportedValue {
                     format!(
                         "`{name}: {raw}` 用了内在尺寸关键字 `{keyword}`：Skyline 的 `{name}` 只接受长度 / 百分比 / `auto`，整条声明会被丢弃"
                     ),
-                    "换成明确长度或 `auto`；要按内容宽度收缩可用 `display: inline-flex`（父级是 flex 时用 `align-items: flex-start`）",
+                    "换成明确长度；`auto` 只在父级是行向 flex（或元素脱离文档流）时等于内容宽。父级是列向 flex 时给元素写 `align-self: flex-start`，其余情况用 `display: inline-flex`",
                 )
             } else if let Some(advice) = table.value(&name, &value) {
                 (
@@ -290,6 +314,26 @@ mod tests {
                 .iter()
                 .all(|d| d.message.contains("width: fit-content"))
         );
+    }
+
+    /// 级联里还有别的 `width` 时不能一律豁免：被后面的声明覆盖的本来就没生效，
+    /// 生效中的丢弃后会落到更早那条上——只有落到 `auto` 才与「内容宽」同解。
+    #[test]
+    fn intrinsic_size_keywords_respect_other_width_declarations() {
+        let (_f, project) = page(
+            "value-intrinsic-other-width",
+            r#"<view class="row"><view class="a"/><view class="b"/></view>"#,
+            r#"
+            .row { display: flex; }
+            .a { width: 24px; }
+            .a { width: fit-content; }
+            .b { width: fit-content; }
+            .b { width: 24px; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert!(diags[0].message.contains("width: fit-content"));
     }
 
     #[test]

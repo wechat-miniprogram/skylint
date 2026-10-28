@@ -294,14 +294,20 @@ pub(crate) struct Resolved<'a> {
     pub declaration: Option<&'a crate::input::wxss::WxssDeclaration>,
 }
 
-/// 元素某个属性的有效取值：内联 `style` 最后生效（`!important` 不计）。
-pub(crate) fn resolved_property<'a>(
+/// 元素命中的某属性声明，按级联顺序（内联 `style` 除外）。
+///
+/// 与 [`resolved_property`] 同口径：不计算 specificity，只按样式表顺序与规则顺序。
+/// 需要知道「丢掉其中一条之后会落到哪一条」时用它——只看有效取值会丢掉这个信息。
+pub(crate) fn matched_declarations<'a>(
     project: &'a Project,
     tree: &Tree<'_>,
     element: &WxmlElement,
     property: &str,
-) -> Option<Resolved<'a>> {
-    let from_sheets = project
+) -> Vec<(
+    &'a crate::project::StyleSheet,
+    &'a crate::input::wxss::WxssDeclaration,
+)> {
+    project
         .styles
         .iter()
         .filter(|sheet| sheet_covers(sheet, project, tree.path()))
@@ -322,7 +328,18 @@ pub(crate) fn resolved_property<'a>(
                         .map(move |decl| (sheet, decl))
                 })
         })
-        .last()
+        .collect()
+}
+
+/// 元素某个属性的有效取值：内联 `style` 最后生效（`!important` 不计）。
+pub(crate) fn resolved_property<'a>(
+    project: &'a Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    property: &str,
+) -> Option<Resolved<'a>> {
+    let from_sheets = matched_declarations(project, tree, element, property)
+        .pop()
         .map(|(sheet, declaration)| Resolved {
             value: declaration.value.trim().to_string(),
             sheet: Some(sheet),

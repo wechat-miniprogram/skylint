@@ -1215,3 +1215,32 @@ flex-direction 收成 2 条：源码 `app.json` 4 处、`dist/plugin/app.json` 9
 `flex-grow`」三层。行向但写了 `flex:1` 仍报（元素会按剩余空间拉伸），列向容器也仍报
 （`width` 不是主轴尺寸）。skit-player 因此去掉 4 条（select-drama-dialog、playlet ×2、
 skit-detail），其余五工程两方向零变化。
+
+### P18 补 2：`fit-content` 的豁免要看级联里的同属性声明
+
+补 1 的豁免只问「`width` 是否本来就等于内容宽」，没问「丢掉这条声明之后还剩什么」。
+`playlet.less` 的 `.playlet-bottom-right-btn { width: 24px }` + `.playlet-continue-btn {
+width: fit-content }` 就是反例：父级是行向 flex，豁免成立，但 Skyline 丢掉 `fit-content`
+后落到前一条的 `24px`（不是 `auto`），按钮内宽只剩 6px，「稍后看」被压成三行——这条
+从头到尾没报过（属漏报，不是「报了但改错」）。
+
+判据改成先看级联：用新增的 `rules::wxml::matched_declarations`（与 `resolved_property`
+同一次遍历，但保留全部命中而不是只取最后一条）定位本条声明在级联里的位置——被更后面的
+声明覆盖 → 本来就没生效，豁免；正在生效 → 只有丢弃后落到 `auto`（或压根没有更早的声明）
+才继续按「内容宽」豁免，否则报。跨优先级冲突仍判不了，与 `resolved_property` 同口径。
+
+`resolved_property` 一并改成复用这个遍历（`.last()` → `.pop()`），六工程两方向逐字段
+diff：计数全部不变（六个工程里没有同时成立这两种条件的地方），只有 `fit-content` 的 help
+文案变化（见下）。测试 763+30+3 全绿、clippy 0。
+
+### 文案：`fit-content` 的建议写错了对象和方向
+
+原 help 是「换成明确长度或 `auto`；要按内容宽度收缩可用 `display: inline-flex`（父级是
+flex 时用 `align-items: flex-start`）」，两处不准：`align-items` 属于父级、且只对列向父级
+才管宽；`auto` 在列向 flex 里是 stretch（撑满），不等于内容宽。改成：
+
+> 换成明确长度；`auto` 只在父级是行向 flex（或元素脱离文档流）时等于内容宽。父级是列向
+> flex 时给元素写 `align-self: flex-start`，其余情况用 `display: inline-flex`
+
+短剧插件当时是照着旧文案把 `.playlet-rank-tag` / `.playlet-current-info` 改成
+`align-self: flex-start` 的——方向恰好正确，所以文案修正不推翻那两处改法。
