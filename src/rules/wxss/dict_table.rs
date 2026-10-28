@@ -21,17 +21,22 @@ const UNSUPPORTED_PROPERTIES: &[(&str, &str)] = &[
     ("writing-mode", "无替代"),                          // SKILL.md NEVER 表
     ("text-indent", "使用 padding-left 模拟"),           // SKILL.md NEVER 表
     ("overflow-wrap", "使用 word-break"),                // SKILL.md NEVER 表
-    ("text-decoration-thickness", "无替代"),             // SKILL.md NEVER 表
-    ("background-attachment", "无替代"),                 // SKILL.md NEVER 表
-    ("background-clip", "无替代"),                       // SKILL.md NEVER 表
-    ("background-origin", "无替代"),                     // SKILL.md NEVER 表
-    ("mask-origin", "无替代"),                           // SKILL.md NEVER 表（一格多属性拆分）
-    ("mask-clip", "无替代"),                             // SKILL.md NEVER 表（一格多属性拆分）
-    ("mask-mode", "无替代"),                             // SKILL.md NEVER 表（一格多属性拆分）
-    ("justify-items", "无替代"),                         // SKILL.md NEVER 表
-    ("list-style-type", "无替代"),                       // SKILL.md NEVER 表（一格多属性拆分）
-    ("list-style-image", "无替代"),                      // SKILL.md NEVER 表（一格多属性拆分）
-    ("list-style-position", "无替代"),                   // SKILL.md NEVER 表（一格多属性拆分）
+    ("word-wrap", "使用 word-break"), // `overflow-wrap` 的旧名，引擎属性表里同样没有（css_property_names.h 无该 id）
+    (
+        "clip-path",
+        "裁切动画改用外层 `overflow: hidden` + 内层 `transform` 位移",
+    ), // css_property_names.h 无该 id，声明整条丢弃
+    ("text-decoration-thickness", "无替代"), // SKILL.md NEVER 表
+    ("background-attachment", "无替代"), // SKILL.md NEVER 表
+    ("background-clip", "无替代"),    // SKILL.md NEVER 表
+    ("background-origin", "无替代"),  // SKILL.md NEVER 表
+    ("mask-origin", "无替代"),        // SKILL.md NEVER 表（一格多属性拆分）
+    ("mask-clip", "无替代"),          // SKILL.md NEVER 表（一格多属性拆分）
+    ("mask-mode", "无替代"),          // SKILL.md NEVER 表（一格多属性拆分）
+    ("justify-items", "无替代"),      // SKILL.md NEVER 表
+    ("list-style-type", "无替代"),    // SKILL.md NEVER 表（一格多属性拆分）
+    ("list-style-image", "无替代"),   // SKILL.md NEVER 表（一格多属性拆分）
+    ("list-style-position", "无替代"), // SKILL.md NEVER 表（一格多属性拆分）
     ("text-transform", "改用 WXML 里预先转换好的文本"), // css_property_names.h 无该属性 id，声明整条丢弃
     (
         "user-select",
@@ -67,6 +72,8 @@ const INITIAL_VALUES: &[(&str, &[&str])] = &[
     ("writing-mode", &["horizontal-tb"]),
     ("text-indent", &["0"]),
     ("overflow-wrap", &["normal"]),
+    ("word-wrap", &["normal"]),
+    ("clip-path", &["none"]),
     ("text-decoration-thickness", &["auto"]),
     ("background-attachment", &["scroll"]),
     ("background-clip", &["border-box"]),

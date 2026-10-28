@@ -39,6 +39,15 @@ impl Rule for UnsupportedProperty {
                     // 同一块里两条都写时只报一次（autoprefixer 产物很常见）。
                     continue;
                 }
+                // `word-break: break-all` 在两端都生效，且它允许在任意字符处断行，
+                // 已经覆盖了 `word-wrap: break-word` 的效果，丢掉后者没有渲染差异。
+                if name == "word-wrap"
+                    && rule
+                        .declaration("word-break")
+                        .is_some_and(|decl| decl.value.trim().eq_ignore_ascii_case("break-all"))
+                {
+                    continue;
+                }
                 if super::is_css_wide_keyword(&decl.value) {
                     continue;
                 }
@@ -185,6 +194,41 @@ mod tests {
         assert!(diags[0].message.contains("`text-transform`"));
         assert!(diags[1].message.contains("`user-select`"));
         assert!(diags[1].help.as_deref().unwrap().contains("user-select"));
+    }
+
+    /// `word-wrap` 是 `overflow-wrap` 的旧名，引擎属性表里同样没有；`normal` 是初始值，
+    /// 同一块又写了 `word-break: break-all` 时断行效果已被覆盖，两者都不报。
+    #[test]
+    fn word_wrap_is_reported_unless_redundant() {
+        let (_f, project) = page(
+            "property-word-wrap",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
+            r#"
+            .a { word-wrap: break-word; }
+            .b { word-wrap: normal; }
+            .c { word-wrap: break-word; word-break: break-all; }
+            "#,
+        );
+        let diags = UnsupportedProperty.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert!(diags[0].message.contains("`word-wrap`"));
+        assert_eq!(diags[0].help.as_deref(), Some("使用 word-break"));
+    }
+
+    /// `clip-path` 在引擎里没有对应属性 id，描边式擦除动画会整条失效；`none` 是初始值。
+    #[test]
+    fn clip_path_is_reported_unless_none() {
+        let (_f, project) = page(
+            "property-clip-path",
+            r#"<view class="a"/><view class="b"/>"#,
+            r#"
+            .a { clip-path: inset(0 100% 0 0); }
+            .b { clip-path: none; }
+            "#,
+        );
+        let diags = UnsupportedProperty.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert!(diags[0].message.contains("`clip-path`"));
     }
 
     #[test]

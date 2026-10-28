@@ -225,6 +225,24 @@ mod tests {
         );
     }
 
+    /// `max-lines="{{2}}"` 与静态 `max-lines="2"` 等价：Skyline 靠属性截两行，
+    /// 请求时算出的候选值必须能折成行数，否则两端各写一份的块会被误报。
+    #[test]
+    fn dynamic_max_lines_with_constant_value_still_silences() {
+        let (_f, project) = page(
+            "legacy-dynamic-max-lines",
+            r#"<text class="a" max-lines="{{2}}" overflow="ellipsis">x</text>"#,
+            r#"
+            .a {
+              display: -webkit-box;
+              -webkit-line-clamp: 2;
+              -webkit-box-orient: vertical;
+            }
+            "#,
+        );
+        assert!(LegacyFlexbox.check(&project).is_empty());
+    }
+
     #[test]
     fn layout_block_without_clamp_gets_layout_message() {
         let (_f, project) = page(

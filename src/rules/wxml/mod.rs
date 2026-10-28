@@ -372,19 +372,25 @@ pub(crate) fn webview_truncates(
 ///
 /// 静态属性与「包着一个数字字面量的插值」（`max-lines="{{2}}"`）等价：引擎拿到的就是 2。
 pub(crate) fn max_lines(element: &WxmlElement) -> Option<u32> {
-    let raw = element
+    let attribute = element
         .attributes
         .iter()
-        .find(|attr| attr.name == "max-lines")?
-        .value
-        .as_deref()?
-        .trim();
-    let digits = raw
-        .strip_prefix("{{")
+        .find(|attr| attr.name == "max-lines")?;
+    // 静态写法直接读原文；`max-lines="{{2}}"` 这类绑定没有原文，退到解析期算出的
+    // 候选值——只有一个候选且是整数才算得出（`{{a ? 2 : 3}}` 枚举出两个就不猜）。
+    let raw = match attribute.value.as_deref() {
+        Some(value) => value.trim().to_string(),
+        None => match attribute.candidates.as_deref() {
+            Some([only]) => only.trim().to_string(),
+            _ => return None,
+        },
+    };
+    raw.strip_prefix("{{")
         .and_then(|rest| rest.strip_suffix("}}"))
-        .unwrap_or(raw)
-        .trim();
-    digits.parse::<u32>().ok()
+        .unwrap_or(&raw)
+        .trim()
+        .parse::<u32>()
+        .ok()
 }
 
 /// 元素是否脱离文档流（`position: absolute | fixed`）。

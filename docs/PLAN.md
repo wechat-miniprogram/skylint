@@ -1181,3 +1181,28 @@ flex-direction 收成 2 条：源码 `app.json` 4 处、`dist/plugin/app.json` 9
 `buttons` 折掉后目标元素确实不在了，但组件有 `<slot>`，`any_match` 对跨组合符的选择器
 仍按「投影内容可能命中」给 `Unknown`，闸门因此放行。要消掉必须把父级传进 slot 的实际内容
 接进 matcher（跨文档投影），成本高于收益，先记在这里。
+
+## P18：短剧插件首跑暴露的三处判据缺口
+
+按新规则集跑 `weapp-skit-player-plugin`（77 条），发现三处不是「规则漏了某个属性」，而是判据本身少一条路径：
+
+1. **`max-lines="{{N}}"` 折不出行数**：`wxml::max_lines` 只读属性原文，动态绑定在输入层是
+   `value: None` + `expression`，于是 `<text max-lines="{{2}}">` 一律算「没有 max-lines」，
+   `legacy-flexbox` / `unsupported-property(-webkit-line-clamp)` 的「两端各写一份」门控失效。
+   改成：无原文时读解析期算出的 `candidates`，只有一个候选且为整数才采纳（`{{a ? 2 : 3}}`
+   仍判不出）。六工程净效果：skit_1 −10、skit-player −2，全部是 `<text max-lines="{{2}}">`
+   的真实重复报，其余四工程与反向零变化。
+2. **`word-wrap` 不在属性表**：它是 `overflow-wrap` 的旧名，`css_property_names.h` 里同样没有
+   属性 id，声明整条丢弃。补进 `UNSUPPORTED_PROPERTIES`（初值 `normal`）。同一块又写了
+   `word-break: break-all` 时跳过：断行能力已被覆盖，丢掉 `word-wrap` 没有渲染差异
+   （businessview `receive-flower.scss:19` 就是这种写法）。
+3. **`clip-path` 不在属性表**：引擎里没有 `kClipPath`，`inset()` 擦除动画整条失效。此前
+   PLAN 只把它写进「反向无需规则」的那一行，正向一直没收录。补进属性表（初值 `none`）。
+
+**验收**（`fd34603` → 本轮，六工程两方向逐字段）：novel 17→20、skit_1 25→22、businessview
+246→252、skit-player 77→82，新增项全部是 `word-wrap` / `clip-path`；plugin_1/2 与反向六工程
+零变化；测试 761+30+3 全绿、clippy 0。
+
+**仍缺的（本批没做）**：`fit-content` 只豁免绝对定位，行向 flex item 上 `auto` 与 `fit-content`
+同解，skit-player 里 4 条属误报；要修得让规则拿到命中元素的父节点判父的 `display` +
+`flex-direction`，`Tree` 目前没暴露 parent，属匹配层小改，单独一批。
