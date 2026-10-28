@@ -31,7 +31,7 @@ impl Rule for FlexDirection {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit_matching_rules(project, |sheet, rule, out| {
+        let per_block = visit_matching_rules(project, |sheet, rule, out| {
             // `defaultDisplayBlock: true` 时 Skyline 的 flex-direction 默认值就是 row，
             // 与 WebView 一致，这条警告不成立。
             if sheet
@@ -77,8 +77,37 @@ impl Rule for FlexDirection {
                 "display: flex 未显式声明 flex-direction；Skyline 默认 column，WebView 默认 row，迁移后布局方向会翻转",
                 help,
             ));
-        })
+        });
+        // 工程级没开开关时，每一处 `display: flex` 都会翻转，但解法只有一个：要么开
+        // 开关、要么逐处补 `flex-direction`。逐条报只在按声明检视时有用，迁移报告里
+        // 它只是一片同因噪声（参考工程最多 96 条），所以收成一条带条数的提示。
+        // 页面级单独关开关的情况不聚合：那时受影响的是个别页面，逐条报才有意义。
+        if project.app_display_block() || per_block.is_empty() {
+            return per_block;
+        }
+        vec![aggregated(project, per_block.len())]
     }
+}
+
+/// 一处 `display: flex` 都没声明方向时的工程级提示：条数不进 message，只作
+/// 影响面说明，解法只有配置里的一个开关。
+fn aggregated(project: &Project, blocks: usize) -> Diagnostic {
+    let (line, column) = crate::input::json::JsonPositions::new(&project.app_json_source)
+        .key("rendererOptions")
+        .unwrap_or((1, 1));
+    Diagnostic::new(
+        FlexDirection::ID,
+        Severity::Warning,
+        format!(
+            "app 级未开启 defaultDisplayBlock：{blocks} 处 `display: flex` 没有显式声明 flex-direction，Skyline 默认 column、WebView 默认 row，迁移后这些容器的布局方向都会翻转"
+        ),
+        "app.json",
+        line,
+        column,
+    )
+    .help(
+        "在 `rendererOptions.skyline` 开启 `defaultDisplayBlock: true`，Skyline 的 flex-direction 默认值就变回 row，这一整类差异一次性消失；保持关闭则需为每处补 `flex-direction: row`，或按 column 重新设计布局",
+    )
 }
 
 /// 同一份样式表里是否有**同名选择器**的另一条规则声明了方向（`flex-direction` 或 `flex-flow`）。
@@ -128,11 +157,11 @@ mod tests {
     use crate::rules::Rule;
 
     use super::FlexDirection;
-    use crate::rules::testutil::wxss::{Fixture, messages, page};
+    use crate::rules::testutil::wxss::{Fixture, messages, page, page_opt_out};
 
     #[test]
     fn flex_direction_reports_flex_without_direction() {
-        let (_f, project) = page(
+        let (_f, project) = page_opt_out(
             "flex-positive",
             r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/>"#,
             r#"
@@ -183,7 +212,7 @@ mod tests {
     /// Skyline 的初值是 column，WebView 是 row。
     #[test]
     fn global_keywords_do_not_count_as_declaring_a_direction() {
-        let (_f, project) = page(
+        let (_f, project) = page_opt_out(
             "flex-global-keywords",
             r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/>"#,
             r#"
@@ -202,7 +231,7 @@ mod tests {
     /// 同一条规则里 display 写两次时，后一条生效。
     #[test]
     fn the_last_display_declaration_wins() {
-        let (_f, project) = page(
+        let (_f, project) = page_opt_out(
             "flex-last-display",
             r#"<view class="a"/><view class="b"/>"#,
             r#"
@@ -213,6 +242,30 @@ mod tests {
         let diags = FlexDirection.check(&project);
         assert_eq!(diags.len(), 1, "{diags:#?}");
         assert_eq!(diags[0].line, 3);
+    }
+
+    /// app 级没开开关时，逐条 warning 收成一条带条数的提示：解法只有那一个开关。
+    #[test]
+    fn missing_app_switch_aggregates_the_warnings() {
+        let (_f, project) = page(
+            "flex-aggregate",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
+            r#"
+            .a { display: flex; }
+            .b { display: flex; }
+            .c { display: flex; }
+            "#,
+        );
+        let diags = FlexDirection.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert_eq!(diags[0].path, "app.json");
+        assert!(diags[0].message.contains("3 处"), "{:?}", diags[0].message);
+        assert!(
+            diags[0]
+                .help
+                .as_deref()
+                .is_some_and(|help| help.contains("defaultDisplayBlock"))
+        );
     }
 
     #[test]

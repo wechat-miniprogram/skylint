@@ -15,6 +15,9 @@ pub enum Lit {
     Str(String),
     Bool(bool),
     Num(f64),
+    /// 数组只建模长度：模板里用到数组常量的地方都是 `list.length` 与真值判定
+    /// （`{{buttons && buttons.length}}`），元素的取值不影响这两条。
+    Array(usize),
 }
 
 impl Lit {
@@ -24,6 +27,8 @@ impl Lit {
             Self::Str(value) => !value.is_empty(),
             Self::Bool(value) => *value,
             Self::Num(value) => *value != 0.0 && !value.is_nan(),
+            // JS 里数组总是真值，空数组也是（`[]` 的 `Boolean()` 是 `true`）。
+            Self::Array(_) => true,
         }
     }
 
@@ -44,7 +49,8 @@ impl Lit {
             // 数字/布尔的字符串化与 JS 一致到够用的程度：整数值不带小数点。
             Self::Bool(value) => Some(value.to_string()),
             Self::Num(value) if value.fract() == 0.0 => Some(format!("{value:.0}")),
-            Self::Num(_) => None,
+            // 数组的字符串化是元素逐个拼接，没建模元素取值，不猜。
+            Self::Num(_) | Self::Array(_) => None,
         }
     }
 }

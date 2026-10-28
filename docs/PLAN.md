@@ -1157,3 +1157,27 @@ skit-player 179 → 172（−2 绝对定位的 fit-content、−2 初始值、�
 （dead-selector / media-query / 闸门）的漏报；六个工程里 camelCase 类名仅 16 处，量小但语义是错的。
 修法：`Ident` 存原文，标签/属性名比较改大小写不敏感、class/id 保持敏感，伪类名在解析处单独小写；
 改完必须逐字段比对六工程（会新增命中）。
+
+## P17：同因噪声收口（flex-direction 聚合 + 数组默认值折叠）
+
+审计里剩下的两大块噪声都不是判据错了，而是「同一个原因报了很多次」与「输入层少一种常量」。
+
+1. **`flex-direction` 按工程聚合**：app 级没开 `defaultDisplayBlock` 时，每一处 `display: flex`
+   都会翻转，但解法只有一个开关。现在 `check` 先照旧逐块算，若 `app_display_block()` 为假且有条数，
+   就只留一条挂 `app.json` 的诊断（消息带上条数，help 指向那个开关）。页面级单独关开关的工程
+   仍是逐条报——那时受影响的是个别页面，逐条才有指向性。`default-layout-drift` 仍按工程报配置本身。
+2. **数组默认值折成常量**：`Env` 的 `Lit` 增加 `Array(usize)`，只建模长度（`{{list.length}}` 与真值
+   判定够用，元素取值不猜）。来源两处：单元脚本 `properties` 的 `value: []`（`js.rs` 的 `literal`），
+   以及模板里的 `LitArr`（含 spread 则放弃）。这让 `wx:if="{{buttons && buttons.length}}"` 这类
+   「数组属性默认空数组 → 整块永不渲染」的模板能收起，对应审计里 `half-screen-dialog` 的
+   `buttons` 簇：那 40 条判据本来就对，错在模板其实渲染不出来。
+
+**验收**（六工程、两个方向逐字段 diff，`4da767a` → 本轮）：skit-player 171 → 77（−96 条
+flex-direction 收成 2 条：源码 `app.json` 4 处、`dist/plugin/app.json` 92 处）、businessview
+248 → 246（`coup` / `student-check` 各掉一条 `.weui-transition.weui-mask` 的 `transition` ——
+该 class 在工程内所有 WXML 里 0 次出现，属闸门收紧后的真阴性），其余四工程与反向零变化。
+
+**遗留**：同一块 `:nth-last-child` 噪音（businessview 72 条）在 `half-screen-dialog` 里，
+`buttons` 折掉后目标元素确实不在了，但组件有 `<slot>`，`any_match` 对跨组合符的选择器
+仍按「投影内容可能命中」给 `Unknown`，闸门因此放行。要消掉必须把父级传进 slot 的实际内容
+接进 matcher（跨文档投影），成本高于收益，先记在这里。

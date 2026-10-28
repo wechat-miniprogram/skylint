@@ -12,7 +12,7 @@
 //! 在 `renderer` 已知时直接折叠成真值，`wx:if` 的不可达分支与 `class` 的另一档
 //! 都因此消失——这是同一条推导链的第二个消费者。
 
-use glass_easel_template_compiler::parse::expr::Expression;
+use glass_easel_template_compiler::parse::expr::{ArrayFieldKind, Expression};
 
 use crate::input::env::{Env, Lit};
 
@@ -566,6 +566,21 @@ pub fn constant(expression: &Expression, env: &Env) -> Option<Lit> {
                 _ => None,
             }
         }
+        // `{{list.length}}` / `{{name.length}}`：数组只知长度，字符串按字符数。
+        Expression::StaticMember {
+            obj, field_name, ..
+        } if field_name.as_str() == "length" => match constant(obj, env)? {
+            Lit::Array(len) => Some(Lit::Num(len as f64)),
+            Lit::Str(text) => Some(Lit::Num(text.chars().count() as f64)),
+            Lit::Bool(_) | Lit::Num(_) => None,
+        },
+        // 数组只建模长度：含 spread 时长度不可知。
+        Expression::LitArr { fields, .. } => {
+            let spread = fields
+                .iter()
+                .any(|field| matches!(field, ArrayFieldKind::Spread { .. }));
+            (!spread).then_some(Lit::Array(fields.len()))
+        }
         Expression::Lt { left, right, .. }
         | Expression::Gt { left, right, .. }
         | Expression::Lte { left, right, .. }
@@ -693,6 +708,29 @@ mod tests {
         let tokens = tokens("{{'a' + 1 + 2}}");
         assert_eq!(tokens.definite, ["a12"]);
         assert!(!tokens.any);
+    }
+
+    /// 数组常量只建模长度：`{{list && list.length}}` 的折法与 JS 一致。
+    ///
+    /// 空数组在 JS 里是真值，`[] && [].length` 得 0；`wx:if` 因此收起整块。这条是
+    /// `buttons: { type: Array, value: [] }` 这类属性默认值能消音一片误报的原因。
+    #[test]
+    fn array_constants_fold_to_their_length() {
+        use crate::input::env::{Env, Lit};
+
+        let source = r#"<view wx:if="{{list && list.length}}"><text class="inside"/></view>"#;
+        let mut env = Env::default();
+        env.insert("list", Lit::Array(0));
+        let doc = crate::input::wxml::parse("t.wxml", source, &env).unwrap();
+        assert!(!doc.elements().any(|element| element.tag == "text"));
+
+        env.insert("list", Lit::Array(2));
+        let doc = crate::input::wxml::parse("t.wxml", source, &env).unwrap();
+        assert!(doc.elements().any(|element| element.tag == "text"));
+
+        // 没有取值时仍判不了：两块都留着。
+        let doc = crate::input::wxml::parse("t.wxml", source, &Env::default()).unwrap();
+        assert!(doc.elements().any(|element| element.tag == "text"));
     }
 
     #[test]

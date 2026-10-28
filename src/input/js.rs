@@ -17,10 +17,10 @@ use std::fmt;
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
-    Argument, ArrowFunctionBody, ArrowFunctionExpression, AssignmentExpression, AssignmentTarget,
-    BindingPattern, CallExpression, ChainElement, Expression, Function, FunctionBody,
-    MethodDefinition, ObjectExpression, ObjectProperty, ObjectPropertyKind, PropertyDefinition,
-    PropertyKey, VariableDeclarator,
+    Argument, ArrayExpressionElement, ArrowFunctionBody, ArrowFunctionExpression,
+    AssignmentExpression, AssignmentTarget, BindingPattern, CallExpression, ChainElement,
+    Expression, Function, FunctionBody, MethodDefinition, ObjectExpression, ObjectProperty,
+    ObjectPropertyKind, PropertyDefinition, PropertyKey, VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
 use std::collections::{BTreeMap, BTreeSet};
@@ -551,7 +551,7 @@ impl Collector {
     }
 }
 
-/// 字面量：字符串 / 数字 / 布尔。其余（对象、数组、变量、调用）都算不可知。
+/// 字面量：字符串 / 数字 / 布尔 / 无 spread 的数组（只记长度）。其余（对象、变量、调用）都算不可知。
 fn literal(expression: &Expression) -> Option<Lit> {
     match expression {
         Expression::StringLiteral(value) => Some(Lit::Str(
@@ -559,6 +559,14 @@ fn literal(expression: &Expression) -> Option<Lit> {
         )),
         Expression::NumericLiteral(value) => Some(Lit::Num(value.value)),
         Expression::BooleanLiteral(value) => Some(Lit::Bool(value.value)),
+        // `{{buttons && buttons.length}}` 这类条件靠数组默认值折叠；带 spread 时长度不可知。
+        Expression::ArrayExpression(array) => {
+            let spread = array
+                .elements
+                .iter()
+                .any(|element| matches!(element, ArrayExpressionElement::SpreadElement(_)));
+            (!spread).then_some(Lit::Array(array.elements.len()))
+        }
         // 不含插值的模板串就是普通字符串。
         Expression::TemplateLiteral(template) if template.expressions.is_empty() => {
             let quasi = template.quasis.first()?;

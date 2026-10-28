@@ -149,6 +149,26 @@ pub(crate) mod wxss {
         let project = fixture.project();
         (fixture, project)
     }
+
+    /// app 级开了 `defaultDisplayBlock`、页面级又单独关掉：这是逐条报
+    /// `flex-direction` 的唯一工程形态（app 级没开时整片收成一条）。
+    pub(crate) fn page_opt_out(name: &str, wxml: &str, wxss: &str) -> (Fixture, Project) {
+        let fixture = Fixture::new(name);
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true}}}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"rendererOptions":{"skyline":{"defaultDisplayBlock":false}}}"#,
+            )
+            .write("pages/index/index.wxml", wxml)
+            .write("pages/index/index.wxss", wxss);
+        let project = fixture.project();
+        (fixture, project)
+    }
 }
 
 /// JS 规则的默认单页 / 插件工程。
