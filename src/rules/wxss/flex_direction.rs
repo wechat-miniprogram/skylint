@@ -89,25 +89,38 @@ impl Rule for FlexDirection {
     }
 }
 
-/// 一处 `display: flex` 都没声明方向时的工程级提示：条数不进 message，只作
-/// 影响面说明，解法只有配置里的一个开关。
+/// 一处 `display: flex` 都没声明方向时的工程级提示：条数只作影响面说明，解法只有
+/// 配置里的一个开关。
+///
+/// 插件视图没有 app.json 可改（`rendererOptions` 归宿主 app），所以那一侧只描述后果，
+/// 并把「插件侧能自己做的」写在 help 里。
 fn aggregated(project: &Project, blocks: usize) -> Diagnostic {
     let (line, column) = crate::input::json::JsonPositions::new(&project.app_json_source)
         .key("rendererOptions")
         .unwrap_or((1, 1));
+    let message = if project.plugin_view {
+        format!(
+            "宿主 app 未开启 defaultDisplayBlock：{blocks} 处 `display: flex` 没有显式声明 flex-direction，Skyline 默认 column、WebView 默认 row，宿主的这个开关决定它们会不会翻转（插件自身无法设置 `rendererOptions`）"
+        )
+    } else {
+        format!(
+            "app 级未开启 defaultDisplayBlock：{blocks} 处 `display: flex` 没有显式声明 flex-direction，Skyline 默认 column、WebView 默认 row，迁移后这些容器的布局方向都会翻转"
+        )
+    };
+    let help = if project.plugin_view {
+        "插件侧要给准话就为每处显式写 `flex-direction: row`（或按 column 重写布局）；想靠开关解决则需宿主 app 在 `rendererOptions.skyline` 开启 `defaultDisplayBlock: true`"
+    } else {
+        "在 `rendererOptions.skyline` 开启 `defaultDisplayBlock: true`，Skyline 的 flex-direction 默认值就变回 row，这一整类差异一次性消失；保持关闭则需为每处补 `flex-direction: row`，或按 column 重新设计布局"
+    };
     Diagnostic::new(
         FlexDirection::ID,
         Severity::Warning,
-        format!(
-            "app 级未开启 defaultDisplayBlock：{blocks} 处 `display: flex` 没有显式声明 flex-direction，Skyline 默认 column、WebView 默认 row，迁移后这些容器的布局方向都会翻转"
-        ),
-        "app.json",
+        message,
+        project.app_json_path.clone(),
         line,
         column,
     )
-    .help(
-        "在 `rendererOptions.skyline` 开启 `defaultDisplayBlock: true`，Skyline 的 flex-direction 默认值就变回 row，这一整类差异一次性消失；保持关闭则需为每处补 `flex-direction: row`，或按 column 重新设计布局",
-    )
+    .help(help)
 }
 
 /// 同一份样式表里是否有**同名选择器**的另一条规则声明了方向（`flex-direction` 或 `flex-flow`）。
