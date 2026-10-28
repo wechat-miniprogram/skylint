@@ -214,7 +214,7 @@ fn direct_violation(
     let expected = render_targets(targets);
     let Some(parent) = ancestors.last() else {
         // 模板定义体的根节点在实例化处的父节点未知。
-        return (!element.in_template).then(|| {
+        return (!element.in_template()).then(|| {
             format!(
                 "`<{}>` 位于文件顶层，必须直接放在 {} 内",
                 element.tag, expected
@@ -226,7 +226,7 @@ fn direct_violation(
         return None;
     }
     let Some(target) = targets.iter().find(|target| target.tag == parent.tag) else {
-        return (!element.in_template).then(|| {
+        return (!element.in_template()).then(|| {
             format!(
                 "`<{}>` 必须直接放在 {} 内，当前父节点是 `<{}>`",
                 element.tag, expected, parent.tag
@@ -276,7 +276,7 @@ fn ancestor_violation(
         };
     }
     // 模板定义体可能被放在目标容器里，静态看不到实例化处。
-    if element.in_template {
+    if element.in_template() {
         return None;
     }
     Some(format!(
@@ -294,7 +294,7 @@ fn first_child_violation(
     // 容器祖先存在但中间隔着内置节点：它仍不是容器的直接子元素。
     // （`<block wx:if>` 已被摊平，不会走到这里。）
     if !is_container(parent, containers) {
-        if element.in_template {
+        if element.in_template() {
             return None;
         }
         let container = nearest_container(ancestors, containers)?;

@@ -1,25 +1,20 @@
-//! `skyline/fixed-layer`：`position: fixed` 元素在 Skyline 下被提升成独立层，
-//! 没有有效 `z-index` 时它和页面内容的先后不可控。
+//! `skyline/fixed-layer`：`position: fixed` 元素的定位基准在 Skyline 下变成了页面根，
+//! 祖先的包含块失效。
 //!
 //! 引擎把 fixed 节点从原位换成一个 replacer，把节点本身 append 到 root container
 //! （`shadow/shadow_tree.cc:683-706` 收集、`widgets/widget_operation.cc:492-546`
 //! 的 `UpdatePositionFixedWidgetOperation::Apply` 里 `InsertBefore(replacer)` +
-//! `root_container_widget->AppendChild(widget)`）。root container 内按子节点的
-//! z-index 稳定排序（`package/skyline/lib/rendering/stacking.dart:44-60`），而整个
-//! 页面只是它的**一个**子节点：fixed 节点与页面根平级，页面内部的层级关系整体压在
-//! 页面根之下。它只有写了自己的 z-index 才能和页面根分出先后；两者都是 `auto` 时
-//! 顺序由引擎的 append 时机决定，静态不可控——页面里 z-index 200 / 999 的浮层既可能
-//! 盖住它，也可能被它盖住。这就是本规则报的点。
+//! `root_container_widget->AppendChild(widget)`）；每个页面只有一个 ShadowTree
+//! （`shadow/context.cc:142`），组件共用它——组件里的 fixed 同样被提到**页面** root。
 //!
-//! 判据只有一条：解析后的 `position` 是 `fixed`，且解析不出有效的 `z-index`
-//! （无声明 / `auto` / 非整数 / 变量或插值都算没有）。用户明确要求误报优于漏报，
-//! 所以这里不做任何额外收窄。
+//! WebView 里 fixed 相对视口定位，但祖先一旦形成包含块（`transform` / `perspective` /
+//! `filter` / `backdrop-filter` / `contain` / `will-change: transform`），它改成相对那个
+//! 祖先定位；Skyline 把节点提到页面根后不再受该祖先约束。两端位置不同，这才是本规则
+//! 报的点。
 //!
-//! 为什么不再做层比较：旧实现试图找出「被这个 fixed 盖住的、z-index 更高的同父兄弟
-//! 浮层」，为此要求 fixed 铺满视口（`top`/`left: 0` 且另一维撑满）。实测六个工程
-//! 0 命中——真实工程里 fixed 很少写成这种严格形态（多用 `inset`、`100%`、安全区偏移），
-//! 收窄后等于没有覆盖；跨文档比较同样不可靠（组件里的 fixed 提升到组件自己的 root
-//! container，页面浮层仍在它之上，见历史 bug `8fc12686`）。
+//! 单纯的「fixed + 没有 z-index」不是缺陷：非 fixed 内容永远盖不住 fixed，两个都没有
+//! z-index 时页面级顺序与 WebView 一致（都是文档序），实测五个参考工程这类形态全部
+//! 零差异。早期版本按「有 fixed 无整数 z-index 就报」，在真实工程上 5/5 是噪音。
 
 use std::collections::{HashMap, HashSet};
 
@@ -32,9 +27,9 @@ use crate::rules::wxml::{load_doc, page_wxml_groups, resolved_property, walk};
 use crate::rules::wxss::value_util::at_declaration;
 use crate::{Diagnostic, Severity};
 
-const MESSAGE: &str = "`position: fixed` 在 Skyline 下被提升成独立层、与页面根平级；这里没有有效的 `z-index`，它和整页内容的先后不可控";
+const MESSAGE: &str = "`position: fixed` 在 Skyline 下被提到页面根，祖先的包含块不再约束它；这里相对该祖先定位，WebView 与 Skyline 的位置会不同";
 
-const HELP: &str = "需要它固定在最上层时显式给一个足够大的 `z-index`（例如 `z-index: 999`），否则它的层级取决于引擎把节点挂到 root container 的时机";
+const HELP: &str = "去掉祖先的 `transform` / `filter` / `contain` 等包含块触发条件，改成把 fixed 元素提到组件根（脱离该祖先），或把定位方式改成 `absolute` 并调整布局";
 
 pub struct FixedLayer;
 
@@ -70,7 +65,7 @@ impl Rule for FixedLayer {
 
             for doc in loaded {
                 let tree = Tree::new(doc);
-                walk(doc, |element, _| {
+                walk(doc, |element, ancestors| {
                     let Some(position) = resolved_property(project, &tree, element, "position")
                     else {
                         return;
@@ -78,7 +73,8 @@ impl Rule for FixedLayer {
                     if !clean_value(&position.value).eq_ignore_ascii_case("fixed") {
                         return;
                     }
-                    if has_z_index(project, &tree, element) {
+                    // 只有祖先形成包含块时，WebView 与 Skyline 的定位基准才不同。
+                    if !has_containing_block(project, &tree, ancestors) {
                         return;
                     }
 
@@ -129,12 +125,35 @@ impl Rule for FixedLayer {
     }
 }
 
-/// 元素是否有一个能参与层叠的 `z-index`：解析出整数才算。
+/// 最近一个形成包含块的祖先。
 ///
-/// 无声明、`auto`、`calc(...)`、变量与插值一律视为没有。
-fn has_z_index(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
-    resolved_property(project, tree, element, "z-index")
-        .is_some_and(|resolved| clean_value(&resolved.value).parse::<i64>().is_ok())
+/// WebView 里 fixed 会被这样的祖先「抓住」（相对它定位），Skyline 提到页面根后不受
+/// 约束；没有这类祖先时两端都相对视口，行为一致。
+///
+/// `z-index` 不算：它只影响绘制顺序，不构成 fixed 的包含块。页面级叠放顺序两端都是
+/// 文档序，也是为什么「fixed + 没有 z-index」本身不是缺陷。
+fn has_containing_block(project: &Project, tree: &Tree<'_>, ancestors: &[&WxmlElement]) -> bool {
+    let resolve = |element: &WxmlElement, property: &str| {
+        resolved_property(project, tree, element, property)
+            .map(|resolved| clean_value(&resolved.value).to_ascii_lowercase())
+    };
+    ancestors.iter().any(|ancestor| {
+        let set = |property: &str| {
+            resolve(ancestor, property)
+                .is_some_and(|value| !value.is_empty() && value != "none" && value != "normal")
+        };
+        let animated = resolve(ancestor, "will-change").is_some_and(|value| {
+            ["transform", "perspective", "filter"]
+                .iter()
+                .any(|trigger| value.contains(trigger))
+        });
+        set("transform")
+            || set("perspective")
+            || set("filter")
+            || set("backdrop-filter")
+            || set("contain")
+            || animated
+    })
 }
 
 /// 去掉取值末尾的 `!important`。
@@ -165,74 +184,75 @@ mod tests {
         FixedLayer.check(&project)
     }
 
-    const PAGE: &str = r#"<view class="page">
-  <view class="mask"/>
-</view>"#;
-
     #[test]
-    fn fixed_without_z_index_is_reported() {
+    fn containing_ancestor_makes_the_position_differ() {
+        // WebView 里 fixed 相对这个 transform 祖先定位，Skyline 提到页面根后相对视口。
+        let wxml = r#"<view class="panel">
+  <view class="bar"/>
+</view>"#;
         let diagnostics = check(
-            "fixed-layer-no-z",
-            PAGE,
-            ".mask { position: fixed; top: 0; left: 0; }",
+            "fixed-layer-transform",
+            wxml,
+            ".panel { transform: translate3d(0, 100%, 0); }
+             .bar { position: fixed; bottom: 0; }",
         );
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-        assert_eq!((diagnostics[0].line, diagnostics[0].column), (1, 9));
-        assert!(diagnostics[0].message.contains("z-index"));
-        assert!(diagnostics[0].help.as_deref().unwrap_or("").contains("999"));
+        assert!(diagnostics[0].message.contains("包含块"));
     }
 
     #[test]
-    fn fixed_with_numeric_z_index_is_not_reported() {
+    fn fixed_without_containing_ancestor_is_skipped() {
+        // 两端都相对视口：没有 z-index 也不影响位置，只影响页面级叠放顺序，
+        // 而那部分两端都是文档序。
+        let wxml = r#"<view class="page">
+  <view class="mask"/>
+</view>"#;
         let diagnostics = check(
-            "fixed-layer-numeric-z",
-            PAGE,
-            ".mask { position: fixed; z-index: 999; }",
+            "fixed-layer-plain",
+            wxml,
+            ".mask { position: fixed; top: 0; left: 0; }",
         );
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     #[test]
-    fn auto_z_index_counts_as_missing() {
-        let diagnostics = check(
-            "fixed-layer-auto-z",
-            PAGE,
-            ".mask { position: fixed; z-index: auto; }",
-        );
-        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-    }
-
-    #[test]
-    fn dynamic_z_index_counts_as_missing() {
-        // WXSS 里 `{{}}` 是语法错误（整个样式表解析失败），动态值只可能出现在内联
-        // `style` 里，见下面的用例。
-        let diagnostics = check(
-            "fixed-layer-dynamic-z",
-            PAGE,
-            ".mask { position: fixed; z-index: var(--layer); }",
-        );
-        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-    }
-
-    #[test]
-    fn inline_mustache_z_index_counts_as_missing() {
-        // `{{}}` 出现在 WXSS 里是语法错误（整个样式表解析失败），出现在内联 `style`
-        // 里时 WXML 解析器不提供字符串值；两种情况都只能当成「没有 z-index」。
-        let wxml = r#"<view class="page">
-  <view class="mask" style="z-index: {{layer}}"/>
+    fn z_index_ancestor_is_not_a_containing_block() {
+        // `z-index` 只影响绘制顺序，不改变 fixed 的定位基准。
+        let wxml = r#"<view class="panel">
+  <view class="bar"/>
 </view>"#;
         let diagnostics = check(
-            "fixed-layer-inline-mustache",
+            "fixed-layer-z-ancestor",
             wxml,
-            ".mask { position: fixed; }",
+            ".panel { position: relative; z-index: 5; }
+             .bar { position: fixed; }",
         );
-        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-        assert_eq!((diagnostics[0].line, diagnostics[0].column), (1, 9));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     #[test]
-    fn inline_fixed_style_is_reported_at_the_element() {
-        let wxml = r#"<view class="page">
+    fn filter_and_contain_also_form_containing_blocks() {
+        for (name, declaration) in [
+            ("filter", "filter: blur(1px);"),
+            ("backdrop", "backdrop-filter: blur(1px);"),
+            ("contain", "contain: paint;"),
+            ("perspective", "perspective: 100px;"),
+        ] {
+            let wxml = r#"<view class="panel">
+  <view class="bar"/>
+</view>"#;
+            let diagnostics = check(
+                &format!("fixed-layer-{name}"),
+                wxml,
+                &format!(".panel {{ {declaration} }} .bar {{ position: fixed; }}"),
+            );
+            assert_eq!(diagnostics.len(), 1, "{name}: {diagnostics:#?}");
+        }
+    }
+
+    #[test]
+    fn inline_style_is_reported_at_the_element() {
+        let wxml = r#"<view style="transform: translateZ(0)">
   <view style="position: fixed"/>
 </view>"#;
         let diagnostics = check("fixed-layer-inline", wxml, "");
@@ -242,32 +262,19 @@ mod tests {
     }
 
     #[test]
-    fn inline_style_is_normalized_for_important() {
-        // 两个元素：一个带有效 z-index，一个没有；`!important` 不能影响判定。
-        let wxml = r#"<view class="page">
-  <view style="position: fixed !important; z-index: 10 !important"/>
-  <view style="position: fixed !important"/>
-</view>"#;
-        let diagnostics = check("fixed-layer-inline-important", wxml, "");
-        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-        assert_eq!((diagnostics[0].line, diagnostics[0].column), (3, 4));
-    }
-
-    #[test]
     fn non_fixed_positions_are_not_reported() {
-        let wxml = r#"<view class="page">
+        let wxml = r#"<view class="panel">
   <view class="absolute"/>
   <view class="relative"/>
   <view class="sticky"/>
-  <view class="static"/>
 </view>"#;
         let diagnostics = check(
             "fixed-layer-other-positions",
             wxml,
-            ".absolute { position: absolute; }
+            ".panel { transform: scale(1); }
+             .absolute { position: absolute; }
              .relative { position: relative; }
-             .sticky { position: sticky; }
-             .static { z-index: 1; }",
+             .sticky { position: sticky; }",
         );
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
@@ -275,14 +282,15 @@ mod tests {
     #[test]
     fn every_fixed_element_is_reported_once() {
         // 同一文档里多个 fixed（含内联）不能被去重吞掉。
-        let wxml = r#"<view class="page">
+        let wxml = r#"<view class="panel">
   <view class="mask"/>
   <view class="toast" style="position: fixed"/>
 </view>"#;
         let diagnostics = check(
             "fixed-layer-multiple",
             wxml,
-            ".mask { position: fixed; }
+            ".panel { transform: translateY(0); }
+             .mask { position: fixed; }
              .toast { top: 0; }",
         );
         assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
@@ -296,9 +304,9 @@ mod tests {
     }
 
     #[test]
-    fn fixed_inside_a_component_is_still_reported() {
-        // 组件里的 fixed 提升到的是组件自己的 root container，与组件根同样不可控；
-        // 按「误报优于漏报」不做跨文档豁免。
+    fn fixed_inside_a_component_is_reported_when_its_ancestor_contains_it() {
+        // 组件共用页面的 ShadowTree，fixed 提到页面 root；祖先的 transform 在 WebView
+        // 里会抓住它，两端位置不同。
         let fixture = Fixture::new("fixed-layer-component");
         fixture
             .write("project.config.json", r#"{"miniprogramRoot":""}"#)
@@ -312,8 +320,14 @@ mod tests {
             )
             .write("pages/index/index.wxml", r#"<mask-layer/>"#)
             .write("components/mask/mask.json", r#"{"component":true}"#)
-            .write("components/mask/mask.wxml", r#"<view class="mask"/>"#)
-            .write("components/mask/mask.wxss", ".mask { position: fixed; }");
+            .write(
+                "components/mask/mask.wxml",
+                r#"<view class="wrap"><view class="mask"/></view>"#,
+            )
+            .write(
+                "components/mask/mask.wxss",
+                ".wrap { transform: translateZ(0); } .mask { position: fixed; }",
+            );
         let project = fixture.project();
         let diagnostics = FixedLayer.check(&project);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");

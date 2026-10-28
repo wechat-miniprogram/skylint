@@ -18,7 +18,7 @@ use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
 use crate::rules::Target;
-use crate::rules::wxml::resolved_property;
+use crate::rules::wxml::webview_truncates;
 
 use super::{element_diagnostic, structure::find_attr, visit, walk};
 
@@ -52,8 +52,7 @@ impl Rule for TextTruncation {
                 // 只看真正起截断作用的写法：`overflow="visible"`、`max-lines="0"`
                 // 在两个渲染器下表现一致，报出来是噪音。
                 let attributes = truncating_attributes(element);
-                if attributes.is_empty() || has_webview_fallback(project, &tree, element, ancestors)
-                {
+                if attributes.is_empty() || webview_truncates(project, &tree, element, ancestors) {
                     return;
                 }
                 let written = attributes
@@ -108,47 +107,6 @@ fn truncating_attributes(element: &WxmlElement) -> Vec<&'static str> {
         }
     }
     out
-}
-
-/// WebView 侧是否已经自己实现了截断：多行用 `-webkit-line-clamp`，单行用
-/// `white-space: nowrap` + `overflow: hidden` + `text-overflow: ellipsis`。
-///
-/// 自身与任一祖先都算：祖先被 clamp 时内层文本同样被裁掉。选择器匹配走 `Tree`，
-/// 不用类名字串比——`class="title"` 不能因为存在 `.subtitle` 就静音。
-fn has_webview_fallback(
-    project: &Project,
-    tree: &Tree<'_>,
-    element: &WxmlElement,
-    ancestors: &[&WxmlElement],
-) -> bool {
-    std::iter::once(element)
-        .chain(ancestors.iter().rev().copied())
-        .any(|candidate| {
-            let clamped = resolved_property(project, tree, candidate, "-webkit-line-clamp")
-                .is_some_and(|resolved| {
-                    resolved
-                        .value
-                        .trim()
-                        .parse::<u32>()
-                        .is_ok_and(|lines| lines > 0)
-                });
-            clamped || single_line_ellipsis(project, tree, candidate)
-        })
-}
-
-fn single_line_ellipsis(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
-    let is = |property: &str, expected: &str| {
-        resolved_property(project, tree, element, property)
-            .is_some_and(|resolved| resolved.value.trim().eq_ignore_ascii_case(expected))
-    };
-    is("white-space", "nowrap")
-        && matches!(
-            resolved_property(project, tree, element, "overflow")
-                .as_ref()
-                .map(|resolved| resolved.value.trim().to_ascii_lowercase()),
-            Some(value) if value == "hidden" || value == "clip"
-        )
-        && is("text-overflow", "ellipsis")
 }
 
 #[cfg(test)]

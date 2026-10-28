@@ -21,6 +21,7 @@ use std::sync::OnceLock;
 
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlAttribute, WxmlElement};
+use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
@@ -468,7 +469,8 @@ impl Rule for ComponentAttribute {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let table = table();
         visit(project, |doc, out| {
-            walk(doc, |element, _ancestors| {
+            let tree = Tree::new(doc);
+            walk(doc, |element, ancestors| {
                 for attr in &element.attributes {
                     let name = attr.name.to_ascii_lowercase();
                     let Some(entries) = table.lookup(&element.tag, &name) else {
@@ -477,6 +479,15 @@ impl Rule for ComponentAttribute {
                     let Some((entry, value)) = judge_attribute(entries, attr) else {
                         continue;
                     };
+                    // `<image mode>` 的取值既不是 Skyline 的合法值、也不是 WebView 的裁剪模式时
+                    // （`mode="aspectFit|aspectFill|widthFix"` 这类管道串），两个渲染器都回退成
+                    // 拉伸填满：两端一致，不是迁移差异。
+                    if element.tag == "image"
+                        && name == "mode"
+                        && matches!(entry.constraint, Constraint::Enum(_))
+                    {
+                        continue;
+                    }
                     out.push(
                         span_diagnostic(
                             Self::ID,
@@ -484,7 +495,7 @@ impl Rule for ComponentAttribute {
                             attr.start,
                             attr.end,
                             doc.path(),
-                            severity(&element.tag, &name, &entry.constraint),
+                            Severity::Warning,
                             message(&element.tag, &name, value, &entry.constraint),
                         )
                         .help(help(entry)),
@@ -503,6 +514,15 @@ impl Rule for ComponentAttribute {
                     let Verdict::Violated(current) = judge(element, &rule.requirement) else {
                         continue;
                     };
+                    // `<text overflow="ellipsis">` 缺 `max-lines`：WebView 的行内 `<text>`
+                    // 没 nowrap / clamp 时本来就换行不省略，两端一致。
+                    let needs_baseline = rule.trigger.attr() == "overflow"
+                        && matches!(rule.requirement, Requirement::Present("max-lines"));
+                    if needs_baseline
+                        && !super::webview_truncates(project, &tree, element, ancestors)
+                    {
+                        continue;
+                    }
                     out.push(
                         span_diagnostic(
                             Self::ID,
@@ -683,15 +703,6 @@ fn requires_message(tag: &str, rule: &Requires, value: &str, current: Option<&st
     }
 }
 
-/// `<image mode>` 写成非法取值时两个渲染器都回退成拉伸填满，不是迁移差异：仍然
-/// 值得修，但不是 Skyline 阻塞项，按 info 报。
-fn severity(tag: &str, attr: &str, constraint: &Constraint) -> Severity {
-    match constraint {
-        Constraint::Enum(_) if tag == "image" && attr == "mode" => Severity::Info,
-        _ => Severity::Warning,
-    }
-}
-
 fn message(tag: &str, attr: &str, value: Value<'_>, constraint: &Constraint) -> String {
     // 静态值写进属性里；候选集只写属性名，候选列在句末——`mode="{{a ? 'x' : 'y'}}"`
     // 展开成 `mode="x / y"` 会读成「写了一个带斜杠的值」。
@@ -718,10 +729,7 @@ fn message(tag: &str, attr: &str, value: Value<'_>, constraint: &Constraint) -> 
             format!("{subject} 必须是 {min}~{max} 的数值")
         }
         // `<image mode>` 命中这里说明它既不是 Skyline 的值、也不是 WebView 的裁剪模式：
-        // 两个渲染器都不认这个取值，不是迁移差异而是取值本身写错了。
-        Constraint::Enum(_) if tag == "image" && attr == "mode" => format!(
-            "{subject} 不是合法的 mode：WebView 与 Skyline 都不识别，两个渲染器都会回退成拉伸填满"
-        ),
+        // 两个渲染器都不认，已在 check 里跳过。
         Constraint::Enum(_) | Constraint::WebviewOnly(_) => {
             format!("{subject} 不是 Skyline 支持的值，会被忽略")
         }
@@ -765,24 +773,9 @@ mod tests {
             ),
             &ComponentAttribute,
         );
-        assert_eq!(diagnostics.len(), 2);
-        let image = diagnostics
-            .iter()
-            .find(|d| d.message.contains("image"))
-            .unwrap();
-        assert_eq!((image.line, image.column), (1, 14));
-        // `mode` 的非法值两个渲染器都回退成拉伸，按 info 报；其余枚举违规仍是 warning。
-        assert_eq!(image.severity, crate::Severity::Info);
-        assert!(
-            diagnostics
-                .iter()
-                .filter(|d| !d.message.contains("image"))
-                .all(|d| d.severity == crate::Severity::Warning)
-        );
-        assert_eq!(
-            image.help.as_deref().unwrap(),
-            "合法值：scaleToFill、aspectFit、aspectFill、widthFix、heightFix、auto"
-        );
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("hidden"));
+        assert_eq!(diagnostics[0].severity, crate::Severity::Warning);
     }
 
     /// 引擎实际接受、但旧白名单漏掉的取值：补上后不再误报。
@@ -796,17 +789,15 @@ mod tests {
             ),
             &ComponentAttribute,
         );
-        assert_eq!(diagnostics.len(), 4, "{diagnostics:#?}");
+        assert_eq!(diagnostics.len(), 3, "{diagnostics:#?}");
         assert!(
             diagnostics
                 .iter()
-                .skip(1)
                 .all(|d| d.severity == crate::Severity::Warning)
         );
-        assert!(diagnostics[0].message.contains("cover"));
-        assert!(diagnostics[1].message.contains("hidden"));
-        assert!(diagnostics[2].message.contains("enter"));
-        assert!(diagnostics[3].message.contains("max-lines"));
+        assert!(diagnostics[0].message.contains("hidden"));
+        assert!(diagnostics[1].message.contains("enter"));
+        assert!(diagnostics[2].message.contains("max-lines"));
     }
 
     /// WebView 有、引擎没有实现的分页滚动属性。
@@ -821,21 +812,39 @@ mod tests {
     }
 
     /// `overflow="ellipsis"` 不带 `max-lines` 时引擎不施加行数约束，省略号不会出现。
+    ///
+    /// 前提是 WebView 侧本来就会省略：行内 `<text>` 没 nowrap / clamp 时会直接换行。
     #[test]
     fn overflow_ellipsis_requires_max_lines() {
+        let fixture = project(
+            "attr-ellipsis",
+            r#"<text class="clip" overflow="ellipsis"/>
+<text class="clip" overflow="ellipsis" max-lines="2"/>
+<text class="clip" overflow="clip"/>
+<text class="clip" overflow="{{o}}" max-lines="2"/>
+<text overflow="ellipsis"/>"#,
+        );
+        fixture.write(
+            "pages/index/index.wxss",
+            ".clip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }",
+        );
+        let diagnostics = check_rule(&fixture, &ComponentAttribute);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("max-lines"));
+        assert_eq!((diagnostics[0].line, diagnostics[0].column), (1, 20));
+    }
+
+    /// WebView 下也不省略时不报：`<text>` 是行内元素，`max-width` 不生效、文本直接换行。
+    #[test]
+    fn ellipsis_without_webview_baseline_is_skipped() {
         let diagnostics = check_rule(
             &project(
-                "attr-ellipsis",
-                r#"<text overflow="ellipsis"/>
-<text overflow="ellipsis" max-lines="2"/>
-<text overflow="clip"/>
-<text overflow="{{o}}" max-lines="2"/>"#,
+                "attr-ellipsis-baseline",
+                r#"<view style="width: 100px;"><text style="max-width: 100px;" overflow="ellipsis">共 3 章</text></view>"#,
             ),
             &ComponentAttribute,
         );
-        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-        assert!(diagnostics[0].message.contains("max-lines"));
-        assert_eq!((diagnostics[0].line, diagnostics[0].column), (1, 7));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     #[test]
@@ -866,17 +875,16 @@ mod tests {
         let diagnostics = check_rule(
             &project(
                 "attr-dynamic-all-invalid",
-                r#"<image mode="{{ok ? 'aspectX' : 'foo'}}"/>"#,
+                r#"<input confirm-type="{{ok ? 'sendX' : 'foo'}}"/>"#,
             ),
             &ComponentAttribute,
         );
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(
-            diagnostics[0].message.contains("候选只有 `aspectX`、`foo`"),
+            diagnostics[0].message.contains("候选只有 `sendX`、`foo`"),
             "{}",
             diagnostics[0].message
         );
-        assert!(diagnostics[0].message.contains("aspectX"));
     }
 
     /// 候选里有一个合法值就不报：运行时换个分支就对了。
@@ -895,14 +903,16 @@ mod tests {
     /// 触发条件只有「所有候选都命中」时才算触发。
     #[test]
     fn dynamic_trigger_needs_every_candidate() {
-        let diagnostics = check_rule(
-            &project(
-                "attr-dynamic-trigger",
-                r#"<text overflow="{{a ? 'ellipsis' : 'clip'}}"/>
-<text overflow="{{'ellipsis'}}"/>"#,
-            ),
-            &ComponentAttribute,
+        let fixture = project(
+            "attr-dynamic-trigger",
+            r#"<text class="clip" overflow="{{a ? 'ellipsis' : 'clip'}}"/>
+<text class="clip" overflow="{{'ellipsis'}}"/>"#,
         );
+        fixture.write(
+            "pages/index/index.wxss",
+            ".clip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }",
+        );
+        let diagnostics = check_rule(&fixture, &ComponentAttribute);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert_eq!(diagnostics[0].line, 2);
     }
@@ -935,10 +945,11 @@ mod tests {
         assert!(diagnostics[1].message.contains("placeholder-class"));
     }
 
+    /// `<image mode>` 两个渲染器都不认的取值：两端都回退成拉伸填满，不是迁移差异。
     #[test]
     fn garbage_image_modes_are_not_blamed_on_skyline() {
         // `mode` 写成一串用竖线拼起来的候选值：WebView 的 `_checkMode` 同样不认
-        // （未知值直接 return，background-size 保持默认），不是 Skyline 差异。
+        // （未知值直接 return，background-size 保持默认），两端一致。
         let diagnostics = check_rule(
             &project(
                 "attr-mode-garbage",
@@ -946,15 +957,7 @@ mod tests {
             ),
             &ComponentAttribute,
         );
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].severity, crate::Severity::Info);
-        assert!(
-            diagnostics[0]
-                .message
-                .contains("WebView 与 Skyline 都不识别"),
-            "{}",
-            diagnostics[0].message
-        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     #[test]

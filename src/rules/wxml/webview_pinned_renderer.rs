@@ -4,7 +4,8 @@
 //! （[`Project::env`]）里 `renderer` 能不能定成具体值。环境只有三个来源
 //! （`project::collect_envs`）：
 //!
-//! 1. 单元脚本 `data` / `properties` 里的字面量；
+//! 1. 单元脚本 `properties` 默认值的字面量（`data` 不收：它是初始化值，随后会被
+//!    `setData` 改成运行时值）；
 //! 2. 父级以静态属性传入的值（所有使用处都传同一个静态值才算）；
 //! 3. 被 `setData` / `this.data.x = …` 写过就丢弃（`dirty_data`）。
 //!

@@ -122,8 +122,9 @@ pub(crate) fn overridden_in_renderer_branch(
                 .iter()
                 .any(|decl| decl.name.eq_ignore_ascii_case(property))
             && other.selectors.iter().any(|selector| {
-                strip_class(&selector.text, branch)
-                    .is_some_and(|base| mine.contains(&normalize_selector(&base)))
+                let variant = normalize_selector(&selector.text);
+                mine.iter()
+                    .any(|mine| is_same_element_variant(mine, &variant, branch))
             })
     });
     let Some(_) = variant else {
@@ -171,7 +172,7 @@ pub(crate) fn class_depends_on_renderer(
             };
             let mut hit = false;
             crate::rules::wxml::walk(doc, |element, _| {
-                if element.in_template {
+                if element.in_template() {
                     return;
                 }
                 let Some(attr) = element.attributes.iter().find(|attr| attr.name == "class") else {
@@ -251,39 +252,28 @@ fn normalize_selector(text: &str) -> String {
     text.split_ascii_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// 把选择器里指定的类去掉（`.a .b.skyline` → `.a .b`）；没出现该类时返回 `None`。
-fn strip_class(text: &str, class: &str) -> Option<String> {
-    let mut out = String::with_capacity(text.len());
-    let mut found = false;
-    let mut chars = text.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch != '.' {
-            out.push(ch);
-            continue;
-        }
-        let mut name = String::new();
-        while let Some(&next) = chars.peek() {
-            if next.is_alphanumeric() || next == '-' || next == '_' {
-                name.push(next);
-                chars.next();
-            } else {
-                break;
-            }
-        }
-        if name == class {
-            found = true;
-        } else {
-            out.push('.');
-            out.push_str(&name);
-        }
-    }
-    found.then_some(out)
+/// `variant` 是否正好是 `mine` 的**最后一个 compound** 多了一个 `.branch`。
+///
+/// 只认同元素的写法（`.a` → `.a.skyline`、`.a .b` → `.a .b.skyline`）。写到后代上的
+/// `.a .skyline` 不算：那既可能是「作者想的同元素、写成了后代」（由 `dead-selector`
+/// 单独报），也可能是真的后代选择器——两种读法下 `.a` 的声明都没被覆盖。
+fn is_same_element_variant(mine: &str, variant: &str, branch: &str) -> bool {
+    let mine: Vec<&str> = mine.split_ascii_whitespace().collect();
+    let variant: Vec<&str> = variant.split_ascii_whitespace().collect();
+    let (Some((subject, head)), Some((last, variant_head))) =
+        (mine.split_last(), variant.split_last())
+    else {
+        return false;
+    };
+    head == variant_head && *last == format!("{subject}.{branch}")
 }
 
-/// 这批选择器在作用域里是否有任何可能命中（`Yes` 或 `Unknown`）。
+/// 这批选择器在作用域里是否**确定**命中至少一个节点（只要 `Yes`）。
 ///
 /// 用于「条件被丢弃、块内声明对所有设备生效」这类判定：块内选择器一个节点都
-/// 对不上时，条件丢失不产生任何可见差异。看不到 WXML 时保守返回 `true`。
+/// 对不上时，条件丢失不产生任何可见差异。`Unknown`（动态 class / 动态属性）按不命中
+/// 处理——它只意味着「可能有」，据此报出就把动态 class 多的组件全变成噪音。
+/// 看不到 WXML 时保守返回 `true`。
 pub(crate) fn any_selector_matches(
     project: &Project,
     sheet: &StyleSheet,
@@ -309,7 +299,7 @@ pub(crate) fn any_selector_matches(
                 if crate::matcher::shape(text).is_none_or(|shape| shape.pseudo_element) {
                     return true;
                 }
-                if tree.any_match(text, Dialect::WebView) != Tri::No {
+                if tree.any_match(text, Dialect::WebView) == Tri::Yes {
                     return true;
                 }
             }

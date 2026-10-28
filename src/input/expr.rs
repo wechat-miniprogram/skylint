@@ -289,35 +289,92 @@ fn eval(expression: &Expression, env: &Env) -> Option<Vec<String>> {
 ///
 /// 只用于判断「这个条件是不是按某个键分支」，不求值。
 pub fn references(expression: &Expression, target: &str) -> bool {
+    let mut found = false;
+    walk(expression, &mut |node| {
+        if let Expression::DataField { name, .. } = node {
+            found |= name.as_str() == target;
+        }
+    });
+    found
+}
+
+/// 表达式里出现的顶层数据字段名（去重、按首次出现排序）。
+///
+/// `wx:for` 的 `item` / `index`、WXS 模块名都解析成 `ScopeRef`，不在结果里。
+pub fn data_fields(expression: &Expression) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    walk(expression, &mut |node| {
+        if let Expression::DataField { name, .. } = node
+            && !out.iter().any(|field| field == name.as_str())
+        {
+            out.push(name.to_string());
+        }
+    });
+    out
+}
+
+/// 值是一个对象字面量时返回它的顶层键；含 spread 或不是对象字面量时返回 `None`
+/// （调用方无法确定它到底提供了哪些键）。
+pub fn object_keys(expression: &Expression) -> Option<Vec<String>> {
+    use glass_easel_template_compiler::parse::expr::ObjectFieldKind;
+
+    let Expression::LitObj { fields, .. } = expression else {
+        return None;
+    };
+    fields
+        .iter()
+        .map(|field| match field {
+            ObjectFieldKind::Named { name, .. } => Some(name.to_string()),
+            ObjectFieldKind::Spread { .. } => None,
+        })
+        .collect()
+}
+
+/// 遍历表达式树上的每个节点（含自身）。对象键、`wx:for` 作用域不参与遍历。
+fn walk(expression: &Expression, visit: &mut impl FnMut(&Expression)) {
     use Expression::*;
     use glass_easel_template_compiler::parse::expr::{ArrayFieldKind, ObjectFieldKind};
+
+    visit(expression);
     match expression {
-        DataField { name, .. } => name.as_str() == target,
-        StaticMember { obj, .. } => references(obj, target),
+        StaticMember { obj, .. } => walk(obj, visit),
         DynamicMember {
             obj, field_name, ..
-        } => references(obj, target) || references(field_name, target),
-        FuncCall { func, args, .. } => {
-            references(func, target) || args.iter().any(|arg| references(arg, target))
+        } => {
+            walk(obj, visit);
+            walk(field_name, visit);
         }
-        LitObj { fields, .. } => fields.iter().any(|field| match field {
-            ObjectFieldKind::Named { value, .. } | ObjectFieldKind::Spread { value, .. } => {
-                references(value, target)
+        FuncCall { func, args, .. } => {
+            walk(func, visit);
+            for arg in args {
+                walk(arg, visit);
             }
-        }),
-        LitArr { fields, .. } => fields.iter().any(|field| match field {
-            ArrayFieldKind::Normal { value } | ArrayFieldKind::Spread { value, .. } => {
-                references(value, target)
+        }
+        LitObj { fields, .. } => {
+            for field in fields {
+                match field {
+                    ObjectFieldKind::Named { value, .. }
+                    | ObjectFieldKind::Spread { value, .. } => walk(value, visit),
+                }
             }
-            ArrayFieldKind::EmptySlot => false,
-        }),
+        }
+        LitArr { fields, .. } => {
+            for field in fields {
+                match field {
+                    ArrayFieldKind::Normal { value } | ArrayFieldKind::Spread { value, .. } => {
+                        walk(value, visit)
+                    }
+                    ArrayFieldKind::EmptySlot => {}
+                }
+            }
+        }
         ToStringWithoutUndefined { value, .. }
         | Reverse { value, .. }
         | BitReverse { value, .. }
         | Positive { value, .. }
         | Negative { value, .. }
         | TypeOf { value, .. }
-        | Void { value, .. } => references(value, target),
+        | Void { value, .. } => walk(value, visit),
         Multiply { left, right, .. }
         | Divide { left, right, .. }
         | Remainer { left, right, .. }
@@ -341,7 +398,8 @@ pub fn references(expression: &Expression, target: &str) -> bool {
         | LogicAnd { left, right, .. }
         | LogicOr { left, right, .. }
         | NullishCoalescing { left, right, .. } => {
-            references(left, target) || references(right, target)
+            walk(left, visit);
+            walk(right, visit);
         }
         Cond {
             cond,
@@ -349,9 +407,11 @@ pub fn references(expression: &Expression, target: &str) -> bool {
             false_br,
             ..
         } => {
-            references(cond, target) || references(true_br, target) || references(false_br, target)
+            walk(cond, visit);
+            walk(true_br, visit);
+            walk(false_br, visit);
         }
-        _ => false,
+        _ => {}
     }
 }
 

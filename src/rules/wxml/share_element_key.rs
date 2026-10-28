@@ -115,7 +115,7 @@ fn check_file(doc: &WxmlDoc, out: &mut Vec<Diagnostic>) {
         }
         // 模板定义体里的元素只在实例化处渲染，实例数量与相对位置静态不可知，
         // 只判「缺 key / 空 key」这类与实例无关的问题，不参与重复判定。
-        if !element.in_template {
+        if !element.in_template() {
             seen.push((key.to_string(), element.branches.clone()));
         }
     });

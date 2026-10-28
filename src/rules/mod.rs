@@ -86,6 +86,7 @@ impl Registry {
             Box::new(wxml::ScrollViewFamily),
             Box::new(wxml::ComponentChildren),
             Box::new(wxml::ShareElementKey),
+            Box::new(wxml::TemplateDataScope),
             Box::new(wxml::HorizontalScrollEnableFlex),
             Box::new(wxml::TextHardBreakEllipsis),
             Box::new(wxml::InlineRun),

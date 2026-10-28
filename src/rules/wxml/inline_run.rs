@@ -64,7 +64,7 @@ fn check_element(
     }
     // `<template>` 定义里的元素在实例化时才接上外层祖先，样式表里的后代选择器
     // 在这里一律匹配不到（`display_values` 会返回空）——与其误报，不如不判。
-    if element.in_template || doc.fragment {
+    if element.in_template() || doc.fragment {
         return;
     }
     // 内联 `style` 是动态值时 display 未知，宁可漏报。

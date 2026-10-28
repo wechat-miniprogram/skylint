@@ -10,6 +10,7 @@
 
 use std::ops::Range;
 
+use glass_easel_template_compiler::parse::expr::Expression;
 use glass_easel_template_compiler::parse::tag::{
     Attribute, ClassAttribute, Element, ElementKind, EventBinding, Ident, Node, NormalAttribute,
     NormalAttributePrefix, StaticAttribute, StyleAttribute, Value,
@@ -23,6 +24,22 @@ pub fn parse(path: &str, source: &str, env: &Env) -> Result<WxmlDoc, String> {
     WxmlDoc::parse(path, source, env)
 }
 
+/// 一个 `<template is="x" data="…">` 调用点。
+///
+/// 模板被摊平后调用元素不在 `nodes` 里（展开内容静态不可知），需要这份单独记录才能
+/// 回答「这个调用给了模板体哪些数据」。
+#[derive(Debug, Clone)]
+pub struct TemplateCall {
+    /// 静态模板名；`is="{{…}}"` 这种动态引用不记录。
+    pub name: String,
+    /// `data` 是对象字面量时的顶层键；不是对象字面量（含 spread、变量）时为 `None`。
+    pub data_keys: Option<Vec<String>>,
+    /// 这个调用点本身写在哪个模板的定义体里（顶层调用为 `None`）。
+    pub template: Option<String>,
+    pub start: Position,
+    pub end: Position,
+}
+
 /// 一个 WXML 文件的解析结果。
 #[derive(Debug)]
 pub struct WxmlDoc {
@@ -31,6 +48,8 @@ pub struct WxmlDoc {
     pub nodes: Vec<WxmlNode>,
     /// `<import>` / `<include>` 的 `src` 原始值（编译器已剥掉 `.wxml` 后缀）。
     template_refs: Vec<String>,
+    /// `<template is="x" data="…">` 调用点（按源码顺序）。
+    pub template_calls: Vec<TemplateCall>,
     /// 这份文件不是单元本身，而是被 `<import>` / `<include>` 引用的片段：
     /// 它的根节点在实例化处的父节点静态不可知。
     pub fragment: bool,
@@ -61,12 +80,12 @@ pub struct WxmlElement {
     /// 嵌套 `wx:if` 时会叠加：外层分支与外层 `else` 里的元素各带一条栈，内层元素
     /// 在栈顶再加自己那一层，这样「互斥」判定不会因为嵌套而丢失外层信息。
     pub branches: Vec<Branch>,
-    /// 元素来自内联 `<template name="x">` 的定义体。
+    /// 元素来自内联 `<template name="x">` 的定义体，值为模板名。
     ///
     /// 定义体只在被 `<template is="x"/>` 实例化的位置渲染，真实祖先 / 兄弟结构
     /// 静态不可知：标签与属性类规则照常检查，依赖祖先或子节点计数的结构规则
     /// （scroll-view 家族、组件子节点、key 唯一性）必须跳过。
-    pub in_template: bool,
+    pub template: Option<String>,
     /// 子节点里有被摊平掉的 `<template is>` / `<include>`：展开后的内容静态不可知。
     pub unknown_children: bool,
     /// 元素是 `<slot/>`：运行时的子节点由父级提供，写在使用它的文件里，
@@ -76,6 +95,11 @@ pub struct WxmlElement {
 
 impl WxmlElement {
     /// 元素（或它的任一祖先）处在条件里用到 `renderer` 的分支里。
+    /// 元素是否来自内联 `<template name>` 的定义体。
+    pub fn in_template(&self) -> bool {
+        self.template.is_some()
+    }
+
     pub fn renderer_guarded(&self) -> bool {
         self.branches.iter().any(|branch| branch.renderer_guarded)
     }
@@ -93,13 +117,15 @@ impl WxmlElement {
 
 /// 一个条件分支的标识：同一个 `wx:if` 节点的所有分支共享 `group`，`arm` 是分支序号
 /// （`wx:if` 为 0，`wx:elif` 依次递增，`else` 排在它们之后）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Branch {
     pub group: u32,
     pub arm: u32,
     /// 这一支的条件里用到了 `renderer`：整支只在特定渲染器下渲染。
     /// 反向（WebView）规则据此跳过作者已经做过两端分支的代码。
     pub renderer_guarded: bool,
+    /// 这一支的条件引用的数据字段（模板数据作用域规则需要知道条件吃了哪些键）。
+    pub fields: Vec<String>,
 }
 
 /// 元素上的一个属性。
@@ -121,6 +147,11 @@ pub struct WxmlAttribute {
     pub candidates: Option<Vec<String>>,
     /// 属性值里引用了 `renderer`：这个属性的取值跟着渲染后端变。
     pub references_renderer: bool,
+    /// 动态绑定的表达式原文，静态 / 无值属性为 `None`。
+    ///
+    /// 保留整棵表达式树而不是预先抽字段：规则需要的东西各不相同（数据字段、对象键、
+    /// 是否引用某字段），让规则自己用 `input::expr` 里的辅助函数取。
+    pub expression: Option<Expression>,
     /// 属性名（含前缀）到值结尾的范围。
     pub start: Position,
     pub end: Position,
@@ -167,7 +198,16 @@ impl WxmlDoc {
             ));
         }
         let mut next_group = 0;
-        let mut nodes = flatten(&template.content, source, env, &mut next_group, &[], false);
+        let mut template_calls = Vec::new();
+        let mut nodes = flatten(
+            &template.content,
+            source,
+            env,
+            &mut next_group,
+            &[],
+            None,
+            &mut template_calls,
+        );
         // 内联 `<template name="x">` 的定义体只存在 `globals.sub_templates` 里，不在
         // `content` 中：不摊平的话其中的元素对所有规则都不可见。
         // 定义体的数据作用域是 `<template is data="…">` 新传的对象，看不到组件的
@@ -180,7 +220,8 @@ impl WxmlDoc {
                 &empty,
                 &mut next_group,
                 &[],
-                true,
+                Some(definition.name.name.as_str()),
+                &mut template_calls,
             ));
         }
         let template_refs = template
@@ -203,6 +244,7 @@ impl WxmlDoc {
             source: source.to_string(),
             nodes,
             template_refs,
+            template_calls,
             // 由调用方（`load_doc`）按工程视图补上。
             fragment: false,
         })
@@ -326,11 +368,12 @@ fn flatten(
     env: &Env,
     next_group: &mut u32,
     branches: &[Branch],
-    in_template: bool,
+    template: Option<&str>,
+    calls: &mut Vec<TemplateCall>,
 ) -> Vec<WxmlNode> {
     nodes
         .iter()
-        .flat_map(|node| node_nodes(node, source, env, next_group, branches, in_template))
+        .flat_map(|node| node_nodes(node, source, env, next_group, branches, template, calls))
         .collect()
 }
 
@@ -340,12 +383,13 @@ fn node_nodes(
     env: &Env,
     next_group: &mut u32,
     branches: &[Branch],
-    in_template: bool,
+    template: Option<&str>,
+    calls: &mut Vec<TemplateCall>,
 ) -> Vec<WxmlNode> {
     match node {
         Node::Text(value) => vec![WxmlNode::Text(text_node(value, source, branches))],
         Node::Element(element) => {
-            element_nodes(element, source, env, next_group, branches, in_template)
+            element_nodes(element, source, env, next_group, branches, template, calls)
         }
         Node::Comment(_) => vec![WxmlNode::Comment],
         _ => Vec::new(),
@@ -358,7 +402,8 @@ fn element_nodes(
     env: &Env,
     next_group: &mut u32,
     branches: &[Branch],
-    in_template: bool,
+    template: Option<&str>,
+    calls: &mut Vec<TemplateCall>,
 ) -> Vec<WxmlNode> {
     match &element.kind {
         ElementKind::Normal {
@@ -371,14 +416,14 @@ fn element_nodes(
             tag_end: tag_name.location.end,
             attributes: attributes(element, source, env),
             unknown_children: has_unknown_children(children),
-            children: flatten(children, source, env, next_group, branches, in_template),
+            children: flatten(children, source, env, next_group, branches, template, calls),
             branches: branches.to_vec(),
-            in_template,
+            template: template.map(str::to_string),
             is_slot: false,
         })],
         // 透明容器：不产生条件组，但把外层的分支栈透传下去。
         ElementKind::Pure { children, .. } | ElementKind::For { children, .. } => {
-            flatten(children, source, env, next_group, branches, in_template)
+            flatten(children, source, env, next_group, branches, template, calls)
         }
         ElementKind::If {
             branches: arms,
@@ -394,12 +439,13 @@ fn element_nodes(
             let chain_guarded = arms
                 .iter()
                 .any(|(_, condition, _)| condition_mentions_renderer(condition));
-            let inner = |arm: u32, guarded: bool| {
+            let inner = |arm: u32, guarded: bool, fields: Vec<String>| {
                 let mut stack = branches.to_vec();
                 stack.push(Branch {
                     group,
                     arm,
                     renderer_guarded: guarded,
+                    fields,
                 });
                 stack
             };
@@ -422,8 +468,13 @@ fn element_nodes(
                     source,
                     env,
                     next_group,
-                    &inner(arm as u32, condition_mentions_renderer(condition)),
-                    in_template,
+                    &inner(
+                        arm as u32,
+                        condition_mentions_renderer(condition),
+                        condition_fields(condition),
+                    ),
+                    template,
+                    calls,
                 ));
             }
             if !decided && let Some((_, children)) = else_branch {
@@ -432,8 +483,9 @@ fn element_nodes(
                     source,
                     env,
                     next_group,
-                    &inner(arms.len() as u32, chain_guarded),
-                    in_template,
+                    &inner(arms.len() as u32, chain_guarded, Vec::new()),
+                    template,
+                    calls,
                 ));
             }
             out
@@ -448,9 +500,33 @@ fn element_nodes(
             children: Vec::new(),
             unknown_children: false,
             branches: branches.to_vec(),
-            in_template,
+            template: template.map(str::to_string),
             is_slot: true,
         })],
+        ElementKind::TemplateRef { target, data, .. } => {
+            // 动态 `<template is="{{…}}">` 解析不出目标，跳过。
+            let Value::Static { value: name, .. } = &target.1 else {
+                return Vec::new();
+            };
+            if name.is_empty() {
+                return Vec::new();
+            }
+            calls.push(TemplateCall {
+                name: name.to_string(),
+                data_keys: match &data.1 {
+                    Value::Dynamic { expression, .. } => {
+                        crate::input::expr::object_keys(expression)
+                    }
+                    // 没写 `data`：模板体拿到的是空对象。
+                    Value::Static { value, .. } if value.is_empty() => Some(Vec::new()),
+                    _ => None,
+                },
+                template: template.map(str::to_string),
+                start: element.tag_location.start.0.start,
+                end: element.tag_location.start.1.end,
+            });
+            Vec::new()
+        }
         _ => Vec::new(),
     }
 }
@@ -464,6 +540,14 @@ fn condition_truthy(condition: &Value, env: &Env) -> Option<bool> {
         // 只有空值等价于「没写这个属性」。
         Value::Static { value, .. } => Some(!value.is_empty()),
         _ => None,
+    }
+}
+
+/// 条件表达式引用的数据字段；静态条件没有。
+fn condition_fields(condition: &Value) -> Vec<String> {
+    match condition {
+        Value::Dynamic { expression, .. } => crate::input::expr::data_fields(expression),
+        _ => Vec::new(),
     }
 }
 
@@ -612,6 +696,7 @@ fn value_attribute(
             class_tokens: None,
             candidates: None,
             references_renderer: false,
+            expression: None,
             start: range.start,
             end: location.end,
             value_start: Some(location.start),
@@ -622,6 +707,7 @@ fn value_attribute(
                 .then(|| crate::input::expr::class_tokens(expression, env)),
             candidates: crate::input::expr::candidates(expression, env),
             references_renderer: crate::input::expr::references(expression, "renderer"),
+            expression: Some((**expression).clone()),
             name,
             value: None,
             is_static: false,
@@ -637,6 +723,7 @@ fn value_attribute(
             class_tokens: None,
             candidates: None,
             references_renderer: false,
+            expression: None,
             start: range.start,
             end: range.end,
             value_start: None,
@@ -648,6 +735,7 @@ fn value_attribute(
             class_tokens: None,
             candidates: None,
             references_renderer: false,
+            expression: None,
             start: range.start,
             end: range.end,
             value_start: None,
@@ -693,6 +781,7 @@ fn static_attribute(attr: &StaticAttribute, source: &str) -> WxmlAttribute {
         class_tokens: None,
         candidates: None,
         references_renderer: false,
+        expression: None,
         start,
         end: attr.value.location.end,
         value_start: Some(attr.value.location.start),

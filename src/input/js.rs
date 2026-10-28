@@ -119,11 +119,10 @@ impl JsDoc {
         &self.source
     }
 
-    /// `data` / `properties` 里能确定取值的绑定（已被动态写入的键扣掉）。
+    /// `properties` 默认值里能确定取值的绑定（已被动态写入的键扣掉）。
     ///
-    /// 这是模板常量环境的数据来源之一：只有整份文件都没对它做过非字面量写入的
-    /// 键才会留下——`setData({ renderer: 变量 })` 或 `setData(变量)` 会让对应键
-    /// （或全部键）从环境里消失，`wx:if="{{renderer === 'skyline'}}"` 随之不折叠。
+    /// 只有 `properties` 参与：`data` 是初始化值，页面/组件常用 `onLoad` 后的
+    /// `setData` 把它改成运行时值，而 `dirty_data` 只能看到显式写过的键。
     pub fn constants(&self) -> Env {
         let mut env = Env::default();
         if self.dirty_all {

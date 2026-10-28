@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 54 条：error 15 条、warning 35 条、info 4 条。
+共 55 条：error 15 条、warning 36 条、info 4 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
@@ -16,6 +16,7 @@
 | `skyline/scroll-view-family` | error | skyline | scroll-view 家族组件的结构约束（挂载位置 / 顺序 / 唯一性 / 必需属性 / 关联容器） |
 | `skyline/component-children` | error | skyline | 组件对直接子节点的结构约束（只允许某类子节点 / 必须唯一子节点 / 条件必需的子节点） |
 | `skyline/share-element-key` | error | skyline | `<share-element>` 的 key 必填且同一文件内唯一 |
+| `skyline/template-data-scope` | warning | skyline | 模板体引用的字段在它的所有 `<template is>` 调用点都没传，引用恒为 undefined |
 | `skyline/horizontal-scroll-enable-flex` | warning | skyline | 横向滚动的 `<scroll-view>` 需开启 `enable-flex` 以兼容 WebView |
 | `skyline/text-hard-break-ellipsis` | info | skyline | 多行省略里含硬换行时，Skyline 默认不给末行省略号 |
 | `skyline/inline-run` | info | skyline | WebView 下并排的文本级元素在 Skyline 下会各自换行 |

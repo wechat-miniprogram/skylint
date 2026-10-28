@@ -15,6 +15,7 @@ pub mod scroll_view_family;
 pub mod scroll_view_type;
 pub mod share_element_key;
 pub(crate) mod structure;
+pub mod template_data_scope;
 pub mod text_hard_break_ellipsis;
 pub mod unsupported_component;
 pub mod webview_nested_scroll;
@@ -32,6 +33,7 @@ pub use root_scope_class::RootScopeClass;
 pub use scroll_view_family::ScrollViewFamily;
 pub use scroll_view_type::ScrollViewType;
 pub use share_element_key::ShareElementKey;
+pub use template_data_scope::TemplateDataScope;
 pub use text_hard_break_ellipsis::TextHardBreakEllipsis;
 pub use unsupported_component::UnsupportedComponent;
 pub use webview_nested_scroll::NestedScroll;
@@ -254,6 +256,47 @@ pub(crate) fn resolved_property<'a>(
         }),
         None => from_sheets,
     }
+}
+
+/// WebView 侧本来就会截断吗：多行靠 `-webkit-line-clamp`，单行靠
+/// `white-space: nowrap` + `overflow: hidden` + `text-overflow: ellipsis`。
+///
+/// 自身与任一祖先都算：祖先被 clamp 时内层文本同样被裁掉。用于「WebView 能截断、
+/// Skyline 截不了」这类迁移差异的准入判断——WebView 也不截断时两端一致，不该报。
+pub(crate) fn webview_truncates(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    ancestors: &[&WxmlElement],
+) -> bool {
+    std::iter::once(element)
+        .chain(ancestors.iter().rev().copied())
+        .any(|candidate| {
+            let clamped = resolved_property(project, tree, candidate, "-webkit-line-clamp")
+                .is_some_and(|resolved| {
+                    resolved
+                        .value
+                        .trim()
+                        .parse::<u32>()
+                        .is_ok_and(|lines| lines > 0)
+                });
+            clamped || single_line_ellipsis(project, tree, candidate)
+        })
+}
+
+fn single_line_ellipsis(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
+    let is = |property: &str, expected: &str| {
+        resolved_property(project, tree, element, property)
+            .is_some_and(|resolved| resolved.value.trim().eq_ignore_ascii_case(expected))
+    };
+    is("white-space", "nowrap")
+        && matches!(
+            resolved_property(project, tree, element, "overflow")
+                .as_ref()
+                .map(|resolved| resolved.value.trim().to_ascii_lowercase()),
+            Some(value) if value == "hidden" || value == "clip"
+        )
+        && is("text-overflow", "ellipsis")
 }
 
 /// 内联 `style` 里某个属性的最后一个取值。

@@ -279,7 +279,7 @@ impl<'a> Tree<'a> {
                     attributes: Vec::new(),
                     children: Vec::new(),
                     branches: Vec::new(),
-                    in_template: false,
+                    template: None,
                     unknown_children: true,
                     is_slot: false,
                 });
@@ -327,7 +327,7 @@ impl<'a> Tree<'a> {
             return Tri::Unknown;
         }
         // 内联 `<template name>` 的定义体只在实例化处渲染，真实祖先静态不可知。
-        if shape.combinator && self.elems.iter().any(|element| element.in_template) {
+        if shape.combinator && self.elems.iter().any(|element| element.in_template()) {
             return Tri::Unknown;
         }
         Tri::No
@@ -406,10 +406,20 @@ impl<'a> Tree<'a> {
         let element = self.element_at(idx);
         let mut positional = false;
         let mut dynamic = false;
+        // `iter_raw_match_order` 从主体往左走：组合符左边是祖先 / 兄弟，问的是**别的**
+        // 元素，动态属性由引擎沿真实结构去比，不能拿主体元素的动态 class 一概而论
+        // （`.a .b` 里 `.b` 带任意动态类会让 `.a` 永远判成 Unknown）。
+        let mut in_subject = true;
         for component in selector.iter_raw_match_order() {
             match component {
-                Component::Combinator(Combinator::NextSibling | Combinator::LaterSibling) => {
-                    positional = true;
+                Component::Combinator(_) => {
+                    in_subject = false;
+                    if matches!(
+                        component,
+                        Component::Combinator(Combinator::NextSibling | Combinator::LaterSibling)
+                    ) {
+                        positional = true;
+                    }
                 }
                 Component::Nth(_) | Component::NthOf(_) => positional = true,
                 Component::NonTSPseudoClass(pseudo) => match dialect {
@@ -438,37 +448,42 @@ impl<'a> Tree<'a> {
                     return Some(Tri::No);
                 }
                 Component::Class(name) => {
-                    if self.class_unresolved(&name.0, element) {
+                    if in_subject && self.class_unresolved(&name.0, element) {
                         dynamic = true;
                     }
                 }
                 Component::ID(_) => {
-                    if self.has_dynamic(Some("id"), element) {
+                    if in_subject && self.has_dynamic(Some("id"), element) {
                         dynamic = true;
                     }
                 }
                 // `[foo]` 只看存在性，动态绑定同样确定存在，静态可判。
                 Component::AttributeInNoNamespaceExists { .. } => {}
                 Component::AttributeInNoNamespace { local_name, .. } => {
-                    if dialect == Dialect::WebView
+                    if in_subject
+                        && dialect == Dialect::WebView
                         && self.attr_condition_unresolved(local_name.0.as_str(), element)
                     {
                         dynamic = true;
                     }
                 }
                 Component::AttributeOther(other) => {
-                    if dialect == Dialect::WebView
+                    if in_subject
+                        && dialect == Dialect::WebView
                         && self.attr_condition_unresolved(other.local_name.0.as_str(), element)
                     {
                         dynamic = true;
                     }
                 }
                 Component::Empty => {
-                    if element.unknown_children {
+                    if in_subject && element.unknown_children {
                         dynamic = true;
                     }
                 }
                 Component::Negation(list) | Component::Is(list) => {
+                    if !in_subject {
+                        continue;
+                    }
                     for inner in list.slice() {
                         for component in inner.iter_raw_match_order() {
                             match component {
@@ -555,7 +570,7 @@ impl<'a> Tree<'a> {
     /// 兄弟区是否线性：含条件分支 / 循环 / 模板片段时序号不可静态确定。
     fn nonlinear_siblings(&self, idx: usize) -> bool {
         let element = self.element_at(idx);
-        if element.in_template || self.doc.fragment {
+        if element.in_template() || self.doc.fragment {
             return true;
         }
         let siblings: &[WxmlNode] = match self.parent[idx] {
@@ -568,7 +583,7 @@ impl<'a> Tree<'a> {
         siblings.iter().any(|node| match node {
             WxmlNode::Element(el) => {
                 !el.branches.is_empty()
-                    || el.in_template
+                    || el.in_template()
                     || self.attribute(el, "wx:for").is_some()
                     || self.attribute(el, "wx:if").is_some()
             }
@@ -932,5 +947,43 @@ mod tests {
         assert_eq!(check(&d, 0, ".x:active", Dialect::WebView), Tri::Unknown);
         // 支持的伪类照常判定。
         assert_eq!(check(&d, 0, ".x:first-child", Dialect::Skyline), Tri::Yes);
+    }
+}
+
+#[cfg(test)]
+mod descendant_dynamic_subject {
+    use super::*;
+
+    /// 主体带任意动态 class 时，祖先 compound 仍要按真实祖先判定：`.a .b` 里 `.a`
+    /// 问的是父节点，不能拿 `.b` 的动态 class 把整条选择器判成 Unknown。
+    #[test]
+    fn dynamic_subject_class_does_not_poison_combinator_matching() {
+        let fixture = crate::rules::testutil::wxml::project(
+            "descendant-dynamic-subject",
+            r#"<view class="half-screen-dialog"><view class="panel {{extClass}}">x</view></view>"#,
+        );
+        let project = fixture.project();
+        let doc = crate::rules::wxml::load_doc(&project, "pages/index/index.wxml").unwrap();
+        let tree = Tree::new(&doc);
+        assert_eq!(
+            tree.any_match(".half-screen-dialog .panel", Dialect::WebView),
+            Tri::Yes
+        );
+    }
+
+    /// 祖先 compound 的类根本不存在时仍然是 No，不能被动态类洗成 Unknown。
+    #[test]
+    fn missing_ancestor_class_stays_no() {
+        let fixture = crate::rules::testutil::wxml::project(
+            "descendant-missing-ancestor",
+            r#"<view class="other"><view class="panel {{extClass}}">x</view></view>"#,
+        );
+        let project = fixture.project();
+        let doc = crate::rules::wxml::load_doc(&project, "pages/index/index.wxml").unwrap();
+        let tree = Tree::new(&doc);
+        assert_eq!(
+            tree.any_match(".half-screen-dialog .panel", Dialect::WebView),
+            Tri::No
+        );
     }
 }

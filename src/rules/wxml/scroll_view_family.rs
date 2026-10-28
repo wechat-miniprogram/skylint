@@ -220,7 +220,7 @@ impl Rule for ScrollViewFamily {
                 structure::check_element(ID, doc, element, ancestors, CONSTRAINTS, doc.path(), out);
 
                 // nested-scroll.md NEVER 1「不要在 nested-scroll-body 下面放 nested-scroll-header」。
-                if !element.in_template
+                if !element.in_template()
                     && element.tag == "nested-scroll-header"
                     && ancestors
                         .iter()

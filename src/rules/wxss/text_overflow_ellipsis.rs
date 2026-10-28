@@ -62,7 +62,7 @@ impl crate::rules::Rule for TextOverflowEllipsis {
                 sheet,
                 &rule.selectors,
                 &mut docs,
-                |tree, element| can_host_text(project, tree, element),
+                |tree, element| no_divergence(project, tree, element),
             );
             if offenders.is_empty() {
                 return;
@@ -84,12 +84,12 @@ impl crate::rules::Rule for TextOverflowEllipsis {
     }
 }
 
-/// 这个命中在 WebView 下会不会真的产生省略号。
+/// 这个命中不构成「WebView 能省略、Skyline 不能」的差异。
 ///
-/// `<text>` / `<span>` / `<navigator>` 与自定义组件按「能承载」处理；其余宿主只有
-/// `white-space: nowrap` 生效时才可能省略——没 nowrap 时文本会换行，WebView 也不省略。
-/// `white-space` 继承上来的场景静态判不了，按漏报处理。
-fn can_host_text(project: &Project, tree: &Tree, element: &WxmlElement) -> bool {
+/// - 宿主是 `<text>` / `<span>` / `<navigator>` 或自定义组件：Skyline 下这条声明本来生效；
+/// - 其余宿主在 WebView 里也得要 `white-space: nowrap` 才可能省略，没 nowrap 时文本只
+///   换行、两端一致。`white-space` 从祖先继承的场景静态判不了，按漏报处理。
+fn no_divergence(project: &Project, tree: &Tree, element: &WxmlElement) -> bool {
     if !is_builtin(&element.tag) || matches!(element.tag.as_str(), "text" | "span" | "navigator") {
         return true;
     }

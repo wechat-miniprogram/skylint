@@ -873,6 +873,64 @@ skit-player 170 → 180（+10 `fit-content`）。
 
 测试 735 + 30 + 3 全绿，clippy 0，`docs/RULES.md` 54 条（error 15）。
 
+### P13 二轮审计后的判据修正：包含块、主体 compound、模板数据作用域
+
+第二轮 novel plugin 审计（`.tmp/novel-audit2/REPORT.md`）复核后，只落了「有源码证据、且在六个参考工程上零噪音」的几项；三条被否的候选也记在这里。
+
+**新规则 `skyline/template-data-scope`（warning）**
+
+模板体的数据作用域是 `<template is>` 新建的对象，看不到页面 / 组件的 `data`（`proc_gen/tag.rs:1275-1287`）。
+判据：模板名 → 模板体引用到的字段（属性表达式 + `wx:if`/`wx:elif` 条件；`wx:for` 的 `item`/`index`、WXS 模块名是作用域引用，不算），
+调用点 → `data` 对象字面量的顶层键。**只有「所有调用点都没传」才报**：
+逐调用点判在 `weapp-novel-plugin` 上会出 12 条，其中 8 条是故意的（同一 `Blocks` 模板被有选择地传部分键，未传的靠 `undefined` 走关闭分支），
+而「一个都没传」几乎必然是漏改。实测六工程：novel 两个仓库各 1 条（`Blocks` 模板体引用了 `needHeartAnimation` / `payChapterId`，全项目没有任何调用点提供），其余四工程 0 条。
+
+输入层为此补了三样：`WxmlAttribute::expression`（动态绑定保留表达式树，规则用 `input::expr::data_fields` / `object_keys` 取）、
+`WxmlElement::template`（定义体元素记住模板名，原来的 `in_template: bool` 变成 `in_template()`）、
+`WxmlDoc::template_calls`（`<template is data>` 调用点；模板被摊平后调用元素不在节点树里）。
+文本插值（`{{x}}` 写在文本节点里）看不到，属已知漏报。
+
+**`skyline/fixed-layer` 改成判「包含块」**
+
+旧判据「fixed + 没有整数 z-index 就报」在真实工程里 14/14 是噪音：非 fixed 的普通内容永远盖不住 fixed（`widgets/yoga_connector.h:62` 的 `StackingPaintEnabled()` 只在 root container 有带 z-index 的直接子节点时才启用排序），
+页面级顺序两端都是文档序。真正会产生差异的是**祖先形成包含块**：WebView 里 `transform` / `perspective` / `filter` / `backdrop-filter` / `contain` / `will-change: transform` 的祖先会把 fixed 抓住、相对该祖先定位，
+而 Skyline 把它提到页面 root container（`shadow/shadow_tree.cc:683-706` + `widgets/widget_operation.cc:492-546`，每页一个 ShadowTree）。
+`z-index` 只影响绘制顺序、不构成包含块，已从触发条件里去掉。
+五个参考工程里原来 14 条噪音全部消失，新增 2 条（novel 两个仓库的 `.official_contents_mask`：祖先 `.official_option_menu_container` 带 `will-change: transform`，WebView 里 mask 被这个 0 高度的容器抓住）。
+
+**`skyline/component-attribute` 去掉两类「两端同错」**
+
+- `<image mode="aspectFit|aspectFill|widthFix">` 这种管道串：WebView 的 `_checkMode` 是字面量白名单（`wx-image.js:539-564`），未知值直接 return、`backgroundSize` 停在默认，Skyline 未知 mode 走 `kFill`——两端都回退成拉伸，不是迁移差异，整类跳过（原来按 info 报，仍是噪音）。
+- `<text overflow="ellipsis">` 缺 `max-lines`：行内 `<text>` 在 WebView 里没 `nowrap` / clamp 时只换行，两行截断根本不存在。现在走共享的 `wxml::webview_truncates`（自身或任一祖先有 `-webkit-line-clamp` 或单行三件套才算 WebView 真会省略），与 `webview/text-truncation` 用同一份判据。
+
+`text-overflow-ellipsis` 里那个反向职责的闭包同时改名成 `no_divergence`（它返回的是「这个命中不构成差异」，原来叫 `can_host` 会读反）。
+
+**匹配层：动态 class 只影响主体 compound**
+
+`classify()` 原来对 `iter_raw_match_order()` 里的每个类都拿**主体元素**去问「这个类不可判定吗」，于是 `.a .b` 只要 `.b` 的 class 里带任意动态插值，`.a` 也会被问在 `.b` 上并判成 `Unknown`——
+实测 `.half-screen-dialog .panel`（`.panel` 是 `class="panel {{extClass}}"`）从 Yes 变 Unknown，`media-query` 的命中闸门因此丢掉 2 条真问题。
+现在遇到组合符就停止主体分析：组合符左边问的是别的节点，由引擎沿真实结构去比。新增两条 matcher 测试（动态主体仍 Yes、祖先类不存在仍是 No）。
+
+`any_selector_matches`（`media-query` 的「块内选择器命中了吗」闸门）从「`!= No`」收成「`== Yes`」：`Unknown` 只意味着可能有，businessview 的 `styles/weui.wxss` 整库 vendor 样式里有 4 条 `@media` 块命不中导入它的 4 份作用域 WXML（`.weui-half-screen-dialog` 等在组件里，页面导入的样式表进不去组件）。收紧后 businessview −4 media-query，plugin_1 的 2 条（`.half-screen-dialog .panel`，真实命中）保留。
+
+收紧带来的 3 条新命中是 `dead-selector`（businessview `styles/weui.wxss:3573,3574,3577` 的 `.weui-agree a` / `.weui-agree navigator`）：`auth.wxml` 里 `.weui-agree` 只有 `checkbox` / `text` / `view`，没有 `<a>` 也没有 `<navigator>`，选择器确实永不命中。
+
+**明确不做**
+
+| 候选 | 理由 |
+|---|---|
+| `<text space="nbsp" decode>` 报「Skyline 不支持」 | 知识库 `media/text.md:57-62` 说这是 WebView 特有属性，但引擎 2025-04 就实现了：`shadow/components/text_shadow_node.cc:310-323` 读 `space` / `decode`（`feat(text): support space and decode property` `5d865a682`），有 `CollapseTextWhitespace` 全套逻辑。按知识库报会全是误报，规则不落；知识库该改的是文档 |
+| `skyline/page-scroll`（Skyline 页没有滚动容器） | 维持 P12 的判断：Skyline 页会被注入 `disableScroll: true`，「内容是否超过一屏」静态判不出，实测 14 页只有 1 页真有问题 |
+| `pinned-renderer` 收脚本 `data` 字面量 | 同一份偏差留着只影响一条漏报，而 Env 是所有折叠的共享输入层，按 `#1779` 必须五工程零差异——改不了就只修文档：`js.rs` 与 `webview_pinned_renderer` 的注释原来写「`data` / `properties`」，实现一直只收 `properties`（`data` 是初始化值，随后会被 `setData` 改写），已改成与实现一致 |
+
+**验收**（六工程、两个方向逐字段 diff，`d1daef4` → 本轮）
+
+正向：novel 23 → 23、skit_1 28 → 28、businessview 411 → 406（−4 media-query、−4 fixed-layer、+3 dead-selector）、
+plugin_1 144 → 117（−23 component-attribute、−6 fixed-layer、+1 fixed-layer、+1 template-data-scope）、plugin_2 142 → 117（同型）、
+skit-player 180 → 179（−1 fixed-layer）。反向：businessview 0 → 3（同上 3 条 dead-selector），其余五个工程零变化。
+
+测试 743 + 30 + 3 全绿，clippy 0，`docs/RULES.md` 55 条（error 15）。
+
 ## 5. 五个视图与规则族
 
 | 视图 | 来源 | 服务哪族规则 |

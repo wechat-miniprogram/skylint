@@ -224,6 +224,20 @@ mod tests {
     }
 
     #[test]
+    fn descendant_written_branch_does_not_exempt_the_base_declaration() {
+        // `.name .skyline` 是后代关系，不是同元素的变体：`.name` 的声明没被覆盖。
+        let (_f, project) = page(
+            "property-skyline-descendant",
+            r#"<text class="name {{renderer}}">x</text>"#,
+            r#"
+            .name { -webkit-line-clamp: 2; }
+            .name .skyline { -webkit-line-clamp: unset; }
+            "#,
+        );
+        assert_eq!(messages(&UnsupportedProperty, &project).len(), 1);
+    }
+
+    #[test]
     fn property_names_are_matched_exactly_not_by_substring() {
         let (_f, project) = single(
             "property-attribution",
