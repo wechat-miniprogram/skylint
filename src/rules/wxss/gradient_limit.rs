@@ -213,12 +213,13 @@ mod tests {
     use crate::rules::Rule;
 
     use super::GradientLimit;
-    use crate::rules::testutil::wxss::{messages, single};
+    use crate::rules::testutil::wxss::{messages, page};
 
     #[test]
     fn gradient_limit_reports_shape_size_and_stop_units() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "gradient-positive",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/>"#,
             r#"
             .a { background-image: radial-gradient(ellipse, red 0%, blue 100%); }
             .b { background-image: radial-gradient(circle 10em, red 0%, blue 100%); }
@@ -239,8 +240,9 @@ mod tests {
     /// 长度型前言（没有形状关键字）不能被当成颜色停止；省略形状本身也要报。
     #[test]
     fn radial_gradient_with_length_only_prelude_is_a_size_not_a_stop() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "gradient-length-prelude",
+            r#"<view class="a"/><view class="b"/>"#,
             r#"
             .a { background-image: radial-gradient(10em, red 0%, blue 100%); }
             .b { background-image: radial-gradient(10px, red 0%, blue 100%); }
@@ -258,8 +260,9 @@ mod tests {
     /// `rpx` 停止位置不被引擎接受，`mask-image` 也要查。
     #[test]
     fn rpx_stops_and_mask_gradients_are_reported() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "gradient-rpx",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
             r#"
             .a { background-image: linear-gradient(red 10rpx, blue 100%); }
             .b { mask-image: linear-gradient(red 10em, blue 100%); }
@@ -275,8 +278,9 @@ mod tests {
 
     #[test]
     fn gradient_limit_accepts_supported_gradients_and_vars() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "gradient-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="f"/><view class="g"/>"#,
             r#"
             .a { background-image: radial-gradient(circle 50px at 10% 20%, red 0%, blue 100%); }
             .b { background-image: linear-gradient(to right, red 0%, blue 100px); }

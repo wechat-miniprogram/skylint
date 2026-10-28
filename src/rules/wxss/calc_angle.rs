@@ -69,12 +69,13 @@ mod tests {
     use crate::rules::Rule;
 
     use super::CalcAngle;
-    use crate::rules::testutil::wxss::{messages, single};
+    use crate::rules::testutil::wxss::{messages, page};
 
     #[test]
     fn calc_angle_reports_angle_units() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "calc-positive",
+            r#"<view class="a"/><view class="b"/>"#,
             r#"
             .a { width: calc(100% - 10deg); }
             .b { margin-left: calc(1rad + 2px); }
@@ -87,8 +88,9 @@ mod tests {
 
     #[test]
     fn pure_angle_calc_folds_and_is_accepted() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "calc-folded",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
             r#"
             .a { transform: rotate(calc(45deg)); }
             .b { transform: rotate(calc(30deg + 15deg)); }
@@ -100,8 +102,9 @@ mod tests {
 
     #[test]
     fn calc_angle_accepts_lengths_plain_angles_and_vars() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "calc-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/>"#,
             r#"
             .a { width: calc(100% - 10px); }
             .b { height: calc(10px + 5rpx); }

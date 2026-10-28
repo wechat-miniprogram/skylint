@@ -26,7 +26,7 @@ use crate::rules::wxml::is_builtin;
 use crate::rules::wxml::resolved_property;
 use crate::{Diagnostic, Severity};
 
-use super::visit_rules;
+use super::visit_matching_rules;
 
 pub const ID: &str = "skyline/text-overflow-ellipsis";
 
@@ -48,7 +48,7 @@ impl crate::rules::Rule for TextOverflowEllipsis {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut docs: HashMap<String, Option<wxml::WxmlDoc>> = HashMap::new();
 
-        visit_rules(project, |sheet, rule, out| {
+        visit_matching_rules(project, |sheet, rule, out| {
             let doc = &sheet.doc;
             let Some(decl) = rule.declaration("text-overflow") else {
                 return;

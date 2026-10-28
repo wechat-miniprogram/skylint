@@ -604,7 +604,7 @@ fn plugin_project(name: &str) -> Fixture {
         "dist/plugin/pages/novel/index.json",
         r#"{"usingComponents":{"row":"../../components/row/row"}}"#,
     )
-    .write("dist/plugin/pages/novel/index.wxml", "<row/>")
+    .write("dist/plugin/pages/novel/index.wxml", r#"<row class="a"/>"#)
     .write("dist/plugin/pages/novel/index.wxss", ".a:hover{color:red}")
     .write("dist/plugin/components/row/row.json", r#"{"component":true}"#)
     .write("dist/plugin/components/row/row.wxml", "<view/>")

@@ -5,7 +5,7 @@ use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
 use super::dict_table::table;
-use super::visit_rules;
+use super::visit_matching_rules;
 use crate::input::wxml::WxmlDoc;
 
 use std::collections::HashMap;
@@ -28,7 +28,7 @@ impl Rule for UnsupportedProperty {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let table = table();
         let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
-        visit_rules(project, |sheet, rule, out| {
+        visit_matching_rules(project, |sheet, rule, out| {
             let doc = &sheet.doc;
             for decl in &rule.declarations {
                 let name = decl.name.to_ascii_lowercase();
@@ -93,12 +93,13 @@ mod tests {
     use crate::rules::Rule;
 
     use super::UnsupportedProperty;
-    use crate::rules::testutil::wxss::{messages, page, single};
+    use crate::rules::testutil::wxss::{messages, page};
 
     #[test]
     fn property_reports_unsupported_properties() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "property-positive",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/><view class="i"/><view class="j"/>"#,
             r#"
             .a { float: left; }
             .b { writing-mode: vertical-rl; }
@@ -127,8 +128,9 @@ mod tests {
     /// 丢弃与不丢弃渲染结果相同。
     #[test]
     fn initial_values_are_not_reported() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "property-initial-values",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/>"#,
             r#"
             .a { object-fit: fill; }
             .b { background-clip: border-box; }
@@ -146,8 +148,9 @@ mod tests {
 
     #[test]
     fn property_ignores_custom_properties_values_and_prefixed_names() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "property-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/><view class="i"/>"#,
             r#"
             .a { --float: left; }
             .b { -wx-contain: size; }
@@ -168,8 +171,9 @@ mod tests {
 
     #[test]
     fn property_reports_missing_property_ids() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "property-unconditional",
+            r#"<view class="c"/><view class="d"/>"#,
             r#"
             .c { text-transform: uppercase; }
             .d { user-select: none; }
@@ -187,8 +191,9 @@ mod tests {
     fn animation_play_state_takes_effect_statically() {
         // 引擎会为它发 Diag，但 Parse 返回的是有效值（animation_play_state.cc:51-86），
         // 且运行时读 PlayStateList 判 kPaused（css_animations.cc:415-416）——静态写法生效。
-        let (_f, project) = single(
+        let (_f, project) = page(
             "property-animation",
+            r#"<view class="a"/><view class="b"/>"#,
             r#"
             .a { animation-play-state: paused; }
             .b { animation-play-state: running; }
@@ -203,8 +208,9 @@ mod tests {
     #[test]
     fn css_wide_keyword_is_not_reported() {
         // `unset` 是迁移工程关掉 WebView 侧写法的手段，不是「用了不支持的值」。
-        let (_f, project) = single(
+        let (_f, project) = page(
             "property-wide-keyword",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/>"#,
             r#"
             .a { float: unset; }
             .b { -webkit-line-clamp: unset; }
@@ -264,8 +270,9 @@ mod tests {
 
     #[test]
     fn property_names_are_matched_exactly_not_by_substring() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "property-attribution",
+            r#"<view class="a"/>"#,
             r#"
             .a { background-clip: padding-box; }
             "#,

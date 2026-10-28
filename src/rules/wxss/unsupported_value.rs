@@ -133,14 +133,15 @@ mod tests {
     use crate::rules::Rule;
 
     use super::UnsupportedValue;
-    use crate::rules::testutil::wxss::{messages, single};
+    use crate::rules::testutil::wxss::{messages, page};
 
     #[test]
     fn value_reports_unsupported_items_of_multi_value_forms() {
         // 引擎按项解析（overflow 分轴、border-style 分边），不支持的项被丢弃，
         // 其余项照常生效。
-        let (_f, project) = single(
+        let (_f, project) = page(
             "value-multi",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
             r#"
             .a { overflow: hidden auto; }
             .b { border-style: solid double; }
@@ -164,8 +165,9 @@ mod tests {
 
     #[test]
     fn multi_value_forms_keep_supported_items_silent() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "value-multi-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
             r#"
             .a { overflow: hidden visible; }
             .b { border-style: solid dashed none dotted; }
@@ -177,8 +179,9 @@ mod tests {
 
     #[test]
     fn value_reports_unsupported_values() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "value-positive",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/>"#,
             r#"
             .a { display: grid; }
             .b { position: sticky; }
@@ -206,8 +209,9 @@ mod tests {
 
     #[test]
     fn value_ignores_supported_values_vars_and_partial_matches() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "value-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/><view class="i"/><view class="j"/><view class="k"/><view class="l"/><view class="m"/><view class="n"/>"#,
             r#"
             .a { display: flex; }
             .b { position: relative; }
@@ -232,8 +236,9 @@ mod tests {
     fn value_reports_intrinsic_size_keywords() {
         // fp 的 width/height/min/max/flex-basis 都是 `<length_percentage_auto>`，
         // `fit-content` 一类关键字解析失败 → 整条声明回滚。
-        let (_f, project) = single(
+        let (_f, project) = page(
             "value-intrinsic-size",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/>"#,
             r#"
             .a { width: fit-content; }
             .b { height: fit-content; }
@@ -254,8 +259,9 @@ mod tests {
 
     #[test]
     fn intrinsic_size_keywords_stay_silent_outside_size_properties() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "value-intrinsic-size-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/>"#,
             r#"
             .a { width: 100%; }
             .b { height: auto; }
@@ -273,8 +279,9 @@ mod tests {
     fn value_reports_length_values_of_vertical_align() {
         // fp 的 vertical-align 值语法只有关键字分支（property.rs:426-433），长度值
         // 解析失败后属性被回滚（parser/mod.rs:1768-1781）；引擎 ParseValue 也只认关键字。
-        let (_f, project) = single(
+        let (_f, project) = page(
             "value-vertical-align-length",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/>"#,
             r#"
             .a { vertical-align: 4px; }
             .b { vertical-align: -2px; }
@@ -300,8 +307,9 @@ mod tests {
 
     #[test]
     fn length_values_of_other_properties_and_keywords_stay_silent() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "value-vertical-align-length-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/><view class="i"/><view class="j"/>"#,
             r#"
             .a { vertical-align: middle; }
             .b { vertical-align: baseline; }

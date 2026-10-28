@@ -15,7 +15,7 @@
 use crate::project::Project;
 use crate::{Diagnostic, Severity};
 
-use super::visit_rules;
+use super::visit_matching_rules;
 use crate::rules::{Rule, RuleMeta};
 
 pub struct NoPseudo;
@@ -37,7 +37,7 @@ impl Rule for NoPseudo {
         // 嵌套选择器会继承父选择器的伪类，同一个伪类可能在多个选择器里出现；
         // 按源文件位置去重，一条伪类只报一次。
         let mut seen = std::collections::HashSet::new();
-        visit_rules(project, |sheet, rule, out| {
+        visit_matching_rules(project, |sheet, rule, out| {
             let doc = &sheet.doc;
             for selector in &rule.selectors {
                 for pseudo in &selector.pseudos {
@@ -102,12 +102,16 @@ mod tests {
     use crate::rules::Rule;
 
     use super::NoPseudo;
-    use crate::rules::testutil::wxss::{Fixture, messages, single};
+    use crate::rules::testutil::wxss::{Fixture, messages, page};
 
     #[test]
     fn no_pseudo_reports_unsupported_pseudos() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "no-pseudo-positive",
+            r#"<view class="a"/>
+               <view class="b"/>
+               <view><view/><view class="c"/></view>
+               <view class="d"/><view class="e"/>"#,
             r#"
             .a:hover { color: red; }
             .b::placeholder { color: red; }
@@ -132,8 +136,9 @@ mod tests {
     /// 嵌套选择器的伪类落在自己那一行的真实位置（旧实现按合成文本算，会错到下一行）。
     #[test]
     fn nested_pseudo_points_at_its_own_line() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "no-pseudo-nested-position",
+            r#"<view class="a"/>"#,
             ".a {\n  &:active { color: red; }\n}\n",
         );
         let diags = NoPseudo.check(&project);
@@ -144,7 +149,11 @@ mod tests {
     /// 同一个选择器上的两个不支持伪类都要报。
     #[test]
     fn reports_every_unsupported_pseudo_in_one_selector() {
-        let (_f, project) = single("no-pseudo-many", ".a:hover:focus:not(.b) { color: red; }");
+        let (_f, project) = page(
+            "no-pseudo-many",
+            r#"<view class="a"/>"#,
+            ".a:hover:focus:not(.b) { color: red; }",
+        );
         let diags = NoPseudo.check(&project);
         assert_eq!(diags.len(), 2, "{diags:#?}");
         assert!(diags.iter().any(|d| d.message.contains(":hover")));
@@ -153,8 +162,9 @@ mod tests {
 
     #[test]
     fn single_colon_pseudo_elements_are_accepted() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "no-pseudo-legacy-elements",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
             r#"
             .a:before { content: "x"; }
             .b:after { content: "x"; }
@@ -166,8 +176,12 @@ mod tests {
 
     #[test]
     fn child_position_pseudos_are_supported() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "no-pseudo-child",
+            r#"<view><view class="a"/></view>
+               <view><view/><view class="b"/></view>
+               <view><view/><view/><view class="c"/></view>
+               <view><view/><view/><view class="d"/></view>"#,
             r#"
             .a:first-child { color: red; }
             .b:last-child { color: red; }
@@ -180,8 +194,9 @@ mod tests {
 
     #[test]
     fn no_pseudo_accepts_plain_selectors_strings_and_supported_pseudos() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "no-pseudo-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="e"/><view class="f"/><view class="g"/>"#,
             r#"
             .a { color: red; }
             [data-x] { color: red; }
@@ -199,8 +214,9 @@ mod tests {
     /// Tailwind 风格转义冒号：`.hover\:bg-red` 里的冒号是类名的一部分，不是伪类。
     #[test]
     fn escaped_colon_in_a_class_name_is_not_a_pseudo() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "no-pseudo-escaped",
+            r#"<view class="hover:bg-red"/><view class="md:flex"/>"#,
             r#"
             .hover\:bg-red { color: red; }
             .md\:flex { display: flex; }
@@ -226,7 +242,7 @@ mod tests {
         )
         // 正常 wxss：应报。
         .write("pages/a/a.json", "{}")
-        .write("pages/a/a.wxml", "<view/>")
+        .write("pages/a/a.wxml", r#"<view class="a"/>"#)
         .write("pages/a/a.wxss", ".a:hover { color: red; }")
         // 非法 UTF-8：读失败，跳过。
         .write("pages/b/b.json", "{}")
@@ -234,7 +250,7 @@ mod tests {
         .write_bytes("pages/b/b.wxss", &[0xff, 0xfe, 0x00])
         // less 源：预处理器语法同样解析（嵌套摊平），要查。
         .write("pages/c/c.json", "{}")
-        .write("pages/c/c.wxml", "<view/>")
+        .write("pages/c/c.wxml", r#"<view class="c"/>"#)
         .write("pages/c/c.less", ".c:hover { color: red; }")
         // 显式 opt-out（`renderer: "webview"`）的页面不查：它不会迁 Skyline，
         // 与 wxml 侧同口径。没写 renderer 的页面仍然检查。
@@ -243,7 +259,7 @@ mod tests {
         .write("pages/legacy/legacy.wxss", ".l:hover { color: red; }")
         // 组件：全部检查。
         .write("components/nav/nav.json", r#"{"component":true}"#)
-        .write("components/nav/nav.wxml", "<view/>")
+        .write("components/nav/nav.wxml", r#"<view class="n"/>"#)
         .write("components/nav/nav.wxss", ".n:focus { color: red; }");
 
         let project = f.project();

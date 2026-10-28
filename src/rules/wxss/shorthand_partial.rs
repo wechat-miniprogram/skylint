@@ -153,12 +153,13 @@ mod tests {
     use crate::rules::Rule;
 
     use super::ShorthandPartial;
-    use crate::rules::testutil::wxss::{messages, single};
+    use crate::rules::testutil::wxss::{messages, page};
 
     #[test]
     fn unsupported_sub_properties_in_shorthands_are_reported() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "shorthand-positive",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/>"#,
             r#"
             .a { background: url(a) no-repeat fixed; }
             .b { background: red border-box; }
@@ -187,8 +188,9 @@ mod tests {
 
     #[test]
     fn one_row_reports_once_and_lists_every_hit_token() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "shorthand-merge",
+            r#"<view class="a"/><view class="b"/>"#,
             r#"
             .a { background: url(a) local fixed; }
             .b { background: url(a) fixed border-box; }
@@ -204,8 +206,9 @@ mod tests {
     /// 与初始值相同的 token 不报：`background: scroll` / `mask: border-box` 写了等于没写。
     #[test]
     fn initial_values_are_not_reported() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "shorthand-initial",
+            r#"<view class="a"/><view class="b"/>"#,
             r#"
             .a { background: url(a) scroll; }
             .b { mask: url(a) border-box; }
@@ -216,8 +219,9 @@ mod tests {
 
     #[test]
     fn supported_shorthands_and_longhands_are_not_reported() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "shorthand-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/>"#,
             r#"
             .a { background: url(a) no-repeat center/cover; }
             .b { mask: url(a) no-repeat; }

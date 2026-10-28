@@ -94,12 +94,13 @@ mod tests {
     use crate::rules::Rule;
 
     use super::FilterLimit;
-    use crate::rules::testutil::wxss::{Fixture, messages, single};
+    use crate::rules::testutil::wxss::{Fixture, messages, page};
 
     #[test]
     fn filter_limit_reports_url_drop_shadow_and_combinations() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "filter-positive",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
             r#"
             .a { filter: url(#f); }
             .b { filter: drop-shadow(0 0 2px #000); }
@@ -116,8 +117,9 @@ mod tests {
 
     #[test]
     fn filter_limit_accepts_single_functions_and_vars() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "filter-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/>"#,
             r#"
             .a { filter: blur(2px); }
             .b { backdrop-filter: grayscale(1); }
@@ -133,8 +135,9 @@ mod tests {
     /// 白名单之外的函数名要报（BNF 只列了 9 个）。
     #[test]
     fn filter_limit_reports_unknown_functions() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "filter-unknown",
+            r#"<view class="a"/><view class="b"/>"#,
             r#"
             .a { filter: custom(2px); }
             .b { backdrop-filter: blur(2px) opacity(0.5) nobody(1); }
@@ -155,7 +158,7 @@ mod tests {
                 r#"{"pages":["pages/a/a","pages/b/b"],"renderer":"skyline"}"#,
             )
             .write("pages/a/a.json", "{}")
-            .write("pages/a/a.wxml", "<view/>")
+            .write("pages/a/a.wxml", r#"<view class="a"/>"#)
             .write("pages/a/a.wxss", ".a { filter: url(#f); }")
             // 非法 UTF-8：读失败，跳过。
             .write("pages/b/b.json", "{}")

@@ -25,7 +25,7 @@ use crate::{Diagnostic, Severity};
 use std::collections::HashMap;
 
 use super::value_util::at_declaration;
-use super::visit_rules;
+use super::visit_matching_rules;
 use crate::input::wxml::WxmlDoc;
 
 pub struct LegacyFlexbox;
@@ -68,7 +68,7 @@ impl Rule for LegacyFlexbox {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
-        visit_rules(project, |sheet, rule, out| {
+        visit_matching_rules(project, |sheet, rule, out| {
             let doc = &sheet.doc;
             // `.x.skyline { display: unset }` 这种渲染器分支已经把这块关掉了：
             // 基础块只服务 WebView，在 Skyline 下本来就不生效。
@@ -193,14 +193,15 @@ fn is_webkit_flex_display(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use crate::rules::Rule;
-    use crate::rules::testutil::wxss::{messages, page, single};
+    use crate::rules::testutil::wxss::{messages, page};
 
     use super::LegacyFlexbox;
 
     #[test]
     fn one_rule_block_reports_once_with_every_declaration() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "legacy-one-block",
+            r#"<view class="a"/>"#,
             r#"
             .a {
               display: -webkit-box;
@@ -226,8 +227,9 @@ mod tests {
 
     #[test]
     fn layout_block_without_clamp_gets_layout_message() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "legacy-layout-only",
+            r#"<view class="a"/>"#,
             r#"
             .a {
               display: -webkit-box;
@@ -250,8 +252,9 @@ mod tests {
         // `display: flex` 写在最前面、`-webkit-flex` 写在最后的写法：WebView 生效的是
         // 最后一条合法的 `-webkit-flex`（= flex），Skyline 保留前面可解析的 `flex`，
         // 两端都是 flex。
-        let (_f, project) = single(
+        let (_f, project) = page(
             "legacy-stack-webkit-flex-last",
+            r#"<view class="a"/>"#,
             r#"
             .a {
               display: flex;
@@ -268,8 +271,9 @@ mod tests {
     #[test]
     fn webkit_flex_without_any_parseable_display_is_reported() {
         // 整块没有 Skyline 认得的 `display`：WebView 是 flex，Skyline 退回默认。
-        let (_f, project) = single(
+        let (_f, project) = page(
             "legacy-webkit-flex-only",
+            r#"<view class="a"/>"#,
             r#"
             .a { display: -webkit-flex; -webkit-box-align: center; }
             "#,
@@ -286,8 +290,9 @@ mod tests {
     #[test]
     fn later_supported_display_wins_over_webkit_box() {
         // autoprefixer 的渐进增强栈：最后一条 display 是 flex，这块不依赖老式弹性盒。
-        let (_f, project) = single(
+        let (_f, project) = page(
             "legacy-prefixed-stack",
+            r#"<view class="a"/>"#,
             r#"
             .a {
               display: -webkit-box;
@@ -304,8 +309,9 @@ mod tests {
     fn legacy_properties_without_a_webkit_display_are_skipped() {
         // 老式属性在 display 已生效为 flex 的块里是死声明，但可能是无害兜底，
         // 也可能父级才是老式容器——静态判不了，按宁可漏报跳过。
-        let (_f, project) = single(
+        let (_f, project) = page(
             "legacy-child-properties",
+            r#"<view class="a"/><view class="b"/>"#,
             r#"
             .a { -webkit-box-align: center; -webkit-box-pack: center; }
             .b { display: flex; -webkit-box-flex: 1; }
@@ -317,8 +323,9 @@ mod tests {
     #[test]
     fn value_and_name_spelling_is_normalized() {
         // autoprefixer 产物与手写混用的常见形态：大写属性名、`!important`。
-        let (_f, project) = single(
+        let (_f, project) = page(
             "legacy-spelling",
+            r#"<view class="a"/>"#,
             r#"
             .a { display: -webkit-box !important; -WEBKIT-BOX-ORIENT: vertical; }
             "#,
@@ -418,8 +425,9 @@ mod tests {
 
     #[test]
     fn line_clamp_alone_is_left_to_unsupported_property() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "legacy-only-clamp",
+            r#"<view class="a"/>"#,
             r#"
             .a { -webkit-line-clamp: 2; }
             "#,

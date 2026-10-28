@@ -400,12 +400,13 @@ mod tests {
     use crate::rules::Rule;
 
     use super::ValueDegraded;
-    use crate::rules::testutil::wxss::{Fixture, messages, single};
+    use crate::rules::testutil::wxss::{Fixture, messages, page};
 
     #[test]
     fn exact_values_report_the_actual_behaviour() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "degraded-exact",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/>"#,
             r#"
             .a { animation-fill-mode: none; }
             .b { animation-fill-mode: backwards; }
@@ -432,8 +433,9 @@ mod tests {
 
     #[test]
     fn exact_accepts_supported_values_and_dynamic_values() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "degraded-exact-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/><view class="i"/>"#,
             r#"
             .a { animation-fill-mode: forwards; }
             .b { animation-fill-mode: both; }
@@ -454,8 +456,9 @@ mod tests {
 
     #[test]
     fn other_properties_are_not_affected() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "degraded-other-properties",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/>"#,
             r#"
             .a { transition: transform; }
             .b { animation-name: content; }
@@ -468,8 +471,9 @@ mod tests {
 
     #[test]
     fn will_change_reports_unsupported_idents_as_info() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "degraded-will-change",
+            r#"<view class="a"/><view class="b"/>"#,
             r#"
             .a { will-change: transform; }
             .b { will-change: transform, opacity; }
@@ -491,8 +495,9 @@ mod tests {
     fn will_change_accepts_every_value_the_engine_understands() {
         // 引擎认 auto / contents / scroll-position（`will_change.cc:30-51`），
         // 之前把 scroll-position 当「不生效」报是误报。
-        let (_f, project) = single(
+        let (_f, project) = page(
             "degraded-will-change-supported",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/>"#,
             r#"
             .a { will-change: auto; }
             .b { will-change: none; }
@@ -506,8 +511,9 @@ mod tests {
 
     #[test]
     fn font_weight_numbers_report_the_effective_weight() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "degraded-font-weight",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/>"#,
             r#"
             .a { font-weight: 450; }
             .b { font-weight: 950; }
@@ -530,8 +536,9 @@ mod tests {
 
     #[test]
     fn font_weight_accepts_hundreds_keywords_and_dynamic_values() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "degraded-font-weight-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/>"#,
             r#"
             .a { font-weight: 100; }
             .b { font-weight: 400; }
@@ -548,8 +555,9 @@ mod tests {
 
     #[test]
     fn function_calls_report_content_url() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "degraded-function",
+            r#"<view class="a"/><view class="b"/>"#,
             r#"
             .a { content: url(icon.png); }
             .b { content: url("a.png") url("b.png"); }
@@ -563,8 +571,9 @@ mod tests {
 
     #[test]
     fn function_accepts_string_and_keyword_content() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "degraded-function-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/>"#,
             r#"
             .a { content: "x"; }
             .b { content: normal; }
@@ -578,8 +587,9 @@ mod tests {
 
     #[test]
     fn font_family_system_ui_is_reported() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "degraded-font-family",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
             r#"
             .a { font-family: system-ui; }
             .b { font-family: system-ui, -apple-system, sans-serif; }
@@ -595,8 +605,9 @@ mod tests {
 
     #[test]
     fn font_family_without_system_ui_and_dynamic_values_are_accepted() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "degraded-font-family-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/>"#,
             r#"
             .a { font-family: sans-serif; }
             .b { font-family: -apple-system, BlinkMacSystemFont; }
@@ -609,8 +620,9 @@ mod tests {
 
     #[test]
     fn env_reports_variables_outside_the_whitelist() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "degraded-env",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
             r#"
             .a { padding: env(foo); }
             .b { height: calc(100% - env(bar)); }
@@ -627,8 +639,9 @@ mod tests {
 
     #[test]
     fn env_accepts_the_four_safe_area_variables() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "degraded-env-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/>"#,
             r#"
             .a { padding-top: env(safe-area-inset-top); }
             .b { padding-right: env(safe-area-inset-right); }
@@ -643,8 +656,9 @@ mod tests {
 
     #[test]
     fn env_with_fallback_still_reports_and_explains() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "degraded-env-fallback",
+            r#"<view class="a"/>"#,
             r#"
             .a { padding: env(keyboard-height, 10px); }
             "#,
@@ -667,7 +681,10 @@ mod tests {
             r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
         )
         .write("pages/index/index.json", "{}")
-        .write("pages/index/index.wxml", "<view/>")
+        .write(
+            "pages/index/index.wxml",
+            r#"<view class="a"><view class="b"/></view>"#,
+        )
         .write(
             "pages/index/index.less",
             ".a { will-change: transform; .b { word-break: keep-all; } }",

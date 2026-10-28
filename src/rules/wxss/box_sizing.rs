@@ -84,12 +84,13 @@ mod tests {
     use crate::rules::Rule;
 
     use super::BoxSizing;
-    use crate::rules::testutil::wxss::{messages, single};
+    use crate::rules::testutil::wxss::{messages, page};
 
     #[test]
     fn box_sizing_reports_unsupported_values() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "box-sizing-positive",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
             r#"
             .a { box-sizing: padding-box; }
             .b { box-sizing: padding-box !important; }
@@ -105,8 +106,9 @@ mod tests {
 
     #[test]
     fn box_sizing_accepts_supported_values_and_keywords() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "box-sizing-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="f"/>"#,
             r#"
             .a { box-sizing: content-box; }
             .b { box-sizing: border-box; }
@@ -121,8 +123,9 @@ mod tests {
     /// 未开启 defaultContentBox 时 `initial` / `unset` 解析成 border-box，与 WebView 不同。
     #[test]
     fn initial_resolves_to_border_box_without_the_flag() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "box-sizing-initial",
+            r#"<view class="a"/><view class="b"/>"#,
             r#"
             .a { box-sizing: initial; }
             .b { box-sizing: unset; }
@@ -137,8 +140,9 @@ mod tests {
     /// 预处理器变量不是「不受支持的值」，必须全静默（SCSS / Less 工程上 error 级误报）。
     #[test]
     fn preprocessor_variables_are_not_reported() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "box-sizing-dynamic",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/>"#,
             r#"
             .a { box-sizing: $box; }
             .b { box-sizing: @box; }

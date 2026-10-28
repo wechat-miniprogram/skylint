@@ -30,7 +30,7 @@ use crate::project::{Project, Scope, StyleSheet};
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
-use super::visit_rules;
+use super::visit_matching_rules;
 
 pub struct AttributeSelector;
 
@@ -57,7 +57,7 @@ impl Rule for AttributeSelector {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut docs: HashMap<&str, Option<WxmlDoc>> = HashMap::new();
-        visit_rules(project, |sheet, rule, out| {
+        visit_matching_rules(project, |sheet, rule, out| {
             if !renders_in_skyline(project, sheet) {
                 return;
             }
@@ -237,9 +237,11 @@ mod tests {
     fn attribute_never_written_only_widens_the_locator() {
         // 属性从未写过：`.card[data-theme]` 在 Skyline 下等价 `.card`（真差异），
         // 而 `[data-theme]` 两端都不命中（不是差异）。
+        // 第一行的动态 class 让闸门对 `.card[data-theme]` 判成 Unknown（可能命中），
+        // 否则属性从未出现时整块会被可达性闸门跳过。
         let (_f, project) = fixture(
             "attr-unused",
-            r#"<view class="card"/>"#,
+            r#"<view class="{{cls}}"/><view class="card"/>"#,
             r#".card[data-theme] { color: red; }
                [data-theme] { color: blue; }"#,
         );
@@ -281,9 +283,11 @@ mod tests {
 
     #[test]
     fn attribute_on_the_ancestor_segment_is_checked_too() {
+        // 第一个 .page 带 data-theme（WebView 命中，闸门放行），第二个不带：
+        // Skyline 丢掉属性条件后多命中它。
         let (_f, project) = fixture(
             "attr-ancestor",
-            r#"<view class="page"><view class="title"/></view>"#,
+            r#"<view class="page" data-theme="dark"><view class="title"/></view><view class="page"><view class="title"/></view>"#,
             r#".page[data-theme] .title { color: red; }"#,
         );
         let diags = AttributeSelector.check(&project);

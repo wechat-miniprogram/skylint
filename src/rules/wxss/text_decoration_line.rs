@@ -91,12 +91,13 @@ mod tests {
     use crate::rules::Rule;
 
     use super::TextDecorationLine;
-    use crate::rules::testutil::wxss::{messages, single};
+    use crate::rules::testutil::wxss::{messages, page};
 
     #[test]
     fn text_decoration_line_reports_combinations() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "decoration-positive",
+            r#"<text class="a"/><text class="b"/><text class="c"/>"#,
             r#"
             .a { text-decoration-line: underline line-through; }
             .b { text-decoration-line: overline underline; }
@@ -111,8 +112,9 @@ mod tests {
     /// 简写会展开到 line，多线型与 fp 不认的值同样不生效。
     #[test]
     fn text_decoration_shorthand_is_checked_too() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "decoration-shorthand",
+            r#"<text class="a"/><text class="b"/><text class="c"/>"#,
             r#"
             .a { text-decoration: underline line-through; }
             .b { text-decoration: underline red; }
@@ -127,8 +129,9 @@ mod tests {
 
     #[test]
     fn text_decoration_line_accepts_single_values_and_vars() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "decoration-negative",
+            r#"<text class="a"/><text class="b"/><text class="c"/><text class="d"/>"#,
             r#"
             .a { text-decoration-line: underline; }
             .b { text-decoration-line: none; }

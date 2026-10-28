@@ -25,8 +25,8 @@ impl Rule for ScrollViewType {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
             id: Self::ID,
-            severity: Severity::Warning,
-            description: "`<scroll-view>` 必须显式指定合法 type，否则性能退化",
+            severity: Severity::Info,
+            description: "`<scroll-view>` 建议显式指定合法 type，否则 Skyline 下性能退化",
         }
     }
 
@@ -44,7 +44,7 @@ impl Rule for ScrollViewType {
                                 doc,
                                 element,
                                 doc.path(),
-                                Severity::Warning,
+                                Severity::Info,
                                 "`<scroll-view>` 缺少 type 属性，Skyline 下会退化为非按需渲染，性能下降",
                             )
                             .help(
@@ -63,11 +63,11 @@ impl Rule for ScrollViewType {
                         if value.is_empty() {
                             out.push(
                                 element_diagnostic(
-                                    Self::ID,
-                                    doc,
-                                    element,
-                                    doc.path(),
-                                    Severity::Warning,
+                                Self::ID,
+                                doc,
+                                element,
+                                doc.path(),
+                                Severity::Info,
                                     "`<scroll-view>` 没有指定 type，Skyline 下会退化为非按需渲染，性能下降",
                                 )
                                 .help(
@@ -78,7 +78,7 @@ impl Rule for ScrollViewType {
                         }
                         let (severity, message, help) = if value == DEGRADED_TYPE {
                             (
-                                Severity::Warning,
+                                Severity::Info,
                                 "`<scroll-view type=\"default\">` 在 Skyline 下按传统滚动渲染，没有按需渲染".to_string(),
                                 "type=default 是合法的（引擎映射到 kFlex），但长列表下性能明显低于 list/custom；建议改用 list（普通长列表）、custom（list-view/grid-view/sticky 布局）、nested（嵌套滚动）",
                             )
@@ -122,7 +122,7 @@ mod tests {
             &ScrollViewType,
         );
         assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].severity, crate::Severity::Warning);
+        assert_eq!(diagnostics[0].severity, crate::Severity::Info);
         assert_eq!((diagnostics[0].line, diagnostics[0].column), (1, 2));
     }
 
@@ -164,7 +164,7 @@ mod tests {
             &ScrollViewType,
         );
         assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].severity, crate::Severity::Warning);
+        assert_eq!(diagnostics[0].severity, crate::Severity::Info);
         assert!(diagnostics[0].message.contains("按需渲染"));
     }
 
@@ -176,7 +176,7 @@ mod tests {
             &ScrollViewType,
         );
         assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].severity, crate::Severity::Warning);
+        assert_eq!(diagnostics[0].severity, crate::Severity::Info);
         assert!(diagnostics[0].message.contains("没有指定 type"));
     }
 }

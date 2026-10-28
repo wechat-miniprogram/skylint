@@ -28,6 +28,11 @@ pub struct ClassTokens {
     pub possible: Vec<String>,
     /// 除上面两类之外，任意词都可能出现（取值依赖运行时数据）。
     pub any: bool,
+    /// 取值不可知的那几段，以及它们两侧**紧贴**的静态文本（按空格切开）。
+    ///
+    /// `class="{{platform}}-font"` 记作 `("", "-font")`：任意词都可能出现，但只能以
+    /// `-font` 结尾。两侧都空（`class="{{cls}}"`、`class="a {{cls}} b"`）时才是真正的任意。
+    pub open: Vec<(String, String)>,
     /// 静态片段的原文（按空白切开，含被动态值截断的半截词）。
     ///
     /// 匹配不能用它（`~banner-{{i}}` 的 `~banner-` 不是完整类名），但规则可以靠
@@ -43,8 +48,28 @@ impl ClassTokens {
 
     /// 这个词仍可能出现（只对「确定出现」之外的情况有意义）。
     pub fn might_appear(&self, token: &str, case_sensitive: bool) -> bool {
-        self.any || self.possible.iter().any(|t| same(t, token, case_sensitive))
+        if self.possible.iter().any(|t| same(t, token, case_sensitive)) {
+            return true;
+        }
+        if !self.any {
+            return false;
+        }
+        // 任意的只有那几段动态值：静态文本紧贴着它们时，词必须带上这段文本。
+        self.open.iter().any(|(left, right)| {
+            fits(left, token, case_sensitive) && fits(right, token, case_sensitive)
+        })
     }
+}
+
+fn fits(glue: &str, token: &str, case_sensitive: bool) -> bool {
+    glue.is_empty()
+        || if case_sensitive {
+            token.contains(glue)
+        } else {
+            token
+                .to_ascii_lowercase()
+                .contains(&glue.to_ascii_lowercase())
+        }
 }
 
 fn same(a: &str, b: &str, case_sensitive: bool) -> bool {
@@ -117,6 +142,7 @@ pub fn class_tokens(expression: &Expression, env: &Env) -> ClassTokens {
                 possible: possible.iter().map(|word| word.to_string()).collect(),
                 any: false,
                 fragments: static_fragments(&pieces),
+                open: Vec::new(),
             }
         }
         // 有任一段取值不可知：只能保住静态段里被空格完整包住的词，其余任意。
@@ -125,6 +151,7 @@ pub fn class_tokens(expression: &Expression, env: &Env) -> ClassTokens {
             possible: Vec::new(),
             any: true,
             fragments: static_fragments(&pieces),
+            open: open_glues(&pieces),
         },
     }
 }
@@ -141,6 +168,67 @@ fn static_fragments(pieces: &[Piece]) -> Vec<String> {
         }
     }
     out
+}
+
+/// 每段不可知的取值，以及它们两侧紧贴的静态文本（按空格切开）。
+///
+/// 只看相邻的 `Text` 段：中间隔着别的动态段就断开了，拿不到可靠的粘连信息，
+/// 那一侧当作空（保守，宁可认为任意）。
+fn open_glues(pieces: &[Piece]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (index, piece) in pieces.iter().enumerate() {
+        if !matches!(piece, Piece::Value(None)) {
+            continue;
+        }
+        let left = glued_run(pieces, index, Direction::Left);
+        let right = glued_run(pieces, index, Direction::Right);
+        out.push((left, right));
+    }
+    out
+}
+
+enum Direction {
+    Left,
+    Right,
+}
+
+/// 从 `index` 向 `direction` 收集紧贴的静态文本，遇到空格或动态段就停。
+fn glued_run(pieces: &[Piece], index: usize, direction: Direction) -> String {
+    let mut run = String::new();
+    let mut cursor = index;
+    loop {
+        let next = match direction {
+            Direction::Left => cursor.checked_sub(1),
+            Direction::Right => Some(cursor + 1).filter(|next| *next < pieces.len()),
+        };
+        let Some(next) = next else {
+            break;
+        };
+        let Piece::Text(text) = &pieces[next] else {
+            break;
+        };
+        let chunk = match direction {
+            Direction::Left => text.rsplit(char::is_whitespace).next().unwrap_or(""),
+            Direction::Right => text.split(char::is_whitespace).next().unwrap_or(""),
+        };
+        if chunk.is_empty() {
+            break;
+        }
+        run = match direction {
+            Direction::Left => format!("{chunk}{run}"),
+            Direction::Right => format!("{run}{chunk}"),
+        };
+        // 这一段内部就到空格了，不再往外走。
+        let stopped = match direction {
+            Direction::Left => text.starts_with(char::is_whitespace),
+            Direction::Right => text.ends_with(char::is_whitespace),
+        };
+        if stopped {
+            break;
+        }
+        cursor = next;
+    }
+    run
 }
 
 /// 拼接链里「两侧都被空格包住」的词——只有这些词在任何取值下都独立成词。

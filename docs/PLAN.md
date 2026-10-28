@@ -1115,13 +1115,45 @@ skit-player 179 → 172（−2 绝对定位的 fit-content、−2 初始值、�
 `.current-info { position:absolute; width: fit-content }`、weui 的 `resize: none` 等）。
 测试 755 + 30 + 3 全绿，clippy 0。
 
-**待定：声明级规则的「可达性」前置闸门（P16 候选，已试做并回退）**
+**P16：声明级规则的「可达性」前置闸门（已落地）**
 
 两份审计都指到同一个最大噪音源：声明级规则只按「声明 × 选择器」报，不看选择器在该样式表的 scopes 里
-是否真的落在节点上——businessview 254/409 出自 vendored `weui.wxss` 里本工程从未出现的类。试做版把
-`visit_rules` / `visit_declarations` 接上 `any_selector_matches` 闸门后只降到 345（−64），原因是这些
-pages 里有 `class="{{platform}}-font"` 这种**整段动态**的 class 绑定，匹配器对所有类名都给 `Unknown`，
-`Unknown` 必须放行（宁可漏报），于是闸门失效；同时 45 条单元测试因为夹具 WXML 是空 `<view/>` 而全挂。
-结论：这条要真做，得先把 `ClassTokens.any` 细化成「静态片段可约束的任意」——只有证明某个类名不可能由
-声明里的静态片段拼出来时才把 `Unknown` 降为 `No`；并且所有 `single()` 夹具要带真实 markup。
-回退前已确认它不是「改一行就好」的量级，单独作为一批设计。
+是否真的落在节点上——businessview 254/409 出自 vendored `weui.wxss` 里本工程从未出现的类。
+
+第一版试做（只接 `any_selector_matches`）只降 64 条就回退了，缺的是三件事，这一批补齐：
+
+1. **动态 class 的「粘连」语义**：`class="{{platform}}-font"` 以前让所有类名都变 `unknown`，
+   `ClassTokens` 新增 `open: Vec<(left_glue, right_glue)>`——取值不可知的那几段，连同两侧紧贴的
+   静态文本（按空格切开）。`might_appear` 要求候选词带上两侧粘连文本，`weui-icon-clear` 不含
+   `-font`，于是判 `No` 而不是 `Unknown`。这一层在 `input/expr.rs`，对全部选择器规则生效。
+2. **伪类剥离**：`:hover` / `:active` / `:focus` / `:checked` 这类运行时伪类在静态阶段只能给
+   `Unknown`，会把「宿主节点根本不存在」掩盖掉。`matcher::without_runtime_pseudo` 剥掉它们回到宿主
+   本身（保留伪元素、结构伪类、`:not()`/`:is()`/`:where()` 及其参数，转义序列原样保留）。
+3. **大写类名保护**：选择器解析层把标识符统一小写（`matcher/imp.rs` 的 `Ident::from`），而 class
+   比较是大小写敏感的——`.btnItem` 永远命中不了 `class="btnItem"`。这是既有漏报（不是这一批引入），
+   但闸门会把漏报变成误消音，所以含大写字母的选择器一律当可达。**修 matcher 的这条另开一批**（见下）。
+
+落地形态：`visit_rules` → `visit_matching_rules`（新增），`visit_declarations` 直接带闸门；
+`no-pseudo` / `unsupported-property` / `unsupported-value` / `legacy-flexbox` / `flex-direction` /
+`transition-property` / `attribute-selector` / `text-*` 全部切过去。`dead-selector` 与
+`tag-selector-isolation` 自带判据，不动。语义边界写进代码注释：`Unknown` 一律放行（宁可漏报）。
+
+**验收**（六工程、两个方向逐字段 diff，`cb66a7a` → 本轮）：
+正向 novel 18 → 17、skit_1 27 → 25、businessview 403 → 248（−158：156 条 vendored weui 里本工程
+不存在的类、2 条 navbar 死选择器 `.provider__avatar` / `.navbar-area_left`）、plugin_1/2 各 −2
+（`cover.wxss:162` 的 `.expand_btn` 无 WXML 消费者）、skit-player −1（`actor-dialog__header` 死类）。
+新增 3 条 `dead-selector`（businessview weui 的 `button.weui-btn` / `input.weui-btn` /
+`.weui-btn_disabled`）：粘连语义让它们从 `Unknown` 变成确定死，属真阳性。反向六工程零变化
+（businessview 2 → 5 只是同一批 dead-selector 的反向复报）。
+夹具：所有 wxss 规则测试的 `single()`（页面 WXML 固定 `<view/>`）换成 `page(name, wxml, wxss)`，
+正向与反向用例都补 markup，避免反向用例因闸门跳过而假通过；`single` / `Fixture::wxss` 已无消费者，删除。
+另把 `scroll-view-type` 降为 info（纯性能提示，不改变渲染结果），`will-change` 本就是 info。
+
+**新发现的 matcher 缺陷（未修，单独一批）**
+
+`matcher/imp.rs:58-62` 的 `Ident::from` 无条件 `to_ascii_lowercase()`，而 `has_class` / `has_id`
+按 `selectors` 给的 `CaseSensitivity::CaseSensitive` 比较 → 含大写字母的类名/ID **永不命中**：
+`.btnItem` 对 `class="btnItem"` 判 `No`（实测 4 行 fixture 可复现）。影响面是所有依赖匹配的规则
+（dead-selector / media-query / 闸门）的漏报；六个工程里 camelCase 类名仅 16 处，量小但语义是错的。
+修法：`Ident` 存原文，标签/属性名比较改大小写不敏感、class/id 保持敏感，伪类名在解析处单独小写；
+改完必须逐字段比对六工程（会新增命中）。

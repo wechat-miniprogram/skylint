@@ -76,12 +76,13 @@ mod tests {
     use crate::rules::Rule;
 
     use super::MultiValueLimit;
-    use crate::rules::testutil::wxss::{messages, single};
+    use crate::rules::testutil::wxss::{messages, page};
 
     #[test]
     fn multi_value_reports_excess_values() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "multi-positive",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/><view class="i"/>"#,
             r#"
             .a { background-image: url(a.png), url(b.png), url(c.png); }
             .b { background-position: 0 0, 10px 10px, 20px 20px; }
@@ -102,8 +103,9 @@ mod tests {
 
     #[test]
     fn multi_value_accepts_two_values_and_commas_inside_parens() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "multi-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/><view class="i"/><view class="j"/><view class="k"/><view class="l"/><view class="m"/><view class="n"/>"#,
             r#"
             .a { background-image: url(a.png), url(b.png); }
             .b { background-image: url("a,b.png"), url(c.png); }

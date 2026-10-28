@@ -19,7 +19,7 @@ use crate::rules::wxml::is_builtin;
 use crate::{Diagnostic, Severity};
 
 use super::value_util::at_declaration;
-use super::visit_rules;
+use super::visit_matching_rules;
 
 pub const ID: &str = "skyline/text-decoration-target";
 
@@ -50,7 +50,7 @@ impl crate::rules::Rule for TextDecorationTarget {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut docs: HashMap<String, Option<wxml::WxmlDoc>> = HashMap::new();
 
-        visit_rules(project, |sheet, rule, out| {
+        visit_matching_rules(project, |sheet, rule, out| {
             let doc = &sheet.doc;
             for decl in &rule.declarations {
                 let name = decl.name.to_ascii_lowercase();

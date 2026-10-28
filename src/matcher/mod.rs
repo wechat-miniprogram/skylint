@@ -219,6 +219,67 @@ fn walk_component(component: &Component<SelImpl>, shape: &mut Shape) {
     }
 }
 
+/// 去掉选择器里的运行时态伪类（`:hover` / `:active` / `:checked` …），用于回答
+/// 「这个选择器的宿主节点到底存不存在」。伪元素与结构化伪类（`:nth-child` 等）保留，
+/// `:not()` / `:is()` / `:where()` 只保留外层、不往里剥（剥掉参数会变成另一条选择器）。
+pub fn without_runtime_pseudo(selector: &str) -> String {
+    let mut out = String::with_capacity(selector.len());
+    let mut chars = selector.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            // 转义序列原样保留：`\:` 是类名里的冒号，不是伪类分隔符。
+            '\\' => {
+                out.push(ch);
+                if let Some(escaped) = chars.next() {
+                    out.push(escaped);
+                }
+            }
+            ':' => {
+                let element = chars.peek() == Some(&':');
+                if element {
+                    chars.next();
+                }
+                let mut name = String::new();
+                while let Some(&next) = chars.peek() {
+                    if next.is_alphanumeric() || next == '-' || next == '_' {
+                        name.push(next);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+                if element || keeps_pseudo(&name) {
+                    out.push(':');
+                    if element {
+                        out.push(':');
+                    }
+                    out.push_str(&name);
+                } else if chars.peek() == Some(&'(') {
+                    let mut depth = 0usize;
+                    for next in chars.by_ref() {
+                        match next {
+                            '(' => depth += 1,
+                            ')' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn keeps_pseudo(name: &str) -> bool {
+    STRUCTURAL_PSEUDO_CLASSES.contains(&name) || matches!(name, "not" | "is" | "where" | "host")
+}
+
 /// 三值判定：`Unknown` 表示静态阶段无法确定（动态属性 / 运行时状态 / 非线性兄弟区）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tri {
@@ -744,6 +805,40 @@ fn collect<'a>(
 mod tests {
     use super::{Dialect, Tree, Tri};
     use crate::input::wxml::{self, WxmlDoc};
+
+    #[test]
+    fn runtime_pseudos_are_stripped_for_reachability() {
+        assert_eq!(
+            super::without_runtime_pseudo(".a:hover"),
+            ".a",
+            "运行时伪类剥掉"
+        );
+        assert_eq!(
+            super::without_runtime_pseudo(".a:not(.b):active"),
+            ".a:not(.b)",
+            "结构化伪类与 :not() 保留、参数不剥"
+        );
+        assert_eq!(
+            super::without_runtime_pseudo(".a::before"),
+            ".a::before",
+            "伪元素保留"
+        );
+        assert_eq!(
+            super::without_runtime_pseudo(".a:is(.b, .c)"),
+            ".a:is(.b, .c)",
+            ":is() 保留"
+        );
+        assert_eq!(
+            super::without_runtime_pseudo(".hover\\:bg-red:hover"),
+            ".hover\\:bg-red",
+            "转义冒号是类名的一部分"
+        );
+        assert_eq!(
+            super::without_runtime_pseudo(".a:focus-visible"),
+            ".a",
+            "带连字符的伪类名"
+        );
+    }
 
     /// 按文档顺序取第 n 个元素（0 起）。
     fn at(doc: &WxmlDoc, n: usize) -> &crate::input::wxml::WxmlElement {

@@ -291,17 +291,35 @@ pub(crate) fn any_selector_matches(
                 return Tri::Yes;
             };
             seen_doc = true;
+            // 选择器解析层把标识符统一小写（`matcher/imp.rs` 的 `Ident::from`），而 class
+            // 比较是大小写敏感的：含大写字母的选择器会永远命中不了 `class="btnItem"`。
+            // 这是已知的漏报面；这里宁可当作可达，不能拿它去消音诊断。
+            if selectors
+                .iter()
+                .any(|selector| selector.text.chars().any(|c| c.is_ascii_uppercase()))
+            {
+                return Tri::Yes;
+            }
             let tree = Tree::new(doc);
             for selector in selectors {
-                let text = selector.text.trim();
+                let original = selector.text.trim();
                 // 伪元素的承载者是生成的文本节点、`page` / `:host` 指向运行时根节点（不在
                 // WXML 文档树里），匹配器一律给 `No`，不能据此断定块内没有生效。
-                if crate::matcher::shape(text)
-                    .is_none_or(|shape| shape.pseudo_element || shape.runtime_root)
-                {
+                let Some(shape) = crate::matcher::shape(original) else {
+                    return Tri::Yes;
+                };
+                if shape.pseudo_element || shape.runtime_root {
                     return Tri::Yes;
                 }
-                match tree.any_match(text, Dialect::WebView) {
+                // 运行时态伪类在静态阶段只能给 `Unknown`，会把「宿主节点根本不存在」
+                // 掩盖掉：这里要回答的是宿主在不在，剥掉它们回到宿主本身。
+                let text = if shape.dynamic_pseudo {
+                    crate::matcher::without_runtime_pseudo(original)
+                } else {
+                    original.to_string()
+                };
+                let verdict = tree.any_match(&text, Dialect::WebView);
+                match verdict {
                     Tri::Yes => return Tri::Yes,
                     Tri::Unknown => unknown = true,
                     Tri::No => {}
@@ -460,25 +478,54 @@ pub(crate) fn truncation_by_max_lines(
 /// 就落空了。
 pub(crate) fn visit_rules(
     project: &Project,
+    f: impl FnMut(&StyleSheet, &WxssRule, &mut Vec<Diagnostic>),
+) -> Vec<Diagnostic> {
+    visit_rules_inner(project, false, f)
+}
+
+/// 同 [`visit_rules`]，但跳过「选择器在本样式表作用域里命不中任何节点」的规则块。
+///
+/// 针对 `decl × selector` 的规则看的是声明本身，不接可达性就会把 vendored `weui.wxss`
+/// 那类在本工程里一个节点都命不中的样式表整份报出来——命不中就是两端都不生效。
+pub(crate) fn visit_matching_rules(
+    project: &Project,
+    f: impl FnMut(&StyleSheet, &WxssRule, &mut Vec<Diagnostic>),
+) -> Vec<Diagnostic> {
+    visit_rules_inner(project, true, f)
+}
+
+fn visit_rules_inner(
+    project: &Project,
+    only_matching: bool,
     mut f: impl FnMut(&StyleSheet, &WxssRule, &mut Vec<Diagnostic>),
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
+    let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
     for sheet in &project.styles {
         for rule in &sheet.doc.rules {
+            if only_matching
+                && any_selector_matches(project, sheet, &rule.selectors, &mut docs) == Tri::No
+            {
+                continue;
+            }
             f(sheet, rule, &mut out);
         }
     }
     out
 }
 
-/// 遍历全部样式文件的每一条声明。
+/// 遍历全部样式文件的每一条声明（同样跳过命不中的规则块）。
 pub(crate) fn visit_declarations(
     project: &Project,
     mut f: impl FnMut(&StyleSheet, &WxssRule, &WxssDeclaration, &mut Vec<Diagnostic>),
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
+    let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
     for sheet in &project.styles {
         for rule in &sheet.doc.rules {
+            if any_selector_matches(project, sheet, &rule.selectors, &mut docs) == Tri::No {
+                continue;
+            }
             for declaration in &rule.declarations {
                 f(sheet, rule, declaration, &mut out);
             }

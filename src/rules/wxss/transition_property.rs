@@ -230,12 +230,13 @@ mod tests {
     use crate::rules::Rule;
 
     use super::TransitionProperty;
-    use crate::rules::testutil::wxss::{messages, single};
+    use crate::rules::testutil::wxss::{messages, page};
 
     #[test]
     fn properties_outside_the_whitelist_are_reported() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "transition-positive",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/>"#,
             r#"
             .a { transition: text-shadow .2s; }
             .b { transition-property: color, text-shadow; }
@@ -265,8 +266,9 @@ mod tests {
 
     #[test]
     fn whitelisted_properties_and_timing_keywords_are_accepted() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "transition-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/><view class="i"/>"#,
             r#"
             .a { transition: width .3s ease; }
             .b { transition: transform .2s ease-in-out; }
@@ -288,8 +290,9 @@ mod tests {
     /// 引擎只实现了长写，`margin` / `border` / `background` 等简写落到 default 分支被丢弃。
     #[test]
     fn shorthand_properties_are_rejected() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "transition-shorthands",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/>"#,
             r#"
             .a { transition: margin .3s; }
             .b { transition: border 1s; }
@@ -310,8 +313,9 @@ mod tests {
 
     #[test]
     fn global_keywords_are_not_property_names() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "transition-global-keywords",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/>"#,
             r#"
             .a { transition: inherit; }
             .b { transition: initial; }
@@ -330,8 +334,9 @@ mod tests {
     /// `transition-behavior` 的关键字不是属性名（CSS Transitions Level 2）。
     #[test]
     fn behavior_keywords_are_not_property_names() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "transition-behavior-keywords",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
             r#"
             .a { transition: transform 1s allow-discrete; }
             .b { transition: opacity .2s normal; }
@@ -346,8 +351,9 @@ mod tests {
 
     #[test]
     fn animation_shorthand_is_not_checked() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "transition-animation",
+            r#"<view class="a"/><view class="b"/>"#,
             r#"
             .a { animation: color 1s linear infinite; }
             .b { animation-name: color; }

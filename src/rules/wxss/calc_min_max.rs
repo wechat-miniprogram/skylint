@@ -104,12 +104,13 @@ mod tests {
     use crate::rules::Rule;
 
     use super::CalcMinMax;
-    use crate::rules::testutil::wxss::{messages, single};
+    use crate::rules::testutil::wxss::{messages, page};
 
     #[test]
     fn dynamic_arguments_are_reported() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "calc-min-max-positive",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/>"#,
             r#"
             .a { width: min(100%, 300px); }
             .b { height: clamp(100px, 20vh, 300px); }
@@ -129,8 +130,9 @@ mod tests {
 
     #[test]
     fn constant_arguments_and_dynamic_values_are_accepted() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "calc-min-max-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/><view class="i"/>"#,
             r#"
             .a { width: min(10px, 20px); }
             .b { width: clamp(1px, 2px, 3px); }

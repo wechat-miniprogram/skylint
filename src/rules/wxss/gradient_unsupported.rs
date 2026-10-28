@@ -74,12 +74,13 @@ mod tests {
     use crate::rules::Rule;
 
     use super::GradientUnsupported;
-    use crate::rules::testutil::wxss::{messages, single};
+    use crate::rules::testutil::wxss::{messages, page};
 
     #[test]
     fn repeating_and_mask_conic_gradients_are_reported() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "gradient-unsupported-positive",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/>"#,
             r#"
             .a { background-image: repeating-linear-gradient(red 0 10px, blue 10px 20px); }
             .b { background: repeating-radial-gradient(circle, red 0 10px, blue 10px 20px); }
@@ -105,8 +106,9 @@ mod tests {
 
     #[test]
     fn mask_linear_radial_and_normal_background_gradients_are_accepted() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "gradient-unsupported-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/>"#,
             r#"
             .a { mask-image: linear-gradient(red, blue); }
             .b { mask-image: radial-gradient(circle, red 0%, blue 100%); }

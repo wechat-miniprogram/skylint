@@ -13,7 +13,7 @@ use crate::input::wxss::{WxssDoc, WxssRule, WxssSelector};
 use crate::rules::{Rule, RuleMeta};
 
 use super::value_util::at_declaration;
-use super::visit_rules;
+use super::visit_matching_rules;
 
 pub struct FlexDirection;
 
@@ -31,7 +31,7 @@ impl Rule for FlexDirection {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit_rules(project, |sheet, rule, out| {
+        visit_matching_rules(project, |sheet, rule, out| {
             // `defaultDisplayBlock: true` 时 Skyline 的 flex-direction 默认值就是 row，
             // 与 WebView 一致，这条警告不成立。
             if sheet
@@ -128,12 +128,13 @@ mod tests {
     use crate::rules::Rule;
 
     use super::FlexDirection;
-    use crate::rules::testutil::wxss::{Fixture, messages, single};
+    use crate::rules::testutil::wxss::{Fixture, messages, page};
 
     #[test]
     fn flex_direction_reports_flex_without_direction() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "flex-positive",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/>"#,
             r#"
             .a { display: flex; }
             .b { display: inline-flex; color: red; }
@@ -151,8 +152,9 @@ mod tests {
     #[test]
     fn flex_direction_is_found_in_a_separate_rule_with_the_same_selector() {
         // 声明可以拆开写：`.a` 在两条规则里各写一半，不能只看单条。
-        let (_f, project) = single(
+        let (_f, project) = page(
             "flex-split",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
             r#"
             .a { display: flex; }
             .a { flex-direction: row; }
@@ -165,8 +167,9 @@ mod tests {
 
     #[test]
     fn flex_flow_counts_as_direction() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "flex-flow",
+            r#"<view class="a"/><view class="b"/>"#,
             r#"
             .a { display: flex; flex-flow: row wrap; }
             .b { display: flex; }
@@ -180,8 +183,9 @@ mod tests {
     /// Skyline 的初值是 column，WebView 是 row。
     #[test]
     fn global_keywords_do_not_count_as_declaring_a_direction() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "flex-global-keywords",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/>"#,
             r#"
             .a { display: flex; flex-direction: initial; }
             .b { display: flex; flex-direction: unset; }
@@ -198,8 +202,9 @@ mod tests {
     /// 同一条规则里 display 写两次时，后一条生效。
     #[test]
     fn the_last_display_declaration_wins() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "flex-last-display",
+            r#"<view class="a"/><view class="b"/>"#,
             r#"
             .a { display: flex; display: block; }
             .b { display: block; display: flex; }
@@ -219,7 +224,7 @@ mod tests {
             r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true}}}"#,
         )
         .write("pages/index/index.json", "{}")
-        .write("pages/index/index.wxml", "<view/>")
+        .write("pages/index/index.wxml", r#"<view class="a"/>"#)
         .write("pages/index/index.wxss", ".a { display: flex; }");
         let project = f.project();
         assert!(messages(&FlexDirection, &project).is_empty());
@@ -237,7 +242,7 @@ mod tests {
             "pages/index/index.json",
             r#"{"rendererOptions":{"skyline":{"defaultDisplayBlock":false}}}"#,
         )
-        .write("pages/index/index.wxml", "<view/>")
+        .write("pages/index/index.wxml", r#"<view class="a"/>"#)
         .write("pages/index/index.wxss", ".a { display: flex; }");
         let project = f.project();
         assert_eq!(messages(&FlexDirection, &project).len(), 1);
@@ -245,8 +250,9 @@ mod tests {
 
     #[test]
     fn flex_direction_ignores_declared_direction_block_and_vars() {
-        let (_f, project) = single(
+        let (_f, project) = page(
             "flex-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="f"/>"#,
             r#"
             .a { display: flex; flex-direction: column; }
             .b { display: block; }
