@@ -291,15 +291,6 @@ pub(crate) fn any_selector_matches(
                 return Tri::Yes;
             };
             seen_doc = true;
-            // 选择器解析层把标识符统一小写（`matcher/imp.rs` 的 `Ident::from`），而 class
-            // 比较是大小写敏感的：含大写字母的选择器会永远命中不了 `class="btnItem"`。
-            // 这是已知的漏报面；这里宁可当作可达，不能拿它去消音诊断。
-            if selectors
-                .iter()
-                .any(|selector| selector.text.chars().any(|c| c.is_ascii_uppercase()))
-            {
-                return Tri::Yes;
-            }
             let tree = Tree::new(doc);
             for selector in selectors {
                 let original = selector.text.trim();

@@ -87,8 +87,8 @@ impl<'a> selectors::Element for Node<'a> {
         self.at(self.tree.first_child_idx(self.idx))
     }
 
-    /// 与 `is_same_type` 一起决定 `:nth-of-type` 的计数口径；WXML 标签大小写已归一，
-    /// 与 HTML 文档无关。
+    /// 与 `is_same_type` 一起决定 `:nth-of-type` 的计数口径。WXML 标签名不敏感，
+    /// 所以返回 `false`、由 `has_local_name` 自己忽略大小写。
     fn is_html_element_in_html_document(&self) -> bool {
         false
     }
@@ -98,7 +98,7 @@ impl<'a> selectors::Element for Node<'a> {
             self.tree.unresolved.set(true);
             return false;
         }
-        self.element().tag == local_name
+        self.element().tag.eq_ignore_ascii_case(local_name)
     }
 
     fn has_namespace(&self, _ns: &()) -> bool {
@@ -106,7 +106,9 @@ impl<'a> selectors::Element for Node<'a> {
     }
 
     fn is_same_type(&self, other: &Self) -> bool {
-        self.element().tag == other.element().tag
+        self.element()
+            .tag
+            .eq_ignore_ascii_case(&other.element().tag)
     }
 
     fn attr_matches(

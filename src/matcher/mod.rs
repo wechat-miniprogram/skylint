@@ -52,7 +52,7 @@ pub struct Subject {
     pub has_class: bool,
     /// 主体里有 `*`。
     pub universal: bool,
-    /// 主体里的属性选择器名（小写，保持书写顺序）。
+    /// 主体里的属性选择器名（保留原文大小写，保持书写顺序）。
     pub attributes: Vec<String>,
     /// 主体之前（祖先 / 兄弟段）的属性选择器名：这些条件的丢弃同样会放宽匹配。
     pub other_attributes: Vec<String>,
@@ -143,7 +143,8 @@ pub fn shape(selector: &str) -> Option<Shape> {
     Some(shape)
 }
 
-/// 选择器里出现的全部 class 名（含 `:not()` / `:is()` 内的）；解析失败返回 `None`。
+/// 选择器里出现的全部 class 名（含 `:not()` / `:is()` 内的），保留原文大小写；
+/// 解析失败返回 `None`。
 pub fn class_names(selector: &str) -> Option<Vec<String>> {
     let list = imp::parse(selector)?;
     let mut names = Vec::new();
@@ -876,6 +877,27 @@ mod tests {
         assert_eq!(check(&d, 0, "view.a.b", Dialect::WebView), Tri::Yes);
         assert_eq!(check(&d, 0, ".c", Dialect::WebView), Tri::No);
         assert_eq!(check(&d, 1, ".a .missing", Dialect::WebView), Tri::No);
+    }
+
+    /// class / id 大小写敏感，标签名与属性名不敏感。`Ident` 不再统一小写之后，
+    /// 这三者必须分开成立——`class="btnItem"` 是真实写过的形态。
+    #[test]
+    fn identifiers_keep_case_for_classes_but_not_for_tags() {
+        let d = doc(r#"<view class="btnItem"><view class="btnitem"/></view>"#);
+        assert_eq!(check(&d, 0, ".btnItem", Dialect::WebView), Tri::Yes);
+        assert_eq!(check(&d, 0, ".btnitem", Dialect::WebView), Tri::No);
+        assert_eq!(check(&d, 1, ".btnItem", Dialect::WebView), Tri::No);
+        assert_eq!(check(&d, 0, "VIEW", Dialect::WebView), Tri::Yes);
+        assert_eq!(check(&d, 0, ".btnItem[CLASS]", Dialect::WebView), Tri::Yes);
+        assert_eq!(
+            check(&d, 0, "[class=\"btnItem\"]", Dialect::WebView),
+            Tri::Yes
+        );
+        assert_eq!(
+            check(&d, 0, "[class=\"btnitem\"]", Dialect::WebView),
+            Tri::No,
+            "属性值按敏感比"
+        );
     }
 
     #[test]

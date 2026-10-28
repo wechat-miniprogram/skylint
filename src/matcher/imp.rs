@@ -15,7 +15,13 @@ use selectors::parser::{
     NonTSPseudoClass, ParseRelative, Parser, PseudoElement, SelectorImpl, SelectorParseErrorKind,
 };
 
-/// 大小写不敏感的本地名 / 标识符 / 属性值：统一存小写。
+/// 标识符 / 本地名 / 属性值：**保留原文大小写**。
+///
+/// 大小写敏感性不在这里定，按使用点区分：标签名与属性名不敏感（与 HTML 一致），
+/// class / id / 属性值敏感。`selectors` 判 class / id 时会把 `CaseSensitivity` 传进来
+/// （`MatchingContext` 用 `QuirksMode::NoQuirks`，即敏感），见
+/// [`super::element::Node::has_class`]；这里再统一小写就会把 `class="btnItem"` 变成
+/// 永远命中不了。
 #[derive(Clone, Debug, Default, Eq, PartialEq, Hash, PartialOrd, Ord)]
 pub struct Ident(pub String);
 
@@ -57,7 +63,7 @@ impl From<&str> for Ns {
 
 impl From<&str> for Ident {
     fn from(value: &str) -> Self {
-        Self(value.to_ascii_lowercase())
+        Self(value.to_string())
     }
 }
 

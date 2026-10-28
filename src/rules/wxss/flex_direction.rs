@@ -191,6 +191,18 @@ mod tests {
         assert!(diags.iter().any(|d| d.message.contains("flex-direction")));
     }
 
+    /// 旧实现把选择器里的标识符统一小写，`.Btn` 命不中 `class="Btn"`：整块样式被可达性闸门
+    /// 当作「没人用」跳过，块内的真实诊断全部消失。
+    #[test]
+    fn capitalized_class_selectors_are_reachable() {
+        let (_f, project) = page_opt_out(
+            "flex-capitalized",
+            r#"<view class="Btn"/>"#,
+            r#".Btn { display: flex; }"#,
+        );
+        assert_eq!(messages(&FlexDirection, &project).len(), 1);
+    }
+
     #[test]
     fn flex_direction_is_found_in_a_separate_rule_with_the_same_selector() {
         // 声明可以拆开写：`.a` 在两条规则里各写一半，不能只看单条。
