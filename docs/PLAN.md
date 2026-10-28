@@ -957,6 +957,12 @@ skit-player 180 → 179（−1 fixed-layer）。反向：businessview 0 → 3（
 `any_selector_matches` 从 `bool`（只认 `Yes`）改成返回 `Tri`：`No` 继续跳过，`Unknown`（块内选择器命中的节点取决于动态 class / 动态属性）报一条 `Info`——
 「条件被丢弃、但块内是否生效静态判不出」。实测六工程只有 businessview 的 4 条（vendor `weui.wxss`），不构成噪音。
 
+**文本插值进入模板作用域**
+
+`WxmlText` 补 `expression`（动态文本保留表达式）与 `template`（定义体归属），`template-data-scope` 的「模板体引用到的字段」
+从「属性表达式 + 分支条件」扩到「属性 + 分支 + 文本插值」（`{{x}}` 写在文本节点里的字段以前看不到）。
+六工程逐字段 diff 零变化——已知的 novel 事故本来就在属性/条件里，这一项是补漏而不是新发现。
+
 **验收**（六工程、两个方向逐字段 diff，`a82694a` → 本轮）
 
 正向：novel 23 → 21（−2 scroll-view-type：`pages/index/index.wxml:230`、`pages/recent-read/recent-read.wxml:126` 的 `wx:else` webview 分支）、

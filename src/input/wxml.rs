@@ -201,16 +201,28 @@ pub struct WxmlAttribute {
 pub struct WxmlText {
     /// 文本内容；静态文本是解码后的值，插值是原文（含 `{{}}`）。
     pub text: String,
+    /// 插值的表达式（静态文本为 `None`）。
+    pub expression: Option<Expression>,
     pub start: Position,
     pub end: Position,
     /// 文本所处的条件分支栈（`<block wx:if>` 摊平后仍保留）。
     pub branches: Vec<Branch>,
+    /// 文本来自内联 `<template name>` 的定义体时，记下模板名。
+    pub template: Option<String>,
 }
 
 impl WxmlText {
     /// 空白文本不算「有意义的文本」。
     pub fn is_meaningful(&self) -> bool {
         !self.text.trim().is_empty()
+    }
+
+    /// 插值里引用到的数据字段（静态文本为空）。
+    pub fn data_fields(&self) -> Vec<String> {
+        self.expression
+            .as_ref()
+            .map(crate::input::expr::data_fields)
+            .unwrap_or_default()
     }
 }
 
@@ -351,20 +363,29 @@ fn byte_offset(source: &str, pos: Position) -> Option<usize> {
     None
 }
 
-fn text_node(value: &Value, source: &str, branches: &[Branch]) -> WxmlText {
+fn text_node(value: &Value, source: &str, branches: &[Branch], template: Option<&str>) -> WxmlText {
     let range = value.location();
-    let (text, start, end) = if let Value::Static { value: raw, .. } = value {
-        // 解析器把文本前的空白也包进了 Value，这里裁掉并把起点前移，
-        // 让诊断落在真正的第一个字符上。
-        let trimmed = raw.trim();
-        let lead = &raw[..raw.len() - raw.trim_start().len()];
-        let start = advance(range.start, lead);
-        (trimmed.to_string(), start, advance(start, trimmed))
-    } else {
-        (slice(source, range.clone()), range.start, range.end)
+    let (text, expression, start, end) = match value {
+        Value::Static { value: raw, .. } => {
+            // 解析器把文本前的空白也包进了 Value，这里裁掉并把起点前移，
+            // 让诊断落在真正的第一个字符上。
+            let trimmed = raw.trim();
+            let lead = &raw[..raw.len() - raw.trim_start().len()];
+            let start = advance(range.start, lead);
+            (trimmed.to_string(), None, start, advance(start, trimmed))
+        }
+        Value::Dynamic { expression, .. } => (
+            slice(source, range.clone()),
+            Some((**expression).clone()),
+            range.start,
+            range.end,
+        ),
+        _ => (slice(source, range.clone()), None, range.start, range.end),
     };
     WxmlText {
         text,
+        expression,
+        template: template.map(str::to_string),
         start,
         end,
         branches: branches.to_vec(),
@@ -422,7 +443,7 @@ fn node_nodes(
     calls: &mut Vec<TemplateCall>,
 ) -> Vec<WxmlNode> {
     match node {
-        Node::Text(value) => vec![WxmlNode::Text(text_node(value, source, branches))],
+        Node::Text(value) => vec![WxmlNode::Text(text_node(value, source, branches, template))],
         Node::Element(element) => {
             element_nodes(element, source, env, next_group, branches, template, calls)
         }

@@ -16,19 +16,18 @@
 //! 口径与边界：
 //! - 只比较静态信息：`is` 必须是静态模板名，`data` 必须是对象字面量（含 spread 或写成
 //!   变量时判不了，跳过）。
-//! - 模板体的「需要」= 属性表达式里的数据字段 + `wx:if` / `wx:elif` 条件里的字段；
-//!   `wx:for` 的 `item` / `index`、WXS 模块名是作用域引用，不在其中。
-//! - 文本插值（`{{x}}` 写在文本节点里）看不到，属已知漏报。
+//! - 模板体的「需要」= 属性表达式、`wx:if` / `wx:elif` 条件、以及**文本插值**里引用的
+//!   数据字段；`wx:for` 的 `item` / `index`、WXS 模块名是作用域引用，不在其中。
 //! - 跨文件 `<import>` 的模板不做。
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxml::WxmlDoc;
+use crate::input::wxml::{WxmlDoc, WxmlNode};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::{visit, walk};
+use super::visit;
 
 pub const ID: &str = "skyline/template-data-scope";
 
@@ -48,23 +47,38 @@ impl Rule for TemplateDataScope {
     }
 }
 
+/// 模板名 → 模板体引用到的字段（元素、文本插值、分支条件）。
+fn collect_needed<'a>(nodes: &'a [WxmlNode], needed: &mut BTreeMap<&'a str, BTreeSet<String>>) {
+    for node in nodes {
+        match node {
+            WxmlNode::Element(element) => {
+                if let Some(name) = element.template.as_deref() {
+                    let fields = needed.entry(name).or_default();
+                    for attribute in &element.attributes {
+                        if let Some(expression) = &attribute.expression {
+                            fields.extend(crate::input::expr::data_fields(expression));
+                        }
+                    }
+                    for branch in &element.branches {
+                        fields.extend(branch.fields.iter().cloned());
+                    }
+                }
+                collect_needed(&element.children, needed);
+            }
+            WxmlNode::Text(text) => {
+                if let Some(name) = text.template.as_deref() {
+                    needed.entry(name).or_default().extend(text.data_fields());
+                }
+            }
+            WxmlNode::Comment => {}
+        }
+    }
+}
+
 fn check_file(doc: &WxmlDoc, out: &mut Vec<Diagnostic>) {
     // 模板名 → 模板体用到的字段。
     let mut needed: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
-    walk(doc, |element, _| {
-        let Some(name) = element.template.as_deref() else {
-            return;
-        };
-        let fields = needed.entry(name).or_default();
-        for attribute in &element.attributes {
-            if let Some(expression) = &attribute.expression {
-                fields.extend(crate::input::expr::data_fields(expression));
-            }
-        }
-        for branch in &element.branches {
-            fields.extend(branch.fields.iter().cloned());
-        }
-    });
+    collect_needed(&doc.nodes, &mut needed);
 
     // 模板名 → 所有顶层调用点提供的键的并集；判不了 data 的调用点整体跳过该模板。
     let mut provided: BTreeMap<&str, Option<BTreeSet<&str>>> = BTreeMap::new();
@@ -134,6 +148,23 @@ mod tests {
   <text>{{title}}</text>
 </template>
 "#;
+
+    #[test]
+    fn field_used_only_in_text_interpolation_is_reported() {
+        // 文本里的插值同样吃模板作用域：`{{label}}` 只看得到调用点的 `data`。
+        let diagnostics = check_rule(
+            &project(
+                "template-scope-text",
+                r#"<template name="Card"><text>{{label}}</text></template><template is="Card" data="{{ {} }}"/>"#,
+            ),
+            &TemplateDataScope,
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0].message.contains("`label`"),
+            "{diagnostics:#?}"
+        );
+    }
 
     #[test]
     fn field_missing_from_every_call_site_is_reported() {
