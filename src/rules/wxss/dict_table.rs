@@ -125,6 +125,11 @@ const UNSUPPORTED_VALUES: &[(&[&str], &str, &str)] = &[
     (&["display"], "flow-root", "改用 flex 或 block"), // layout.md「display」
     (&["display"], "inline-grid", "改用 inline-flex"), // display.cc 无 InlineGrid case（property.rs:213 可解析）
     (
+        &["display"],
+        "contents",
+        "`contents` 在 Skyline 下整条声明被丢弃（fp 的 Display 枚举无此值，float-pigment-css/src/typing.rs:522），元素会保留默认 flex 盒子：改成显式 flex 容器并调整父子层级",
+    ), // layout.md 的 display 值表（none/block/inline/inline-block/flex/inline-flex）不含 contents
+    (
         &["position"],
         "sticky",
         "改用 relative/absolute/fixed；吸顶使用 sticky-header/sticky-section 组件",

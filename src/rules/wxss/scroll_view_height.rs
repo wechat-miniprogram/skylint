@@ -1,25 +1,22 @@
-//! `skyline/scroll-view-height`：`flex: 1` 的 `scroll-view` 靠父容器撑高，
-//! 而父容器是「主轴尺寸不定」的列容器——Skyline 下 scroll-view 没有内容高度兜底，
-//! 实测会塌成 0。
+//! `skyline/scroll-view-height`：`scroll-view` 没有确定高度，Skyline 下会塌成 0。
 //!
 //! 为什么这是 Skyline 差异：WebView 的 scroll-view 是原生滚动容器，内容多高它都能滚；
-//! Skyline 的 scroll-view 只有在 `enableScrollViewAutoSize` 开启时才成为 measurable
-//! 节点（`shadow/components/scroll_view_shadow_node.cc:1098-1103`），否则它就是一个
-//! 普通布局节点，高度完全由 CSS 决定——`flex: 1` 在不定主轴的列容器里拿不到剩余空间
-//! （fp 的 `Percent` 在不定父轴下 `resolve` 成 None，`float-pigment-layout/src/types.rs:224`，
-//! 于是退化成内容求和），内容又是懒加载的，最终就是 0。
+//! Skyline 只有 `enableScrollViewAutoSize` 打开时才成为 measurable 节点
+//! （`shadow/components/scroll_view_shadow_node.cc:1096-1103`），否则：
 //!
-//! 判据（全部满足才报，方向是宁可漏报）：
+//! - 它自己的 yoga 节点在 fp 布局树里是**叶子**：子元素各自 `SetAsRoot()` 独立布局
+//!   （`shadow/shadow_node.cc:195-226`，`YGConnector` 只在没有 concrete widget 时创建），
+//!   `ScrollView::AppendChild` 只挂 Widget 树、不碰 fp（`widgets/scroll_view.cc:346-353`）；
+//! - 没有任何 measure 兜底：`SetLayoutNode` 只用于失效通知（`scroll_view.cc:318-320`），
+//!   尺寸一律由 `FPNodeCalculateLayout` 从自身 CSS + 父约束解出（`widgets/yoga.cc:473-554`）；
+//! - Flutter 侧拿到的是 `BoxConstraints.loose`（`yoga.h:365-370` + `yoga.dart:575-584`），
+//!   内容只能填满盒子，撑不大它。
 //!
-//! 1. 元素是 `<scroll-view>`；
-//! 2. 它的 `flex-grow > 0`（含 `flex: 1` / `flex: auto` 简写）；
-//! 3. 它自己没有确定的 `height`（写了任何非 `auto` 的值都算确定，含 `%`——百分比
-//!    写法在真实工程里基本都配着确定的父高，按确定处理可少报）；
-//! 4. 父元素是 flex 容器，且主轴是纵向（`flex-direction: column`，Skyline 默认值）；
-//! 5. 父元素同样没有确定的 `height`。
+//! 所以高度只能来自 CSS：[`definite_height`] 逐条覆盖「自身 `height`、百分比沿父链、
+//! 绝对定位上下拉伸、flex 主轴 grow、交叉轴 stretch」，全都不成立就是 0。
 //!
 //! 工程级 `rendererOptions.skyline.enableScrollViewAutoSize` 开启时整条规则跳过：
-//! 那时 scroll-view 变 measurable，尺寸来自内容而不是 flex 分配。
+//! 那时 scroll-view 变 measurable，尺寸来自内容（`ScrollView::MeasureContent`）。
 
 use crate::input::wxml::WxmlElement;
 use crate::matcher::Tree;
@@ -30,13 +27,16 @@ use crate::rules::wxml::structure::find_attr;
 use crate::rules::wxml::{
     ElementDoc, Resolved, element_diagnostic, element_docs, resolved_property, walk_skyline,
 };
-use crate::rules::wxss::value_util::at_declaration;
 use crate::{Diagnostic, Severity};
 
 pub struct ScrollViewHeight;
 
 impl ScrollViewHeight {
     pub const ID: &'static str = "skyline/scroll-view-height";
+
+    const MESSAGE: &'static str = "`scroll-view` 没有确定高度：Skyline 默认不开 `enableScrollViewAutoSize`，高度只来自 CSS，内容再多也撑不开，会塌成 0";
+
+    const HELP: &'static str = "给它确定高度：`height` / 定高父级下的 `height: 100%` / 定高容器里的 `flex: 1`；只写 `max-height` 不产生高度（WebView 靠内容撑开，Skyline 不会），要配合 `height` 或打开 `app.json` 的 `rendererOptions.skyline.enableScrollViewAutoSize`";
 }
 
 impl Rule for ScrollViewHeight {
@@ -44,7 +44,7 @@ impl Rule for ScrollViewHeight {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Warning,
-            description: "`flex: 1` 的 scroll-view 在主轴尺寸不定的列容器里没有高度可撑，Skyline 下会塌成 0",
+            description: "scroll-view 没有确定高度，Skyline 下内容不会撑开它，会塌成 0",
         }
     }
 
@@ -60,63 +60,123 @@ impl Rule for ScrollViewHeight {
                 || project.app_display_block(),
                 |scope| project.renders_as_block(&scope),
             );
-            walk_skyline(&doc, |element, ancestors| {
-                if element.tag != "scroll-view" {
+            walk_skyline(&doc, |element, _| {
+                if element.tag != "scroll-view"
+                    || definite_height(project, &tree, element, default_block, 0)
+                {
                     return;
                 }
-                let flex = resolved_property(project, &tree, element, "flex");
-                let grow = resolved_property(project, &tree, element, "flex-grow");
-                if !grows(grow.as_ref(), flex.as_ref()) {
-                    return;
-                }
-                if determinate(project, &tree, element) {
-                    return;
-                }
-                let Some(parent) = ancestors.last() else {
-                    return;
-                };
-                if !is_column_flex(project, &tree, parent, default_block) {
-                    return;
-                }
-                if determinate_height(
-                    project,
-                    &tree,
-                    parent,
-                    &ancestors[..ancestors.len() - 1],
-                    default_block,
-                ) {
-                    return;
-                }
-
-                let message = "`scroll-view` 用 `flex` 撑高，但所在列容器没有确定高度：Skyline 下 scroll-view 没有内容高度兜底，flex 分不到高度时会塌成 0";
-                let help = reach.help("给父容器一个确定高度（如 `height: 100vh`），或给这个 scroll-view 补 `height: 0` 让它按 flex 分配");
                 out.push(
-                    match flex
-                        .or(grow)
-                        .and_then(|resolved| Some((resolved.sheet?, resolved.declaration?)))
-                    {
-                        Some((sheet, declaration)) => at_declaration(
-                            Self::ID,
-                            &sheet.doc,
-                            declaration,
-                            Severity::Warning,
-                            message,
-                            help,
-                        ),
-                        None => element_diagnostic(
-                            Self::ID,
-                            &doc,
-                            element,
-                            doc.path(),
-                            Severity::Warning,
-                            message,
-                        )
-                        .help(help),
-                    },
+                    element_diagnostic(
+                        Self::ID,
+                        &doc,
+                        element,
+                        doc.path(),
+                        Severity::Warning,
+                        Self::MESSAGE,
+                    )
+                    .help(reach.help(Self::HELP)),
                 );
             });
         }
         out
+    }
+}
+
+/// 元素在 Skyline 下拿到的高度是否确定（= 不会塌成 0）。
+///
+/// 判不了的情况（动态内联 `style`、递归过深）一律当确定，宁可漏报。
+fn definite_height(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    default_block: bool,
+    depth: u8,
+) -> bool {
+    if depth > 16 || dynamic_inline_style(element) {
+        return true;
+    }
+    // 框架自己定尺寸的盒子：`swiper-item` 撑满 swiper，`nested-scroll-body` /
+    // `nested-scroll-header` 由滚动视口分配。它们的分支自己的高度问题会在宿主元素上报，
+    // 这里按确定处理，避免把百分比链一律断在这里（宁可漏报）。
+    if matches!(
+        element.tag.as_str(),
+        "swiper-item" | "nested-scroll-body" | "nested-scroll-header"
+    ) {
+        return true;
+    }
+    // `min-height` 是地板：定长的它就把盒子顶到那个高度。
+    if length_value(project, tree, element, "min-height").is_some_and(|min| {
+        !min.contains('%') || parent_definite(project, tree, element, default_block, depth)
+    }) {
+        return true;
+    }
+    if let Some(height) = length_value(project, tree, element, "height") {
+        // 百分比要沿父链解到确定值：父高不定时它退化成 `auto`。
+        return !height.contains('%')
+            || parent_definite(project, tree, element, default_block, depth);
+    }
+    // 绝对定位 + 上下都有值：高度由定位决定。
+    if is_out_of_flow(project, tree, element)
+        && length_value(project, tree, element, "top").is_some()
+        && length_value(project, tree, element, "bottom").is_some()
+    {
+        return true;
+    }
+    let Some(parent) = tree.parent_of(element) else {
+        // 顶层元素：页面本身有视口高度，但自动高度不会被它拉伸。
+        return false;
+    };
+    match flex_axis(project, tree, parent, default_block) {
+        // 主轴是高度：`flex-basis` 定长，或 grow 从确定高度的父级分到剩余空间。
+        Some(false) => {
+            if length_value(project, tree, element, "flex-basis")
+                .is_some_and(|basis| !basis.contains('%'))
+            {
+                return true;
+            }
+            let flex = resolved_property(project, tree, element, "flex");
+            let grow = resolved_property(project, tree, element, "flex-grow");
+            grows(grow.as_ref(), flex.as_ref())
+                && parent_definite(project, tree, element, default_block, depth)
+        }
+        // 主轴是宽度：高度走交叉轴，`stretch`（默认）时等于父级高度。
+        Some(true) => {
+            stretches(project, tree, element, parent)
+                && parent_definite(project, tree, element, default_block, depth)
+        }
+        None => false,
+    }
+}
+
+/// 父级的高度是否确定；父级就是页面时按视口高度算确定。
+fn parent_definite(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    default_block: bool,
+    depth: u8,
+) -> bool {
+    match tree.parent_of(element) {
+        Some(parent) => definite_height(project, tree, parent, default_block, depth + 1),
+        None => true,
+    }
+}
+
+/// 属性的取值，`auto` / `em` 一类空值返回 `None`（等同没写）。
+fn length_value(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    property: &str,
+) -> Option<String> {
+    let value = resolved_property(project, tree, element, property)?
+        .value
+        .trim()
+        .to_ascii_lowercase();
+    match value.as_str() {
+        "" | "auto" | "inherit" | "initial" | "unset" | "none" => None,
+        _ => Some(value),
     }
 }
 
@@ -150,53 +210,68 @@ fn flex_grows(flex: &Resolved<'_>) -> bool {
     }
 }
 
-/// 属性的取值是否为「确定尺寸」：写了 `auto` / `inherit` 之外的值就算。
-///
-/// 不对百分比追父链：真实工程里 `height: 100%` 基本都配着确定父高，按确定处理可少报。
-fn determinate(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
-    if dynamic_inline_style(element) {
-        return true;
-    }
-    let Some(resolved) = resolved_property(project, tree, element, "height") else {
-        return false;
-    };
-    let value = resolved.value.trim().to_ascii_lowercase();
-    !matches!(
-        value.as_str(),
-        "" | "auto" | "inherit" | "initial" | "unset"
-    )
-}
-
-/// 容器的高度是否确定：自己写了 `height`，或者作为 flex 子项被上一级列容器分配。
-///
-/// 标准「整页固定 + 中间滚动」是 `.outer{height:100vh} > .mid{flex:1} > scroll-view`，
-/// `.mid` 自己没写高度，只看一层会把它当不定高。
-fn determinate_height(
+/// 交叉轴是否被拉伸（`align-self` 缺省 `auto` 时看父级 `align-items`，再缺省就是 `stretch`）。
+fn stretches(
     project: &Project,
     tree: &Tree<'_>,
     element: &WxmlElement,
-    ancestors: &[&WxmlElement],
-    default_block: bool,
+    parent: &WxmlElement,
 ) -> bool {
-    if determinate(project, tree, element) {
-        return true;
+    let align = resolved_property(project, tree, element, "align-self")
+        .map(|resolved| resolved.value.trim().to_ascii_lowercase())
+        .filter(|value| value != "auto")
+        .or_else(|| {
+            resolved_property(project, tree, parent, "align-items")
+                .map(|resolved| resolved.value.trim().to_ascii_lowercase())
+        });
+    match align.as_deref() {
+        Some("flex-start" | "start" | "flex-end" | "end" | "center" | "baseline") => false,
+        // 缺省、`stretch`、`normal` 都是拉伸。
+        _ => true,
     }
-    let flex = resolved_property(project, tree, element, "flex");
-    let grow = resolved_property(project, tree, element, "flex-grow");
-    if !grows(grow.as_ref(), flex.as_ref()) {
-        return false;
+}
+
+/// 元素是 flex 容器时返回主轴方向（`true` = 横向），否则 `None`。
+///
+/// Skyline 默认 `display: flex` + `flex-direction: column`；开了 `defaultDisplayBlock`
+/// 之后默认变成 `block` + `row`（`renderer_options` 的整工程对齐开关）。
+fn flex_axis(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    default_block: bool,
+) -> Option<bool> {
+    let display = resolved_property(project, tree, element, "display")
+        .map(|resolved| resolved.value.trim().to_ascii_lowercase())
+        .unwrap_or_else(|| {
+            if default_block {
+                "block".to_string()
+            } else {
+                "flex".to_string()
+            }
+        });
+    if !matches!(display.as_str(), "flex" | "inline-flex") {
+        return None;
     }
-    let Some(parent) = ancestors.last() else {
-        return false;
-    };
-    is_column_flex(project, tree, parent, default_block)
-        && determinate_height(
-            project,
-            tree,
-            parent,
-            &ancestors[..ancestors.len() - 1],
-            default_block,
+    let direction = resolved_property(project, tree, element, "flex-direction")
+        .map(|resolved| resolved.value.trim().to_ascii_lowercase())
+        .unwrap_or_else(|| {
+            if default_block {
+                "row".to_string()
+            } else {
+                "column".to_string()
+            }
+        });
+    Some(direction.starts_with("row"))
+}
+
+fn is_out_of_flow(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
+    resolved_property(project, tree, element, "position").is_some_and(|resolved| {
+        matches!(
+            resolved.value.trim().to_ascii_lowercase().as_str(),
+            "absolute" | "fixed"
         )
+    })
 }
 
 /// 带 `{{…}}` 或纯动态的内联 `style`：运行时的尺寸静态判不出，按确定处理（宁可漏报）。
@@ -208,41 +283,6 @@ fn dynamic_inline_style(element: &WxmlElement) -> bool {
     })
 }
 
-/// 元素是否为「主轴纵向的 flex 容器」。
-///
-/// Skyline 默认 `display: flex` + `flex-direction: column`；开了 `defaultDisplayBlock`
-/// 之后默认变成 `block` + `row`（`renderer_options` 的整工程对齐开关）。
-fn is_column_flex(
-    project: &Project,
-    tree: &Tree<'_>,
-    element: &WxmlElement,
-    default_block: bool,
-) -> bool {
-    let display = resolved_property(project, tree, element, "display")
-        .map(|resolved| resolved.value.trim().to_ascii_lowercase())
-        .unwrap_or_else(|| {
-            if default_block {
-                "block".to_string()
-            } else {
-                "flex".to_string()
-            }
-        });
-    if display != "flex" && display != "inline-flex" {
-        return false;
-    }
-    let direction = resolved_property(project, tree, element, "flex-direction")
-        .map(|resolved| resolved.value.trim().to_ascii_lowercase())
-        .unwrap_or_else(|| {
-            if default_block {
-                "row".to_string()
-            } else {
-                "column".to_string()
-            }
-        });
-    direction == "column" || direction == "column-reverse"
-}
-
-/// 诊断落在元素开始标签上（没有可落的声明时）。
 #[cfg(test)]
 mod tests {
     use crate::Diagnostic;
@@ -253,15 +293,21 @@ mod tests {
 
     /// 页面：`<view class="panel"><scroll-view class="list"/></view>`。
     fn check(name: &str, app_json: &str, wxss: &str) -> Vec<Diagnostic> {
+        check_wxml(
+            name,
+            app_json,
+            wxss,
+            r#"<view class="panel"><scroll-view class="list"/></view>"#,
+        )
+    }
+
+    fn check_wxml(name: &str, app_json: &str, wxss: &str, wxml: &str) -> Vec<Diagnostic> {
         let fixture = Fixture::new(name);
         fixture
             .write("project.config.json", r#"{"miniprogramRoot":""}"#)
             .write("app.json", app_json)
             .write("pages/index/index.json", "{}")
-            .write(
-                "pages/index/index.wxml",
-                r#"<view class="panel"><scroll-view class="list"/></view>"#,
-            )
+            .write("pages/index/index.wxml", wxml)
             .write("pages/index/index.wxss", wxss);
         let project = fixture.project();
         ScrollViewHeight.check(&project)
@@ -270,7 +316,7 @@ mod tests {
     const SKYLINE_APP: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#;
 
     #[test]
-    fn flex_one_in_unbounded_column_container_is_reported() {
+    fn scroll_view_without_height_is_reported() {
         let diagnostics = check(
             "svh-report",
             SKYLINE_APP,
@@ -278,7 +324,7 @@ mod tests {
         );
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(diagnostics[0].message.contains("塌成 0"));
-        assert_eq!(diagnostics[0].line, 2);
+        assert_eq!(diagnostics[0].line, 1);
     }
 
     #[test]
@@ -293,43 +339,92 @@ mod tests {
 
     #[test]
     fn own_height_is_not_reported() {
-        let diagnostics = check(
-            "svh-own-height",
-            SKYLINE_APP,
-            ".panel { display: flex; flex-direction: column; }\n.list { flex: 1; height: 0; }",
-        );
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        for (name, css) in [
+            ("svh-own-height", ".list { flex: 1; height: 0; }"),
+            ("svh-own-vh", ".list { height: 100vh; }"),
+            ("svh-min-height", ".list { min-height: 200px; }"),
+            (
+                "svh-absolute",
+                ".list { position: absolute; top: 0; bottom: 0; }",
+            ),
+        ] {
+            let diagnostics = check(name, SKYLINE_APP, css);
+            assert!(diagnostics.is_empty(), "{name}: {diagnostics:#?}");
+        }
     }
 
+    /// 行向容器的交叉轴是高度：父级定高时 `stretch` 撑满，父级不定高时跟着塌。
     #[test]
-    fn row_direction_is_not_reported() {
-        // 主轴横向时 flex 分配的是宽度，高度与内容无关。
-        let diagnostics = check(
-            "svh-row",
+    fn row_container_stretches_only_under_a_bounded_parent() {
+        let bounded = check(
+            "svh-row-bounded",
+            SKYLINE_APP,
+            ".panel { display: flex; flex-direction: row; height: 100vh; }\n.list { flex: 1; }",
+        );
+        assert!(bounded.is_empty(), "{bounded:#?}");
+
+        let unbounded = check(
+            "svh-row-unbounded",
             SKYLINE_APP,
             ".panel { display: flex; flex-direction: row; }\n.list { flex: 1; }",
         );
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(unbounded.len(), 1, "{unbounded:#?}");
     }
 
+    /// 交叉轴上不是 `stretch` 就不吃父级高度。
     #[test]
-    fn block_parent_is_not_reported() {
+    fn non_stretch_alignment_is_reported() {
         let diagnostics = check(
-            "svh-block",
+            "svh-align-start",
             SKYLINE_APP,
-            ".panel { display: block; }\n.list { flex: 1; }",
+            ".panel { display: flex; flex-direction: row; height: 100vh; }\n.list { align-self: flex-start; }",
         );
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     }
 
+    /// 百分比要沿父链解：父级自动高度时它退化成 `auto`。
     #[test]
-    fn flex_none_is_not_reported() {
-        let diagnostics = check(
-            "svh-none",
+    fn percentage_height_needs_a_bounded_parent() {
+        let broken = check(
+            "svh-percent-unbounded",
             SKYLINE_APP,
-            ".panel { display: flex; flex-direction: column; }\n.list { flex: none; }",
+            ".panel { display: block; }\n.list { height: 100%; }",
         );
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(broken.len(), 1, "{broken:#?}");
+
+        let nested = check(
+            "svh-percent-two-levels",
+            SKYLINE_APP,
+            ".outer { height: 100vh; }\n.panel { display: block; height: 100%; }\n.list { height: 100%; }",
+        );
+        assert!(nested.is_empty(), "百分比链解到确定值时不报：{nested:#?}");
+    }
+
+    /// 块级父容器、`flex: none`、甚至直接挂在页面下，都没有高度来源。
+    #[test]
+    fn no_layout_source_is_reported() {
+        for (name, css) in [
+            (
+                "svh-block",
+                ".panel { display: block; }\n.list { flex: 1; }",
+            ),
+            (
+                "svh-none",
+                ".panel { display: flex; flex-direction: column; }\n.list { flex: none; }",
+            ),
+            ("svh-plain", ".panel { margin: 10px; }"),
+        ] {
+            let diagnostics = check(name, SKYLINE_APP, css);
+            assert_eq!(diagnostics.len(), 1, "{name}: {diagnostics:#?}");
+        }
+
+        let top_level = check_wxml(
+            "svh-top-level",
+            SKYLINE_APP,
+            ".list { margin: 10px; }",
+            r#"<scroll-view class="list"/>"#,
+        );
+        assert_eq!(top_level.len(), 1, "{top_level:#?}");
     }
 
     #[test]
