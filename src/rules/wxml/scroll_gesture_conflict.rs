@@ -69,7 +69,12 @@ impl Rule for ScrollGestureConflict {
                 }
                 let (line, _) = doc.position(element.tag_start);
                 let scroll_view = format!("{path}:{line}");
-                for (ancestor_path, ancestor) in graph.ancestors(&path, element).nodes {
+                let chain = graph.ancestors(&path, element).nodes;
+                // 调用方把拖拽开关做成动态绑定：里面有 scrollTop 门控，静态看不出来。
+                if chain.iter().any(|(_, ancestor)| is_gated(ancestor)) {
+                    return;
+                }
+                for (ancestor_path, ancestor) in chain {
                     if has_catch_touchmove(ancestor) {
                         break;
                     }
@@ -117,6 +122,16 @@ fn has_bind_touchmove(element: &FlatElement) -> bool {
 
 fn has_catch_touchmove(element: &FlatElement) -> bool {
     element.attr("catch:touchmove").is_some() || element.attr("catchtouchmove").is_some()
+}
+
+/// 使用方是否把拖拽开关做成了动态绑定（`dragHide="{{…}}"`）。
+///
+/// `half-screen-dialog` 这条链的固定写法：面板绑 `touchmove`，开关由调用方传。
+/// 调用方传的是动态值时，说明里面有 `scrollTop` 门控（仓库里的 `dragHide` 范式），
+/// 静态看不出门控逻辑，就不能报。
+fn is_gated(element: &FlatElement) -> bool {
+    element.attr("dragHide").is_some_and(|attr| !attr.is_static)
+        && !crate::rules::wxml::is_builtin(&element.tag)
 }
 
 #[cfg(test)]
@@ -213,6 +228,42 @@ mod tests {
             "Page({ onTap() {} });",
         );
         assert!(check(&fixture).is_empty());
+    }
+
+    #[test]
+    fn dynamic_drag_hide_means_it_is_gated() {
+        let fixture = page(
+            "gesture-gated",
+            r#"<panel dragHide="{{dragHide}}"><scroll-view scroll-y><view/></scroll-view></panel>"#,
+            "\"panel\": \"/components/panel/panel\"",
+            "Page({});",
+        );
+        fixture
+            .write("components/panel/panel.json", r#"{"component":true}"#)
+            .write("components/panel/panel.js", "Component({});")
+            .write(
+                "components/panel/panel.wxml",
+                r#"<view bind:touchmove="onMove"><slot/></view>"#,
+            );
+        assert!(check(&fixture).is_empty());
+    }
+
+    #[test]
+    fn static_drag_hide_is_still_reported() {
+        let fixture = page(
+            "gesture-static-drag-hide",
+            r#"<panel dragHide><scroll-view scroll-y><view/></scroll-view></panel>"#,
+            "\"panel\": \"/components/panel/panel\"",
+            "Page({});",
+        );
+        fixture
+            .write("components/panel/panel.json", r#"{"component":true}"#)
+            .write("components/panel/panel.js", "Component({});")
+            .write(
+                "components/panel/panel.wxml",
+                r#"<view bind:touchmove="onMove"><slot/></view>"#,
+            );
+        assert_eq!(check(&fixture).len(), 1);
     }
 
     #[test]
