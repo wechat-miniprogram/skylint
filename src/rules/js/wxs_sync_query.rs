@@ -1,4 +1,7 @@
-//! `skyline/wxs-sync-rect`：WXS 里同步调用 `getBoundingClientRect()` 在 Skyline 下恒为全 0。
+//! `skyline/wxs-sync-query`：WXS 里同步形式的布局查询在 Skyline 下拿不到值。
+//!
+//! 两个方法，同一个成因：WXS 的节点描述符照着 DOM 提供了「同步 + 回调」双签名，
+//! 而 Skyline 的布局在 UI 线程，引擎侧只有回调接口。
 //!
 //! WXS 的矩形查询最终落到 glass-easel-adapter 的两条分支
 //! （`glass-easel-adapter/src/events/wxs/base.ts:72-93`）：
@@ -7,8 +10,12 @@
 //! - Skyline：`be.getBoundingClientRect(cb)`，引擎侧只有回调式接口
 //!   （`skyline/src/native/native_global.ts:402`），因为布局在 UI 线程、JS 在逻辑线程。
 //!
-//! 于是 `:201-229` 在不传回调时只能返回 `defaultBoundingClientRect`（全 0）——调用方拿着
-//! 0 继续算，既不报错也不生效。判据只有一种写法：`.getBoundingClientRect()` 不传实参。
+//! - `getBoundingClientRect()`：`base.ts:201-229` 在不传回调时只能返回
+//!   `defaultBoundingClientRect`（全 0）——调用方拿着 0 继续算，既不报错也不生效；
+//! - `getComputedStyle(fields)`：`wxs/skyline.ts:41-57` 只有回调分支、没有 `return`，
+//!   不传回调直接得到 `undefined`。
+//!
+//! 判据都只有一种写法：`getBoundingClientRect()` 不传实参、`getComputedStyle()` 缺第二个回调。
 //! 修法唯一：改成回调形式（需要同步值的场景改为回调里算、把结果缓存）。
 
 use crate::Severity;
@@ -17,22 +24,24 @@ use crate::rules::{Rule, RuleMeta};
 
 use super::{at_span, renders_in_skyline};
 
-const MESSAGE: &str = "WXS 里同步调用 `getBoundingClientRect()` 在 Skyline 下恒返回全 0（引擎只提供回调式矩形查询）；改成 `getBoundingClientRect(rect => …)`，需要同步值时把结果缓存下来";
+const RECT_MESSAGE: &str = "WXS 里同步调用 `getBoundingClientRect()` 在 Skyline 下恒返回全 0（引擎只提供回调式矩形查询）；改成 `getBoundingClientRect(rect => …)`，需要同步值时把结果缓存下来";
 
-const HELP: &str = "WebView 的 DOM 可以同步取矩形，Skyline 的测量要跨线程，只能回调；缓存一次结果再在触摸回调里使用";
+const STYLE_MESSAGE: &str = "WXS 里同步调用 `getComputedStyle()` 在 Skyline 下返回 `undefined`（引擎只提供回调式样式查询）；改成 `getComputedStyle(fields, style => …)`";
 
-pub struct WxsSyncRect;
+const HELP: &str = "WebView 的 DOM 可以同步取矩形与计算样式，Skyline 的查询要跨线程、只能回调；回调里算好再缓存，在触摸回调里读缓存";
 
-impl WxsSyncRect {
-    pub const ID: &'static str = "skyline/wxs-sync-rect";
+pub struct WxsSyncQuery;
+
+impl WxsSyncQuery {
+    pub const ID: &'static str = "skyline/wxs-sync-query";
 }
 
-impl Rule for WxsSyncRect {
+impl Rule for WxsSyncQuery {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Warning,
-            description: "WXS 里同步调用 `getBoundingClientRect()` 在 Skyline 下拿到的是全 0",
+            description: "WXS 里同步形式的 `getBoundingClientRect()` / `getComputedStyle()` 在 Skyline 下拿不到值",
         }
     }
 
@@ -43,9 +52,14 @@ impl Rule for WxsSyncRect {
                 continue;
             }
             for call in file.doc.calls() {
-                if !call.callee.ends_with(".getBoundingClientRect") || !call.args.is_empty() {
-                    continue;
-                }
+                let message =
+                    if call.callee.ends_with(".getBoundingClientRect") && call.args.is_empty() {
+                        RECT_MESSAGE
+                    } else if call.callee.ends_with(".getComputedStyle") && call.args.len() < 2 {
+                        STYLE_MESSAGE
+                    } else {
+                        continue;
+                    };
                 out.push(
                     at_span(
                         Self::ID,
@@ -53,7 +67,7 @@ impl Rule for WxsSyncRect {
                         file,
                         call.start,
                         call.end,
-                        MESSAGE,
+                        message,
                     )
                     .help(HELP),
                 );
@@ -68,7 +82,7 @@ mod tests {
     use crate::rules::Rule;
     use crate::rules::testutil::js::Fixture;
 
-    use super::WxsSyncRect;
+    use super::WxsSyncQuery;
 
     fn fixture(name: &str, renderer: &str, wxs: &str) -> Fixture {
         let f = Fixture::new(name);
@@ -94,9 +108,31 @@ mod tests {
             "skyline",
             "function move(evt, owner) { var w = owner.getBoundingClientRect().width; }",
         );
-        let diagnostics = WxsSyncRect.check(&f.project());
+        let diagnostics = WxsSyncQuery.check(&f.project());
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert_eq!(diagnostics[0].path, "pages/index/index.wxs");
+    }
+
+    #[test]
+    fn sync_computed_style_is_reported() {
+        let f = fixture(
+            "wxs-sync-style",
+            "skyline",
+            "function move(evt, owner) { var s = owner.getComputedStyle(['width']) }",
+        );
+        let diagnostics = WxsSyncQuery.check(&f.project());
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("getComputedStyle"));
+    }
+
+    #[test]
+    fn computed_style_callback_form_is_not_reported() {
+        let f = fixture(
+            "wxs-sync-style-cb",
+            "skyline",
+            "function move(evt, owner) { owner.getComputedStyle(['width'], function (s) { var w = s.width }) }",
+        );
+        assert!(WxsSyncQuery.check(&f.project()).is_empty());
     }
 
     #[test]
@@ -106,7 +142,7 @@ mod tests {
             "skyline",
             "function move(evt, owner) { owner.getBoundingClientRect(function (rect) { var w = rect.width; }); }",
         );
-        assert!(WxsSyncRect.check(&f.project()).is_empty());
+        assert!(WxsSyncQuery.check(&f.project()).is_empty());
     }
 
     /// WebView 页里同步形式是好的（DOM 同步返回），不能报。
@@ -117,7 +153,7 @@ mod tests {
             "webview",
             "function move(evt, owner) { var w = owner.getBoundingClientRect().width; }",
         );
-        assert!(WxsSyncRect.check(&f.project()).is_empty());
+        assert!(WxsSyncQuery.check(&f.project()).is_empty());
     }
 
     /// 普通 `.js` 文件里的同名调用不是 WXS：那是 `wx.createSelectorQuery` 之外的写法，
@@ -133,6 +169,6 @@ mod tests {
             "pages/index/index.js",
             "Page({ a() { const w = this.getBoundingClientRect().width; } });",
         );
-        assert_eq!(WxsSyncRect.check(&f.project()).len(), 1);
+        assert_eq!(WxsSyncQuery.check(&f.project()).len(), 1);
     }
 }

@@ -50,7 +50,7 @@
 | `skyline/calc-min-max` | warning | skyline | min() / max() / clamp() 在 Skyline 下求值为 0，整个表达式失效 |
 | `skyline/gradient-unsupported` | warning | skyline | repeating 渐变不被 Skyline 解析，mask 也不支持 conic 渐变 |
 | `skyline/unsupported-api` | warning | skyline | Skyline 不支持的 JS API（如 this.animate、插件内的 wx.router.*） |
-| `skyline/wxs-sync-rect` | warning | skyline | WXS 里同步调用 `getBoundingClientRect()` 在 Skyline 下拿到的是全 0 |
+| `skyline/wxs-sync-query` | warning | skyline | WXS 里同步形式的 `getBoundingClientRect()` / `getComputedStyle()` 在 Skyline 下拿不到值 |
 | `skyline/worklet-api-scope` | error | skyline | scrollViewContext.scrollTo 必须在 worklet 内调用，worklet 内不能调用 wx.* |
 | `skyline/worklet-directive` | error | skyline | worklet: 绑定、applyAnimatedStyle 与路由动画处理函数缺少 'worklet' 指令 |
 | `skyline/worklet-data-freeze` | error | skyline | worklet 内解构 this.data 会冻结 this.data，导致 setData 失效 |

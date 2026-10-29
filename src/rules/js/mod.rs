@@ -13,7 +13,7 @@ pub mod worklet_api_scope;
 pub mod worklet_data_freeze;
 pub mod worklet_directive;
 pub mod worklet_es5;
-pub mod wxs_sync_rect;
+pub mod wxs_sync_query;
 
 pub(crate) use callee::Callee;
 pub use draggable_sheet_scroll_to::DraggableSheetScrollTo;
@@ -24,7 +24,7 @@ pub use worklet_api_scope::WorkletApiScope;
 pub use worklet_data_freeze::WorkletDataFreeze;
 pub use worklet_directive::WorkletDirective;
 pub use worklet_es5::WorkletCompileSetting;
-pub use wxs_sync_rect::WxsSyncRect;
+pub use wxs_sync_query::WxsSyncQuery;
 
 use std::collections::HashSet;
 
