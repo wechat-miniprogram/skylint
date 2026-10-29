@@ -7,7 +7,7 @@
 //!
 //! 语法交给 `oxc_parser`，这里只遍历一遍 AST。`.js` / `.ts` 的差异由
 //! `SourceType::from_path` 按后缀决定（脚本还是模块、要不要解析类型）；`.wxs` 是
-//! 独立方言，不在此列，由调用方挡掉。
+//! 独立方言、后缀不在其白名单里，这里显式按 CommonJS 脚本解析。
 //!
 //! 容错策略与 `input/wxss.rs` 一致：不 panic，解析失败返回 `Err`，由调用方决定是否
 //! 跳过。差别在于这里不接受可恢复的语法错误：oxc 能带着错误产出一棵「大致像样」的
@@ -73,8 +73,14 @@ pub struct JsDoc {
 
 impl JsDoc {
     pub fn parse(path: &str, source: &str) -> Result<Self, ParseError> {
-        let source_type = SourceType::from_path(path)
-            .map_err(|_| ParseError::Syntax(format!("不支持的文件后缀：{path}")))?;
+        // `.wxs` 不在 `SourceType::VALID_EXTENSIONS` 里，但它就是脚本方言：
+        // 按 CommonJS 脚本解析（`require` 与 `module.exports` 都能落位）。
+        let source_type = if path.ends_with(".wxs") {
+            SourceType::cjs()
+        } else {
+            SourceType::from_path(path)
+                .map_err(|_| ParseError::Syntax(format!("不支持的文件后缀：{path}")))?
+        };
 
         let owned = source.to_string();
         let allocator = Allocator::default();
@@ -1064,9 +1070,18 @@ mod tests {
     #[test]
     fn unsupported_extension() {
         assert!(matches!(
-            JsDoc::parse("a.wxs", "var a = 1;"),
+            JsDoc::parse("a.coffee", "var a = 1;"),
             Err(ParseError::Syntax(_))
         ));
+    }
+
+    /// `.wxs` 不在 oxc 的后缀白名单里，但要按脚本解析：规则需要看 wxs 里的调用。
+    #[test]
+    fn wxs_is_parsed_as_a_script() {
+        let src = "function f(owner) { return owner.getBoundingClientRect().width }\nmodule.exports = { f: f }";
+        let doc = JsDoc::parse("a.wxs", src).expect("WXS 应当解析成功");
+        assert_eq!(doc.functions().len(), 1);
+        assert_eq!(doc.calls()[0].callee, "owner.getBoundingClientRect");
     }
 
     #[test]

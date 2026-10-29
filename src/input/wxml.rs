@@ -48,6 +48,8 @@ pub struct WxmlDoc {
     pub nodes: Vec<WxmlNode>,
     /// `<import>` / `<include>` 的 `src` 原始值（编译器已剥掉 `.wxml` 后缀）。
     template_refs: Vec<String>,
+    /// `<wxs src>` 的原始值（`Script::GlobalRef`）。
+    wxs_refs: Vec<String>,
     /// `<template is="x" data="…">` 调用点（按源码顺序）。
     pub template_calls: Vec<TemplateCall>,
     /// 这份文件不是单元本身，而是被 `<import>` / `<include>` 引用的片段：
@@ -290,11 +292,24 @@ impl WxmlDoc {
             // 动态 `src="{{x}}"` 解析成空串，不是可解析的模板引用。
             .filter(|name| !name.is_empty())
             .collect();
+        let wxs_refs = template
+            .globals
+            .scripts
+            .iter()
+            .filter_map(|script| match script {
+                glass_easel_template_compiler::parse::tag::Script::GlobalRef { src, .. } => {
+                    Some(src.name.to_string())
+                }
+                glass_easel_template_compiler::parse::tag::Script::Inline { .. } | &_ => None,
+            })
+            .filter(|name| !name.is_empty())
+            .collect();
         Ok(Self {
             path: path.to_string(),
             source: source.to_string(),
             nodes,
             template_refs,
+            wxs_refs,
             template_calls,
             // 由调用方（`load_doc`）按工程视图补上。
             fragment: false,
@@ -316,6 +331,11 @@ impl WxmlDoc {
     /// 编译器在解析时已剥掉 `.wxml` 后缀，所以这里拿到的通常是不带后缀的路径。
     pub fn template_refs(&self) -> &[String] {
         &self.template_refs
+    }
+
+    /// 本文件通过 `<wxs src>` 引入的脚本路径（编译器已补 `.wxs` 后缀）。
+    pub fn wxs_refs(&self) -> &[String] {
+        &self.wxs_refs
     }
 
     /// 深度优先遍历全部元素节点。

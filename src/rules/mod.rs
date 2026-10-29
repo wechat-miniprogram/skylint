@@ -120,6 +120,7 @@ impl Registry {
             Box::new(wxss::CalcMinMax),
             Box::new(wxss::GradientUnsupported),
             Box::new(js::UnsupportedApi),
+            Box::new(js::WxsSyncRect),
             Box::new(js::WorkletApiScope),
             Box::new(js::WorkletDirective),
             Box::new(js::WorkletDataFreeze),

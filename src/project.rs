@@ -1458,6 +1458,30 @@ fn collect_scripts(
         }
     }
 
+    // `<wxs src>` 引入的脚本：作用域跟随引入它的单元，规则据此判断会不会跑在 Skyline 下。
+    for (wxml_path, scope) in pages
+        .iter()
+        .filter_map(|page| Some((page.files.wxml.as_deref()?, Scope::Page(page.route.clone()))))
+        .chain(
+            components
+                .iter()
+                .filter_map(|c| Some((c.files.wxml.as_deref()?, Scope::Component(c.path.clone())))),
+        )
+    {
+        let Some(source) = fs.read_file(miniprogram_root, wxml_path) else {
+            continue;
+        };
+        let Ok(doc) = wxml::parse(wxml_path, &source, &Env::default()) else {
+            continue;
+        };
+        for src in doc.wxs_refs() {
+            let Some(target) = resolve_wxs_ref(fs, miniprogram_root, wxml_path, src) else {
+                continue;
+            };
+            entries.entry(target).or_insert_with(|| scope.clone());
+        }
+    }
+
     // `list_files` 的返回值带 miniprogramRoot 前缀，脚本路径不带。
     let prefix = if miniprogram_root.is_empty() {
         String::new()
@@ -1554,6 +1578,24 @@ fn resolve_template_ref(
         joined
     } else {
         format!("{joined}.wxml")
+    };
+    fs.exists(miniprogram_root, &candidate).then_some(candidate)
+}
+
+/// `<wxs src>` 的值 → 项目相对路径（必须是真实存在的文件）。
+fn resolve_wxs_ref(fs: &LocalFs, miniprogram_root: &str, from: &str, src: &str) -> Option<String> {
+    let src = src.trim();
+    if src.is_empty() {
+        return None;
+    }
+    let joined = match src.strip_prefix('/') {
+        Some(rooted) => posix_join("", rooted),
+        None => posix_join(&posix_dirname(from), src),
+    };
+    let candidate = if joined.ends_with(".wxs") {
+        joined
+    } else {
+        format!("{joined}.wxs")
     };
     fs.exists(miniprogram_root, &candidate).then_some(candidate)
 }
