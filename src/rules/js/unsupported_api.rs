@@ -35,14 +35,6 @@ enum Entry {
         prefix: &'static str,
         message: &'static str,
     },
-    /// `wx.createXxxContext`：Skyline 下 playerId 靠 `webviewId_pluginId_domId_nodeId`
-    /// 反查 `videoPlayerIdMap` 一类的表，而 nodeId 在自定义组件/页面里取不到
-    /// （`getInfoByCaller` → `adapterRoot.getNodeId(component)`，nodesMap 只登记带 id-mapper
-    /// 的内置组件）→ 查不到时 `_invokeMethodWithId` 把调用挂到下一次 insert 上，永久静默。
-    ///
-    /// `createSelectorQuery().context()` 的 playerId 来自节点自己的 contextId，不查表，
-    /// 且 `selectorQuery.js:45-59` 已支持 wx-video / wx-live-player / wx-map。
-    ContextApi { callee: &'static str },
 }
 
 const ENTRIES: &[Entry] = &[
@@ -55,25 +47,47 @@ const ENTRIES: &[Entry] = &[
         prefix: "wx.router",
         message: "小程序插件不支持 wx.router.*（自定义路由），插件页内调用无效",
     },
-    Entry::ContextApi {
+    Entry::Call {
         callee: "wx.createVideoContext",
+        message: "Skyline 下 `wx.createVideoContext` 很可能失效（playerId 靠 nodeId 反查，自定义组件/页面里取不到，调用会被静默丢弃）；建议弃用，改用 `createSelectorQuery().select('#id').context()`",
+        skyline_only: true,
     },
-    Entry::ContextApi {
+    Entry::Call {
         callee: "wx.createMapContext",
+        message: "Skyline 下 `wx.createMapContext` 很可能失效（mapId 靠 nodeId 反查，自定义组件/页面里取不到，调用会被静默丢弃）；建议弃用，改用 `createSelectorQuery().select('#id').context()`",
+        skyline_only: true,
     },
-    Entry::ContextApi {
+    Entry::Call {
         callee: "wx.createLivePlayerContext",
+        message: "Skyline 下 `wx.createLivePlayerContext` 很可能失效（playerId 靠 nodeId 反查，自定义组件/页面里取不到，调用会被静默丢弃）；建议弃用，改用 `createSelectorQuery().select('#id').context()`",
+        skyline_only: true,
+    },
+    Entry::Call {
+        callee: "wx.createCameraContext",
+        message: "`wx.createCameraContext` 已不再维护，Skyline 下暂无 selectorQuery 等价物；插件工程里 pluginId 两侧写法还不一致，需实测确认",
+        skyline_only: true,
+    },
+    Entry::Call {
+        callee: "wx.createLivePusherContext",
+        message: "`wx.createLivePusherContext` 已不再维护，Skyline 下暂无 selectorQuery 等价物；插件工程里 pluginId 两侧写法还不一致，需实测确认",
+        skyline_only: true,
+    },
+    Entry::Call {
+        callee: "wx.createAudioContext",
+        message: "`wx.createAudioContext` 已不再维护；Skyline 没有 `<audio>` 组件，改用 `wx.createInnerAudioContext()`",
+        skyline_only: true,
+    },
+    Entry::Call {
+        callee: "wx.createEditorContext",
+        message: "`wx.createEditorContext` 已不再维护；Skyline 没有 `<editor>` 组件，需确认这个能力是否还需要",
+        skyline_only: true,
     },
 ];
 
 impl Entry {
-    fn message(&self) -> String {
+    fn message(&self) -> &'static str {
         match self {
-            Self::Call { message, .. } | Self::PluginCall { message, .. } => (*message).to_owned(),
-            Self::ContextApi { callee } => format!(
-                "Skyline 下 `{callee}` 很可能失效：playerId 靠 nodeId 反查，自定义组件/页面里取不到，\
-                 调用会被静默丢弃；建议弃用，改用 `createSelectorQuery().select('#id').context()`"
-            ),
+            Self::Call { message, .. } | Self::PluginCall { message, .. } => message,
         }
     }
 }
@@ -109,10 +123,6 @@ impl Rule for UnsupportedApi {
                         .then_some((call.start, call.end)),
                         Entry::PluginCall { prefix, .. } => (in_plugin(project, &file.path)
                             && Callee::Namespace(prefix).matches(&call.callee))
-                        .then_some((call.start, call.end)),
-                        Entry::ContextApi { callee } => (Callee::Exact(callee)
-                            .matches(&call.callee)
-                            && renders_in_skyline(project, &file.scope))
                         .then_some((call.start, call.end)),
                     };
                     let Some((start, end)) = span else { continue };
@@ -350,5 +360,22 @@ mod tests {
             "Page({ a() { wx.createVideoContext('v', this); } });",
         );
         assert!(UnsupportedApi.check(&f.project()).is_empty());
+    }
+
+    /// 无 selectorQuery 等价物的那几个：不维护了，同样只提“已不再维护”。
+    #[test]
+    fn deprecated_context_apis_are_reported_in_skyline() {
+        let (_f, project) = single(
+            "unsupported-context-deprecated",
+            "Page({ a() {
+                wx.createCameraContext('c', this);
+                wx.createLivePusherContext('p', this);
+                wx.createAudioContext('a');
+                wx.createEditorContext('e');
+            } });",
+        );
+        let messages = messages(&UnsupportedApi, &project);
+        assert_eq!(messages.len(), 4, "{messages:#?}");
+        assert!(messages.iter().all(|m| m.contains("已不再维护")));
     }
 }
