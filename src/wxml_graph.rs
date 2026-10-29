@@ -200,6 +200,29 @@ impl WxmlGraph {
         AncestorChain { nodes: out, open }
     }
 
+    /// 这份文档（含递归使用的组件）能渲染到的全部文档路径，含自身。
+    ///
+    /// 用于「同一个页面里两个元素会不会互相覆盖」这类需要跨组件配对的判断：
+    /// 组件实现里的元素与使用方文件里的元素同处一个渲染树。
+    pub fn render_docs(&self, doc_path: &str) -> Vec<&str> {
+        let Some(&start) = self.by_path.get(doc_path) else {
+            return Vec::new();
+        };
+        let mut seen = HashSet::new();
+        let mut queue = VecDeque::from([start]);
+        let mut out = Vec::new();
+        while let Some(doc) = queue.pop_front() {
+            if !seen.insert(doc) {
+                continue;
+            }
+            out.push(self.docs[doc].path.as_str());
+            for &component in self.docs[doc].components.values() {
+                queue.push_back(component);
+            }
+        }
+        out
+    }
+
     /// 这个节点是「解析不出来的自定义组件」：不在内置表里，它的文档也没声明
     /// 它能渲染成什么——它后面的祖先静态不可知。
     fn is_unresolved_custom(&self, node: NodeId) -> bool {

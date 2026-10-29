@@ -95,6 +95,7 @@ impl Registry {
             Box::new(wxss::BoxSizing),
             Box::new(wxss::FlexDirection),
             Box::new(wxss::FixedLayer),
+            Box::new(wxss::FixedZIndexInversion),
             Box::new(wxss::TextOverflowEllipsis),
             Box::new(wxss::AttributeSelector),
             Box::new(wxss::DeadSelector),

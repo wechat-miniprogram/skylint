@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 58 条：error 15 条、warning 38 条、info 5 条。
+共 59 条：error 15 条、warning 39 条、info 5 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
@@ -25,6 +25,7 @@
 | `skyline/box-sizing` | error | skyline | box-sizing 的值在 Skyline 下不受支持，声明会被忽略 |
 | `skyline/flex-direction` | warning | skyline | display: flex 未声明 flex-direction，迁移后默认方向会从 row 变为 column |
 | `skyline/fixed-layer` | warning | skyline | `position: fixed` 在 Skyline 下被提升成与页面根平级的独立层，没有有效 `z-index` 时先后不可控 |
+| `skyline/fixed-z-index-inversion` | warning | skyline | `position: fixed` 在 Skyline 下跳出祖先的层叠上下文，上下顺序可能与 WebView 相反 |
 | `skyline/text-overflow-ellipsis` | warning | skyline | text-overflow: ellipsis 在 Skyline 下只对 `<text>` 生效 |
 | `skyline/attribute-selector` | warning | skyline | 属性选择器在 Skyline 下不参与匹配：主体只有属性时整条声明失效，否则命中范围被放宽 |
 | `skyline/dead-selector` | warning | both | 样式表里的选择器在它作用到的所有 WXML 里都不命中任何节点，多半是类名 / 标签名写错 |
