@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 57 条：error 15 条、warning 37 条、info 5 条。
+共 58 条：error 15 条、warning 38 条、info 5 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
@@ -36,6 +36,7 @@
 | `skyline/unsupported-value` | error | skyline | 属性在 Skyline 下可用，但该值不支持，声明会被静默忽略 |
 | `skyline/value-degraded` | warning | skyline | 属性在 Skyline 下可用，但该值的表现与 WebView 不同（被降级 / 映射 / 无效果） |
 | `skyline/shorthand-partial` | warning | skyline | 简写属性在 Skyline 下部分生效：值里属于不受支持子属性的那一段被丢弃 |
+| `skyline/transition-animation-conflict` | warning | skyline | 同一元素上 transition 与 animation 动同一个属性，Skyline 下动画只会跑开头几帧 |
 | `skyline/transition-property` | warning | skyline | transition 里的属性名不在 Skyline 的可动画属性白名单内，该段过渡不生效 |
 | `skyline/gradient-limit` | warning | skyline | 渐变的形状 / 尺寸 / 颜色停止位置超出 Skyline 支持范围 |
 | `skyline/legacy-flexbox` | error | skyline | 规则块用了老式 `-webkit-box` 弹性盒，Skyline 不认识这些声明，整块布局会退回默认 display |
