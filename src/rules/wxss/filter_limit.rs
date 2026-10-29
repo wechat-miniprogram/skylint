@@ -53,7 +53,7 @@ impl Rule for FilterLimit {
                 reasons.push("不支持 url()".to_string());
             }
             if calls.iter().any(|c| c.name == "drop-shadow") {
-                reasons.push("不支持 drop-shadow()，可用 box-shadow 替代".to_string());
+                reasons.push("不支持 drop-shadow()".to_string());
             }
             // 白名单之外的函数名（含 url / drop-shadow 以外的未知函数）。
             let unknown: Vec<&str> = calls
@@ -76,13 +76,18 @@ impl Rule for FilterLimit {
             if reasons.is_empty() {
                 return;
             }
+            let help = if calls.iter().any(|c| c.name == "drop-shadow") {
+                "drop-shadow 没有被实现（阴影不会绘制）。能不能换 box-shadow 取决于元素盒子是否就是可见形状：不透明矩形可以换；元素透明、图形在背景图或字体里时，box-shadow 会沿盒子画出一圈方框，应当把阴影烘焙进图形或去掉阴影"
+            } else {
+                "filter / backdrop-filter 只支持单个 blur/brightness/contrast/grayscale/hue-rotate/invert/opacity/saturate/sepia 函数"
+            };
             out.push(at_value(
-                        Self::ID,
-                        doc,
-                        decl,
-                        format!("`{}` 在 Skyline 下{}", decl.name, reasons.join("；")),
-                        "filter / backdrop-filter 只支持单个 blur/brightness/contrast/grayscale/hue-rotate/invert/opacity/saturate/sepia 函数",
-                    ));
+                Self::ID,
+                doc,
+                decl,
+                format!("`{}` 在 Skyline 下{}", decl.name, reasons.join("；")),
+                help,
+            ));
         })
     }
 }
@@ -111,7 +116,18 @@ mod tests {
         assert_eq!(diags.len(), 3);
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
         assert!(diags.iter().any(|d| d.message.contains("url()")));
-        assert!(diags.iter().any(|d| d.message.contains("drop-shadow()")));
+        let drop_shadow = diags
+            .iter()
+            .find(|d| d.message.contains("drop-shadow()"))
+            .expect("drop-shadow 应当报出");
+        // 不能只说「用 box-shadow 替代」：透明元素上换成 box-shadow 会沿盒子画出方框。
+        assert!(
+            drop_shadow
+                .help
+                .as_deref()
+                .is_some_and(|help| help.contains("透明"))
+        );
+        assert!(!drop_shadow.message.contains("box-shadow"));
         assert!(diags.iter().any(|d| d.message.contains("多个函数")));
     }
 
