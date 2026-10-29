@@ -11,11 +11,11 @@
 //!
 //! 两档后果不同，所以文案分开：
 //!
-//! - [`Tier::IgnoredCss`]：`InflateNaked()` / `SetSkipStyleBuild()`，连 yoga 节点都不建，
+//! - [`NativeKind::NoCssBox`]：`InflateNaked()` / `SetSkipStyleBuild()`，连 yoga 节点都不建，
 //!   CSS 布局属性一律无效（`shadow_node.cc:269-277`）。`list-view` / `grid-view` /
 //!   `list-builder` / `grid-builder` 还会在 style builder 的白名单里被挡掉，只剩背景色
 //!   （`style/style_builder.cc:155-166`、`:446-535`）。
-//! - [`Tier::BorderBoxTail`]：有 yoga 节点、padding 也写进去了（`style_builder.cc:648-670`），
+//! - [`NativeKind::BorderBoxTail`]：有 yoga 节点、padding 也写进去了（`style_builder.cc:648-670`），
 //!   但 concrete widget 是 widget 链尾，子节点仍是独立根，所以内容不内缩。
 //!
 //! WebView 里这些组件的内部是普通 DOM（`wx-swiper > .wx-swiper-wrapper{width:100%}` 之类），
@@ -31,94 +31,14 @@ use crate::rules::RuleMeta;
 use crate::rules::wxml::{
     ElementDoc, Reach, element_diagnostic, element_docs, resolved_property, walk_skyline,
 };
+use crate::rules::wxss::natives::{NATIVES, Native, NativeKind};
 use crate::{Diagnostic, Severity};
 
 pub struct NativePadding;
 
-/// 组件「不跟随 CSS 布局」的程度。
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Tier {
-    /// 连 yoga 节点都没有：CSS 布局属性整体失效。
-    IgnoredCss,
-    /// 有 yoga 节点，但 concrete widget 是链尾、子节点是独立布局根。
-    BorderBoxTail,
-}
-
-struct Native {
-    tag: &'static str,
-    tier: Tier,
-    /// 这个组件唯一可行的改法：有组件 `padding` 属性的用它，没有的只能内层包一层。
-    help: &'static str,
-}
-
-const PADDING_ATTR: &str = "把内边距写成组件属性 `padding=\"{{[top,right,bottom,left]}}\"`（与 CSS padding 是两条通路），或在里面包一层普通 `view` 写 padding";
+const PADDING_ATTR: &str = "把内边距写成组件属性 `padding=\"{{[top,right,bottom,left]}}\"`（与 CSS padding 是两条通路；组件 padding 是 sliver padding，滚动方向上也占位），或在里面包一层普通 `view` 写 padding";
 const INNER_VIEW: &str =
     "这个组件没有 `padding` 属性：在里面包一层普通 `view`，把内边距写在那层 `view` 上";
-
-/// 按 `tag` 命中的表；新增组件只加一行。属性来源：`wxapplib/src/skyline/src/components/wx-custom-scroll-view/{index,list-builder,grid-builder}.ts`
-const NATIVES: &[Native] = &[
-    //
-    Native {
-        tag: "list-view",
-        tier: Tier::IgnoredCss,
-        help: PADDING_ATTR,
-    },
-    Native {
-        tag: "grid-view",
-        tier: Tier::IgnoredCss,
-        help: PADDING_ATTR,
-    },
-    Native {
-        tag: "list-builder",
-        tier: Tier::IgnoredCss,
-        help: PADDING_ATTR,
-    },
-    Native {
-        tag: "grid-builder",
-        tier: Tier::IgnoredCss,
-        help: PADDING_ATTR,
-    },
-    Native {
-        tag: "sticky-section",
-        tier: Tier::IgnoredCss,
-        help: PADDING_ATTR,
-    },
-    Native {
-        tag: "sticky-header",
-        tier: Tier::IgnoredCss,
-        help: PADDING_ATTR,
-    },
-    Native {
-        tag: "nested-scroll-header",
-        tier: Tier::IgnoredCss,
-        help: INNER_VIEW,
-    },
-    Native {
-        tag: "nested-scroll-body",
-        tier: Tier::IgnoredCss,
-        help: INNER_VIEW,
-    },
-    Native {
-        tag: "scroll-view",
-        tier: Tier::BorderBoxTail,
-        help: PADDING_ATTR,
-    },
-    Native {
-        tag: "swiper",
-        tier: Tier::BorderBoxTail,
-        help: INNER_VIEW,
-    },
-    Native {
-        tag: "draggable-sheet",
-        tier: Tier::BorderBoxTail,
-        help: INNER_VIEW,
-    },
-    Native {
-        tag: "picker-view-column",
-        tier: Tier::BorderBoxTail,
-        help: INNER_VIEW,
-    },
-];
 
 impl NativePadding {
     pub const ID: &'static str = "skyline/native-padding";
@@ -133,12 +53,12 @@ impl NativePadding {
     ];
 
     fn message(native: &Native) -> String {
-        match native.tier {
-            Tier::IgnoredCss => format!(
+        match native.kind {
+            NativeKind::NoCssBox { .. } => format!(
                 "`{}` 在 Skyline 下由原生 widget 排布子节点、自身不参与 CSS 布局，CSS `padding` 不会内缩子节点（WebView 下生效）",
                 native.tag
             ),
-            Tier::BorderBoxTail => format!(
+            NativeKind::BorderBoxTail => format!(
                 "`{}` 的 CSS `padding` 不会内缩子节点：子节点是独立布局根，容器按 border box 铺满（WebView 下生效）",
                 native.tag
             ),
@@ -183,7 +103,11 @@ impl Rule for NativePadding {
                         Severity::Warning,
                         Self::message(native),
                     )
-                    .help(reach.help(native.help)),
+                    .help(reach.help(if native.padding_attr {
+                        PADDING_ATTR
+                    } else {
+                        INNER_VIEW
+                    })),
                 );
             });
         }

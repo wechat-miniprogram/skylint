@@ -124,14 +124,23 @@ fn has_catch_touchmove(element: &FlatElement) -> bool {
     element.attr("catch:touchmove").is_some() || element.attr("catchtouchmove").is_some()
 }
 
-/// 使用方是否把拖拽开关做成了动态绑定（`dragHide="{{…}}"`）。
+/// 使用方是否把拖拽开关做成了动态绑定（`dragHide="{{…}}"` 一类）。
 ///
-/// `half-screen-dialog` 这条链的固定写法：面板绑 `touchmove`，开关由调用方传。
-/// 调用方传的是动态值时，说明里面有 `scrollTop` 门控（仓库里的 `dragHide` 范式），
-/// 静态看不出门控逻辑，就不能报。
+/// 这条链的固定写法：面板绑 `touchmove`，开关由调用方传。调用方传动态值时，说明
+/// 里面有 `scrollTop` 门控（`select-drama-dialog.ts` 那套），静态看不出门控逻辑，
+/// 就不能报。属性名各组件不同（`dragHide` / `dragEnable` / `canDrag`），按「名字里
+/// 带 drag 且是动态值」判，而不是认死一个。
 fn is_gated(element: &FlatElement) -> bool {
-    element.attr("dragHide").is_some_and(|attr| !attr.is_static)
-        && !crate::rules::wxml::is_builtin(&element.tag)
+    !crate::rules::wxml::is_builtin(&element.tag)
+        && element.attributes.iter().any(|attr| {
+            let name = attr.name.to_ascii_lowercase();
+            // 事件绑定（`bind:dragmove` / `catchdragend`）不是开关，别把它当成门控。
+            !name.starts_with("bind")
+                && !name.starts_with("catch")
+                && !name.starts_with("capture")
+                && name.contains("drag")
+                && !attr.is_static
+        })
 }
 
 #[cfg(test)]
@@ -235,6 +244,25 @@ mod tests {
         let fixture = page(
             "gesture-gated",
             r#"<panel dragHide="{{dragHide}}"><scroll-view scroll-y><view/></scroll-view></panel>"#,
+            "\"panel\": \"/components/panel/panel\"",
+            "Page({});",
+        );
+        fixture
+            .write("components/panel/panel.json", r#"{"component":true}"#)
+            .write("components/panel/panel.js", "Component({});")
+            .write(
+                "components/panel/panel.wxml",
+                r#"<view bind:touchmove="onMove"><slot/></view>"#,
+            );
+        assert!(check(&fixture).is_empty());
+    }
+
+    #[test]
+    fn any_dynamic_drag_flag_counts_as_gated() {
+        // 属性名各组件不同，按「名字带 drag + 动态值」判，不认死 `dragHide`。
+        let fixture = page(
+            "gesture-gated-renamed",
+            r#"<panel dragEnable="{{canDrag}}"><scroll-view scroll-y><view/></scroll-view></panel>"#,
             "\"panel\": \"/components/panel/panel\"",
             "Page({});",
         );

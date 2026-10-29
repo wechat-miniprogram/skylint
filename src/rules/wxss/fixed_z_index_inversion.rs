@@ -37,7 +37,6 @@ struct Layer {
     path: String,
     line: u32,
     column: u32,
-    tag: String,
     /// 自身 `z-index`：Skyline 的排序键。
     own: i64,
     /// WebView 的排序键：最外层层叠上下文祖先的 `z-index`，没有则等于 `own`。
@@ -68,10 +67,11 @@ impl Rule for FixedZIndexInversion {
             .map(|path| graph.render_docs(path).into_iter().collect::<HashSet<_>>())
             .collect();
 
-        let mut out = Vec::new();
-        let mut reported: HashSet<(&str, u32, u32)> = HashSet::new();
+        // 按「遮挡方」聚合：同一个遮罩压住多个上层时只报一条，避免同因噪声。
+        let mut groups: Vec<(usize, Vec<usize>)> = Vec::new();
         for (index, first) in layers.iter().enumerate() {
-            for second in &layers[index + 1..] {
+            for (offset, second) in layers[index + 1..].iter().enumerate() {
+                let second_index = index + 1 + offset;
                 if !shares_tree(&trees, &first.path, &second.path) {
                     continue;
                 }
@@ -88,27 +88,33 @@ impl Rule for FixedZIndexInversion {
                 }
                 // 在 WebView 里压在上面、在 Skyline 里被反超的那个才是被盖住的元素。
                 let (loser, winner) = if webview_first_on_top {
-                    (first, second)
+                    (index, second_index)
                 } else {
-                    (second, first)
+                    (second_index, index)
                 };
-                if !reported.insert((loser.path.as_str(), loser.line, loser.column)) {
-                    continue;
+                match groups.iter_mut().find(|(group, _)| *group == winner) {
+                    Some((_, losers)) => losers.push(loser),
+                    None => groups.push((winner, vec![loser])),
                 }
-                out.push(
-                    Diagnostic::new(
-                        Self::ID,
-                        Severity::Warning,
-                        Self::message(loser, winner),
-                        &loser.path,
-                        loser.line,
-                        loser.column,
-                    )
-                    .help(Self::HELP),
-                );
             }
         }
-        out
+
+        groups
+            .into_iter()
+            .map(|(winner, losers)| {
+                let winner = &layers[winner];
+                let losers: Vec<&Layer> = losers.into_iter().map(|index| &layers[index]).collect();
+                Diagnostic::new(
+                    Self::ID,
+                    Severity::Warning,
+                    Self::message(winner, &losers),
+                    &winner.path,
+                    winner.line,
+                    winner.column,
+                )
+                .help(Self::HELP)
+            })
+            .collect()
     }
 }
 
@@ -117,10 +123,21 @@ impl FixedZIndexInversion {
 
     const HELP: &'static str = "Skyline 会把这个 fixed 元素提到页面根：把它自身的 `z-index` 调到高于被它覆盖的元素，或把两者放进同一个组件、不要依赖祖先的 `z-index` 分层";
 
-    fn message(loser: &Layer, winner: &Layer) -> String {
+    fn message(winner: &Layer, losers: &[&Layer]) -> String {
+        let shown = losers
+            .iter()
+            .take(4)
+            .map(|loser| format!("`{}:{}`（{}）", loser.path, loser.line, loser.own))
+            .collect::<Vec<_>>()
+            .join("、");
+        let more = match losers.len().checked_sub(4) {
+            Some(more) if more > 0 => format!(" 等 {} 个", losers.len()),
+            _ => String::new(),
+        };
         format!(
-            "与 `{}:{}` 的 `<{}>` 上下顺序会翻转：WebView 里这层在上（层叠键 {} vs {}），Skyline 把它提到页面根后按自身 `z-index` 比较（{} vs {}）",
-            winner.path, winner.line, winner.tag, loser.flat, winner.flat, loser.own, winner.own
+            "`z-index` 在 Skyline 下只在同一父节点内排序，fixed 又被提到页面根：这一层（{}）会盖住 WebView 里原本在它上面的 {} 个 fixed 层 —— {shown}{more}",
+            winner.own,
+            losers.len()
         )
     }
 }
@@ -168,7 +185,6 @@ fn collect_layers(project: &Project, graph: &WxmlGraph) -> Vec<Layer> {
                 path: doc.path().to_string(),
                 line,
                 column,
-                tag: element.tag.clone(),
                 own,
                 flat,
             });
@@ -247,9 +263,32 @@ mod tests {
             ".wrap { position: relative; z-index: 0; }\n.panel { position: fixed; z-index: 5000; }",
         );
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-        assert_eq!(diagnostics[0].path, "pages/index/index.wxml");
+        // 诊断落在「遮挡方」上：它是被提升到根、压住别人那一层。
+        assert_eq!(diagnostics[0].path, "components/panel/panel.wxml");
         assert!(diagnostics[0].message.contains("5000"));
+        // 被压住的层列在消息里，带它自己的位置与键，方便跳过去改。
+        assert!(diagnostics[0].message.contains("pages/index/index.wxml:1"));
         assert!(diagnostics[0].message.contains("4000"));
+    }
+
+    /// 同一个遮挡方压住多个上层时只报一条（同因噪声收口）。
+    #[test]
+    fn one_occluder_is_reported_once() {
+        let diagnostics = check(
+            "zindex-aggregate",
+            r#"<panel/><view class="input"/><view class="tag"/>"#,
+            ".input { position: fixed; z-index: 4000; }\n.tag { position: fixed; z-index: 100; }",
+            r#"<view class="wrap"><view class="panel"/></view>"#,
+            ".wrap { position: relative; z-index: 0; }\n.panel { position: fixed; z-index: 5000; }",
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        let message = &diagnostics[0].message;
+        assert!(message.contains("2 个"), "{message}");
+        assert!(message.contains("`pages/index/index.wxml:1`"), "{message}");
+        assert!(
+            message.contains("`pages/index/index.wxml:1`（4000）") && message.contains("（100）"),
+            "{message}"
+        );
     }
 
     /// 顺序与 WebView 一致时不报：内部层级本来就低于外面的 fixed。

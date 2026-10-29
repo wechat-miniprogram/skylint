@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 60 条：error 15 条、warning 40 条、info 5 条。
+共 61 条：error 15 条、warning 41 条、info 5 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
@@ -30,6 +30,7 @@
 | `skyline/attribute-selector` | warning | skyline | 属性选择器在 Skyline 下不参与匹配：主体只有属性时整条声明失效，否则命中范围被放宽 |
 | `skyline/dead-selector` | warning | both | 样式表里的选择器在它作用到的所有 WXML 里都不命中任何节点，多半是类名 / 标签名写错 |
 | `skyline/scroll-view-height` | warning | skyline | scroll-view 没有确定高度，Skyline 下内容不会撑开它，会塌成 0 |
+| `skyline/native-layout-ignored` | warning | skyline | 没有 CSS 盒的内置组件上，布局类声明在 Skyline 下不生效 |
 | `skyline/native-padding` | warning | skyline | 内置组件上的 CSS padding 在 Skyline 下不内缩子节点 |
 | `skyline/implicit-color` | info | skyline | 省略颜色时 Skyline 用黑色而不是元素自身的 color（受实验开关影响） |
 | `skyline/tag-selector-isolation` | warning | skyline | 标签 / id 选择器在 Skyline 下不跨组件匹配，WebView 上生效的样式会静默失效 |

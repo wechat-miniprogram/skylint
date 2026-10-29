@@ -100,6 +100,7 @@ impl Registry {
             Box::new(wxss::AttributeSelector),
             Box::new(wxss::DeadSelector),
             Box::new(wxss::ScrollViewHeight),
+            Box::new(wxss::NativeLayoutIgnored),
             Box::new(wxss::NativePadding),
             Box::new(wxss::ImplicitColor),
             Box::new(wxss::TagSelectorIsolation),

@@ -55,7 +55,9 @@ impl Rule for WxsSyncQuery {
                 let message =
                     if call.callee.ends_with(".getBoundingClientRect") && call.args.is_empty() {
                         RECT_MESSAGE
-                    } else if call.callee.ends_with(".getComputedStyle") && call.args.len() < 2 {
+                    } else if call.callee.ends_with(".getComputedStyle")
+                        && missing_callback(file.doc.source(), call)
+                    {
                         STYLE_MESSAGE
                     } else {
                         continue;
@@ -75,6 +77,24 @@ impl Rule for WxsSyncQuery {
         }
         out
     }
+}
+
+/// 第二个实参是不是真的回调。
+///
+/// 只看参数个数会把 `getComputedStyle(fields, undefined)` 当成有回调（引擎里同样拿不到值），
+/// 所以显式排除那些「写了等于没写」的实参；变量/箭头函数/函数名一律当作有回调。
+fn missing_callback(source: &str, call: &crate::input::js::CallInfo) -> bool {
+    let Some(arg) = call.args.get(1) else {
+        return true;
+    };
+    let text = source
+        .get(arg.start as usize..arg.end as usize)
+        .unwrap_or_default()
+        .trim();
+    matches!(
+        text,
+        "undefined" | "null" | "void 0" | "false" | "0" | "''" | "\"\""
+    )
 }
 
 #[cfg(test)]
@@ -123,6 +143,18 @@ mod tests {
         let diagnostics = WxsSyncQuery.check(&f.project());
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(diagnostics[0].message.contains("getComputedStyle"));
+    }
+
+    #[test]
+    fn literal_second_argument_is_not_a_callback() {
+        // 写了 `undefined` 等于没写回调：引擎里同样拿不到值。
+        let f = fixture(
+            "wxs-sync-style-undefined",
+            "skyline",
+            "function move(evt, owner) { owner.getComputedStyle(['width'], undefined) }",
+        );
+        let diagnostics = WxsSyncQuery.check(&f.project());
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     }
 
     #[test]
