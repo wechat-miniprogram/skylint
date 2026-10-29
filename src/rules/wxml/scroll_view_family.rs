@@ -215,9 +215,19 @@ impl Rule for ScrollViewFamily {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
+        let graph = crate::wxml_graph::WxmlGraph::new(project);
         visit(project, |doc, out| {
             walk_skyline(doc, |element, ancestors| {
-                structure::check_element(ID, doc, element, ancestors, CONSTRAINTS, doc.path(), out);
+                structure::check_element(
+                    ID,
+                    doc,
+                    element,
+                    ancestors,
+                    &graph,
+                    CONSTRAINTS,
+                    doc.path(),
+                    out,
+                );
 
                 // nested-scroll.md NEVER 1「不要在 nested-scroll-body 下面放 nested-scroll-header」。
                 if !element.in_template()
@@ -253,6 +263,38 @@ mod tests {
 
     fn check(fixture: &Fixture) -> Vec<crate::Diagnostic> {
         check_rule(fixture, &ScrollViewFamily)
+    }
+
+    /// 通过 `<slot>` 传进组件的节点，按**渲染树**判祖先：
+    /// 组件模板里没有 custom scroll-view，就应该报「不在容器中」。
+    #[test]
+    fn slot_projected_child_is_judged_by_rendered_ancestors() {
+        let fixture = Fixture::new("family-slot");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"card":"/components/card/card"}}"#,
+            )
+            .write(
+                "pages/index/index.wxml",
+                r#"<card><sticky-section><view/></sticky-section></card>"#,
+            )
+            .write("pages/index/index.js", "Page({});")
+            .write("components/card/card.json", r#"{"component":true}"#)
+            .write("components/card/card.js", "Component({});")
+            .write("components/card/card.wxml", "<view><slot/></view>");
+        let diagnostics = check(&fixture);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("sticky-section")),
+            "{diagnostics:#?}"
+        );
     }
 
     /// 被 `<include>` 的片段：根节点插到哪由实例化处决定，不能报「位于文件顶层」。

@@ -13,6 +13,7 @@ pub mod project;
 pub mod report;
 pub mod rules;
 pub mod suppress;
+pub mod wxml_graph;
 
 pub use diag::{Diagnostic, Severity};
 pub use project::{ComponentUnit, PageUnit, Project};

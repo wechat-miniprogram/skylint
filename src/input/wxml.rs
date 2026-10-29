@@ -91,6 +91,10 @@ pub struct WxmlElement {
     /// 元素是 `<slot/>`：运行时的子节点由父级提供，写在使用它的文件里，
     /// 静态看不到。匹配层据此把 slot 位置当成「子节点未知」的区域。
     pub is_slot: bool,
+    /// `<slot name="x">` 的具名槽名；默认槽与普通元素为 `None`。
+    ///
+    /// glass-easel 把 `name` 从普通属性里摘出去了，只能从 `ElementKind::Slot` 取。
+    pub slot_name: Option<String>,
 }
 
 impl WxmlElement {
@@ -476,6 +480,7 @@ fn element_nodes(
             branches: branches.to_vec(),
             template: template.map(str::to_string),
             is_slot: false,
+            slot_name: None,
         })],
         // 透明容器：不产生条件组，但把外层的分支栈透传下去。
         ElementKind::Pure { children, .. } | ElementKind::For { children, .. } => {
@@ -579,7 +584,7 @@ fn element_nodes(
             }
             out
         }
-        ElementKind::Slot { .. } => vec![WxmlNode::Element(WxmlElement {
+        ElementKind::Slot { name, .. } => vec![WxmlNode::Element(WxmlElement {
             tag: "slot".to_string(),
             start: element.location().start,
             end: element.location().end,
@@ -591,6 +596,10 @@ fn element_nodes(
             branches: branches.to_vec(),
             template: template.map(str::to_string),
             is_slot: true,
+            slot_name: match &name.1 {
+                Value::Static { value, .. } if !value.is_empty() => Some(value.to_string()),
+                _ => None,
+            },
         })],
         ElementKind::TemplateRef { target, data, .. } => {
             // 动态 `<template is="{{…}}">` 解析不出目标，跳过。

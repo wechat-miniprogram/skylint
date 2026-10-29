@@ -138,6 +138,11 @@ pub struct Project {
     /// 声明了同名标签时它会遮住内置组件，规则不能把 `<navigation-bar>` 这类
     /// 自定义组件当成不支持的内置组件。模板文件不属于任何单元，不在这张表里。
     pub declared_components: BTreeMap<String, BTreeSet<String>>,
+    /// 单元 WXML → 标签名 → 组件路径（根相对，不带扩展名）。
+    ///
+    /// [`Self::declared_components`] 只回答「这个标签是不是自定义组件」；跨组件边界
+    /// 的关系（`<slot>` 投影、组件内部结构）必须知道标签指向哪份组件 WXML。
+    pub tag_targets: BTreeMap<String, BTreeMap<String, String>>,
     /// 组件 json 原始对象（按组件路径）。
     ///
     /// 组件 json 不是只管 `usingComponents`：`styleIsolation` / `addGlobalClass` 决定
@@ -481,6 +486,7 @@ impl Project {
             project_private_config_source: String::new(),
             pages: Vec::new(),
             declared_components: BTreeMap::new(),
+            tag_targets: BTreeMap::new(),
             envs: BTreeMap::new(),
             components: Vec::new(),
             deps: BTreeMap::new(),
@@ -722,12 +728,20 @@ impl Loaded {
             .collect();
         let app_declared = declared_component_names(view.app);
         let mut declared_components: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut component_targets: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
         let mut declare = |wxml: Option<&str>, names: &BTreeSet<String>| {
             if let Some(wxml) = wxml {
                 declared_components
                     .entry(wxml.to_string())
                     .or_default()
                     .extend(names.iter().cloned());
+            }
+        };
+        let mut record_targets = |wxml: Option<&str>, json: Option<&Map<String, Value>>| {
+            let Some(wxml) = wxml else { return };
+            let targets = tag_targets(fs, base, wxml, view.app, json);
+            if !targets.is_empty() {
+                component_targets.insert(wxml.to_string(), targets);
             }
         };
         for page in &pages {
@@ -740,6 +754,13 @@ impl Loaded {
                 names.extend(declared_component_names(json));
             }
             declare(page.files.wxml.as_deref(), &names);
+            record_targets(
+                page.files.wxml.as_deref(),
+                page_json
+                    .iter()
+                    .find(|(route, _)| route == &page.route)
+                    .and_then(|(_, json)| json.as_ref()),
+            );
         }
         for component in &components {
             let mut names = app_declared.clone();
@@ -747,6 +768,10 @@ impl Loaded {
                 names.extend(own.iter().cloned());
             }
             declare(component.files.wxml.as_deref(), &names);
+            record_targets(
+                component.files.wxml.as_deref(),
+                component_json.get(&component.path),
+            );
         }
 
         let styles = collect_styles(
@@ -812,6 +837,7 @@ impl Loaded {
                 .collect(),
             page_json_source,
             declared_components,
+            tag_targets: component_targets,
             envs,
             styles,
             scripts,

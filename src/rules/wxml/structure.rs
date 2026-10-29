@@ -32,7 +32,8 @@
 //! 取各分支里最多的那一支；不同分支组之间相加。
 
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
+use crate::input::wxml::{WxmlAttribute, WxmlDoc, WxmlElement, WxmlNode};
+use crate::wxml_graph::WxmlGraph;
 
 use super::branch::{element_children, exclusive, max_rendered_children};
 use super::{element_diagnostic, is_builtin};
@@ -129,13 +130,45 @@ pub(crate) fn find_attr<'a>(
 }
 
 pub(crate) fn check_attr(element: &WxmlElement, name: &str, expected: &str) -> AttrCheck {
-    match find_attr(element, name) {
+    check_attributes(&element.attributes, name, expected)
+}
+
+fn check_attributes(attributes: &[WxmlAttribute], name: &str, expected: &str) -> AttrCheck {
+    let found = attributes
+        .iter()
+        .find(|attr| attr.name.eq_ignore_ascii_case(name));
+    match found {
         None => AttrCheck::Violation,
         Some(attr) if !attr.is_static => AttrCheck::Unknown,
         Some(attr) => match attr.value.as_deref() {
             Some(value) if value.trim().eq_ignore_ascii_case(expected) => AttrCheck::Ok,
             _ => AttrCheck::Violation,
         },
+    }
+}
+
+/// 逻辑祖先：同一文件里的祖先，或经 `<slot>` / 组件边界投影来的祖先。
+///
+/// 只带标签与属性：跨文件之后没有「兄弟」「子节点」这些本地概念，
+/// [`Relation::FirstChild`] / [`Relation::Unique`] 仍只看本文件内的真实父节点。
+pub(crate) struct Ancestor<'a> {
+    tag: &'a str,
+    attributes: &'a [WxmlAttribute],
+}
+
+impl<'a> Ancestor<'a> {
+    fn local(element: &'a WxmlElement) -> Self {
+        Self {
+            tag: &element.tag,
+            attributes: &element.attributes,
+        }
+    }
+
+    fn projected(flat: &'a crate::wxml_graph::FlatElement) -> Self {
+        Self {
+            tag: &flat.tag,
+            attributes: &flat.attributes,
+        }
     }
 }
 
@@ -173,19 +206,20 @@ fn describe(element: &WxmlElement, name: &str) -> String {
     }
 }
 
-/// 父节点是否属于目标容器（属性不符不算，动态绑定不阻断）。
-fn is_container(element: &WxmlElement, containers: &[Target]) -> bool {
-    containers.iter().any(|target| match target.attr {
-        None => target.tag == element.tag,
-        Some((name, value)) => {
-            target.tag == element.tag
-                && !matches!(check_attr(element, name, value), AttrCheck::Violation)
-        }
-    })
+fn describe_ancestor(ancestor: &Ancestor<'_>, name: &str) -> String {
+    let value = ancestor
+        .attributes
+        .iter()
+        .find(|attr| attr.name.eq_ignore_ascii_case(name))
+        .and_then(|attr| attr.value.as_deref());
+    match value {
+        Some(value) => format!("<{} {}=\"{}\">", ancestor.tag, name, value),
+        None => format!("<{}>", ancestor.tag),
+    }
 }
 
-/// 最近的同名容器祖先；遇到自定义组件（渲染树未知）或属性不符就停。
-fn nearest_container<'a>(
+/// 本文件内的最近同名容器（需要它的子节点列表，比如 `FirstChild` / `Unique`）。
+fn nearest_container_local<'a>(
     ancestors: &[&'a WxmlElement],
     containers: &[Target],
 ) -> Option<&'a WxmlElement> {
@@ -195,8 +229,65 @@ fn nearest_container<'a>(
         }
         if let Some(target) = containers.iter().find(|target| target.tag == ancestor.tag) {
             return match target.attr {
-                None => Some(ancestor),
+                None => Some(*ancestor),
                 Some((name, value)) => match check_attr(ancestor, name, value) {
+                    AttrCheck::Ok => Some(*ancestor),
+                    AttrCheck::Violation | AttrCheck::Unknown => None,
+                },
+            };
+        }
+    }
+    None
+}
+
+/// 父节点是否属于目标容器（属性不符不算，动态绑定不阻断）。
+fn is_container_element(element: &WxmlElement, containers: &[Target]) -> bool {
+    containers.iter().any(|target| match target.attr {
+        None => target.tag == element.tag,
+        Some((name, value)) => {
+            target.tag == element.tag
+                && !matches!(check_attr(element, name, value), AttrCheck::Violation)
+        }
+    })
+}
+
+/// 祖先链在这一位断掉：自定义组件的渲染树没解析出来（投影没接上），
+/// 它之后的祖先静态不可知，不能继续往外判。
+fn boundary_unresolved(ancestors: &[Ancestor<'_>], idx: usize, open: bool) -> bool {
+    open && idx + 1 == ancestors.len()
+}
+
+/// 祖先链是否在这一位断掉（渲染树不可知）。
+///
+/// 没接上投影（`<import>` 片段、解析不出的自定义组件）时沿用旧口径：遇到自定义
+/// 组件就停；投影接上了才允许穿过去。
+fn stops_here(ancestors: &[Ancestor<'_>], idx: usize, from_graph: bool, open: bool) -> bool {
+    if !is_builtin(ancestors[idx].tag) {
+        return !from_graph || boundary_unresolved(ancestors, idx, open);
+    }
+    false
+}
+
+/// 最近的同名容器祖先；遇到自定义组件（渲染树未知）或属性不符就停。
+///
+/// `ancestors` 是**最近的在前**：本文件内的父节点在前，`<slot>` 投影进来的在后。
+fn nearest_container<'a>(
+    ancestors: &'a [Ancestor<'a>],
+    from_graph: bool,
+    open: bool,
+    containers: &[Target],
+) -> Option<&'a Ancestor<'a>> {
+    for (idx, ancestor) in ancestors.iter().enumerate() {
+        if stops_here(ancestors, idx, from_graph, open) {
+            return None;
+        }
+        if ancestor.tag == "slot" || !is_builtin(ancestor.tag) {
+            continue;
+        }
+        if let Some(target) = containers.iter().find(|target| target.tag == ancestor.tag) {
+            return match target.attr {
+                None => Some(ancestor),
+                Some((name, value)) => match check_attributes(ancestor.attributes, name, value) {
                     AttrCheck::Ok => Some(ancestor),
                     AttrCheck::Violation | AttrCheck::Unknown => None,
                 },
@@ -208,11 +299,18 @@ fn nearest_container<'a>(
 
 fn direct_violation(
     element: &WxmlElement,
-    ancestors: &[&WxmlElement],
+    ancestors: &[Ancestor<'_>],
+    from_graph: bool,
+    open: bool,
     targets: &[Target],
 ) -> Option<String> {
     let expected = render_targets(targets);
-    let Some(parent) = ancestors.last() else {
+    // `<slot>` 只是渲染位置，不构成盒子，跳过它取真正的父节点。
+    let Some((parent_idx, parent)) = ancestors
+        .iter()
+        .enumerate()
+        .find(|(_, ancestor)| ancestor.tag != "slot")
+    else {
         // 模板定义体的根节点在实例化处的父节点未知。
         return (!element.in_template()).then(|| {
             format!(
@@ -221,8 +319,8 @@ fn direct_violation(
             )
         });
     };
-    // 自定义组件的渲染树未知，不越过它判定。
-    if !is_builtin(&parent.tag) {
+    // 自定义组件的渲染树没解析出来：父节点静态不可知，不越过它判定。
+    if stops_here(ancestors, parent_idx, from_graph, open) {
         return None;
     }
     let Some(target) = targets.iter().find(|target| target.tag == parent.tag) else {
@@ -235,12 +333,12 @@ fn direct_violation(
     };
     match target.attr {
         None => None,
-        Some((name, value)) => match check_attr(parent, name, value) {
+        Some((name, value)) => match check_attributes(parent.attributes, name, value) {
             AttrCheck::Violation => Some(format!(
                 "`<{}>` 必须直接放在 {} 内，父节点是 {}",
                 element.tag,
                 expected,
-                describe(parent, name)
+                describe_ancestor(parent, name)
             )),
             _ => None,
         },
@@ -249,27 +347,31 @@ fn direct_violation(
 
 fn ancestor_violation(
     element: &WxmlElement,
-    ancestors: &[&WxmlElement],
+    ancestors: &[Ancestor<'_>],
+    from_graph: bool,
+    open: bool,
     targets: &[Target],
 ) -> Option<String> {
     let expected = render_targets(targets);
-    for ancestor in ancestors.iter().rev() {
-        // 自定义组件的渲染树未知，不越过它判定。
-        if !is_builtin(&ancestor.tag) {
+    for (idx, ancestor) in ancestors.iter().enumerate() {
+        if stops_here(ancestors, idx, from_graph, open) {
             return None;
+        }
+        if ancestor.tag == "slot" || !is_builtin(ancestor.tag) {
+            continue;
         }
         let Some(target) = targets.iter().find(|target| target.tag == ancestor.tag) else {
             continue;
         };
         return match target.attr {
             None => None,
-            Some((name, value)) => match check_attr(ancestor, name, value) {
+            Some((name, value)) => match check_attributes(ancestor.attributes, name, value) {
                 AttrCheck::Violation => Some(format!(
                     "`<{}>` 必须放在 {} 内，最近的 `<{}>` 是 {}",
                     element.tag,
                     expected,
                     ancestor.tag,
-                    describe(ancestor, name)
+                    describe_ancestor(ancestor, name)
                 )),
                 _ => None,
             },
@@ -293,11 +395,11 @@ fn first_child_violation(
     let parent = ancestors.last()?;
     // 容器祖先存在但中间隔着内置节点：它仍不是容器的直接子元素。
     // （`<block wx:if>` 已被摊平，不会走到这里。）
-    if !is_container(parent, containers) {
+    if !is_container_element(parent, containers) {
         if element.in_template() {
             return None;
         }
-        let container = nearest_container(ancestors, containers)?;
+        let container = nearest_container_local(ancestors, containers)?;
         if !is_builtin(&parent.tag) {
             return None;
         }
@@ -333,7 +435,7 @@ fn unique_violation(
     ancestors: &[&WxmlElement],
     containers: &[Target],
 ) -> Option<String> {
-    let container = nearest_container(ancestors, containers)?;
+    let container = nearest_container_local(ancestors, containers)?;
     // 互斥分支里的同标签节点不会与它同时渲染，不计入重复。只数容器的直接子节点：
     // 引擎的 `children.firstWhere`（skyline_scroll_view.dart:1559-1563）与
     // `MultiSliver` 都只看一层。
@@ -415,13 +517,15 @@ fn allowed_values_violation(element: &WxmlElement, name: &str, values: &[&str]) 
 
 fn within_violation(
     element: &WxmlElement,
-    ancestors: &[&WxmlElement],
+    ancestors: &[Ancestor<'_>],
+    open: bool,
+    from_graph: bool,
     container: &Target,
     name: &str,
     value: &str,
 ) -> Option<String> {
     // 只在该容器祖先下才要求关联属性。
-    nearest_container(ancestors, std::slice::from_ref(container))?;
+    nearest_container(ancestors, from_graph, open, std::slice::from_ref(container))?;
     let requirement = format!("{name}=\"{value}\"");
     let inside = describe(element, "type");
     match find_attr(element, name) {
@@ -593,17 +697,45 @@ fn conditions_hold(element: &WxmlElement, conditions: &[Condition]) -> bool {
 }
 
 /// 对单个元素应用约束表，命中的关系直接产出诊断。
+///
+#[allow(clippy::too_many_arguments)]
+///
+/// 关系类约束（`Direct` / `Ancestor` / `Within`）看的是**逻辑祖先**：`graph` 把
+/// `<slot>` 投影与组件边界接上，元素被传进组件后仍能问「渲染树里它在谁里面」。
+/// `FirstChild` / `Unique` 要枚举子节点，跨文件没有这个信息，只看本文件。
 pub(crate) fn check_element(
     id: &'static str,
     doc: &WxmlDoc,
     element: &WxmlElement,
     ancestors: &[&WxmlElement],
+    graph: &WxmlGraph,
     constraints: &[Constraint],
     path: &str,
     out: &mut Vec<Diagnostic>,
 ) {
     // 被 import/include 的片段：根节点插到哪由实例化处决定，位置类约束无从判定。
     let fragment_root = doc.fragment && ancestors.is_empty();
+    let chain = graph.ancestors(path, element);
+    let from_graph = graph.contains(path);
+    let (projected, open): (Vec<Ancestor<'_>>, bool) = if from_graph {
+        (
+            chain
+                .nodes
+                .iter()
+                .map(|(_, flat)| Ancestor::projected(flat))
+                .collect(),
+            chain.open,
+        )
+    } else {
+        (
+            ancestors
+                .iter()
+                .rev()
+                .map(|el| Ancestor::local(el))
+                .collect(),
+            false,
+        )
+    };
     for constraint in constraints.iter().filter(|c| c.tag == element.tag) {
         if fragment_root
             && matches!(
@@ -627,8 +759,12 @@ pub(crate) fn check_element(
             _ => {}
         }
         let message = match &constraint.relation {
-            Relation::Direct(targets) => direct_violation(element, ancestors, targets),
-            Relation::Ancestor(targets) => ancestor_violation(element, ancestors, targets),
+            Relation::Direct(targets) => {
+                direct_violation(element, &projected, from_graph, open, targets)
+            }
+            Relation::Ancestor(targets) => {
+                ancestor_violation(element, &projected, from_graph, open, targets)
+            }
             Relation::FirstChild(targets) => {
                 // 重复节点已由 unique 报在同一个元素上，不再叠一条。
                 let duplicate = constraints.iter().any(|other| {
@@ -658,7 +794,9 @@ pub(crate) fn check_element(
                 container,
                 name,
                 value,
-            } => within_violation(element, ancestors, container, name, value),
+            } => within_violation(
+                element, &projected, open, from_graph, container, name, value,
+            ),
             Relation::ChildrenOnly(_)
             | Relation::Exactly(_)
             | Relation::RequiresChild { .. }

@@ -81,6 +81,7 @@ impl Registry {
         Self::from_rules(vec![
             Box::new(wxml::NoInlineText),
             Box::new(wxml::UnsupportedComponent),
+            Box::new(wxml::ScrollGestureConflict),
             Box::new(wxml::ScrollViewType),
             Box::new(wxml::ComponentAttribute),
             Box::new(wxml::ScrollViewFamily),

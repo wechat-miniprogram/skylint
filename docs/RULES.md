@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 56 条：error 15 条、warning 36 条、info 5 条。
+共 57 条：error 15 条、warning 37 条、info 5 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
@@ -11,6 +11,7 @@
 |---|---|---|---|
 | `skyline/no-inline-text` | warning | skyline | Skyline 下文本与元素混排会变成独立 flex item，需用 `<text>` 包裹 |
 | `skyline/unsupported-component` | error | skyline | Skyline 下不可用的组件（如 web-view / movable-view / editor） |
+| `skyline/scroll-gesture-conflict` | warning | skyline | 滚动容器上的滑动会冒泡触发祖先的 touchmove 手势（拖拽收起等） |
 | `skyline/scroll-view-type` | info | skyline | `<scroll-view>` 建议显式指定合法 type，否则 Skyline 下性能退化 |
 | `skyline/component-attribute` | warning | skyline | Skyline 会静默忽略的组件属性取值与组合（枚举白名单 / 不支持的属性 / 数值范围 / 跨属性条件） |
 | `skyline/scroll-view-family` | error | skyline | scroll-view 家族组件的结构约束（挂载位置 / 顺序 / 唯一性 / 必需属性 / 关联容器） |

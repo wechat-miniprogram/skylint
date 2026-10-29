@@ -359,6 +359,7 @@ impl<'a> Tree<'a> {
             for _ in 0..UNKNOWN_DEPTH {
                 let idx = self.elems.len() + self.synthetic.len();
                 self.synthetic.push(WxmlElement {
+                    slot_name: None,
                     tag: String::new(),
                     start: donor.start,
                     end: donor.end,
