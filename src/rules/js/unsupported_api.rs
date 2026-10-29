@@ -35,6 +35,14 @@ enum Entry {
         prefix: &'static str,
         message: &'static str,
     },
+    /// `wx.createXxxContext`：Skyline 下 playerId 靠 `webviewId_pluginId_domId_nodeId`
+    /// 反查 `videoPlayerIdMap` 一类的表，而 nodeId 在自定义组件/页面里取不到
+    /// （`getInfoByCaller` → `adapterRoot.getNodeId(component)`，nodesMap 只登记带 id-mapper
+    /// 的内置组件）→ 查不到时 `_invokeMethodWithId` 把调用挂到下一次 insert 上，永久静默。
+    ///
+    /// `createSelectorQuery().context()` 的 playerId 来自节点自己的 contextId，不查表，
+    /// 且 `selectorQuery.js:45-59` 已支持 wx-video / wx-live-player / wx-map。
+    ContextApi { callee: &'static str },
 }
 
 const ENTRIES: &[Entry] = &[
@@ -47,12 +55,25 @@ const ENTRIES: &[Entry] = &[
         prefix: "wx.router",
         message: "小程序插件不支持 wx.router.*（自定义路由），插件页内调用无效",
     },
+    Entry::ContextApi {
+        callee: "wx.createVideoContext",
+    },
+    Entry::ContextApi {
+        callee: "wx.createMapContext",
+    },
+    Entry::ContextApi {
+        callee: "wx.createLivePlayerContext",
+    },
 ];
 
 impl Entry {
-    fn message(&self) -> &'static str {
+    fn message(&self) -> String {
         match self {
-            Self::Call { message, .. } | Self::PluginCall { message, .. } => message,
+            Self::Call { message, .. } | Self::PluginCall { message, .. } => (*message).to_owned(),
+            Self::ContextApi { callee } => format!(
+                "Skyline 下 `{callee}` 很可能失效：playerId 靠 nodeId 反查，自定义组件/页面里取不到，\
+                 调用会被静默丢弃；建议弃用，改用 `createSelectorQuery().select('#id').context()`"
+            ),
         }
     }
 }
@@ -88,6 +109,10 @@ impl Rule for UnsupportedApi {
                         .then_some((call.start, call.end)),
                         Entry::PluginCall { prefix, .. } => (in_plugin(project, &file.path)
                             && Callee::Namespace(prefix).matches(&call.callee))
+                        .then_some((call.start, call.end)),
+                        Entry::ContextApi { callee } => (Callee::Exact(callee)
+                            .matches(&call.callee)
+                            && renders_in_skyline(project, &file.scope))
                         .then_some((call.start, call.end)),
                     };
                     let Some((start, end)) = span else { continue };
@@ -288,5 +313,42 @@ mod tests {
             "wx.routers.navigateTo({});\nmywx.router.x();\nwx.routerX.y();",
         );
         assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
+
+    /// Skyline 下这三个 context 的 playerId 靠 nodeId 反查，取不到时调用被静默挂起。
+    #[test]
+    fn context_apis_in_skyline_are_reported() {
+        let (_f, project) = single(
+            "unsupported-context-skyline",
+            "Page({ a() {
+                wx.createVideoContext('v', this);
+                wx.createMapContext('m', this);
+                wx.createLivePlayerContext('l', this);
+            } });",
+        );
+        let messages = messages(&UnsupportedApi, &project);
+        assert_eq!(messages.len(), 3, "{messages:#?}");
+        assert!(messages.iter().all(|m| m.contains("createSelectorQuery")));
+    }
+
+    /// WebView 页面里这些 context 照样能用，不能报。
+    #[test]
+    fn context_apis_in_webview_page_are_not_reported() {
+        let f = Fixture::new("unsupported-context-webview");
+        f.write(
+            "project.config.json",
+            r#"{"miniprogramRoot":"","compileType":"miniprogram"}"#,
+        )
+        .write(
+            "app.json",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+        )
+        .write("pages/index/index.json", r#"{"renderer":"webview"}"#)
+        .write("pages/index/index.wxml", "<view/>")
+        .write(
+            "pages/index/index.js",
+            "Page({ a() { wx.createVideoContext('v', this); } });",
+        );
+        assert!(UnsupportedApi.check(&f.project()).is_empty());
     }
 }
