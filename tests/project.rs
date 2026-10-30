@@ -248,6 +248,38 @@ fn npm_components_join_the_closure() {
     );
 }
 
+/// 没有被任何页面（或 publicComponents / custom-tab-bar / app-bar）引用的组件不进闭包，
+/// 因此不会被任何规则扫到。
+#[test]
+fn unreferenced_components_stay_out_of_the_closure() {
+    let f = Fixture::new("unreferenced");
+    f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+        .write("app.json", r#"{"pages":["pages/index/index"]}"#)
+        .write(
+            "pages/index/index.json",
+            r#"{"usingComponents":{"btn":"/components/btn/btn"}}"#,
+        )
+        .write("pages/index/index.wxml", "<btn/>")
+        .write("components/btn/btn.json", r#"{"component":true}"#)
+        .write("components/btn/btn.wxml", "<view/>")
+        .write("components/btn/btn.js", "Component({})")
+        // 只被上面那个「没人用的」组件引用，同样进不了闭包。
+        .write("components/orphan/orphan.json", r#"{"component":true}"#)
+        .write("components/orphan/orphan.wxml", r#"<child/><scroll-view/>"#)
+        .write(
+            "components/orphan/orphan.json",
+            r#"{"component":true,"usingComponents":{"child":"/components/child/child"}}"#,
+        )
+        .write("components/orphan/orphan.js", "Component({})")
+        .write("components/child/child.json", r#"{"component":true}"#)
+        .write("components/child/child.wxml", "<view/>")
+        .write("components/child/child.js", "Component({})");
+
+    let project = Project::load(f.path()).unwrap();
+    let paths: Vec<&str> = project.components.iter().map(|u| u.path.as_str()).collect();
+    assert_eq!(paths, vec!["components/btn/btn"]);
+}
+
 #[test]
 fn non_declarative_component_entries_join_the_closure() {
     let f = Fixture::new("seeds");
