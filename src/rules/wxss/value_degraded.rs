@@ -350,17 +350,10 @@ fn check_env(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
 /// `[exact]` 条目：`(属性名列表, 整值, 说明)`。
 ///
 /// 属性名列表对应原表一格多属性；值 trim + 小写后整值相等才命中。
+/// `animation-fill-mode: none/backwards` 不在此表：`css/css_properties/animation_fill_mode.cc:65-77`
+/// 虽然对这两个值发 Diag，但 push 的仍是 `kNone` / `kBackwards`，`css_to_style_map.cc:97-113`
+/// 原样映射，运行时行为与 WebView 一致（知识库 animation.md:78 的说明是错的）。
 const EXACT_VALUES: &[(&[&str], &str, &str)] = &[
-    (
-        &["animation-fill-mode"],
-        "none",
-        "可写，但实际按 forwards 处理",
-    ), // animation.md:78
-    (
-        &["animation-fill-mode"],
-        "backwards",
-        "可写，但实际按 forwards 处理",
-    ), // animation.md:78
     (
         &["word-break"],
         "keep-all",
@@ -406,22 +399,19 @@ mod tests {
     fn exact_values_report_the_actual_behaviour() {
         let (_f, project) = page(
             "degraded-exact",
-            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/>"#,
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/>"#,
             r#"
-            .a { animation-fill-mode: none; }
-            .b { animation-fill-mode: backwards; }
-            .c { word-break: keep-all; }
-            .d { word-break: break-word; }
-            .e { background-repeat: space; }
-            .f { mask-repeat: round; }
-            .g { BACKGROUND-REPEAT: SPACE; }
+            .a { word-break: keep-all; }
+            .b { word-break: break-word; }
+            .c { background-repeat: space; }
+            .d { mask-repeat: round; }
             "#,
         );
         let diags = ValueDegraded.check(&project);
-        assert_eq!(diags.len(), 7);
+        // `animation-fill-mode: none/backwards` 不再报：引擎原样保留（见 EXACT_VALUES 注释）。
+        assert_eq!(diags.len(), 4);
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
-        assert!(diags[0].message.contains("animation-fill-mode: none"));
-        assert!(diags[0].message.contains("forwards"));
+        assert!(diags[0].message.contains("word-break: keep-all"));
         assert!(diags.iter().any(|d| d.message.contains("break-word")));
         assert!(
             diags
