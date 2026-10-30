@@ -1,4 +1,4 @@
-//! WXML 逻辑树：把自定义组件的 `<slot>` 投影接上。
+//! WXML 逻辑树：把自定义组件的 `<slot>` 投影、`<template is>` 实例化接上。
 //!
 //! [`crate::rules::wxml::walk`] 给的祖先栈只在单个文件里成立。组件模板里的
 //! `<slot>` 在静态树上是个死胡同——运行时的子节点写在使用方文件里；反过来，
@@ -8,17 +8,38 @@
 //!
 //! 这里建一张图：节点是 `(文档, 元素)`，边是运行时的父边。
 //!
-//! - 同一份文档内：普通父子；
-//! - 使用方的子节点 → 组件模板里对应 `<slot>`（`slot="name"` 配 `<slot name>`，
-//!   无名配默认 `<slot>`）；
-//! - 组件模板的根节点 → 每一处用到这个组件的位置（可能有多处，图因此是 DAG）。
+//! ## 组件边界（glass-easel 语义）
 //!
-//! 祖先查询是对 DAG 的存在性遍历：`ancestors` 返回所有可能祖先，去重、限深。
+//! - 使用方传给组件的子节点，运行时被投影进组件模板里的某个 `<slot>`：
+//!   `shadow_root.ts` 的 `getContainingSlot()` 按 **slot 模式**决定投到哪：
+//!   - `SlotMode.Single`（默认，`multipleSlots` 未开）：所有子节点都进模板里
+//!     **第一个** `<slot>`，`slot="x"` 属性被完全忽略（`_$singleSlot = subtreeSlotStart.value`，
+//!     且 `_$insertChildReassignSlot(shadowRoot, null, …)` 的 `name` 为 `null` 时不做名字过滤）；
+//!   - `SlotMode.Multiple`（`multipleSlots: true`）：按子节点的 `slot` 属性（缺省为 `''`）
+//!     匹配同名的 `<slot name>`；**没有对应 slot 的子节点不参与合成**，即不渲染；
+//!   - `SlotMode.Dynamic`（`dynamicSlots: true`）：槽位由 `slotValues` 运行时决定，静态不可知。
+//! - 组件模板的顶层元素渲染在使用这个组件的元素（宿主）内部；`virtualHost: true` 时
+//!   宿主元素不存在（`component.ts` 不创建 backend element），模板顶层元素直接渲染在
+//!   使用位置的父节点里。
+//!
+//! ## 模板边界
+//!
+//! `<template name="x">` 的定义体不在原位置渲染，只渲染在每个 `<template is="x">` 处
+//! （`parse/tag.rs` 把定义体放在 `globals.sub_templates`，可见范围是本文件 + 被
+//! `<import>`/`<include>` 引入它的文件）。
+//!
+//! 祖先查询是对 DAG 的存在性遍历：`ancestors` 返回所有可能祖先，去重、限深；遇到静态
+//! 不可知的边（动态槽名、`dynamicSlots`、动态 `<template is>`、未渲染）就把 `open`
+//! 置位，调用方据此放弃判定（宁可漏报）。
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::Project;
 use crate::input::wxml::{WxmlAttribute, WxmlDoc, WxmlElement, WxmlNode};
+use crate::project::Scope;
+
+/// `<template is>` 调用写在文档顶层：没有所在元素。
+const TOP: usize = usize::MAX;
 
 /// 遍历深度上限：项目里不该出现这么深的投影链，超了说明组件互相嵌套成环。
 const MAX_NODES: usize = 512;
@@ -41,6 +62,10 @@ pub(crate) struct FlatElement {
     pub end_column: u32,
     /// `<slot name="x">` 的槽名，其余为 `None`。
     slot_name: Option<String>,
+    /// 来自内联 `<template name="x">` 的定义体时的模板名。
+    template: Option<String>,
+    /// 整个元素（含子节点）的范围，用于把 `<template is>` 调用点归到所在的元素。
+    span: ((u32, u32), (u32, u32)),
     parent: Option<usize>,
 }
 
@@ -54,12 +79,20 @@ impl FlatElement {
 
 /// 逻辑祖先链。
 ///
-/// `open` 表示链尾停在了一个解析不出来的自定义组件上：再往上是什么静态不可知，
-/// 依赖祖先的判定必须放弃（宁可漏报）。
+/// `open` 表示链尾停在了一处静态不可知的边上：再往上是什么不可知，依赖祖先的判定
+/// 必须放弃（宁可漏报）。
 #[derive(Default)]
 pub(crate) struct AncestorChain<'a> {
     pub nodes: Vec<(&'a str, &'a FlatElement)>,
     pub open: bool,
+}
+
+/// 组件模板的 `options`（来自组件 JS），决定 slot 语义与宿主是否存在。
+#[derive(Clone, Copy, Default)]
+struct ComponentOptions {
+    multiple_slots: bool,
+    dynamic_slots: bool,
+    virtual_host: bool,
 }
 
 struct DocTree {
@@ -67,10 +100,25 @@ struct DocTree {
     elements: Vec<FlatElement>,
     /// 前序下标 → 源码位置，用于把元素查回下标。
     by_start: HashMap<(u32, u32), usize>,
-    /// `<slot>`：名字（`None` = 默认）与下标。
+    /// `<slot>`：名字（`None` = 默认）与下标，按文档顺序。
     slots: Vec<(Option<String>, usize)>,
     /// 本文件里声明的组件标签 → 组件文档下标。
     components: HashMap<String, usize>,
+    /// 组件模板的 options；页面与片段是默认值。
+    options: ComponentOptions,
+    /// 本文件里 `<template is="x">` 的调用点。
+    template_uses: HashMap<String, Vec<usize>>,
+    /// 这份文档是一个页面（渲染树的根），而不是组件模板。
+    is_page: bool,
+}
+
+/// 一个节点的父边。
+enum Parents {
+    Nodes(Vec<NodeId>),
+    /// 文档顶层：页面到此为止，链结束。
+    Top,
+    /// 静态不可知：动态槽名、`dynamicSlots`、动态 `<template is>`、未渲染、片段无处引用。
+    Unknown,
 }
 
 /// 全工程的 WXML 逻辑树。
@@ -83,6 +131,13 @@ pub(crate) struct WxmlGraph {
 
 impl WxmlGraph {
     pub fn new(project: &Project) -> Self {
+        let page_paths: HashSet<&str> = project
+            .pages
+            .iter()
+            .filter_map(|page| page.files.wxml.as_deref())
+            .collect();
+        let options = component_options(project);
+
         let mut docs = Vec::new();
         let mut by_path = HashMap::new();
         let mut sources = Vec::new();
@@ -115,20 +170,28 @@ impl WxmlGraph {
             .collect();
 
         for doc in sources {
-            docs.push(DocTree::build(doc));
+            let path = doc.path().to_string();
+            let is_page = page_paths.contains(path.as_str());
+            docs.push(DocTree::build(doc, is_page));
         }
-        // 组件标签解析在文档建好之后：需要先知道每个组件文档的下标。
+        // 组件标签与模板引用解析在文档建好之后：需要先知道每个文档的下标。
         for tree in &mut docs {
-            let Some(targets) = project.tag_targets.get(&tree.path) else {
-                continue;
-            };
-            for (tag, route) in targets {
-                if let Some(wxml) = component_wxml.get(route.as_str())
-                    && let Some(&idx) = by_path.get(*wxml)
-                {
-                    tree.components.insert(tag.clone(), idx);
+            if let Some(targets) = project.tag_targets.get(&tree.path) {
+                for (tag, route) in targets {
+                    if let Some(wxml) = component_wxml.get(route.as_str())
+                        && let Some(&idx) = by_path.get(*wxml)
+                    {
+                        tree.components.insert(tag.clone(), idx);
+                    }
                 }
             }
+            tree.options = project
+                .components
+                .iter()
+                .find(|unit| unit.files.wxml.as_deref() == Some(tree.path.as_str()))
+                .and_then(|unit| options.get(&unit.path))
+                .copied()
+                .unwrap_or_default();
         }
 
         let mut usages: HashMap<usize, Vec<NodeId>> = HashMap::new();
@@ -174,8 +237,15 @@ impl WxmlGraph {
         let mut out = Vec::new();
         let mut seen = HashSet::new();
         let mut queue: VecDeque<NodeId> = VecDeque::new();
-        for parent in self.parents(NodeId { doc, idx: start }) {
-            queue.push_back(parent);
+        match self.parents(NodeId { doc, idx: start }) {
+            Parents::Nodes(nodes) => queue.extend(nodes),
+            Parents::Top => {}
+            Parents::Unknown => {
+                return AncestorChain {
+                    nodes: Vec::new(),
+                    open: true,
+                };
+            }
         }
         let mut open = false;
         while let Some(node) = queue.pop_front() {
@@ -189,18 +259,18 @@ impl WxmlGraph {
             if out.len() >= MAX_NODES {
                 break;
             }
-            let parents = self.parents(node);
-            if parents.is_empty() {
-                open = self.is_unresolved_custom(node);
-            }
-            for parent in parents {
-                queue.push_back(parent);
+            match self.parents(node) {
+                Parents::Nodes(nodes) => queue.extend(nodes),
+                // 顶层元素如果是「不认识也不是内置」的标签：可能是没解析出实现的
+                // 自定义组件，它上面的渲染树不可知（沿用旧口径，宁可漏报）。
+                Parents::Top => open |= self.is_unknown_tag(node),
+                Parents::Unknown => open = true,
             }
         }
         AncestorChain { nodes: out, open }
     }
 
-    /// 这份文档（含递归使用的组件）能渲染到的全部文档路径，含自身。
+    /// 这份文档（含递归使用的组件与引入的模板）能渲染到的全部文档路径，含自身。
     ///
     /// 用于「同一个页面里两个元素会不会互相覆盖」这类需要跨组件配对的判断：
     /// 组件实现里的元素与使用方文件里的元素同处一个渲染树。
@@ -223,71 +293,200 @@ impl WxmlGraph {
         out
     }
 
-    /// 这个节点是「解析不出来的自定义组件」：不在内置表里，它的文档也没声明
-    /// 它能渲染成什么——它后面的祖先静态不可知。
-    fn is_unresolved_custom(&self, node: NodeId) -> bool {
+    /// 运行时父节点。
+    fn parents(&self, node: NodeId) -> Parents {
         let tree = &self.docs[node.doc];
-        let tag = &tree.elements[node.idx].tag;
-        tag != "slot"
-            && !crate::rules::wxml::is_builtin(tag)
-            && !tree.components.contains_key(&tag.to_ascii_lowercase())
-    }
-
-    /// 运行时父节点：可能有多个（组件被多处使用、同名 slot 有多个）。
-    fn parents(&self, node: NodeId) -> Vec<NodeId> {
-        let tree = &self.docs[node.doc];
-        let Some(parent) = tree.elements[node.idx].parent else {
-            // 文档根节点：渲染在被使用的位置。
-            return self.usages.get(&node.doc).cloned().unwrap_or_default();
+        let element = &tree.elements[node.idx];
+        let Some(parent) = element.parent else {
+            return self.top_parents(node);
         };
 
-        // 父元素是自定义组件 → 本元素被投影进组件的 `<slot>`。
+        // 父元素是自定义组件 → 本元素被投影进它的某个 `<slot>`。
         let parent_tag = tree.elements[parent].tag.to_ascii_lowercase();
         if let Some(&component) = tree.components.get(&parent_tag) {
-            let name = tree.elements[node.idx]
-                .attr("slot")
-                .and_then(|attr| attr.value.clone());
-            let slots = self.slot_nodes(component, name.as_deref());
-            if !slots.is_empty() {
-                return slots;
-            }
+            return self.slot_parents(component, element);
         }
-
-        vec![NodeId {
+        Parents::Nodes(vec![NodeId {
             doc: node.doc,
             idx: parent,
-        }]
+        }])
     }
 
-    /// 组件文档里与 `name` 匹配的 `<slot>`。`None` 表示取默认 slot。
-    fn slot_nodes(&self, doc: usize, name: Option<&str>) -> Vec<NodeId> {
-        self.docs[doc]
-            .slots
-            .iter()
-            .filter(|(slot, _)| slot.as_deref() == name)
-            .map(|&(_, idx)| NodeId { doc, idx })
-            .collect()
+    /// 文档顶层元素：页面是渲染树的根，组件模板渲染在使用处，模板定义体渲染在调用处。
+    fn top_parents(&self, node: NodeId) -> Parents {
+        let tree = &self.docs[node.doc];
+        let element = &tree.elements[node.idx];
+
+        if let Some(name) = &element.template {
+            // 内联模板的定义体只在本文件可见；`<import>` 进来的模板定义在片段文件里，
+            // 那些文件不进图（片段元素的祖先本来就不解析），这里按不可知处理。
+            let Some(uses) = tree.template_uses.get(name) else {
+                return Parents::Unknown;
+            };
+            let mut out = Vec::new();
+            for &idx in uses {
+                if idx == TOP {
+                    match self.doc_top_parents(node.doc) {
+                        Parents::Nodes(nodes) => out.extend(nodes),
+                        Parents::Top => {}
+                        Parents::Unknown => return Parents::Unknown,
+                    }
+                } else {
+                    out.push(NodeId { doc: node.doc, idx });
+                }
+            }
+            return if out.is_empty() {
+                Parents::Unknown
+            } else {
+                Parents::Nodes(out)
+            };
+        }
+
+        self.doc_top_parents(node.doc)
+    }
+
+    /// 文档顶层元素渲染在哪：页面是根，组件模板渲染在使用处。
+    fn doc_top_parents(&self, doc: usize) -> Parents {
+        let tree = &self.docs[doc];
+        if tree.is_page {
+            return Parents::Top;
+        }
+        let Some(usages) = self.usages.get(&doc) else {
+            // 组件模板没有任何使用处：它永远不渲染。
+            return Parents::Unknown;
+        };
+        if !tree.options.virtual_host {
+            return Parents::Nodes(usages.clone());
+        }
+        // `virtualHost`：宿主元素不存在，模板顶层渲染在「宿主所在的位置」——也就是
+        // 宿主元素的父级；如果那个父级是组件，仍然要经它的 `<slot>` 投影。
+        let mut out = Vec::new();
+        for &usage in usages {
+            match self.place_usage(usage) {
+                Parents::Nodes(nodes) => out.extend(nodes),
+                Parents::Top => {}
+                Parents::Unknown => return Parents::Unknown,
+            }
+        }
+        Parents::Nodes(out)
+    }
+
+    /// 一个使用位置被 `virtualHost` 抹掉后，它的父级是什么。
+    ///
+    /// 等价于「宿主元素的父节点」；父节点若是组件，还要经它的 `<slot>` 投影。
+    fn place_usage(&self, usage: NodeId) -> Parents {
+        let tree = &self.docs[usage.doc];
+        let element = &tree.elements[usage.idx];
+        let Some(parent) = element.parent else {
+            return self.top_parents(usage);
+        };
+        let parent_tag = tree.elements[parent].tag.to_ascii_lowercase();
+        match tree.components.get(&parent_tag) {
+            Some(&component) => self.slot_parents(component, element),
+            None => Parents::Nodes(vec![NodeId {
+                doc: usage.doc,
+                idx: parent,
+            }]),
+        }
+    }
+
+    /// 使用方传给组件的子节点，被投影进组件的哪个 `<slot>`。
+    ///
+    /// 语义见模块注释；没有匹配槽位时子节点不参与合成（不渲染），按不可知处理。
+    fn slot_parents(&self, component: usize, child: &FlatElement) -> Parents {
+        let tree = &self.docs[component];
+        if tree.options.multiple_slots {
+            let Some(attr) = child.attr("slot") else {
+                return match tree
+                    .slots
+                    .iter()
+                    .find(|(name, _)| name.as_deref() == Some(""))
+                {
+                    Some(&(_, idx)) => Parents::Nodes(vec![NodeId {
+                        doc: component,
+                        idx,
+                    }]),
+                    None => Parents::Unknown,
+                };
+            };
+            if !attr.is_static {
+                return Parents::Unknown;
+            }
+            let name = attr.value.as_deref().unwrap_or("");
+            return match tree
+                .slots
+                .iter()
+                .find(|(slot, _)| slot.as_deref().unwrap_or("") == name)
+            {
+                Some(&(_, idx)) => Parents::Nodes(vec![NodeId {
+                    doc: component,
+                    idx,
+                }]),
+                None => Parents::Unknown,
+            };
+        }
+        if tree.options.dynamic_slots {
+            return Parents::Unknown;
+        }
+        // `SlotMode.Single`：所有子节点都进模板里第一个 `<slot>`，`slot` 属性被忽略。
+        match tree.slots.first() {
+            Some(&(_, idx)) => Parents::Nodes(vec![NodeId {
+                doc: component,
+                idx,
+            }]),
+            None => Parents::Unknown,
+        }
+    }
+
+    /// 标签既不是内置组件、也没解析到组件实现。
+    fn is_unknown_tag(&self, node: NodeId) -> bool {
+        let tree = &self.docs[node.doc];
+        let tag = tree.elements[node.idx].tag.to_ascii_lowercase();
+        !crate::rules::wxml::is_builtin(&tag) && !tree.components.contains_key(&tag)
     }
 }
 
 impl DocTree {
-    fn build(doc: WxmlDoc) -> Self {
+    fn build(doc: WxmlDoc, is_page: bool) -> Self {
         let path = doc.path().to_string();
         let mut elements = Vec::new();
         let mut by_start = HashMap::new();
-        let mut slots = Vec::new();
         flatten(&doc.nodes, None, &doc, &mut elements, &mut by_start);
+
+        let mut slots = Vec::new();
         for (idx, element) in elements.iter().enumerate() {
             if element.tag.eq_ignore_ascii_case("slot") {
                 slots.push((element.slot_name.clone(), idx));
             }
         }
+        // `<template is="x">` 不产生元素节点（`input/wxml.rs` 只把它记进 `template_calls`），
+        // 所以调用点用「它所在的元素」表示；写在文档顶层时记 `TOP`。
+        let mut template_uses: HashMap<String, Vec<usize>> = HashMap::new();
+        for call in &doc.template_calls {
+            let enclosing = elements
+                .iter()
+                .enumerate()
+                .filter(|(_, element)| {
+                    let start = (call.start.line, call.start.utf16_col);
+                    element.span.0 <= start && start <= element.span.1
+                })
+                .max_by_key(|(_, element)| element.span.0)
+                .map_or(TOP, |(idx, _)| idx);
+            template_uses
+                .entry(call.name.clone())
+                .or_default()
+                .push(enclosing);
+        }
+
         Self {
             path,
             elements,
             by_start,
             slots,
             components: HashMap::new(),
+            options: ComponentOptions::default(),
+            template_uses,
+            is_page,
         }
     }
 }
@@ -306,6 +505,11 @@ fn flatten(
         let idx = out.len();
         let (line, column) = doc.position(element.tag_start);
         let (end_line, end_column) = doc.position(element.tag_end);
+        // 原始 Position（编译器的 0 基坐标），与 `TemplateCall` 的坐标同一套。
+        let span = (
+            (element.start.line, element.start.utf16_col),
+            (element.end.line, element.end.utf16_col),
+        );
 
         out.push(FlatElement {
             tag: element.tag.clone(),
@@ -315,11 +519,54 @@ fn flatten(
             end_line,
             end_column,
             slot_name: element.slot_name.clone(),
+            template: element.template.clone(),
+            span,
             parent,
         });
         by_start.insert((element.tag_start.line, element.tag_start.utf16_col), idx);
         flatten(&element.children, Some(idx), doc, out, by_start);
     }
+}
+
+/// 组件 JS 里的 `options`。多个脚本（分包、`behaviors` 之外的同名 scope）取并集：
+/// 任一处写了 `true` 就算开了。
+fn component_options(project: &Project) -> HashMap<String, ComponentOptions> {
+    let mut out = HashMap::new();
+    for unit in &project.components {
+        let mut options = ComponentOptions::default();
+        for script in project
+            .scripts
+            .iter()
+            .filter(|script| script.scope == Scope::Component(unit.path.clone()))
+        {
+            let source = script.doc.source();
+            options.multiple_slots |= flag(source, "multipleSlots");
+            options.dynamic_slots |= flag(source, "dynamicSlots");
+            options.virtual_host |= flag(source, "virtualHost");
+        }
+        out.insert(unit.path.clone(), options);
+    }
+    out
+}
+
+/// 源码里有没有 `name: true`（编译产物里的 `!0` 也算 true）。
+///
+/// 只认字面量：`multipleSlots: someVar` 之类判不出来，按默认值（未开启）处理——
+/// 与 glass-easel 的默认值一致，只是行为设定在别处时这里会看错（记录在案）。
+fn flag(source: &str, name: &str) -> bool {
+    let mut rest = source;
+    while let Some(at) = rest.find(name) {
+        let after = &rest[at + name.len()..];
+        let after = after.trim_start();
+        if let Some(value) = after.strip_prefix(':') {
+            let value = value.trim_start();
+            if value.starts_with("true") || value.starts_with("!0") {
+                return true;
+            }
+        }
+        rest = after;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -330,6 +577,10 @@ mod tests {
     use super::WxmlGraph;
 
     fn fixture(name: &str, page: &str, component: &str) -> Fixture {
+        fixture_with(name, page, component, "Component({});")
+    }
+
+    fn fixture_with(name: &str, page: &str, component: &str, component_js: &str) -> Fixture {
         let fixture = Fixture::new(name);
         fixture
             .write("project.config.json", r#"{"miniprogramRoot":""}"#)
@@ -344,40 +595,36 @@ mod tests {
             .write("pages/index/index.wxml", page)
             .write("pages/index/index.js", "Page({});")
             .write("components/panel/panel.json", r#"{"component":true}"#)
-            .write("components/panel/panel.js", "Component({});")
+            .write("components/panel/panel.js", component_js)
             .write("components/panel/panel.wxml", component);
         fixture
     }
 
-    /// 收集 `tag` + `class` 命中的元素的逻辑祖先标签。
-    fn ancestor_tags(fixture: &Fixture, path: &str, class: &str) -> Vec<String> {
+    /// `path` 里 `class` 命中的元素的逻辑祖先标签，以及链尾是否开口。
+    fn chain(fixture: &Fixture, path: &str, class: &str) -> (Vec<String>, bool) {
         let project = fixture.project();
         let doc = load_doc(&project, path).expect("doc");
-        let mut element = None;
+        let mut found = None;
         crate::rules::wxml::walk(&doc, |candidate, _| {
             if candidate
                 .attributes
                 .iter()
                 .any(|attr| attr.name == "class" && attr.value.as_deref() == Some(class))
             {
-                element = Some((candidate.tag_start.line, candidate.tag_start.utf16_col));
-            }
-        });
-        let (line, col) = element.expect("element with class");
-        // ancestors 用的是 tag_start 定位，这里按位置重新取一遍元素。
-        let mut found = None;
-        crate::rules::wxml::walk(&doc, |candidate, _| {
-            if (candidate.tag_start.line, candidate.tag_start.utf16_col) == (line, col) {
                 found = Some(candidate.clone());
             }
         });
         let element = found.expect("element");
-        WxmlGraph::new(&project)
-            .ancestors(path, &element)
-            .nodes
-            .iter()
-            .map(|(_, flat)| flat.tag.clone())
-            .collect()
+        let graph = WxmlGraph::new(&project);
+        let chain = graph.ancestors(path, &element);
+        (
+            chain
+                .nodes
+                .iter()
+                .map(|(_, flat)| flat.tag.clone())
+                .collect(),
+            chain.open,
+        )
     }
 
     #[test]
@@ -387,23 +634,149 @@ mod tests {
             r#"<panel><view class="target"/></panel>"#,
             r#"<view class="host"><slot/></view>"#,
         );
-        let tags = ancestor_tags(&fixture, "pages/index/index.wxml", "target");
         assert_eq!(
-            tags,
+            chain(&fixture, "pages/index/index.wxml", "target").0,
             vec!["slot".to_string(), "view".to_string(), "panel".to_string()]
         );
     }
 
     #[test]
     fn named_slot_picks_its_own_parent_chain() {
-        let fixture = fixture(
+        let fixture = fixture_with(
             "graph-named-slot",
             r#"<panel><view slot="a" class="target"/></panel>"#,
             r#"<view class="other"><slot name="a"/></view>"#,
+            "Component({ options: { multipleSlots: true } });",
         );
-        let tags = ancestor_tags(&fixture, "pages/index/index.wxml", "target");
+        let (tags, open) = chain(&fixture, "pages/index/index.wxml", "target");
         assert_eq!(tags.first().map(String::as_str), Some("slot"));
         assert_eq!(tags.get(1).map(String::as_str), Some("view"));
+        assert!(!open);
+    }
+
+    /// 默认（未开 `multipleSlots`）是单槽模式：`slot="a"` 被忽略，子节点进第一个 `<slot>`。
+    #[test]
+    fn single_slot_mode_ignores_slot_names() {
+        let fixture = fixture(
+            "graph-single-slot",
+            r#"<panel><view slot="a" class="target"/></panel>"#,
+            r#"<view class="host"><slot/></view>"#,
+        );
+        let (tags, open) = chain(&fixture, "pages/index/index.wxml", "target");
+        assert_eq!(
+            tags,
+            vec!["slot".to_string(), "view".to_string(), "panel".to_string()]
+        );
+        assert!(!open);
+    }
+
+    /// 模板里没有对应名字的槽：子节点不参与合成，祖先不可知。
+    #[test]
+    fn missing_named_slot_is_unknown() {
+        let fixture = fixture_with(
+            "graph-missing-slot",
+            r#"<panel><view slot="b" class="target"/></panel>"#,
+            r#"<view class="host"><slot name="a"/></view>"#,
+            "Component({ options: { multipleSlots: true } });",
+        );
+        let (tags, open) = chain(&fixture, "pages/index/index.wxml", "target");
+        assert!(tags.is_empty(), "{tags:?}");
+        assert!(open);
+    }
+
+    /// 动态槽名：静态不可知。
+    #[test]
+    fn dynamic_slot_name_is_unknown() {
+        let fixture = fixture_with(
+            "graph-dynamic-slot",
+            r#"<panel><view slot="{{where}}" class="target"/></panel>"#,
+            r#"<view class="host"><slot name="a"/></view>"#,
+            "Component({ options: { multipleSlots: true } });",
+        );
+        let (tags, open) = chain(&fixture, "pages/index/index.wxml", "target");
+        assert!(tags.is_empty(), "{tags:?}");
+        assert!(open);
+    }
+
+    /// `virtualHost: true`：宿主元素不存在，模板顶层直接挂在使位置的父节点里。
+    #[test]
+    fn virtual_host_hides_the_host_element() {
+        let fixture = fixture_with(
+            "graph-virtual-host",
+            r#"<view class="outer"><panel><view class="target"/></panel></view>"#,
+            r#"<view class="host"><slot/></view>"#,
+            "Component({ options: { virtualHost: true } });",
+        );
+        let (tags, open) = chain(&fixture, "pages/index/index.wxml", "target");
+        assert_eq!(
+            tags,
+            vec!["slot".to_string(), "view".to_string(), "view".to_string()],
+            "宿主 panel 不应出现在链里"
+        );
+        assert!(!open);
+    }
+
+    /// 内联模板定义体渲染在 `<template is>` 处，而不是文档顶层。
+    #[test]
+    fn template_definition_body_is_parented_by_its_usage() {
+        let fixture = fixture(
+            "graph-template",
+            r#"<template name="row"><view class="target"/></template><view class="outer"><template is="row"/></view>"#,
+            r#"<view class="host"><slot/></view>"#,
+        );
+        let (tags, open) = chain(&fixture, "pages/index/index.wxml", "target");
+        // `<template is>` 不产生元素节点，链上直接是它所在的元素。
+        assert_eq!(tags, vec!["view".to_string()]);
+        assert!(!open);
+    }
+
+    /// `virtualHost` 只抹掉宿主元素，父级的 `<slot>` 投影照旧。
+    #[test]
+    fn virtual_host_still_projects_into_the_parent_slot() {
+        let fixture = Fixture::new("graph-virtual-nested");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"panel":"/components/panel/panel","virtual":"/components/virtual/virtual"}}"#,
+            )
+            .write(
+                "pages/index/index.wxml",
+                r#"<panel><virtual><view class="target"/></virtual></panel>"#,
+            )
+            .write("pages/index/index.js", "Page({});")
+            .write("components/panel/panel.json", r#"{"component":true}"#)
+            .write("components/panel/panel.js", "Component({});")
+            .write(
+                "components/panel/panel.wxml",
+                r#"<view class="host"><slot/></view>"#,
+            )
+            .write("components/virtual/virtual.json", r#"{"component":true}"#)
+            .write(
+                "components/virtual/virtual.js",
+                "Component({ options: { virtualHost: true } });",
+            )
+            .write(
+                "components/virtual/virtual.wxml",
+                r#"<view class="vhost"><slot/></view>"#,
+            );
+        let (tags, open) = chain(&fixture, "pages/index/index.wxml", "target");
+        // virtual 的宿主不存在 → 不出现；但它的父级 panel 的 slot 仍要接上。
+        assert_eq!(
+            tags,
+            vec![
+                "slot".to_string(),
+                "view".to_string(),
+                "slot".to_string(),
+                "view".to_string(),
+                "panel".to_string()
+            ]
+        );
+        assert!(!open);
     }
 
     #[test]
@@ -413,8 +786,10 @@ mod tests {
             r#"<panel><view class="target"/></panel>"#,
             r#"<view class="host"><slot/></view>"#,
         );
-        let tags = ancestor_tags(&fixture, "components/panel/panel.wxml", "host");
-        assert_eq!(tags, vec!["panel".to_string()]);
+        assert_eq!(
+            chain(&fixture, "components/panel/panel.wxml", "host").0,
+            vec!["panel".to_string()]
+        );
     }
 
     #[test]
