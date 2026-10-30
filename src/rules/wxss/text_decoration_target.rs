@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use crate::input::wxml::{self, WxmlElement};
+use crate::input::wxml::{self, WxmlElement, WxmlNode};
 use crate::project::Project;
 use crate::rules::RuleMeta;
 use crate::rules::wxml::is_builtin;
@@ -25,12 +25,13 @@ pub const ID: &str = "skyline/text-decoration-target";
 
 /// 会应用装饰的属性。`text-decoration-thickness` 不在内——属性本身就不生效，由
 /// `skyline/unsupported-property` 负责。
-const PROPERTIES: [&str; 4] = [
-    "text-decoration",
-    "text-decoration-line",
-    "text-decoration-style",
-    "text-decoration-color",
-];
+/// 只有「要说画线」的这些声明会触发。`text-decoration-color` / `-style` 只是给已有的
+/// 线型上色/换线式，单独出现时两个渲染器都不画任何东西（`text_decoration_line` 初值
+/// `none` 且不继承，`style/computed_style.h:831,1734`），不构成迁移差异。
+const PROPERTIES: [&str; 2] = ["text-decoration", "text-decoration-line"];
+
+/// 简写里的线型关键字；一个都没有时这条声明不会画出任何线。
+const LINE_KEYWORDS: [&str; 4] = ["underline", "overline", "line-through", "blink"];
 
 pub struct TextDecorationTarget;
 
@@ -61,12 +62,20 @@ impl crate::rules::Rule for TextDecorationTarget {
                 if decl.value.trim().eq_ignore_ascii_case("none") {
                     continue;
                 }
+                if name == "text-decoration"
+                    && !LINE_KEYWORDS
+                        .iter()
+                        .any(|keyword| decl.value.to_ascii_lowercase().contains(keyword))
+                {
+                    continue;
+                }
                 let offenders = super::broken_selectors(
                     project,
                     sheet,
                     &rule.selectors,
                     &mut docs,
-                    |_, element| can_decorate(element),
+                    // 没有文本可装饰时，两端都不画：不算差异。
+                    |_, element| can_decorate(element) || !has_text(element),
                 );
                 if offenders.is_empty() {
                     continue;
@@ -99,6 +108,16 @@ fn can_decorate(element: &WxmlElement) -> bool {
         element.tag.as_str(),
         "text" | "span" | "input" | "navigator"
     )
+}
+
+/// 子树里有没有可装饰的文本（含 `<text>` 这类行内级后代与自定义组件）。
+/// 完全没有文本时两边都不画任何东西，不构成差异。
+fn has_text(element: &WxmlElement) -> bool {
+    element.children.iter().any(|child| match child {
+        WxmlNode::Text(text) => text.is_meaningful(),
+        WxmlNode::Element(child) => can_decorate(child) || has_text(child),
+        _ => false,
+    })
 }
 
 #[cfg(test)]
@@ -144,6 +163,29 @@ mod tests {
             ".link { text-decoration-line: underline; }",
         );
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    }
+
+    /// 只写 `text-decoration-color` / `-style`：没有线型，两端都不画。
+    #[test]
+    fn color_and_style_alone_are_not_reported() {
+        for (name, css) in [
+            ("only-color", ".link { text-decoration-color: red; }"),
+            ("only-style", ".link { text-decoration-style: dashed; }"),
+        ] {
+            let diagnostics = check(name, r#"<view class="link">详情</view>"#, css);
+            assert!(diagnostics.is_empty(), "{name}: {diagnostics:?}");
+        }
+    }
+
+    /// 子树里没有文本：没有可装饰的东西。
+    #[test]
+    fn subtree_without_text_is_not_reported() {
+        let diagnostics = check(
+            "no-text",
+            r#"<view class="box"><image src="x"/></view>"#,
+            ".box { text-decoration: underline; }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
     // ---- negative ----

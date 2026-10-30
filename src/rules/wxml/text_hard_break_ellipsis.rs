@@ -78,11 +78,18 @@ fn check_element(doc: &WxmlDoc, element: &WxmlElement, out: &mut Vec<Diagnostic>
     );
 }
 
-/// 子树里是否有硬换行。嵌套 `<text>` 并入父级同一段排版，所以要递归到底。
+/// 子树里是否有硬换行。
+///
+/// 只递归文本节点容器（`text`/`span`/`navigator`）——它们并入父级同一段排版；
+/// 其余元素在 Skyline 里是 inline block、自成一段（`shadow_node.cc:190-194`），
+/// 里面的换行不影响外层末行的省略号。
 fn has_hard_break(nodes: &[WxmlNode]) -> bool {
     nodes.iter().any(|node| match node {
         WxmlNode::Text(text) => text.text.contains('\n'),
-        WxmlNode::Element(element) => has_hard_break(&element.children),
+        WxmlNode::Element(element) => {
+            matches!(element.tag.as_str(), "text" | "span" | "navigator")
+                && has_hard_break(&element.children)
+        }
         WxmlNode::Comment => false,
     })
 }

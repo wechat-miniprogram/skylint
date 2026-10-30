@@ -156,16 +156,24 @@ fn collect_keyframes(project: &Project) -> HashMap<String, Vec<String>> {
 
 /// 源码里每个 `@keyframes` 动画的名字，以及它花括号内的原文。
 fn keyframe_blocks(source: &str) -> Vec<(String, &str)> {
+    const KEYWORD: &str = "keyframes";
     let mut out = Vec::new();
     let bytes = source.as_bytes();
     let mut cursor = 0;
-    while let Some(found) = source[cursor..].find("@keyframes").or_else(|| {
-        source[cursor..]
-            .find("-webkit-keyframes")
-            .map(|index| index.saturating_sub("-webkit".len()))
-    }) {
-        let at = cursor + found;
-        let mut index = at + "@keyframes".len();
+    while let Some(found) = source[cursor..].find(KEYWORD) {
+        let keyword_at = cursor + found;
+        // 允许 `@keyframes` 与 `@-webkit-keyframes` / `@-moz-keyframes` / `@-o-keyframes`。
+        let at = source[..keyword_at].rfind('@');
+        let prefix = at.map(|at| source[at + 1..keyword_at].trim());
+        let recognised = matches!(
+            prefix,
+            Some("") | Some("-webkit-") | Some("-moz-") | Some("-o-")
+        );
+        let mut index = keyword_at + KEYWORD.len();
+        if !recognised {
+            cursor = index;
+            continue;
+        }
         while index < bytes.len() && (bytes[index] as char).is_whitespace() {
             index += 1;
         }
@@ -198,6 +206,7 @@ fn keyframe_blocks(source: &str) -> Vec<(String, &str)> {
         }
         cursor = index;
     }
+
     out
 }
 
@@ -236,6 +245,7 @@ fn transition_properties(
     element: &crate::input::wxml::WxmlElement,
 ) -> Option<Vec<String>> {
     let longhand = resolved_property(project, tree, element, "transition-property");
+    let shorthand = longhand.is_none();
     let resolved = match longhand {
         Some(resolved) => resolved,
         None => resolved_property(project, tree, element, "transition")?,
@@ -252,7 +262,19 @@ fn transition_properties(
         .map(|ident| ident.to_ascii_lowercase())
         .filter(|ident| ident != "none" && !TRANSITION_KEYWORDS.contains(&ident.as_str()))
         .collect::<Vec<String>>();
-    (!properties.is_empty()).then_some(properties)
+    if properties.is_empty() {
+        // `transition: .3s` 省略属性名时 fp 解析成 `TransitionPropertyItem::All`
+        // （`float-pigment-css/src/parser/property.rs:1154-1158`），等价 `all .3s`。
+        let has_time = match declared {
+            Some(tokens) => tokens
+                .iter()
+                .any(|token| matches!(token, ValueToken::Dimension { .. })),
+            None => true,
+        };
+        return (shorthand && has_time && !resolved.value.contains("none"))
+            .then(|| vec!["all".to_string()]);
+    }
+    Some(properties)
 }
 
 /// 元素生效的 `animation` 引用的名字；没有 animation 或判不出来时返回 `None`。

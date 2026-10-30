@@ -94,7 +94,11 @@ pub(crate) fn scope_script<'a>(project: &'a Project, scope: &Scope) -> Option<&'
     if matches!(scope, Scope::Loose(_)) {
         return None;
     }
-    project.scripts.iter().find(|file| &file.scope == scope)
+    project
+        .scripts
+        .iter()
+        // `.wxs` 与所属单元同 scope，但它不是页面/组件脚本（没有 `Page`/`Component`）。
+        .find(|file| &file.scope == scope && !file.path.ends_with(".wxs"))
 }
 
 /// 页面与组件的 WXML 及所属单元，按路径去重（同一文件被多次引用只留一份）。

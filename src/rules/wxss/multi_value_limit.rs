@@ -36,16 +36,25 @@ impl Rule for MultiValueLimit {
             if count <= max {
                 return;
             }
+            let shorthand = matches!(
+                decl.name.to_ascii_lowercase().as_str(),
+                "background" | "mask"
+            );
             let message = format!(
-                "`{}` 在 Skyline 下最多支持 {max} 个值，当前有 {count} 个",
-                decl.name
+                "`{}` 在 Skyline 下最多支持 {max} 层，当前有 {count} 层；超出的部分会让整条{}失效",
+                decl.name,
+                if shorthand {
+                    "背景/遮罩图"
+                } else {
+                    "声明"
+                }
             );
             out.push(at_value(
                 Self::ID,
                 doc,
                 decl,
                 message,
-                "将多值拆成多条声明，或只保留 Skyline 支持的组数",
+                "将多值拆成多条声明，或只保留 Skyline 支持的层数",
             ));
         })
     }
@@ -67,6 +76,9 @@ fn value_limit(name: &str) -> Option<usize> {
         | "mask-repeat"
         | "background-size"
         | "mask-size" => Some(2),
+        // 简写里的层数同样是「层」：>2 时整条 `background-image` 变成 none
+        // （image_property_utils.h:257-273 对 len>2 不返回值），各层全部不渲染。
+        "background" | "mask" => Some(2),
         _ => None,
     }
 }
@@ -77,6 +89,18 @@ mod tests {
 
     use super::MultiValueLimit;
     use crate::rules::testutil::wxss::{messages, page};
+
+    #[test]
+    fn shorthand_layers_are_limited_too() {
+        let (_f, project) = page(
+            "multi-shorthand",
+            r#"<view class="a"/>"#,
+            r#".a { background: url(a), url(b), url(c); }"#,
+        );
+        let diags = MultiValueLimit.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert!(diags[0].message.contains("3 层"));
+    }
 
     #[test]
     fn multi_value_reports_excess_values() {
@@ -98,7 +122,7 @@ mod tests {
         let diags = MultiValueLimit.check(&project);
         assert_eq!(diags.len(), 9);
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
-        assert!(diags.iter().any(|d| d.message.contains("3 个")));
+        assert!(diags.iter().any(|d| d.message.contains("3 层")));
     }
 
     #[test]

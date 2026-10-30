@@ -49,7 +49,7 @@
 | `skyline/text-decoration-target` | warning | skyline | text-decoration 在 Skyline 下只对 `<text>` / `<span>` / `<input>` / `<navigator>` 生效 |
 | `skyline/calc-angle` | warning | skyline | calc() 不支持角度计算，表达式中的角度单位不生效 |
 | `skyline/calc-min-max` | warning | skyline | min() / max() / clamp() 在 Skyline 下求值为 0，整个表达式失效 |
-| `skyline/gradient-unsupported` | warning | skyline | repeating 渐变不被 Skyline 解析，mask 也不支持 conic 渐变 |
+| `skyline/gradient-unsupported` | warning | skyline | repeating / 厂商前缀渐变不被 Skyline 解析，mask 也不支持 conic 渐变 |
 | `skyline/unsupported-api` | warning | skyline | Skyline 不支持的 JS API（如 this.animate、插件内的 wx.router.*） |
 | `skyline/wxs-sync-query` | warning | skyline | WXS 里同步形式的 `getBoundingClientRect()` / `getComputedStyle()` 在 Skyline 下拿不到值 |
 | `skyline/worklet-api-scope` | error | skyline | scrollViewContext.scrollTo 必须在 worklet 内调用，worklet 内不能调用 wx.* |

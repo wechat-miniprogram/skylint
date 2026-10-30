@@ -52,16 +52,17 @@ impl Rule for WxsSyncQuery {
                 continue;
             }
             for call in file.doc.calls() {
-                let message =
-                    if call.callee.ends_with(".getBoundingClientRect") && call.args.is_empty() {
-                        RECT_MESSAGE
-                    } else if call.callee.ends_with(".getComputedStyle")
-                        && missing_callback(file.doc.source(), call)
-                    {
-                        STYLE_MESSAGE
-                    } else {
-                        continue;
-                    };
+                let message = if call.callee.ends_with(".getBoundingClientRect")
+                    && missing_rect_callback(file.doc.source(), call)
+                {
+                    RECT_MESSAGE
+                } else if call.callee.ends_with(".getComputedStyle")
+                    && missing_callback(file.doc.source(), call)
+                {
+                    STYLE_MESSAGE
+                } else {
+                    continue;
+                };
                 out.push(
                     at_span(
                         Self::ID,
@@ -83,8 +84,33 @@ impl Rule for WxsSyncQuery {
 ///
 /// 只看参数个数会把 `getComputedStyle(fields, undefined)` 当成有回调（引擎里同样拿不到值），
 /// 所以显式排除那些「写了等于没写」的实参；变量/箭头函数/函数名一律当作有回调。
+/// `getBoundingClientRect` 的回调是第一个实参；不传、或传 `undefined` / `null`
+/// 都走「没有回调」的分支（`base.ts:206-227` 用 `typeof cb !== 'function'` 判）。
+fn missing_rect_callback(source: &str, call: &crate::input::js::CallInfo) -> bool {
+    match call.args.first() {
+        None => true,
+        Some(arg) => is_no_value(
+            source
+                .get(arg.start as usize..arg.end as usize)
+                .unwrap_or_default(),
+        ),
+    }
+}
+
+/// `getComputedStyle(fields, cb?)` 的回调是第二个实参。
 fn missing_callback(source: &str, call: &crate::input::js::CallInfo) -> bool {
-    let Some(arg) = call.args.get(1) else {
+    missing_arg(source, call, 1)
+}
+
+fn is_no_value(text: &str) -> bool {
+    matches!(
+        text.trim(),
+        "undefined" | "null" | "void 0" | "false" | "0" | "''" | "\"\""
+    )
+}
+
+fn missing_arg(source: &str, call: &crate::input::js::CallInfo, index: usize) -> bool {
+    let Some(arg) = call.args.get(index) else {
         return true;
     };
     let text = source

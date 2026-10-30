@@ -17,7 +17,7 @@
 
 use std::collections::HashMap;
 
-use crate::input::wxml::{self, WxmlElement};
+use crate::input::wxml::{self, WxmlElement, WxmlNode};
 use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::RuleMeta;
@@ -88,18 +88,43 @@ impl crate::rules::Rule for TextOverflowEllipsis {
 /// 这个命中不构成「WebView 能省略、Skyline 不能」的差异。
 ///
 /// - 宿主是 `<text>` / `<span>` / `<navigator>` 或自定义组件：Skyline 下这条声明本来生效；
+/// - 宿主自己没有任何行内内容（文本全在块级子节点里）：两个渲染器都没有可省略的行盒；
 /// - 其余宿主在 WebView 里也得要 `white-space: nowrap` **且真的裁掉溢出**（`overflow` 不是
 ///   `visible`）才可能省略；两个条件缺一个，文本只是换行或溢出显示，两端一致。
-///   都从祖先继承的场景静态判不了，按漏报处理。
 fn no_divergence(project: &Project, tree: &Tree, element: &WxmlElement) -> bool {
     if !is_builtin(&element.tag) || matches!(element.tag.as_str(), "text" | "span" | "navigator") {
         return true;
     }
-    let is = |property: &str, expected: &str| {
-        resolved_property(project, tree, element, property)
-            .is_some_and(|resolved| resolved.value.trim().eq_ignore_ascii_case(expected))
-    };
-    !(is("white-space", "nowrap") && clips_overflow(project, tree, element))
+    if !has_inline_content(element) {
+        return true;
+    }
+    !(white_space_nowrap(project, tree, element) && clips_overflow(project, tree, element))
+}
+
+/// 宿主自己的行盒里有没有东西可省略：直接文本，或行内级子元素（`text`/`span`/
+/// `navigator` 与自定义组件——后者渲染结果静态不可知，按可能有处理）。
+fn has_inline_content(element: &WxmlElement) -> bool {
+    element.children.iter().any(|child| match child {
+        WxmlNode::Text(text) => text.is_meaningful(),
+        WxmlNode::Element(child) => {
+            matches!(child.tag.as_str(), "text" | "span" | "navigator") || !is_builtin(&child.tag)
+        }
+        _ => false,
+    })
+}
+
+/// `white-space` 是继承属性（`css/css_properties/white_space.h:12` 标了 `kInherited`）：
+/// 自己没写就看最近的祖先。
+fn white_space_nowrap(project: &Project, tree: &Tree, element: &WxmlElement) -> bool {
+    let mut current = Some(element);
+    while let Some(node) = current {
+        if let Some(resolved) = resolved_property(project, tree, node, "white-space") {
+            let value = resolved.value.trim().to_ascii_lowercase();
+            return value == "nowrap" || value == "pre";
+        }
+        current = tree.parent_of(node);
+    }
+    false
 }
 
 #[cfg(test)]
@@ -165,13 +190,14 @@ mod tests {
     }
 
     #[test]
-    fn view_without_any_text_child_is_reported() {
+    fn view_without_inline_content_is_not_a_divergence() {
+        // 文本全在块级子节点里：宿主自己没有行盒，WebView 同样不产生省略号。
         let diagnostics = check(
             "nested-view",
             r#"<view class="title"><view class="inner">x</view></view>"#,
             ".title { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
         );
-        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
     #[test]
@@ -275,13 +301,36 @@ mod tests {
         assert!(diagnostics.is_empty());
     }
 
-    /// `text-overflow` 不继承：容器里的 `<text>` 拿不到这条声明。
+    /// 行内级后代（`<text>`）属于宿主的行盒，所以它不算「没有行内内容」——但这里
+    /// 中间隔了一层块级 `<view>`，宿主的行盒里仍然什么都没有。
     #[test]
-    fn text_descendant_does_not_exempt_the_container() {
+    fn inline_descendant_behind_a_block_child_is_not_enough() {
         let diagnostics = check(
             "descendant",
             r#"<view class="list"><view class="row"><text>标题</text></view></view>"#,
             ".list { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    /// 直接的 `<text>` 子节点算行内内容：这是真差异（WebView 出省略号、Skyline 不出）。
+    #[test]
+    fn inline_descendant_is_reported() {
+        let diagnostics = check(
+            "inline-descendant",
+            r#"<view class="list"><text>标题</text></view>"#,
+            ".list { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    }
+
+    /// `white-space` 从祖先继承：WebView 里宿主的行盒同样不换行。
+    #[test]
+    fn inherited_nowrap_counts() {
+        let diagnostics = check(
+            "inherited-nowrap",
+            r#"<view class="wrap"><view class="title">标题</view></view>"#,
+            ".wrap { white-space: nowrap; } .title { text-overflow: ellipsis; overflow: hidden; }",
         );
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     }

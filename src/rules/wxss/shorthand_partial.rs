@@ -123,9 +123,11 @@ const ROWS: &[Row] = &[
     },
     Row {
         property: "background",
-        triggers: &["border-box", "padding-box", "content-box"],
+        // `text` 是唯一会改变渲染的 clip 值：`background-clip: text` 在 Skyline 下
+        // 没有实现（`css_parser_impl.h:75` 映射成 kInvalid），渐变文字会变成实心块。
+        triggers: &["border-box", "padding-box", "content-box", "text"],
         dropped: "background-origin / background-clip",
-        note: "简写里的盒关键字被丢弃",
+        note: "简写里的盒关键字被丢弃（`text` 是渐变文字，会变成整块渐变）",
     },
     Row {
         property: "mask",

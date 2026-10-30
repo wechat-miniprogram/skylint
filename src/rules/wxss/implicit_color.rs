@@ -193,12 +193,24 @@ fn effective_color<'a>(
     element: &'a WxmlElement,
     ancestors: &[&'a WxmlElement],
 ) -> Option<String> {
-    let value = std::iter::once(element)
-        .chain(ancestors.iter().rev().copied())
-        .find_map(|candidate| {
-            resolved_property(project, tree, candidate, "color").map(|resolved| resolved.value)
-        })
-        .or_else(|| page_color(project, tree))?;
+    // `inherit` / `currentColor` 等都解析成父级的值：继续往上找真正的颜色。
+    let mut value = None;
+    for candidate in std::iter::once(element).chain(ancestors.iter().rev().copied()) {
+        let Some(resolved) = resolved_property(project, tree, candidate, "color") else {
+            continue;
+        };
+        let raw = resolved.value.trim().to_ascii_lowercase();
+        match raw.as_str() {
+            "inherit" | "unset" | "currentcolor" | "current-color" | "revert" => continue,
+            // `initial` 是 CSS 的 `canvastext`（黑），与「没写」等效。
+            "initial" => return None,
+            _ => {
+                value = Some(resolved.value);
+                break;
+            }
+        }
+    }
+    let value = value.or_else(|| page_color(project, tree))?;
     let value = value.trim().to_ascii_lowercase();
     // 变量与函数求解不了：运行时可能是黑色，也可能是任意色，按「判不了」跳过。
     if value.contains("var(") || value.contains("env(") || value.contains("{{") {
@@ -251,6 +263,17 @@ mod tests {
             .write("pages/index/index.wxss", wxss);
         let project = fixture.project();
         ImplicitColor.check(&project)
+    }
+
+    /// `color: inherit` 沿祖先链解析到黑色时，无颜色的 border 两端都是黑。
+    #[test]
+    fn inherited_color_is_followed() {
+        let diagnostics = check(
+            "inherit-black",
+            r#"<view class="a"><view class="b"/></view>"#,
+            ".a { color: #000; } .b { color: inherit; border: 1px solid; }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 
     #[test]
