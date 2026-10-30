@@ -208,3 +208,24 @@
 
 不实现的 30 条都写了具体理由（运行期才能判、静态必然误报、`minidev build` 已硬拦截、
 或根本不是 Skyline 语义差异），见各行。
+
+## 已知边界（2026-10 全量审计后补记）
+
+以下都不是「漏了一条知识库条目」，而是**当前判据明确不覆盖**的形态，写在这里避免重复排查：
+
+- **宿主 `plugins.*.genericsImplementation` 注入的组件不参与检查**：这些组件由插件页在
+  运行时渲染，宿主仓库里没有静态引用点（`app.json` 的映射是给插件页用的）。无条件种子化
+  会把整棵树拉进来、产出无法证伪的诊断，因此按「未知」处理。已知受影响位置
+  （`miniprogram-skit_1/components-for-playlet/*`）已记录在迁移报告里。
+- **`-webkit-*` 属性不整体入表**：2572 条声明里约 2200 条同块存在标准同名声明，两端一致；
+  逐个报会把 vendored weui 的 autoprefixer 产物变成主噪声。只对「让整条 `transition`
+  回滚」的形态单独报（`skyline/transition-property`）。
+- **`calc()` 里角度与长度混算**：这是 CSS 类型错误，WebView 同样整条拒绝，不构成渲染器差异；
+  原 `skyline/calc-angle` 已删除（2026-10）。
+- **自定义组件宿主上的尺寸声明**：宿主在 `defaultBlockLayout` 下被强制 `display:inline`，
+  但「宿主上 `height` / 纵向 `padding` / `width` 各自生不生效」还缺一次对照实验，判据未定。
+- **`aspect-ratio` 之外的定高来源**（grid 轨道、`min-content` 等）在 `scroll-view-height`
+  里按「不确定」处理，宁可漏报。
+- **`share-element` 的 `wx:for` 静态 key**、**`conic-gradient` 的 px 停止位**、
+  **`dead-selector` 对含内联 `<template name>` 文件的组合选择器**：判据已明确，但由于需要
+  解析层新增字段（`in_for`）或新的 conic 参数解析，暂未实现；当前六个参考工程命中为 0。

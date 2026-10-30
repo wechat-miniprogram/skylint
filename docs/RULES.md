@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 61 条：error 15 条、warning 41 条、info 5 条。
+共 60 条：error 15 条、warning 40 条、info 5 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
@@ -47,7 +47,6 @@
 | `skyline/filter-limit` | warning | skyline | filter / backdrop-filter 使用了不支持的函数或组合 |
 | `skyline/text-decoration-line` | warning | skyline | text-decoration-line 只支持单值，多值组合不生效 |
 | `skyline/text-decoration-target` | warning | skyline | text-decoration 在 Skyline 下只对 `<text>` / `<span>` / `<input>` / `<navigator>` 生效 |
-| `skyline/calc-angle` | warning | skyline | calc() 不支持角度计算，表达式中的角度单位不生效 |
 | `skyline/calc-min-max` | warning | skyline | min() / max() / clamp() 在 Skyline 下求值为 0，整个表达式失效 |
 | `skyline/gradient-unsupported` | warning | skyline | repeating / 厂商前缀渐变不被 Skyline 解析，mask 也不支持 conic 渐变 |
 | `skyline/unsupported-api` | warning | skyline | Skyline 不支持的 JS API（如 this.animate、插件内的 wx.router.*） |

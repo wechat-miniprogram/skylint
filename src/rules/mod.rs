@@ -117,7 +117,6 @@ impl Registry {
             Box::new(wxss::FilterLimit),
             Box::new(wxss::TextDecorationLine),
             Box::new(wxss::TextDecorationTarget),
-            Box::new(wxss::CalcAngle),
             Box::new(wxss::CalcMinMax),
             Box::new(wxss::GradientUnsupported),
             Box::new(js::UnsupportedApi),

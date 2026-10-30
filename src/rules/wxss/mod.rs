@@ -6,7 +6,6 @@
 
 pub mod attribute_selector;
 pub mod box_sizing;
-pub mod calc_angle;
 pub mod calc_min_max;
 pub mod dead_selector;
 pub mod dict_table;
@@ -40,7 +39,6 @@ pub mod value_util;
 
 pub use attribute_selector::AttributeSelector;
 pub use box_sizing::BoxSizing;
-pub use calc_angle::CalcAngle;
 pub use calc_min_max::CalcMinMax;
 pub use dead_selector::DeadSelector;
 pub use filter_limit::FilterLimit;

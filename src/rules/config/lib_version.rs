@@ -104,7 +104,9 @@ fn requirement(project: &Project) -> Option<(Version, &'static str)> {
     if skyline {
         bump(((2, 30, 4), "Skyline 渲染"));
     }
-    if project.app_json.contains_key("rendererOptions") {
+    // app 级 `rendererOptions` 只在 Skyline 运行时引导时被读（`runtime/index.ts:124-151`），
+    // 全 WebView 工程里它是死配置，不构成版本门槛。
+    if skyline && project.app_json.contains_key("rendererOptions") {
         bump(((2, 31, 1), "app 级 rendererOptions"));
     }
     // 页面级 rendererOptions 只有 Skyline 页会读；WebView 页上的是死配置，不抬阈值。
@@ -162,6 +164,25 @@ mod tests {
 
     fn config(lib_version: &str) -> String {
         format!(r#"{{"miniprogramRoot":"","libVersion":"{lib_version}"}}"#)
+    }
+
+    /// 全 WebView 工程里的 `rendererOptions` 没有读者，不该把门槛抬到 2.31.1。
+    #[test]
+    fn renderer_options_without_skyline_pages_does_not_raise_the_bar() {
+        let fixture = Fixture::new("lib-version-webview");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"webview","rendererOptions":{"skyline":{"defaultDisplayBlock":true}}}"#,
+            )
+            .write(
+                "project.config.json",
+                r#"{"miniprogramRoot":"","libVersion":"2.30.0"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", "<view/>");
+        assert!(LibVersion.check(&fixture.project()).is_empty());
     }
 
     #[test]

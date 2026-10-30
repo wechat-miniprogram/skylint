@@ -166,57 +166,6 @@ fn text_length_unit(token: &str) -> Option<String> {
     }
 }
 
-/// 表达式里是否出现角度单位。
-pub(crate) fn has_angle_unit(tokens: &[ValueToken]) -> bool {
-    tokens.iter().any(|token| match token {
-        ValueToken::Dimension { unit, .. } => is_angle_unit(unit),
-        ValueToken::Function { args, .. } => has_angle_unit(args),
-        ValueToken::Other(text) => text_has_angle_unit(text),
-        _ => false,
-    })
-}
-
-fn is_angle_unit(unit: &str) -> bool {
-    matches!(
-        unit.to_ascii_lowercase().as_str(),
-        "deg" | "rad" | "grad" | "turn"
-    )
-}
-
-fn text_has_angle_unit(expr: &str) -> bool {
-    let mut i = 0usize;
-    while i < expr.len() {
-        let ch = expr[i..].chars().next().unwrap();
-        if ch.is_ascii_digit() || ch == '.' {
-            let mut j = i;
-            while j < expr.len() {
-                let c = expr[j..].chars().next().unwrap();
-                if c.is_ascii_digit() || c == '.' {
-                    j += c.len_utf8();
-                } else {
-                    break;
-                }
-            }
-            let unit_start = j;
-            while j < expr.len() {
-                let c = expr[j..].chars().next().unwrap();
-                if c.is_ascii_alphabetic() {
-                    j += c.len_utf8();
-                } else {
-                    break;
-                }
-            }
-            if is_angle_unit(&expr[unit_start..j]) {
-                return true;
-            }
-            i = j.max(i + ch.len_utf8());
-        } else {
-            i += ch.len_utf8();
-        }
-    }
-    false
-}
-
 /// 标识符词元是否等于 `name`（ASCII 大小写不敏感）。
 pub(crate) fn is_ident(token: &ValueToken, name: &str) -> bool {
     matches!(token, ValueToken::Ident(ident) if ident.eq_ignore_ascii_case(name))
