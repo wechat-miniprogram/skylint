@@ -128,13 +128,14 @@ fn aggregated(project: &Project, blocks: usize) -> Diagnostic {
 /// 只看选择器原文，不解析 at-rule 上下文：`@media` 里声明的 `flex-direction` 未必
 /// 在所有条件下生效，但漏报好过误报。
 fn declares_flex_direction_elsewhere(doc: &WxssDoc, rule: &WxssRule) -> bool {
-    doc.rules.iter().any(|other| {
-        !std::ptr::eq(other, rule)
-            && declares_direction(other)
-            && other
-                .selectors
-                .iter()
-                .any(|selector| shares_selector(selector, &rule.selectors))
+    // 逐选择器判定：`.a .flex, .a .wrap { display:flex }` 里只有 `.a .flex` 在别处
+    // 声明了方向时，`.a .wrap` 仍然没有方向。
+    rule.selectors.iter().all(|selector| {
+        doc.rules.iter().any(|other| {
+            !std::ptr::eq(other, rule)
+                && declares_direction(other)
+                && shares_selector(selector, &other.selectors)
+        })
     })
 }
 
@@ -208,15 +209,32 @@ mod tests {
         // 声明可以拆开写：`.a` 在两条规则里各写一半，不能只看单条。
         let (_f, project) = page(
             "flex-split",
-            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
+            r#"<view class="a"/><view class="b"/>"#,
             r#"
             .a { display: flex; }
             .a { flex-direction: row; }
+            .b { display: flex; }
+            .b { flex-direction: column; }
+            "#,
+        );
+        assert!(messages(&FlexDirection, &project).is_empty());
+    }
+
+    /// 并列选择器逐项判：`.b` 没有方向，不能被 `.c` 的声明一起豁免。
+    #[test]
+    fn selector_list_is_exempted_one_by_one() {
+        let (_f, project) = page(
+            "flex-list",
+            r#"<view class="b"/><view class="c"/>"#,
+            r#"
             .b, .c { display: flex; }
             .c { flex-direction: column; }
             "#,
         );
-        assert!(messages(&FlexDirection, &project).is_empty());
+        let messages = messages(&FlexDirection, &project);
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        // 消息是工程级聚合（「N 处」），这里只确认 `.b` 那一处被计入了。
+        assert!(messages[0].contains("1 处"), "{messages:?}");
     }
 
     #[test]

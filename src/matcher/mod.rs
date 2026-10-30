@@ -173,7 +173,7 @@ pub fn tag_names(selector: &str) -> Option<Vec<String>> {
 fn collect_tags(component: &Component<SelImpl>, out: &mut Vec<String>) {
     match component {
         Component::LocalName(local) => out.push(local.name.0.to_ascii_lowercase()),
-        Component::Negation(list) | Component::Is(list) => {
+        Component::Negation(list) | Component::Is(list) | Component::Where(list) => {
             for inner in list.slice() {
                 for component in inner.iter_raw_match_order() {
                     collect_tags(component, out);
@@ -187,7 +187,7 @@ fn collect_tags(component: &Component<SelImpl>, out: &mut Vec<String>) {
 fn collect_classes(component: &Component<SelImpl>, out: &mut Vec<String>) {
     match component {
         Component::Class(name) => out.push(name.0.to_string()),
-        Component::Negation(list) | Component::Is(list) => {
+        Component::Negation(list) | Component::Is(list) | Component::Where(list) => {
             for inner in list.slice() {
                 for component in inner.iter_raw_match_order() {
                     collect_classes(component, out);
@@ -211,7 +211,7 @@ fn walk_component(component: &Component<SelImpl>, shape: &mut Shape) {
                 shape.dynamic_pseudo = true;
             }
         }
-        Component::Negation(list) | Component::Is(list) => {
+        Component::Negation(list) | Component::Is(list) | Component::Where(list) => {
             for inner in list.slice() {
                 for component in inner.iter_raw_match_order() {
                     walk_component(component, shape);
@@ -582,7 +582,7 @@ impl<'a> Tree<'a> {
                         dynamic = true;
                     }
                 }
-                Component::Negation(list) | Component::Is(list) => {
+                Component::Negation(list) | Component::Is(list) | Component::Where(list) => {
                     if !in_subject {
                         continue;
                     }
@@ -759,7 +759,11 @@ impl<'a> Tree<'a> {
 /// 每个静态未知区域补的占位层数：覆盖投影 / 展开内容里最右几层嵌套。
 const UNKNOWN_DEPTH: usize = 3;
 
-/// Skyline 认识的结构伪类（`css/selector.h:67-76` 的 7 个 + `:is`/`:where` 走结构化组件）。
+/// Skyline 认识的结构伪类（`css/selector.h:67-76`，仅这 7 个）。
+///
+/// `:is()` / `:where()` 不在其中：fp 的选择器解析对它们直接 `Err(Unsupported)`
+/// （`float-pigment-css/src/parser/selector.rs:401-421`，`parser/mod.rs:989-991`
+/// 据此丢掉整条规则），与「结构化组件」无关。
 const SKYLINE_PSEUDO_CLASSES: &[&str] = &[
     "host",
     "empty",
@@ -769,8 +773,6 @@ const SKYLINE_PSEUDO_CLASSES: &[&str] = &[
     "not",
     "nth-child",
     "nth-last-child",
-    "is",
-    "where",
 ];
 
 /// WebView 下不需要运行时状态就能判定的伪类。

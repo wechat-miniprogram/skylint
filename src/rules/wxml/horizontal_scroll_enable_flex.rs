@@ -12,7 +12,7 @@ use crate::rules::{Rule, RuleMeta};
 use super::structure::find_attr;
 use crate::matcher::Tree;
 
-use super::{display_values, is_flex_value, span_diagnostic, visit, walk_skyline};
+use super::{flex_container, span_diagnostic, visit, walk_skyline};
 
 pub const HORIZONTAL_FLEX_ID: &str = "skyline/horizontal-scroll-enable-flex";
 
@@ -34,9 +34,8 @@ impl Rule for HorizontalScrollEnableFlex {
                 if element.tag != "scroll-view"
                     || flag(element, "scroll-x") != Some(true)
                     || flag(element, "enable-flex") != Some(false)
-                    || !display_values(project, &tree, element)
-                        .iter()
-                        .any(|value| is_flex_value(value))
+                    // 取级联胜出的那一个 `display`：`style="display:block"` 覆盖时不需要 enable-flex。
+                    || !flex_container(project, &tree, element)
                 {
                     return;
                 }

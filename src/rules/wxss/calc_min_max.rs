@@ -82,21 +82,41 @@ fn is_math_function(name: &str) -> bool {
 /// fp 的 `fold_length_extreme` / `fold_length_clamp` 要求「同一个 specified unit」
 /// （`calc.rs:352-386`，百分比在 fp 里是 `Length::Ratio`，也参与折叠）。
 fn is_constant(args: &[ValueToken]) -> bool {
+    // 逐参数折叠：同一 specified unit 的 `+`/`-` 会被 fp 折成字面量
+    // （`calc.rs:302-369`）；裸数字在 length 上下文里 `try_compute` 返回 `None`，
+    // 所以整条参数取不到值、留下 `Length::Expr` → 引擎按 0 处理。
     let mut unit: Option<String> = None;
-    for token in args {
+    for arg in args.split(|token| matches!(token, ValueToken::Comma)) {
+        let Some(own) = folds(arg) else {
+            return false;
+        };
+        match &unit {
+            None => unit = Some(own),
+            Some(existing) if *existing == own => {}
+            Some(_) => return false,
+        }
+    }
+    unit.is_some()
+}
+
+fn folds(arg: &[ValueToken]) -> Option<String> {
+    let mut unit: Option<String> = None;
+    for token in arg {
         let key = match token {
-            ValueToken::Comma | ValueToken::Number(_) => continue,
+            ValueToken::Number(_) => continue,
             ValueToken::Percentage(_) => "%".to_string(),
             ValueToken::Dimension { unit, .. } => unit.to_ascii_lowercase(),
-            _ => return false,
+            ValueToken::Other(op) if op == "+" || op == "-" => continue,
+            _ => return None,
         };
         match &unit {
             None => unit = Some(key),
             Some(existing) if *existing == key => {}
-            Some(_) => return false,
+            Some(_) => return None,
         }
     }
-    true
+    // 整个参数都是裸数字：fp 折不成长度，引擎会求值 0。
+    unit
 }
 
 #[cfg(test)]
@@ -132,11 +152,10 @@ mod tests {
     fn constant_arguments_and_dynamic_values_are_accepted() {
         let (_f, project) = page(
             "calc-min-max-negative",
-            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/><view class="i"/>"#,
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/>"#,
             r#"
             .a { width: min(10px, 20px); }
             .b { width: clamp(1px, 2px, 3px); }
-            .c { width: max(0, 10px); }
             .d { width: var(--w); }
             .e { --w: min(100%, 10px); }
             .f { transition: min .3s; }

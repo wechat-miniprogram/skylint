@@ -82,7 +82,7 @@ impl Rule for LegacyFlexbox {
             ) {
                 return;
             }
-            let Some(legacy) = legacy_block(rule) else {
+            let Some(legacy) = legacy_block(sheet, rule) else {
                 return;
             };
             let clamp = rule
@@ -142,33 +142,44 @@ impl Rule for LegacyFlexbox {
 /// - 生效值是普通值（`block` / `none` …）：两端一致 → 不报。
 ///
 /// `-ms-flexbox` 在 Chromium 里是非法值，当作没写。
-fn legacy_block(
-    rule: &crate::input::wxss::WxssRule,
-) -> Option<Vec<(String, &crate::input::wxss::WxssDeclaration)>> {
-    let display =
-        |decl: &&crate::input::wxss::WxssDeclaration| decl.name.eq_ignore_ascii_case("display");
-    let webview = rule.declarations.iter().rev().find(|decl| {
-        if !display(decl) {
-            return false;
-        }
-        let value = decl.value.trim();
-        PARSEABLE_DISPLAY.contains(&value) || is_webkit_flex_display(value)
-    })?;
+fn legacy_block<'a>(
+    sheet: &'a crate::project::StyleSheet,
+    rule: &'a crate::input::wxss::WxssRule,
+) -> Option<Vec<(String, &'a crate::input::wxss::WxssDeclaration)>> {
+    // 同一选择器可能被拆成多块写（旧 autoprefixer 产物按属性分块）：
+    // 取整份样式表里这些块合并后的最终 `display`，而不是只看当前块。
+    let mut displays: Vec<&'a crate::input::wxss::WxssDeclaration> = sheet
+        .doc
+        .rules
+        .iter()
+        .filter(|other| {
+            other.at_rules == rule.at_rules
+                && other.selectors.iter().any(|selector| {
+                    rule.selectors
+                        .iter()
+                        .any(|current| current.text.trim() == selector.text.trim())
+                })
+        })
+        .flat_map(|other| other.declarations.iter())
+        .filter(|decl| {
+            decl.name.eq_ignore_ascii_case("display")
+                && (PARSEABLE_DISPLAY.contains(&decl.value.trim())
+                    || is_webkit_flex_display(decl.value.trim()))
+        })
+        .collect();
+    displays.sort_by_key(|decl| decl.offset);
+    let webview = *displays.last()?;
     let value = webview.value.trim();
-    let losing = if value.eq_ignore_ascii_case("-webkit-box") {
-        true
-    } else if value.eq_ignore_ascii_case("-webkit-flex")
-        || matches!(value.to_ascii_lowercase().as_str(), "flex" | "inline-flex")
-    {
-        !rule
-            .declarations
-            .iter()
-            .filter(display)
-            .any(|decl| PARSEABLE_DISPLAY.contains(&decl.value.trim()))
-    } else {
-        false
-    };
-    if !losing {
+    if !is_webkit_flex_display(value) {
+        return None;
+    }
+    // Skyline 侧保留最后一个可解析的 `display`；WebView 侧取最后一个合法值。
+    // `-webkit-box` 与 `flex` 语义不同，WebView 用前者、Skyline 用后者就是差异；
+    // `-webkit-flex` 与 `flex` 同义，只有 Skyline 一条可解析值都没有时才算丢。
+    let skyline_parseable = displays
+        .iter()
+        .any(|decl| PARSEABLE_DISPLAY.contains(&decl.value.trim()));
+    if value.eq_ignore_ascii_case("-webkit-flex") && skyline_parseable {
         return None;
     }
     let mut legacy: Vec<(String, &crate::input::wxss::WxssDeclaration)> = rule
@@ -182,6 +193,9 @@ fn legacy_block(
             std::ptr::eq(decl, webview).then(|| (format!("display: {value}"), decl))
         })
         .collect();
+    if legacy.is_empty() {
+        return None;
+    }
     legacy.sort_by_key(|(_, decl)| decl.offset);
     Some(legacy)
 }
@@ -281,6 +295,20 @@ mod tests {
               display: -webkit-flex;
               -webkit-box-align: center;
             }
+            "#,
+        );
+        assert_eq!(messages(&LegacyFlexbox, &project), Vec::<String>::new());
+    }
+
+    /// 同一选择器拆成多块写：后续块把 display 改成 flex 时，老式声明两端都是空转。
+    #[test]
+    fn display_split_across_blocks_is_merged() {
+        let (_f, project) = page(
+            "legacy-split",
+            r#"<view class="a"/>"#,
+            r#"
+            .a { display: -webkit-box; -webkit-box-orient: vertical; }
+            .a { display: flex; }
             "#,
         );
         assert_eq!(messages(&LegacyFlexbox, &project), Vec::<String>::new());

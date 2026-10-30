@@ -49,6 +49,11 @@ impl Rule for RootScopeClass {
             let Some(scope) = project.scope_of(doc.path()) else {
                 return;
             };
+            // 页面节点上 `~x` / `^x` 登记到的就是页面自己的 scope（`class_list.ts:107`
+            // 的 `_$owner` 为空时 `rootScope = styleScope`），与不加前缀等价。
+            if matches!(scope, crate::project::Scope::Page(_)) {
+                return;
+            }
             let local = local_classes(project, &scope);
             if local.is_empty() {
                 return;
@@ -65,6 +70,11 @@ impl Rule for RootScopeClass {
                         };
                         let mut hits: Vec<(&String, &String)> = Vec::new();
                         if let Some((class, sheet)) = local.get_key_value(name) {
+                            // 同一份样式表若也被页面（根作用域）引入，`~x`/`^x` 在那边就是普通类名，
+                            // 规则照样命中——原文案「不再命中」不成立。
+                            if declared_in_page_scope(project, name) {
+                                continue;
+                            }
                             hits.push((class, sheet));
                         } else if name.ends_with('-') || name.ends_with('_') {
                             // 半截词：`~banner-{{i}}` 对上 `banner-0` 这一族。只认数字后缀，
@@ -145,6 +155,24 @@ fn local_classes(project: &Project, scope: &Scope) -> BTreeMap<String, String> {
     out
 }
 
+/// 该类名是否被某个页面作用域的样式表声明过。
+fn declared_in_page_scope(project: &Project, name: &str) -> bool {
+    project.styles.iter().any(|sheet| {
+        sheet
+            .scopes
+            .iter()
+            .any(|scope| matches!(scope, crate::project::Scope::Page(_)))
+            && sheet.doc.rules.iter().any(|rule| {
+                rule.selectors.iter().any(|selector| {
+                    matcher::class_names(selector.text.trim())
+                        .unwrap_or_default()
+                        .iter()
+                        .any(|class| class == name)
+                })
+            })
+    })
+}
+
 /// 属性里的类词元：动态 class 用候选集，静态 class 直接切分。
 fn class_tokens(attribute: &crate::input::wxml::WxmlAttribute) -> Vec<String> {
     match &attribute.class_tokens {
@@ -193,10 +221,44 @@ mod tests {
         RootScopeClass.check(&fixture.project())
     }
 
+    /// 页面节点上的 `~x` 登记到页面自己的 scope，与 `x` 等价。
+    #[test]
+    fn page_node_prefix_is_a_noop() {
+        assert!(
+            check(
+                "root-scope-page",
+                r#"<view class="cnt ~banner"/>"#,
+                ".banner { background-color: #000; }",
+            )
+            .is_empty()
+        );
+    }
+
+    fn component_check(name: &str, wxml: &str, wxss: &str) -> Vec<crate::Diagnostic> {
+        let fixture = Fixture::new(name);
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"c":"/components/c/c"}}"#,
+            )
+            .write("pages/index/index.wxml", "<c/>")
+            .write("pages/index/index.js", "Page({})")
+            .write("components/c/c.json", r#"{"component":true}"#)
+            .write("components/c/c.wxml", wxml)
+            .write("components/c/c.wxss", wxss)
+            .write("components/c/c.js", "Component({})");
+        RootScopeClass.check(&fixture.project())
+    }
+
     #[test]
     fn root_scope_class_shadows_local_rule() {
         // 组件内的 `.banner` 规则不再命中 `~banner` 这个节点。
-        let diags = check(
+        let diags = component_check(
             "root-scope",
             r#"<view class="cnt ~banner"/>"#,
             ".banner { background-color: #000; }",
@@ -208,7 +270,7 @@ mod tests {
 
     #[test]
     fn dynamic_class_candidate_is_checked_too() {
-        let diags = check(
+        let diags = component_check(
             "root-scope-dynamic",
             r#"<view class="cnt ~banner-{{i}}"/>"#,
             ".banner-1 { background-color: #000; }",

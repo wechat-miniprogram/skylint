@@ -116,6 +116,15 @@ fn definite_height(
         return !height.contains('%')
             || parent_definite(project, tree, element, default_block, depth);
     }
+    // `aspect-ratio` + 宽度确定：高度由比例反算（`style_builder.cc:814`、
+    // `flex_box.rs:343-370` / `flow.rs:440-460`）。
+    if aspect_ratio(project, tree, element).is_some()
+        && length_value(project, tree, element, "width").is_some_and(|width| {
+            !width.contains('%') || parent_definite(project, tree, element, default_block, depth)
+        })
+    {
+        return true;
+    }
     // 绝对定位 + 上下都有值：高度由定位决定。
     if is_out_of_flow(project, tree, element)
         && length_value(project, tree, element, "top").is_some()
@@ -124,8 +133,11 @@ fn definite_height(
         return true;
     }
     let Some(parent) = tree.parent_of(element) else {
-        // 顶层元素：页面本身有视口高度，但自动高度不会被它拉伸。
-        return false;
+        // 顶层元素挂在页面根上：`shadow_tree.cc:30` 给根节点 `height:100%`，
+        // 未开 `defaultDisplayBlock` 时根是 `flex-direction: column`，`flex:1` 能分到整屏。
+        let flex = resolved_property(project, tree, element, "flex");
+        let grow = resolved_property(project, tree, element, "flex-grow");
+        return !default_block && grows(grow.as_ref(), flex.as_ref());
     };
     match flex_axis(project, tree, parent, default_block) {
         // 主轴是高度：`flex-basis` 定长，或 grow 从确定高度的父级分到剩余空间。
@@ -164,6 +176,22 @@ fn parent_definite(
 }
 
 /// 属性的取值，`auto` / `em` 一类空值返回 `None`（等同没写）。
+/// `aspect-ratio` 的宽高比（`auto 16/9` 只取比例部分）。0 或无法解析时返回 `None`。
+fn aspect_ratio(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> Option<f64> {
+    let value = resolved_property(project, tree, element, "aspect-ratio")?
+        .value
+        .trim()
+        .to_ascii_lowercase();
+    let ratio = value.strip_prefix("auto").unwrap_or(&value).trim();
+    let (width, height) = match ratio.split_once('/') {
+        Some((width, height)) => (width.trim(), height.trim()),
+        None => (ratio, "1"),
+    };
+    let width: f64 = width.parse().ok()?;
+    let height: f64 = height.parse().ok()?;
+    (width > 0.0 && height > 0.0).then_some(width / height)
+}
+
 fn length_value(
     project: &Project,
     tree: &Tree<'_>,
@@ -314,6 +342,41 @@ mod tests {
     }
 
     const SKYLINE_APP: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#;
+
+    #[test]
+    fn aspect_ratio_with_definite_width_is_a_height() {
+        let diagnostics = check_wxml(
+            "svh-aspect",
+            SKYLINE_APP,
+            ".list { width: 100%; aspect-ratio: 16 / 9; }",
+            r#"<scroll-view class="list"/>"#,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn top_level_flex_one_takes_the_page_height() {
+        let diagnostics = check_wxml(
+            "svh-root-flex",
+            SKYLINE_APP,
+            ".list { flex: 1; }",
+            r#"<scroll-view class="list"/>"#,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    /// 开了 `defaultDisplayBlock` 时页面根是 block，`flex: 1` 不再分到高度。
+    #[test]
+    fn top_level_flex_one_is_not_enough_with_default_block() {
+        let app = r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true}}}"#;
+        let diagnostics = check_wxml(
+            "svh-root-flex-block",
+            app,
+            ".list { flex: 1; }",
+            r#"<scroll-view class="list"/>"#,
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    }
 
     #[test]
     fn scroll_view_without_height_is_reported() {

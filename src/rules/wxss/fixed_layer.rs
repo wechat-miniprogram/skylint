@@ -129,11 +129,17 @@ fn has_containing_block(project: &Project, tree: &Tree<'_>, ancestors: &[&WxmlEl
                 .iter()
                 .any(|trigger| value.contains(trigger))
         });
+        // `contain` 只有 layout / paint 会建立 fixed 的包含块；`size` / `style` 不会。
+        let contain = resolve(ancestor, "contain").is_some_and(|value| {
+            ["layout", "paint", "strict", "content"]
+                .iter()
+                .any(|keyword| value.split_whitespace().any(|part| part == *keyword))
+        });
         set("transform")
             || set("perspective")
             || set("filter")
             || set("backdrop-filter")
-            || set("contain")
+            || contain
             || animated
     })
 }

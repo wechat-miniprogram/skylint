@@ -38,9 +38,26 @@ impl Rule for DraggableSheetScrollTo {
                 if !SCROLL_TO.matches(&call.callee) {
                     continue;
                 }
+                let source = file.doc.source();
                 let conflicting = call.args.iter().any(|arg| {
-                    let has = |key: &str| arg.object_keys.iter().any(|name| name == key);
-                    has("size") && has("pixels")
+                    // 引擎只认 `JS_IS_NUMBER`：`size: undefined` 时照旧用 pixels
+                    // （`draggable_sheet_shadow_node.cc:35-45`）。
+                    let value_is_number = |key: &str| {
+                        arg.object_keys
+                            .iter()
+                            .position(|name| name == key)
+                            .and_then(|index| arg.object_key_spans.get(index))
+                            .map(|(_, end)| {
+                                let rest = &source[*end as usize..arg.end as usize];
+                                let rest = rest.trim_start().trim_start_matches(':').trim_start();
+                                !matches!(
+                                    rest.split([',', '}']).next().unwrap_or("").trim(),
+                                    "undefined" | "null" | "void 0"
+                                )
+                            })
+                            .unwrap_or(false)
+                    };
+                    value_is_number("size") && value_is_number("pixels")
                 });
                 if conflicting {
                     out.push(at_span(
