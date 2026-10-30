@@ -48,6 +48,10 @@ pub struct WxmlDoc {
     pub nodes: Vec<WxmlNode>,
     /// `<import>` / `<include>` 的 `src` 原始值（编译器已剥掉 `.wxml` 后缀）。
     template_refs: Vec<String>,
+    /// `<include src>`：内容整段内联到引入位置，`src` 与 `<include>` 标签起点。
+    includes: Vec<(String, Position)>,
+    /// `<import src>`：只把目标文件的 `<template name>` 定义带进作用域。
+    imports: Vec<String>,
     /// `<wxs src>` 的原始值（`Script::GlobalRef`）。
     wxs_refs: Vec<String>,
     /// `<template is="x" data="…">` 调用点（按源码顺序）。
@@ -292,6 +296,25 @@ impl WxmlDoc {
             // 动态 `src="{{x}}"` 解析成空串，不是可解析的模板引用。
             .filter(|name| !name.is_empty())
             .collect();
+        let includes = template
+            .globals
+            .includes
+            .iter()
+            .map(|element| {
+                (
+                    element.src.name.to_string(),
+                    element.tag_location.start.0.start,
+                )
+            })
+            .filter(|(name, _)| !name.is_empty())
+            .collect();
+        let imports = template
+            .globals
+            .imports
+            .iter()
+            .map(|element| element.src.name.to_string())
+            .filter(|name| !name.is_empty())
+            .collect();
         let wxs_refs = template
             .globals
             .scripts
@@ -309,6 +332,8 @@ impl WxmlDoc {
             source: source.to_string(),
             nodes,
             template_refs,
+            includes,
+            imports,
             wxs_refs,
             template_calls,
             // 由调用方（`load_doc`）按工程视图补上。
@@ -331,6 +356,16 @@ impl WxmlDoc {
     /// 编译器在解析时已剥掉 `.wxml` 后缀，所以这里拿到的通常是不带后缀的路径。
     pub fn template_refs(&self) -> &[String] {
         &self.template_refs
+    }
+
+    /// `<include src="…">` 及其标签起点（编译器已剥掉 `.wxml` 后缀）。
+    pub fn includes(&self) -> &[(String, Position)] {
+        &self.includes
+    }
+
+    /// `<import src="…">` 的路径（编译器已剥掉 `.wxml` 后缀）。
+    pub fn imports(&self) -> &[String] {
+        &self.imports
     }
 
     /// 本文件通过 `<wxs src>` 引入的脚本路径（编译器已补 `.wxs` 后缀）。

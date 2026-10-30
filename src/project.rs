@@ -22,7 +22,7 @@ use crate::input::wxss::{self, ParseError, WxssDoc};
 use crate::{Diagnostic, Severity};
 
 mod fs;
-mod paths;
+pub(crate) mod paths;
 mod units;
 
 use self::fs::LocalFs;

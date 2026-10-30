@@ -22,11 +22,14 @@
 //!   宿主元素不存在（`component.ts` 不创建 backend element），模板顶层元素直接渲染在
 //!   使用位置的父节点里。
 //!
-//! ## 模板边界
+//! ## 模板与片段边界
 //!
-//! `<template name="x">` 的定义体不在原位置渲染，只渲染在每个 `<template is="x">` 处
-//! （`parse/tag.rs` 把定义体放在 `globals.sub_templates`，可见范围是本文件 + 被
-//! `<import>`/`<include>` 引入它的文件）。
+//! - `<template name="x">` 的定义体不在原位置渲染，只渲染在每个 `<template is="x">`
+//!   处（`parse/tag.rs` 把定义体放进 `globals.sub_templates`）。可见范围是本文件加上
+//!   **`<import>` 了它的文件**——`imports` 不通传递，`<include>` 也不带模板定义。
+//! - `<include src>` 是**整段内联**：`proc_gen/tag.rs:1293-1316` 在引入位置生成
+//!   `G[path]('')(R,C,D,U)` 并把结果 `J(child)` 挂到当前位置，所以片段文件的顶层
+//!   元素就渲染在 `<include>` 所在的位置（不是它的父级之外）。
 //!
 //! 祖先查询是对 DAG 的存在性遍历：`ancestors` 返回所有可能祖先，去重、限深；遇到静态
 //! 不可知的边（动态槽名、`dynamicSlots`、动态 `<template is>`、未渲染）就把 `open`
@@ -34,12 +37,17 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
+use crate::project::paths::{posix_dirname, posix_join};
+
 use crate::Project;
 use crate::input::wxml::{WxmlAttribute, WxmlDoc, WxmlElement, WxmlNode};
 use crate::project::Scope;
 
 /// `<template is>` 调用写在文档顶层：没有所在元素。
 const TOP: usize = usize::MAX;
+
+/// `<include>` 互相引用的最大展开深度，超过就按不可知处理（防环）。
+const MAX_INCLUDE_DEPTH: usize = 16;
 
 /// 遍历深度上限：项目里不该出现这么深的投影链，超了说明组件互相嵌套成环。
 const MAX_NODES: usize = 512;
@@ -110,6 +118,12 @@ struct DocTree {
     template_uses: HashMap<String, Vec<usize>>,
     /// 这份文档是一个页面（渲染树的根），而不是组件模板。
     is_page: bool,
+    /// 这份文档是被 `<include>` 引入的片段：它的顶层元素渲染在每个引入位置。
+    is_fragment: bool,
+    /// `<include src>`：原始路径与标签起点（编译器 0 基坐标）。
+    doc_includes: Vec<(String, (u32, u32))>,
+    /// `<import src>`：原始路径。
+    doc_imports: Vec<String>,
 }
 
 /// 一个节点的父边。
@@ -127,6 +141,10 @@ pub(crate) struct WxmlGraph {
     by_path: HashMap<String, usize>,
     /// 组件文档下标 → 用到它的位置。
     usages: HashMap<usize, Vec<NodeId>>,
+    /// 片段文档下标 → 每个 `<include>` 的引入位置（`None` = 文档顶层）。
+    includes: HashMap<usize, Vec<(usize, Option<usize>)>>,
+    /// 文档下标 → `<import>` 了它的文档。
+    importers: HashMap<usize, Vec<usize>>,
 }
 
 impl WxmlGraph {
@@ -161,6 +179,13 @@ impl WxmlGraph {
                 push(path);
             }
         }
+        // 被 `<import>` / `<include>` 引用的片段：它们也有元素，且 `<import>` 的模板
+        // 定义体可能被调用方使用，所以同样进图。
+        let fragment_paths: HashSet<&str> =
+            project.template_files.iter().map(String::as_str).collect();
+        for path in &project.template_files {
+            push(path);
+        }
 
         // 组件路径（根相对、无扩展名）→ 组件 WXML 路径。
         let component_wxml: HashMap<&str, &str> = project
@@ -172,7 +197,8 @@ impl WxmlGraph {
         for doc in sources {
             let path = doc.path().to_string();
             let is_page = page_paths.contains(path.as_str());
-            docs.push(DocTree::build(doc, is_page));
+            let is_fragment = fragment_paths.contains(path.as_str());
+            docs.push(DocTree::build(doc, is_page, is_fragment));
         }
         // 组件标签与模板引用解析在文档建好之后：需要先知道每个文档的下标。
         for tree in &mut docs {
@@ -208,10 +234,38 @@ impl WxmlGraph {
             }
         }
 
+        // 片段的引入位置：`<include>` 元素本身不产生元素节点，用「它所在的元素」表示，
+        // 写在文档顶层时记 `None`（等价于该文档顶层）。
+        let mut includes: HashMap<usize, Vec<(usize, Option<usize>)>> = HashMap::new();
+        let mut importers: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (doc, tree) in docs.iter().enumerate() {
+            let dir = posix_dirname(&tree.path);
+            for (src, pos) in &tree.doc_includes {
+                let Some(&target) = by_path.get(&resolve_ref(&dir, src)) else {
+                    continue;
+                };
+                let enclosing = tree
+                    .elements
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, element)| element.span.0 <= *pos && *pos <= element.span.1)
+                    .max_by_key(|(_, element)| element.span.0)
+                    .map(|(idx, _)| idx);
+                includes.entry(target).or_default().push((doc, enclosing));
+            }
+            for src in &tree.doc_imports {
+                if let Some(&target) = by_path.get(&resolve_ref(&dir, src)) {
+                    importers.entry(target).or_default().push(doc);
+                }
+            }
+        }
+
         Self {
             docs,
             by_path,
             usages,
+            includes,
+            importers,
         }
     }
 
@@ -289,6 +343,12 @@ impl WxmlGraph {
             for &component in self.docs[doc].components.values() {
                 queue.push_back(component);
             }
+            // `<include>` 的内容是页面的一部分；`<import>` 只带模板定义，不进这个视图。
+            for (fragment, sites) in &self.includes {
+                if sites.iter().any(|(includer, _)| *includer == doc) {
+                    queue.push_back(*fragment);
+                }
+            }
         }
         out
     }
@@ -318,21 +378,30 @@ impl WxmlGraph {
         let element = &tree.elements[node.idx];
 
         if let Some(name) = &element.template {
-            // 内联模板的定义体只在本文件可见；`<import>` 进来的模板定义在片段文件里，
-            // 那些文件不进图（片段元素的祖先本来就不解析），这里按不可知处理。
-            let Some(uses) = tree.template_uses.get(name) else {
-                return Parents::Unknown;
-            };
+            // 定义体渲染在每个 `<template is="name">` 处；可见范围是本文件加上
+            // `<import>` 了它的文件（`import` 不传递，`<include>` 不带定义）。
+            let mut candidates = vec![node.doc];
+            if let Some(importers) = self.importers.get(&node.doc) {
+                candidates.extend(importers.iter().copied());
+            }
             let mut out = Vec::new();
-            for &idx in uses {
-                if idx == TOP {
-                    match self.doc_top_parents(node.doc) {
-                        Parents::Nodes(nodes) => out.extend(nodes),
-                        Parents::Top => {}
-                        Parents::Unknown => return Parents::Unknown,
+            for candidate in candidates {
+                let Some(uses) = self.docs[candidate].template_uses.get(name) else {
+                    continue;
+                };
+                for &idx in uses {
+                    if idx == TOP {
+                        match self.doc_top_parents(candidate) {
+                            Parents::Nodes(nodes) => out.extend(nodes),
+                            Parents::Top => {}
+                            Parents::Unknown => return Parents::Unknown,
+                        }
+                    } else {
+                        out.push(NodeId {
+                            doc: candidate,
+                            idx,
+                        });
                     }
-                } else {
-                    out.push(NodeId { doc: node.doc, idx });
                 }
             }
             return if out.is_empty() {
@@ -345,11 +414,34 @@ impl WxmlGraph {
         self.doc_top_parents(node.doc)
     }
 
-    /// 文档顶层元素渲染在哪：页面是根，组件模板渲染在使用处。
+    /// 文档顶层元素渲染在哪：页面是根，组件模板渲染在使用处，片段渲染在每个引入位置。
     fn doc_top_parents(&self, doc: usize) -> Parents {
+        self.doc_top_parents_at(doc, 0)
+    }
+
+    fn doc_top_parents_at(&self, doc: usize, depth: usize) -> Parents {
         let tree = &self.docs[doc];
         if tree.is_page {
             return Parents::Top;
+        }
+        // 片段被 `<include>` 整段内联：顶层元素落在每个 `<include>` 所在的位置。
+        if tree.is_fragment {
+            if depth > MAX_INCLUDE_DEPTH {
+                return Parents::Unknown;
+            }
+            let Some(sites) = self.includes.get(&doc) else {
+                // 没人引入：永远不渲染。
+                return Parents::Unknown;
+            };
+            let mut placed = Vec::new();
+            for &(includer, enclosing) in sites {
+                placed.push(match enclosing {
+                    // 内容是内联在 `<include>` 所在的位置，也就是这个元素的子级。
+                    Some(idx) => Parents::Nodes(vec![NodeId { doc: includer, idx }]),
+                    None => self.doc_top_parents_at(includer, depth + 1),
+                });
+            }
+            return merge(placed);
         }
         let Some(usages) = self.usages.get(&doc) else {
             // 组件模板没有任何使用处：它永远不渲染。
@@ -360,15 +452,11 @@ impl WxmlGraph {
         }
         // `virtualHost`：宿主元素不存在，模板顶层渲染在「宿主所在的位置」——也就是
         // 宿主元素的父级；如果那个父级是组件，仍然要经它的 `<slot>` 投影。
-        let mut out = Vec::new();
-        for &usage in usages {
-            match self.place_usage(usage) {
-                Parents::Nodes(nodes) => out.extend(nodes),
-                Parents::Top => {}
-                Parents::Unknown => return Parents::Unknown,
-            }
-        }
-        Parents::Nodes(out)
+        let placed = usages
+            .iter()
+            .map(|&usage| self.place_usage(usage))
+            .collect();
+        merge(placed)
     }
 
     /// 一个使用位置被 `virtualHost` 抹掉后，它的父级是什么。
@@ -447,7 +535,7 @@ impl WxmlGraph {
 }
 
 impl DocTree {
-    fn build(doc: WxmlDoc, is_page: bool) -> Self {
+    fn build(doc: WxmlDoc, is_page: bool, doc_is_fragment: bool) -> Self {
         let path = doc.path().to_string();
         let mut elements = Vec::new();
         let mut by_start = HashMap::new();
@@ -479,6 +567,12 @@ impl DocTree {
         }
 
         Self {
+            doc_includes: doc
+                .includes()
+                .iter()
+                .map(|(src, pos)| (src.clone(), (pos.line, pos.utf16_col)))
+                .collect(),
+            doc_imports: doc.imports().to_vec(),
             path,
             elements,
             by_start,
@@ -487,6 +581,7 @@ impl DocTree {
             options: ComponentOptions::default(),
             template_uses,
             is_page,
+            is_fragment: doc_is_fragment,
         }
     }
 }
@@ -567,6 +662,44 @@ fn flag(source: &str, name: &str) -> bool {
         rest = after;
     }
     false
+}
+
+/// 合并多个「可能位置」：任一处不可知 → 不可知；任一处落在文档顶层 → 顶层；
+/// 否则是所有父节点的并集。
+fn merge(placed: Vec<Parents>) -> Parents {
+    let mut out = Vec::new();
+    let mut top = false;
+    for placed in placed {
+        match placed {
+            Parents::Nodes(nodes) => out.extend(nodes),
+            Parents::Top => top = true,
+            Parents::Unknown => return Parents::Unknown,
+        }
+    }
+    if out.is_empty() && !top {
+        return Parents::Unknown;
+    }
+    if top {
+        Parents::Top
+    } else {
+        Parents::Nodes(out)
+    }
+}
+
+/// `<import src>` / `<include src>` 的路径解析：相对当前文件所在目录，`/` 开头相对根。
+///
+/// 编译器已剥掉 `.wxml` 后缀，所以这里补回来再查表。
+fn resolve_ref(dir: &str, src: &str) -> String {
+    let base = if let Some(absolute) = src.strip_prefix('/') {
+        absolute.to_string()
+    } else {
+        posix_join(dir, src)
+    };
+    if base.ends_with(".wxml") {
+        base
+    } else {
+        format!("{base}.wxml")
+    }
 }
 
 #[cfg(test)]
@@ -726,6 +859,53 @@ mod tests {
         );
         let (tags, open) = chain(&fixture, "pages/index/index.wxml", "target");
         // `<template is>` 不产生元素节点，链上直接是它所在的元素。
+        assert_eq!(tags, vec!["view".to_string()]);
+        assert!(!open);
+    }
+
+    /// 被 `<include>` 引入的片段：顶层元素渲染在 `<include>` 所在的位置。
+    #[test]
+    fn include_places_fragment_roots_at_the_include_site() {
+        let fixture = Fixture::new("graph-include");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<view class="wrap"><include src="./part"/></view>"#,
+            )
+            .write("pages/index/index.js", "Page({});")
+            .write("pages/index/part.wxml", r#"<view class="target"/>"#);
+        let (tags, open) = chain(&fixture, "pages/index/part.wxml", "target");
+        assert_eq!(tags, vec!["view".to_string()]);
+        assert!(!open);
+    }
+
+    /// `<import>` 只带模板定义，定义体渲染在引入方的 `<template is>` 处。
+    #[test]
+    fn import_makes_template_definitions_visible_to_the_importer() {
+        let fixture = Fixture::new("graph-import");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<import src="./tpl"/><view class="outer"><template is="row"/></view>"#,
+            )
+            .write("pages/index/index.js", "Page({});")
+            .write(
+                "pages/index/tpl.wxml",
+                r#"<template name="row"><view class="target"/></template>"#,
+            );
+        let (tags, open) = chain(&fixture, "pages/index/tpl.wxml", "target");
         assert_eq!(tags, vec!["view".to_string()]);
         assert!(!open);
     }
