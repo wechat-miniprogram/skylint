@@ -44,7 +44,7 @@ pub use webview_text_children::TextChildren;
 pub use webview_text_truncation::TextTruncation;
 pub use webview_worklet_binding::WorkletBinding;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 
 use glass_easel_template_compiler::parse::Position;
@@ -53,6 +53,7 @@ use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{self, WxmlDoc, WxmlElement, WxmlNode};
 use crate::matcher::{Dialect, Tree, Tri};
 use crate::project::{Project, Scope, StyleSheet};
+use crate::wxml_graph::WxmlGraph;
 
 /// 页面与组件的 WXML + 被 import / include 的模板，按路径去重。
 ///
@@ -77,89 +78,15 @@ pub(crate) fn wxml_files(project: &Project) -> impl Iterator<Item = &str> {
         .filter(move |path| seen.insert(*path))
 }
 
-/// 每个（未 opt-out 的）页面的 WXML 路径集合：首项是该页面自己，其后是它可达组件的 WXML。
+/// 一份文档在 Skyline 下的可达性。
 ///
-/// 跨文件的元素级检查（fixed / scroll-view 高度 / 隐含颜色）都要这一份扇出；
-/// 解析结果由调用方按路径缓存，多个页面共用组件时只解析一次。
-pub(crate) fn page_wxml_groups(project: &Project) -> Vec<(&str, Vec<String>)> {
-    project
-        .pages
-        .iter()
-        .filter(|page| !page.opted_out)
-        .filter_map(|page| {
-            let page_wxml = page.files.wxml.as_deref()?;
-            let mut paths = vec![page_wxml.to_string()];
-            paths.extend(project.page_components(&page.route).into_iter().filter_map(
-                |component| {
-                    project
-                        .components
-                        .iter()
-                        .find(|unit| unit.path == component)
-                        .and_then(|unit| unit.files.wxml.clone())
-                },
-            ));
-            Some((page_wxml, paths))
-        })
-        .collect()
-}
-
-/// 一份 WXML 文档与它在 Skyline 下的可达性。
-pub(crate) struct ElementDoc {
-    pub doc: WxmlDoc,
-    pub reach: Reach,
-}
-
-/// 元素级规则能看到的文档：全部页面与组件的 WXML（不只非 opt-out 页面可达的那些）。
-///
-/// 元素级规则曾经只走 [`page_wxml_groups`]，于是只被 `renderer: "webview"` 页面引用的
-/// 组件永远进不了检查，而同一份文件的声明级规则照报——同一个组件一半报一半不报。
-/// 这里对所有文档求值，再用 [`Reach`] 把「WebView 専属」在 `help` 里说明。
-pub(crate) fn element_docs(project: &Project) -> Vec<ElementDoc> {
-    let skyline: HashSet<String> = page_wxml_groups(project)
-        .into_iter()
-        .flat_map(|(_, paths)| paths)
-        .collect();
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    for page in &project.pages {
-        let paths: Vec<String> = std::iter::once(page.files.wxml.iter().cloned())
-            .flatten()
-            .chain(
-                project
-                    .page_components(&page.route)
-                    .into_iter()
-                    .filter_map(|component| {
-                        project
-                            .components
-                            .iter()
-                            .find(|unit| unit.path == component)
-                            .and_then(|unit| unit.files.wxml.clone())
-                    }),
-            )
-            .collect();
-        for path in paths {
-            if !seen.insert(path.clone()) {
-                continue;
-            }
-            let Some(doc) = load_doc(project, &path) else {
-                continue;
-            };
-            let reach = if skyline.contains(&path) {
-                Reach::Skyline
-            } else {
-                Reach::WebviewOnly
-            };
-            out.push(ElementDoc { doc, reach });
-        }
-    }
-    out
-}
-
-/// 文档能否被按 Skyline 检查的页面渲染到。
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// 一个组件可能被 Skyline 页面和 `renderer: "webview"` 页面同时引用——只要有一处能
+/// 在 Skyline 下渲染到，它就按 [`Reach::Skyline`] 处理（诊断是全局的，不该因为
+/// 某个 WebView 页面也用了它而降级）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Reach {
     Skyline,
-    /// 只被 `renderer: "webview"` 的页面引用（或它自己就是这类页面）。
+    /// 只被 `renderer: "webview"` 的页面（传递）引用，或它自己就是这类页面的内容。
     WebviewOnly,
 }
 
@@ -173,6 +100,71 @@ impl Reach {
             ),
         }
     }
+}
+
+/// 一份 WXML 文档与它在 Skyline 下的可达性。
+pub(crate) struct ElementDoc {
+    pub doc: WxmlDoc,
+    pub reach: Reach,
+}
+
+/// 元素级规则能看到的文档：全部页面、组件与被引入的片段。
+///
+/// 元素级规则曾经只走「页面 + 直接引用的组件」，于是只被 `renderer: "webview"` 页面引用的
+/// 组件永远进不了检查，而同一份文件的声明级规则照报——同一个组件一半报一半不报。
+/// 这里对所有文档求值，再用 [`Reach`] 把「WebView 専属」在 `help` 里说明。
+///
+/// 可达性按**渲染树**算（[`WxmlGraph::render_docs`] 沿真实标签用法展开），不是按
+/// `usingComponents` 声明算：声明了但没人用的组件不该被算成 Skyline 可达。同一份
+/// 组件被 Skyline 页面与 WebView 页面同时引用时按 Skyline 处理（只要有一处能渲染到）。
+pub(crate) fn element_docs(project: &Project) -> Vec<ElementDoc> {
+    let graph = WxmlGraph::new(project);
+
+    let mut reach: HashMap<&str, Reach> = HashMap::new();
+    for page in &project.pages {
+        let Some(page_wxml) = page.files.wxml.as_deref() else {
+            continue;
+        };
+        // opt-out 页面照样可能用到受检查的组件，只是标成「仅在 WebView 下渲染」。
+        let page_reach = if page.opted_out {
+            Reach::WebviewOnly
+        } else {
+            Reach::Skyline
+        };
+        for path in graph.render_docs(page_wxml) {
+            let entry = reach.entry(path).or_insert(page_reach);
+            if page_reach == Reach::Skyline {
+                *entry = Reach::Skyline;
+            }
+        }
+    }
+
+    // 顺序：页面自己的 WXML 按页面顺序在前，其余（组件、片段）按路径排序，保证输出稳定。
+    let mut ordered: Vec<&str> = Vec::new();
+    let mut seen = HashSet::new();
+    for page in &project.pages {
+        if let Some(path) = page.files.wxml.as_deref()
+            && seen.insert(path)
+        {
+            ordered.push(path);
+        }
+    }
+    let mut rest: Vec<&str> = reach
+        .keys()
+        .copied()
+        .filter(|path| !seen.contains(path))
+        .collect();
+    rest.sort_unstable();
+    ordered.extend(rest);
+
+    ordered
+        .into_iter()
+        .filter_map(|path| {
+            let doc = load_doc(project, path)?;
+            let reach = *reach.get(path).unwrap_or(&Reach::WebviewOnly);
+            Some(ElementDoc { doc, reach })
+        })
+        .collect()
 }
 
 pub(crate) fn load_doc(project: &Project, path: &str) -> Option<WxmlDoc> {
@@ -677,7 +669,67 @@ pub(crate) fn element_diagnostic(
 
 #[cfg(test)]
 mod tests {
-    use super::is_builtin;
+    use super::{Reach, element_docs, is_builtin};
+    use crate::rules::testutil::Fixture;
+
+    /// 三种引用形态：只被 Skyline 页面用、只被 WebView 页面用、两边都用。
+    #[test]
+    fn component_reach_follows_the_pages_that_render_it() {
+        let fixture = Fixture::new("reach-three-kinds");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/web/index","pages/sky/index"],"rendererOptions":{"skyline":{"defaultDisplayBlock":true}}}"#,
+            )
+            // Skyline 页（未表态 = 默认迁移目标）与显式 WebView 页。
+            .write("pages/sky/index.json", "{}")
+            .write(
+                "pages/sky/index.wxml",
+                r#"<sky-only/><both/><outer/>"#,
+            )
+            .write("pages/sky/index.js", "Page({});")
+            .write("pages/web/index.json", r#"{"renderer":"webview"}"#)
+            .write("pages/web/index.wxml", r#"<web-only/><both/>"#)
+            .write("pages/web/index.js", "Page({});")
+            .write(
+                "pages/sky/index.json",
+                r#"{"usingComponents":{"sky-only":"/components/sky-only/sky-only","both":"/components/both/both","outer":"/components/outer/outer"}}"#,
+            )
+            .write(
+                "pages/web/index.json",
+                r#"{"renderer":"webview","usingComponents":{"web-only":"/components/web-only/web-only","both":"/components/both/both"}}"#,
+            );
+        for name in ["sky-only", "both", "web-only", "outer", "inner"] {
+            let json = if name == "outer" {
+                r#"{"component":true,"usingComponents":{"inner":"/components/inner/inner"}}"#
+            } else {
+                r#"{"component":true}"#
+            };
+            fixture
+                .write(&format!("components/{name}/{name}.json"), json)
+                .write(&format!("components/{name}/{name}.wxml"), "<view/>")
+                .write(&format!("components/{name}/{name}.js"), "Component({})");
+        }
+
+        let project = fixture.project();
+        let reach: std::collections::HashMap<String, Reach> = element_docs(&project)
+            .into_iter()
+            .map(|doc| (doc.doc.path().to_string(), doc.reach))
+            .collect();
+
+        assert_eq!(reach["components/sky-only/sky-only.wxml"], Reach::Skyline);
+        // 两边都被引用：只要有一处能在 Skyline 下渲染就算 Skyline。
+        assert_eq!(reach["components/both/both.wxml"], Reach::Skyline);
+        assert_eq!(
+            reach["components/web-only/web-only.wxml"],
+            Reach::WebviewOnly
+        );
+        // 传递引用：页面 → outer → inner。
+        assert_eq!(reach["components/outer/outer.wxml"], Reach::Skyline);
+        assert_eq!(reach["components/inner/inner.wxml"], Reach::Skyline);
+        assert_eq!(reach["pages/web/index.wxml"], Reach::WebviewOnly);
+    }
 
     /// 引擎节点工厂注册的内置组件（shadow/node_factory.cc:329,331,342-343）
     /// 必须在白名单里，否则结构规则会把它们当成自定义组件边界而跳过内部约束。
