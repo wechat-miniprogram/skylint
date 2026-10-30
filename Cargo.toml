@@ -1,0 +1,40 @@
+[package]
+name = "skylint"
+version = "0.1.0"
+edition = "2024"
+# oxc 0.155 的 oxc_parser / oxc_ast / oxc_allocator 声明 rust-version = 1.97。
+rust-version = "1.97"
+license = "MIT"
+repository = "https://github.com/wechat-miniprogram/skylint"
+description = "Skyline 小程序迁移检查工具"
+readme = "README.md"
+keywords = ["miniprogram", "wechat", "skyline", "lint"]
+categories = ["development-tools"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "wrap_help"] }
+# 终端渲染：源码片段 + caret。fancy-no-backtrace 不带 backtrace，够用。
+miette = { version = "7.6", default-features = false, features = ["fancy-no-backtrace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 模板 / 样式 / 脚本前端。
+glass-easel-template-compiler = "1.2.0"
+# 选择器匹配（servo/stylo 抽出）。只用于「选择器命中哪些元素」，
+# CSS 文法（an+b、:not 复合参数、属性运算符）交给它，方言差异在 Element 回调里。
+selectors = "0.41"
+# selectors 的 trait 要用到这两个 crate 的类型（ToCss / PrecomputedHash），
+# 版本与 selectors 0.41 的依赖保持一致。
+cssparser = "0.38"
+precomputed-hash = "0.1"
+# 0.0.x 会有破坏性变更，必须精确锁版本。
+oxc-css-parser = "=0.0.17"
+# JS / TS 前端。与 oxc-css-parser 复用同一条 0.155 版本线（同一套 Allocator），
+# 同样是 0.x，全部精确锁版本，避免 allocator 跨版本混用。
+oxc_parser = "=0.155.0"
+oxc_ast = "=0.155.0"
+oxc_ast_visit = "=0.155.0"
+oxc_allocator = "=0.155.0"
+oxc_span = "=0.155.0"
+oxc_syntax = "=0.155.0"
