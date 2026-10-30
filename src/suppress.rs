@@ -18,6 +18,11 @@ use crate::project::Project;
 
 const DIRECTIVE: &str = "skylint-disable-next-line";
 
+/// 规则 id 形如 `skyline/<name>`；只认这个前缀，避免把注释里的普通单词当成规则。
+fn is_rule_id(token: &str) -> bool {
+    token.starts_with("skyline/") && token.len() > "skyline/".len()
+}
+
 /// 丢弃被抑制的诊断。读取失败的文件原样保留，宁可多报也不静默丢。
 pub fn apply(project: &Project, diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
     let mut cache: HashMap<String, Vec<Disable>> = HashMap::new();
@@ -53,13 +58,26 @@ fn read_disables(project: &Project, path: &str) -> Vec<Disable> {
         .lines()
         .enumerate()
         .filter_map(|(idx, text)| {
-            let rest = text.split_once(DIRECTIVE)?.1;
-            // 注释在指令之后的部分才是规则列表；外壳与正文可能粘连，按空白/逗号切。
-            let rules = rest
+            let (before, rest) = text.split_once(DIRECTIVE)?;
+            // 必须出现在注释里，否则 JS 字符串里出现这串字就会误抑制。
+            if !before.contains("<!--") && !before.contains("/*") && !before.contains("//") {
+                return None;
+            }
+            // 指令之后是规则列表；外壳与正文可能粘连，按空白/逗号切。
+            let tokens: Vec<&str> = rest
                 .split(|c: char| c.is_whitespace() || c == ',' || c == ';')
                 .map(|token| token.trim_end_matches(['-', '>', '*', '/']))
-                .filter(|token| token.starts_with("skyline/"))
-                .map(String::from)
+                .filter(|token| !token.is_empty())
+                .collect();
+            // 写了规则名但一个都认不出来（例如漏了 `skyline/` 前缀）：不抑制任何规则。
+            // 否则空列表会被当成「抑制全部」，反而变成误报的橡皮擦。
+            if !tokens.is_empty() && !tokens.iter().any(|token| is_rule_id(token)) {
+                return None;
+            }
+            let rules = tokens
+                .iter()
+                .filter(|token| is_rule_id(token))
+                .map(|token| token.to_string())
                 .collect();
             Some(Disable {
                 line: idx as u32 + 1,
@@ -164,6 +182,40 @@ mod tests {
         let project = f.wxml("<!-- skylint-disable-next-line -->\n\n<view>a<image/></view>");
         let kept = apply(&project, vec![diag("skyline/no-inline-text", 3)]);
         assert_eq!(kept.len(), 1, "中间隔了空行就不该生效");
+    }
+
+    /// 漏写 `skyline/` 前缀的规则名不能被当成「抑制全部」。
+    #[test]
+    fn bare_rule_name_does_not_silence_everything() {
+        let f = Fixture::new("bare");
+        let project =
+            f.wxml("<!-- skylint-disable-next-line no-pseudo -->\n<view>a<image/></view>");
+        let kept = apply(&project, vec![diag("skyline/no-pseudo", 2)]);
+        assert_eq!(kept.len(), 1, "认不出的规则名应当不抑制任何规则");
+    }
+
+    /// 指令必须出现在注释里：字符串字面量里出现同样的文本不算。
+    #[test]
+    fn directive_inside_a_string_literal_is_ignored() {
+        let f = Fixture::new("literal");
+        let project = f.wxml("<!-- ok -->\n<view>a<image/></view>");
+        fs::write(
+            f.path().join("pages/a/a.js"),
+            "const s = 'skylint-disable-next-line'\nPage({})",
+        )
+        .unwrap();
+        let kept = apply(
+            &project,
+            vec![Diagnostic::new(
+                "skyline/no-pseudo",
+                Severity::Warning,
+                "x",
+                "pages/a/a.js",
+                1,
+                1,
+            )],
+        );
+        assert_eq!(kept.len(), 1);
     }
 
     #[test]
