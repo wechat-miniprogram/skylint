@@ -344,14 +344,16 @@ mod tests {
     }
 
     #[test]
-    fn missing_wxml_tag_is_still_reported() {
-        // `<navigator>` 是真实的小程序组件：`.agree` 下没有它，这条选择器确实永不命中。
+    fn pure_tag_subject_is_not_reported() {
+        // 主体是纯标签（祖先才有 class）：这类交给 `tag-selector-isolation`，
+        // 本规则只判「主体带 class」的写法——vendored weui 里 `.x a {}` 这类
+        // 主体是 HTML 标签的死规则极多，逐条报会把信号淹掉。
         let (_f, project) = page(
             "wxml-tag",
             r#"<view class="agree"><text>x</text></view>"#,
             ".agree navigator { color: red; }",
         );
-        assert_eq!(DeadSelector.check(&project).len(), 1);
+        assert!(DeadSelector.check(&project).is_empty());
     }
 
     #[test]

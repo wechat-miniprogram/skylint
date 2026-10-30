@@ -309,6 +309,40 @@ mod tests {
         assert_eq!(messages(&WorkletDirective, &project), Vec::<String>::new());
     }
 
+    /// 处理器用链式 API 的身份包装定义：`method(fn)` 原样返回入参，名字应能查到。
+    #[test]
+    fn method_wrapped_handler_without_worklet_is_reported() {
+        let (_f, project) = project(
+            "directive-method-wrap",
+            r#"<view><pan-gesture-handler worklet:ongesture="onPan"/></view>"#,
+            "const onPan = method((e) => { this.offset.value = e.absoluteX; });",
+        );
+        let diagnostics = WorkletDirective.check(&project);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("onPan"));
+    }
+
+    #[test]
+    fn method_wrapped_handler_with_worklet_is_accepted() {
+        let (_f, project) = project(
+            "directive-method-wrap-ok",
+            r#"<view><pan-gesture-handler worklet:ongesture="onPan"/></view>"#,
+            "const onPan = method((e) => { 'worklet'; this.offset.value = e.absoluteX; });",
+        );
+        assert_eq!(messages(&WorkletDirective, &project), Vec::<String>::new());
+    }
+
+    /// 非身份包装（`wrap(fn)`）不能当成同名函数，否则会把包装函数误判成处理器。
+    #[test]
+    fn unrelated_wrapper_is_not_treated_as_the_handler() {
+        let (_f, project) = project(
+            "directive-wrap",
+            r#"<view><pan-gesture-handler worklet:ongesture="onPan"/></view>"#,
+            "const onPan = debounce((e) => { this.offset.value = e.absoluteX; }, 100);",
+        );
+        assert_eq!(messages(&WorkletDirective, &project), Vec::<String>::new());
+    }
+
     #[test]
     fn gesture_binding_to_an_unknown_function_is_ignored() {
         // 函数可能在 mixin / 外部模块里，查不到就不判。

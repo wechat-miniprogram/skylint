@@ -104,8 +104,10 @@ const TIMING_KEYWORDS: [&str; 8] = [
 /// CSS Transitions Level 2 的行为关键字（`transition-behavior`），也不是属性名。
 const BEHAVIOR_KEYWORDS: [&str; 2] = ["allow-discrete", "normal"];
 
-/// 文档明确列出「不支持 transition/animation」的文本与字体相关属性。
-const TEXT_FONT: [&str; 9] = [
+/// 文本/字体相关、且**不在** float-pigment 的 `TransitionPropertyItem` 闭集里
+/// （`float-pigment-css/src/parser/property.rs:1028-1101`）的属性名。含它们的
+/// `transition` 值在解析层就失败，整条声明回滚。
+const TEXT_FONT_FATAL: [&str; 8] = [
     "text-align",
     "text-shadow",
     "direction",
@@ -114,10 +116,13 @@ const TEXT_FONT: [&str; 9] = [
     "font-style",
     "font-family",
     "font-feature-settings",
-    "line-height",
 ];
 
-const TEXT_FONT_TAIL: &str = "Skyline 下文本与字体相关属性不会产生过渡动画";
+/// 在闭集里、但引擎的 `transition_property.cc` 没有对应 case（走 `default:` 只丢这一项）
+/// 的属性名——同一行里其它属性照样过渡。
+const ITEM_ONLY: [&str; 1] = ["line-height"];
+
+const ITEM_ONLY_TAIL: &str = "该属性不会产生过渡动画，同一声明里的其它属性仍然生效";
 const OTHER_TAIL: &str = "该属性不在 Skyline 的可动画属性白名单内";
 
 /// `visibility` 比普通的不在白名单里更糟：float-pigment 的 `TransitionPropertyItem`
@@ -125,6 +130,19 @@ const OTHER_TAIL: &str = "该属性不在 Skyline 的可动画属性白名单内
 /// `transition`/`transition-property` 值整条解析失败，声明被丢弃——同一行里的
 /// `transform`/`opacity` 也一起没了。
 const DROPS_DECLARATION: &[&str] = &["visibility"];
+
+/// 解析层就失败的属性名：`visibility` 与上面那批文本/字体属性，外加所有厂商前缀名
+/// （fp 的属性名闭集里没有任何 `-webkit-*` 别名）。后果是**整条** `transition`
+/// 回滚——`transition: -webkit-transform .35s, transform .35s` 的后半段也会一起消失。
+fn is_parse_fatal(ident: &str) -> bool {
+    ident.starts_with('-')
+        || DROPS_DECLARATION
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(ident))
+        || TEXT_FONT_FATAL
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(ident))
+}
 
 pub struct TransitionProperty;
 
@@ -157,10 +175,6 @@ impl Rule for TransitionProperty {
                 let ValueToken::Ident(ident) = token else {
                     continue;
                 };
-                // 厂商前缀（-webkit-transform…）在 Skyline 下的处理没有证据，不报。
-                if ident.starts_with('-') {
-                    continue;
-                }
                 if ANIMATABLE_PROPERTIES.contains(&ident.to_ascii_lowercase().as_str()) {
                     continue;
                 }
@@ -193,20 +207,16 @@ impl Rule for TransitionProperty {
                 .map(|ident| format!("`{ident}`"))
                 .collect::<Vec<_>>()
                 .join("、");
-            let drops_whole = offenders.iter().any(|ident| {
-                DROPS_DECLARATION
-                    .iter()
-                    .any(|name| name.eq_ignore_ascii_case(ident))
-            });
+            let drops_whole = offenders.iter().any(|ident| is_parse_fatal(ident));
             let tail = if drops_whole {
                 // 值是整条解析失败的：连同一行里受支持的属性也不会过渡。
                 "解析器不认识这个属性名，整条声明会被丢弃，同一声明里的其它属性也不会产生过渡"
             } else if offenders.iter().any(|ident| {
-                TEXT_FONT
+                ITEM_ONLY
                     .iter()
                     .any(|name| name.eq_ignore_ascii_case(ident))
             }) {
-                TEXT_FONT_TAIL
+                ITEM_ONLY_TAIL
             } else {
                 OTHER_TAIL
             };
@@ -248,7 +258,12 @@ mod tests {
         assert_eq!(diags.len(), 4);
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
         assert!(diags[0].message.contains("`text-shadow`"));
-        assert!(diags[0].message.contains("文本与字体相关属性"));
+        // 整条回滚：不在 fp 的属性名闭集里。
+        assert!(
+            diags[0].message.contains("整条声明会被丢弃"),
+            "{}",
+            diags[0].message
+        );
         assert!(diags[1].message.contains("`text-shadow`"));
         assert!(!diags[1].message.contains("`color`"));
         assert!(diags[2].message.contains("`visibility`"));
@@ -268,13 +283,12 @@ mod tests {
     fn whitelisted_properties_and_timing_keywords_are_accepted() {
         let (_f, project) = page(
             "transition-negative",
-            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/><view class="i"/>"#,
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="f"/><view class="g"/><view class="h"/><view class="i"/>"#,
             r#"
             .a { transition: width .3s ease; }
             .b { transition: transform .2s ease-in-out; }
             .c { transition: opacity .2s cubic-bezier(.4, 0, .2, 1); }
             .d { transition-property: all, background-position-x, mask-position-y; }
-            .e { transition: -webkit-transform .2s; }
             .f { transition: color var(--d) ease; }
             .g { transition: border-top-width 1s; }
             .h { transition: color .2s; }
@@ -284,6 +298,42 @@ mod tests {
         assert_eq!(
             messages(&TransitionProperty, &project),
             Vec::<String>::new()
+        );
+    }
+
+    /// 厂商前缀名在 fp 的属性名闭集里不存在：整条 `transition` 回滚，同行的标准属性也一起失效。
+    #[test]
+    fn vendor_prefixed_property_drops_the_whole_declaration() {
+        let (_f, project) = page(
+            "transition-vendor",
+            r#"<view class="a"/>"#,
+            r#".a { transition: -webkit-transform .35s ease, transform .35s ease; }"#,
+        );
+        let diags = TransitionProperty.check(&project);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("`-webkit-transform`"));
+        assert!(
+            diags[0].message.contains("整条声明会被丢弃"),
+            "{}",
+            diags[0].message
+        );
+    }
+
+    /// `line-height` 在闭集里、只是没有 Apply case：只丢这一项，其余属性照常过渡。
+    #[test]
+    fn line_height_only_drops_its_own_item() {
+        let (_f, project) = page(
+            "transition-line-height",
+            r#"<view class="a"/>"#,
+            r#".a { transition: line-height .2s, color .2s; }"#,
+        );
+        let diags = TransitionProperty.check(&project);
+        assert_eq!(diags.len(), 1);
+        assert!(
+            diags[0].message.contains("其他属性仍然生效")
+                || diags[0].message.contains("其它属性仍然生效"),
+            "{}",
+            diags[0].message
         );
     }
 

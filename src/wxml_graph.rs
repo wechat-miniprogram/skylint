@@ -126,6 +126,16 @@ struct DocTree {
     doc_imports: Vec<String>,
 }
 
+/// 投影后的容器。
+pub enum SlotHost<'a> {
+    /// 落在该标签的元素里（`<text>` 之类）。
+    Element(&'a str),
+    /// 没有匹配的槽位，子节点不渲染。
+    NotRendered,
+    /// 动态槽名 / `dynamicSlots` / 槽在模板顶层：静态不可知。
+    Unknown,
+}
+
 /// 一个节点的父边。
 enum Parents {
     Nodes(Vec<NodeId>),
@@ -524,6 +534,46 @@ impl WxmlGraph {
             }]),
             None => Parents::Unknown,
         }
+    }
+
+    /// 使用方传进组件的子节点最终落在哪个元素下面（只看该元素的标签）。
+    ///
+    /// 用于「文本落在 `<text>` 里还是块容器里」这类需要看投影后容器的判定。
+    /// 只处理 `tag` 确实是本文件里注册的组件的情况；其余返回 `None`，调用方按原样处理。
+    pub fn projected_parent_tag<'a>(
+        &'a self,
+        host_doc: &str,
+        tag: &str,
+        slot: Option<Option<&str>>,
+    ) -> Option<SlotHost<'a>> {
+        let host = *self.by_path.get(host_doc)?;
+        let component = *self.docs[host].components.get(&tag.to_ascii_lowercase())?;
+        let tree = &self.docs[component];
+        if tree.options.dynamic_slots {
+            return Some(SlotHost::Unknown);
+        }
+        let slot_idx = if tree.options.multiple_slots {
+            let name = match slot {
+                Some(Some(name)) => name,
+                Some(None) => "",
+                None => return Some(SlotHost::Unknown),
+            };
+            tree.slots
+                .iter()
+                .find(|(slot, _)| slot.as_deref().unwrap_or("") == name)
+                .map(|&(_, idx)| idx)
+        } else {
+            tree.slots.first().map(|&(_, idx)| idx)
+        };
+        let Some(idx) = slot_idx else {
+            // 没有对应槽位：子节点不参与合成，即不渲染。
+            return Some(SlotHost::NotRendered);
+        };
+        Some(match tree.elements[idx].parent {
+            Some(parent) => SlotHost::Element(&tree.elements[parent].tag),
+            // 槽在模板顶层：内容渲染在宿主位置，容器由使用方的父级决定。
+            None => SlotHost::Unknown,
+        })
     }
 
     /// 标签既不是内置组件、也没解析到组件实现。

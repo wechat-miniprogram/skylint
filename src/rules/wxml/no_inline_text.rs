@@ -11,9 +11,10 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
 use crate::matcher::Tree;
+use crate::wxml_graph::{SlotHost, WxmlGraph};
 
 use super::branch::exclusive_branches;
-use super::{flex_container, span_diagnostic, visit, walk_skyline};
+use super::{flex_container, is_out_of_flow, span_diagnostic, visit, walk_skyline};
 
 pub const ID: &str = "skyline/no-inline-text";
 
@@ -35,10 +36,11 @@ impl Rule for NoInlineText {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
+        let graph = WxmlGraph::new(project);
         visit(project, |doc, out| {
             let tree = Tree::new(doc);
             walk_skyline(doc, |element, _ancestors| {
-                check_element(project, doc, &tree, element, out);
+                check_element(project, &graph, doc, &tree, element, out);
             });
         })
     }
@@ -48,6 +50,7 @@ impl Rule for NoInlineText {
 /// 文本根组件内部允许文本与子节点混排，整棵子树豁免。
 fn check_element(
     project: &Project,
+    graph: &WxmlGraph,
     doc: &WxmlDoc,
     tree: &Tree<'_>,
     element: &WxmlElement,
@@ -56,10 +59,29 @@ fn check_element(
     if TEXT_TAGS.contains(&element.tag.as_str()) {
         return;
     }
+    // 子节点被投影进组件的 `<text>`（或根本没有匹配的槽位、不渲染）时，这些文本
+    // 运行时不在本元素的盒子里，按本元素判定会误报。
+    // 没写 `slot` = 默认槽；写了动态值 = 槽名不可知。
+    let slot = match element
+        .attributes
+        .iter()
+        .find(|attr| attr.name.eq_ignore_ascii_case("slot"))
+    {
+        None => Some(None),
+        Some(attr) if attr.is_static => Some(Some(attr.value.as_deref().unwrap_or(""))),
+        Some(_) => None,
+    };
+    match graph.projected_parent_tag(doc.path(), &element.tag, slot) {
+        Some(SlotHost::NotRendered) => return,
+        Some(SlotHost::Element(tag)) if TEXT_TAGS.contains(&tag) => return,
+        _ => {}
+    }
     // flex 容器里文本与元素在两种渲染器下都是 flex item，不存在错位。
     if flex_container(project, tree, element) {
         return;
     }
+    // 脱离文档流的兄弟不参与行内流：`<view>文字<view style="position:absolute"/></view>`
+    // 里文本仍是唯一的在流内容，两端一致。
     let elements: Vec<&WxmlElement> = element
         .children
         .iter()
@@ -67,6 +89,7 @@ fn check_element(
             WxmlNode::Element(element) => Some(element),
             _ => None,
         })
+        .filter(|child| !is_out_of_flow(project, tree, child))
         .collect();
     if elements.is_empty() {
         return;
@@ -107,6 +130,82 @@ mod tests {
 
     fn check(fixture: &Fixture) -> Vec<crate::Diagnostic> {
         check_rule(fixture, &NoInlineText)
+    }
+
+    /// 片段被投影进组件的 `<text>`：运行时文本落在 TextShadowNode 里，两端都不换行。
+    #[test]
+    fn text_projected_into_text_slot_is_exempt() {
+        let fixture = Fixture::new("slot-text");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"pill":"/components/pill/pill"}}"#,
+            )
+            .write(
+                "pages/index/index.wxml",
+                r#"<pill>共 {{n}} 条<image src="x"/></pill>"#,
+            )
+            .write("pages/index/index.js", "Page({});")
+            .write("components/pill/pill.json", r#"{"component":true}"#)
+            .write("components/pill/pill.wxml", "<text><slot/></text>")
+            .write("components/pill/pill.js", "Component({});");
+        assert!(check(&fixture).is_empty());
+    }
+
+    /// 组件只有具名槽，使用方传了没有 `slot` 属性的文本：这段内容不参与合成。
+    #[test]
+    fn children_without_matching_slot_are_not_rendered() {
+        let fixture = Fixture::new("slot-missing");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"sheet":"/components/sheet/sheet"}}"#,
+            )
+            .write(
+                "pages/index/index.wxml",
+                r#"<sheet>文本<image src="x"/></sheet>"#,
+            )
+            .write("pages/index/index.js", "Page({});")
+            .write("components/sheet/sheet.json", r#"{"component":true}"#)
+            .write(
+                "components/sheet/sheet.wxml",
+                r#"<view><slot name="title"/></view>"#,
+            )
+            .write(
+                "components/sheet/sheet.js",
+                "Component({ options: { multipleSlots: true } });",
+            );
+        assert!(check(&fixture).is_empty());
+    }
+
+    /// 脱离文档流的兄弟不参与行内流，文本仍是唯一在流内容。
+    #[test]
+    fn out_of_flow_siblings_do_not_count_as_mixed() {
+        let fixture = Fixture::new("absolute-sibling");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<view class="a">{{n}}<view class="b"/></view>"#,
+            )
+            .write("pages/index/index.wxss", ".b { position: absolute; }")
+            .write("pages/index/index.js", "Page({});");
+        assert!(check(&fixture).is_empty());
     }
 
     // ---- positive ----

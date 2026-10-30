@@ -81,7 +81,9 @@ const NESTED_HEADER: Target = Target {
 const CONSTRAINTS: &[Constraint] = &[
     Constraint {
         tag: "sticky-section",
-        relation: Relation::Ancestor(&[CUSTOM_SCROLL, NESTED_HEADER]),
+        // 引擎只认直接子节点：`skyline_scroll_view.dart` 的 sliver 组装与
+        // `sticky.dart` 的 `MultiSliver` 都是按 `widget.children` 取的。
+        relation: Relation::Direct(&[CUSTOM_SCROLL, NESTED_HEADER]),
         severity: Severity::Error,
         help: "把 `<sticky-section>` 放进 `<scroll-view type=\"custom\">` 或 `<nested-scroll-header>`，type 不能是 list/nested",
     },
@@ -99,13 +101,15 @@ const CONSTRAINTS: &[Constraint] = &[
     },
     Constraint {
         tag: "nested-scroll-header",
-        relation: Relation::Ancestor(&[NESTED_SCROLL]),
+        // `widget.children.whereType<NestedScrollHeader>()`：夹一层 `<view>` 就不在 children 里。
+        relation: Relation::Direct(&[NESTED_SCROLL]),
         severity: Severity::Error,
         help: "把 `<nested-scroll-header>` 放在外层 `<scroll-view type=\"nested\">` 内",
     },
     Constraint {
         tag: "nested-scroll-body",
-        relation: Relation::Ancestor(&[NESTED_SCROLL]),
+        // `children.firstWhere((c) => c is NestedScrollBody)` 没有 orElse：缺直接子节点会抛 StateError。
+        relation: Relation::Direct(&[NESTED_SCROLL]),
         severity: Severity::Error,
         help: "把 `<nested-scroll-body>` 放在外层 `<scroll-view type=\"nested\">` 内",
     },
@@ -135,6 +139,12 @@ const CONSTRAINTS: &[Constraint] = &[
         },
         severity: Severity::Error,
         help: "在 `<scroll-view type=\"nested\">` 内加一个 `<nested-scroll-body>`",
+    },
+    Constraint {
+        tag: "sticky-header",
+        relation: Relation::RendersFirst,
+        severity: Severity::Warning,
+        help: "把内容收进一个直接子节点（`sticky_header.cc` 只把 `GetChildHandle()` 交给 Dart）",
     },
     Constraint {
         tag: "nested-scroll-header",
@@ -349,7 +359,11 @@ mod tests {
             "<view><sticky-section/></view>",
         ));
         assert_eq!(diagnostics.len(), 1);
-        assert!(diagnostics[0].message.contains("不在该容器中"));
+        assert!(
+            diagnostics[0].message.contains("必须直接放在"),
+            "{}",
+            diagnostics[0].message
+        );
     }
 
     #[test]
@@ -462,8 +476,13 @@ mod tests {
             "nested-header-body",
             r#"<scroll-view type="nested"><nested-scroll-body><nested-scroll-header/></nested-scroll-body></scroll-view>"#,
         ));
-        assert_eq!(diagnostics.len(), 1);
-        assert!(diagnostics[0].message.contains("nested-scroll-body"));
+        // 不是直接子节点（Direct）+ 挂在了 body 里（Within）。
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.message.contains("nested-scroll-header"))
+        );
     }
 
     #[test]
@@ -472,7 +491,8 @@ mod tests {
             "nested-header-body-deep",
             r#"<scroll-view type="nested"><nested-scroll-body><view><nested-scroll-header/></view></nested-scroll-body></scroll-view>"#,
         ));
-        assert_eq!(diagnostics.len(), 1);
+        // 不再直接挂在 nested scroll 下（Direct）+ 挂在了 body 里（Within）。
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
     }
 
     // ---- draggable-sheet ----
@@ -940,8 +960,13 @@ mod tests {
             "nested-body-indirect",
             r#"<scroll-view type="nested"><view><nested-scroll-body/></view></scroll-view>"#,
         ));
-        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-        assert!(diagnostics[0].message.contains("nested-scroll-body"));
+        // 两条独立事实：外层缺少「直接子节点」（RequiresChildTag），以及 body 的位置错了（Direct）。
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.message.contains("nested-scroll-body"))
+        );
     }
 
     // ---- 只渲染第一个直接子节点 ----

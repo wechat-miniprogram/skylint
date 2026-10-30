@@ -6,7 +6,6 @@
 //! # 关系语义
 //!
 //! - `Direct`：直接父节点必须是目标之一（渲染树，block/wx:if/wx:for 已摊平）
-//! - `Ancestor`：最近的同名祖先必须是目标，并满足目标上的属性要求
 //! - `FirstChild`：父节点是目标容器时，子标签必须是它的第一个元素子节点
 //! - `Unique`：最近的目标容器内，子标签最多出现一次（多余的不会生效）
 //! - `RendersFirst`：子标签只渲染第一个直接子元素，多写的会被静默丢弃
@@ -62,7 +61,6 @@ pub(crate) enum Relation {
     /// 直接父节点必须是目标之一。
     Direct(&'static [Target]),
     /// 最近的同名祖先必须是目标，并满足目标上的属性要求。
-    Ancestor(&'static [Target]),
     /// 父节点是目标容器时，子节点必须是它的第一个元素子节点。
     FirstChild(&'static [Target]),
     /// 最近的目标容器内，子节点最多出现一次。
@@ -345,48 +343,6 @@ fn direct_violation(
     }
 }
 
-fn ancestor_violation(
-    element: &WxmlElement,
-    ancestors: &[Ancestor<'_>],
-    from_graph: bool,
-    open: bool,
-    targets: &[Target],
-) -> Option<String> {
-    let expected = render_targets(targets);
-    for (idx, ancestor) in ancestors.iter().enumerate() {
-        if stops_here(ancestors, idx, from_graph, open) {
-            return None;
-        }
-        if ancestor.tag == "slot" || !is_builtin(ancestor.tag) {
-            continue;
-        }
-        let Some(target) = targets.iter().find(|target| target.tag == ancestor.tag) else {
-            continue;
-        };
-        return match target.attr {
-            None => None,
-            Some((name, value)) => match check_attributes(ancestor.attributes, name, value) {
-                AttrCheck::Violation => Some(format!(
-                    "`<{}>` 必须放在 {} 内，最近的 `<{}>` 是 {}",
-                    element.tag,
-                    expected,
-                    ancestor.tag,
-                    describe_ancestor(ancestor, name)
-                )),
-                _ => None,
-            },
-        };
-    }
-    // 模板定义体可能被放在目标容器里，静态看不到实例化处。
-    if element.in_template() {
-        return None;
-    }
-    Some(format!(
-        "`<{}>` 必须放在 {} 内，当前不在该容器中",
-        element.tag, expected
-    ))
-}
-
 fn first_child_violation(
     element: &WxmlElement,
     ancestors: &[&WxmlElement],
@@ -588,7 +544,10 @@ fn children_violations(
         Relation::ChildrenOnly(allowed) => element_children(element)
             // 文本子节点不是元素，天然不在候选集里：`text` 只表示它们合法。
             .filter(|child| {
-                !allowed.contains(&child.tag.as_str())
+                // `<slot>` 只是投影位置的占位，不渲染成盒子：那里有什么子节点由使用方决定，
+                // 静态不可知，按不可判定放过。
+                !child.is_slot
+                    && !allowed.contains(&child.tag.as_str())
                     && !INLINE_TEXT_TAGS.contains(&child.tag.as_str())
             })
             .map(|child| {
@@ -609,6 +568,10 @@ fn children_violations(
             })
             .collect(),
         Relation::Exactly(expected) => {
+            // 子节点里有 `<slot>`：真实数量取决于使用方投影，静态不可知。
+            if element_children(element).any(|child| child.is_slot) {
+                return Vec::new();
+            }
             let count = max_rendered_children(element);
             // 有 `<template is>` / `<include>` 子节点时展开内容不可知。
             if element.unknown_children && count < *expected as usize {
@@ -674,6 +637,8 @@ fn children_violations(
         Relation::RequiresChildTag { child_tag, own } => {
             if !conditions_hold(element, own)
                 || element.unknown_children
+                // 有 `<slot>`：必需的那个子节点可能由使用方投影进来。
+                || element_children(element).any(|child| child.is_slot)
                 || element_children(element).any(|child| child.tag == *child_tag)
             {
                 return Vec::new();
@@ -740,10 +705,7 @@ pub(crate) fn check_element(
         if fragment_root
             && matches!(
                 &constraint.relation,
-                Relation::Direct(_)
-                    | Relation::Ancestor(_)
-                    | Relation::FirstChild(_)
-                    | Relation::Unique(_)
+                Relation::Direct(_) | Relation::FirstChild(_) | Relation::Unique(_)
             )
         {
             continue;
@@ -761,9 +723,6 @@ pub(crate) fn check_element(
         let message = match &constraint.relation {
             Relation::Direct(targets) => {
                 direct_violation(element, &projected, from_graph, open, targets)
-            }
-            Relation::Ancestor(targets) => {
-                ancestor_violation(element, &projected, from_graph, open, targets)
             }
             Relation::FirstChild(targets) => {
                 // 重复节点已由 unique 报在同一个元素上，不再叠一条。

@@ -380,9 +380,17 @@ impl<'a> Visit<'a> for Collector {
     }
 
     fn visit_variable_declarator(&mut self, it: &VariableDeclarator<'a>) {
-        // 只认「初始化值本身就是函数」的情况：`const f = wrap(() => {})` 里的箭头
-        // 不该叫 f。
-        if it.init.as_ref().is_some_and(is_function) {
+        // 只认「初始化值本身就是函数」，以及链式 API 的身份包装
+        // `const f = method(() => {})` / `listener(...)`：这两个包装原样返回入参
+        // （`miniprogram-chaining-api-polyfill` 只打 tag），运行时仍是那个函数，
+        // 所以 `'worklet'` 指令照样生效、`bind:` 绑的也是它。
+        // 其余 `wrap(fn)` 一律不认，避免把包装函数当成 worklet。
+        if it.init.as_ref().is_some_and(is_function)
+            || it
+                .init
+                .as_ref()
+                .is_some_and(|init| is_identity_wrapper(init))
+        {
             self.pending = binding_name(&it.id);
         }
         if matches!(it.id, BindingPattern::ObjectPattern(_))
@@ -595,6 +603,23 @@ fn is_function(expr: &Expression) -> bool {
         expr,
         Expression::FunctionExpression(_) | Expression::ArrowFunctionExpression(_)
     )
+}
+
+/// 链式 API 的身份包装：`method(fn)` / `listener(fn)`，实参必须是函数字面量。
+fn is_identity_wrapper(expr: &Expression) -> bool {
+    let Expression::CallExpression(call) = expr else {
+        return false;
+    };
+    let Expression::Identifier(callee) = &call.callee else {
+        return false;
+    };
+    let name = callee.name.as_str();
+    (name == "method" || name == "listener")
+        && matches!(call.arguments.len(), 1)
+        && call
+            .arguments
+            .first()
+            .is_some_and(|arg| arg.as_expression().is_some_and(is_function))
 }
 
 fn binding_name(pattern: &BindingPattern) -> Option<String> {

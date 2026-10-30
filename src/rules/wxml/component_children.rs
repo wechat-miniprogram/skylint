@@ -177,6 +177,23 @@ mod tests {
         check_rule(fixture, &ComponentChildren)
     }
 
+    /// `<slot>` 只是投影占位：`<text><slot/></text>` 里放什么由使用方决定。
+    #[test]
+    fn slot_is_not_a_child_violation() {
+        let diagnostics = check(&project("text-slot", "<text>前缀<slot/></text>"));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 手势组件的子节点里出现 `<slot>`：真实数量取决于投影，静态不可知。
+    #[test]
+    fn slot_makes_exactly_count_unknown() {
+        let diagnostics = check(&project(
+            "gesture-slot",
+            "<tap-gesture-handler><slot/><view/></tap-gesture-handler>",
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
     // ---- 约束表 ----
 
     #[test]

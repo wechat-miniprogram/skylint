@@ -100,10 +100,6 @@ pub fn subject(selector: &str) -> Option<Subject> {
             &mut subject.other_attributes
         };
         match component {
-            Component::LocalName(_) => subject.has_tag = true,
-            Component::ID(_) => subject.has_id = true,
-            Component::Class(_) => subject.has_class = true,
-            Component::ExplicitUniversalType => subject.universal = true,
             Component::AttributeInNoNamespaceExists { local_name, .. }
             | Component::AttributeInNoNamespace { local_name, .. } => {
                 attributes.push(local_name.0.to_string())
@@ -112,6 +108,12 @@ pub fn subject(selector: &str) -> Option<Subject> {
             Component::NonTSPseudoClass(pseudo) if pseudo.name.eq_ignore_ascii_case("host") => {
                 subject.has_host = true;
             }
+            // 主体形状只统计最右侧 compound：`.a view` 的主体是 `view`，祖先的类名
+            // 不该让它看起来「主体带了 class」。
+            Component::LocalName(_) if in_subject => subject.has_tag = true,
+            Component::ID(_) if in_subject => subject.has_id = true,
+            Component::Class(_) if in_subject => subject.has_class = true,
+            Component::ExplicitUniversalType if in_subject => subject.universal = true,
             _ => {}
         }
     }
