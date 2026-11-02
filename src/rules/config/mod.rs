@@ -11,12 +11,14 @@
 //! 运行时求值，也不去补 minidev 缺失的 app.json schema（那会引入大量与本工具
 //! 无关的过时告警）。
 
+pub mod autoprefix_build;
 pub mod config_ignored;
 pub mod default_layout_drift;
 pub mod lib_version;
 pub mod renderer_options;
 pub mod webview_tabbar_renderer;
 
+pub use autoprefix_build::AutoprefixBuild;
 pub use config_ignored::ConfigIgnored;
 pub use default_layout_drift::DefaultLayoutDrift;
 pub use lib_version::LibVersion;

@@ -264,6 +264,11 @@
 `-webkit-transition*` 在同一条规则里没有标准属性。带前缀的 `transition` **值**
 （`transition: -webkit-transform …`）仍由 `skyline/transition-property` 报。
 
+另有一条工程级 Info：**`skyline/autoprefix-build`**——Skyline 工程只要开了
+`setting.postcss` 或 `setting.minifyWXSS`（两者是「或」关系，任一为真就会把 wxss 插件
+拉起来，而插件里的 `autoPrefix` 默认 true），就提示 prod 产物会带上前缀；源码本身没有
+可判的痕迹，能看见的只有这两个开关。纯 WebView 工程不报。
+
 > 背景：开发者工具的 `setting.postcss` / `setting.minifyWXSS` 任一开启时，**prod 构建**
 > 会跑 autoprefixer（`iOS >= 8, Chrome >= 37`、`remove: false`），往 `transition` 值里
 > 塞 `-webkit-transform`、并额外生成 `@-webkit-keyframes`；dev 构建整段跳过，所以本地

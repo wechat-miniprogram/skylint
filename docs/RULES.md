@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 61 条：error 15 条、warning 41 条、info 5 条。
+共 62 条：error 15 条、warning 41 条、info 6 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
@@ -59,6 +59,7 @@
 | `skyline/scroll-context-ref` | warning | skyline | 用 scrollViewContext.scrollTo 前没有通过 NodesRef.ref 拿到 scroll-view 引用 |
 | `skyline/draggable-sheet-scroll-to` | warning | skyline | DraggableSheetContext.scrollTo 同时传 size 与 pixels 时 pixels 被忽略 |
 | `skyline/route-type` | warning | skyline | routeType 必须是 wx.router.addRouteBuilder 注册过的类型或 wx:// 预设 |
+| `skyline/autoprefix-build` | info | skyline | prod 构建的 autoprefixer 会给样式注入 `-webkit-` 前缀，Skyline 不认 |
 | `skyline/config-ignored` | warning | skyline | 配置写在不被读取的位置或类型上，静默无效 |
 | `skyline/default-layout-drift` | info | skyline | app.json 未开启 defaultDisplayBlock / defaultContentBox，Skyline 的默认布局与盒模型仍与 WebView 不同 |
 | `skyline/lib-version` | error | skyline | 项目配置的 libVersion 低于所用 Skyline 特性的最低要求 |

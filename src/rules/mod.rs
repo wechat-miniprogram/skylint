@@ -129,6 +129,7 @@ impl Registry {
             Box::new(js::ScrollContextRef),
             Box::new(js::DraggableSheetScrollTo),
             Box::new(js::RouteType),
+            Box::new(config::AutoprefixBuild),
             Box::new(config::ConfigIgnored),
             Box::new(config::DefaultLayoutDrift),
             Box::new(config::LibVersion),
