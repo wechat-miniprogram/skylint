@@ -142,8 +142,10 @@ impl TransitionAnimationConflict {
 fn collect_keyframes(project: &Project) -> HashMap<String, Vec<String>> {
     let mut out: HashMap<String, Vec<String>> = HashMap::new();
     for sheet in &project.styles {
-        for (name, body) in keyframe_blocks(sheet.doc.source()) {
-            let entry = out.entry(name).or_default();
+        for super::keyframes::Keyframe { name, body, .. } in
+            super::keyframes::blocks(sheet.doc.source())
+        {
+            let entry = out.entry(name.to_string()).or_default();
             for property in property_names(body) {
                 if !entry.contains(&property) {
                     entry.push(property);
@@ -151,62 +153,6 @@ fn collect_keyframes(project: &Project) -> HashMap<String, Vec<String>> {
             }
         }
     }
-    out
-}
-
-/// 源码里每个 `@keyframes` 动画的名字，以及它花括号内的原文。
-fn keyframe_blocks(source: &str) -> Vec<(String, &str)> {
-    const KEYWORD: &str = "keyframes";
-    let mut out = Vec::new();
-    let bytes = source.as_bytes();
-    let mut cursor = 0;
-    while let Some(found) = source[cursor..].find(KEYWORD) {
-        let keyword_at = cursor + found;
-        // 允许 `@keyframes` 与 `@-webkit-keyframes` / `@-moz-keyframes` / `@-o-keyframes`。
-        let at = source[..keyword_at].rfind('@');
-        let prefix = at.map(|at| source[at + 1..keyword_at].trim());
-        let recognised = matches!(
-            prefix,
-            Some("") | Some("-webkit-") | Some("-moz-") | Some("-o-")
-        );
-        let mut index = keyword_at + KEYWORD.len();
-        if !recognised {
-            cursor = index;
-            continue;
-        }
-        while index < bytes.len() && (bytes[index] as char).is_whitespace() {
-            index += 1;
-        }
-        let name_start = index;
-        while index < bytes.len() && !matches!(bytes[index] as char, '{' | ' ' | '\n' | '\t' | '\r')
-        {
-            index += 1;
-        }
-        let name = source[name_start..index].trim().to_string();
-        while index < bytes.len() && bytes[index] != b'{' {
-            index += 1;
-        }
-        if index >= bytes.len() {
-            break;
-        }
-        let body_start = index + 1;
-        let mut depth = 1;
-        index = body_start;
-        while index < bytes.len() && depth > 0 {
-            match bytes[index] {
-                b'{' => depth += 1,
-                b'}' => depth -= 1,
-                _ => {}
-            }
-            index += 1;
-        }
-        let body_end = index.saturating_sub(1);
-        if !name.is_empty() {
-            out.push((name, &source[body_start..body_end]));
-        }
-        cursor = index;
-    }
-
     out
 }
 

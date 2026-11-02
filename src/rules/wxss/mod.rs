@@ -16,6 +16,7 @@ pub mod flex_direction;
 pub mod gradient_limit;
 pub mod gradient_unsupported;
 pub mod implicit_color;
+pub mod keyframes;
 pub mod legacy_flexbox;
 pub mod media_query;
 pub mod multi_value_limit;
@@ -36,6 +37,7 @@ pub mod unsupported_property;
 pub mod unsupported_value;
 pub mod value_degraded;
 pub mod value_util;
+pub mod vendor_prefix;
 
 pub use attribute_selector::AttributeSelector;
 pub use box_sizing::BoxSizing;
@@ -65,6 +67,7 @@ pub use transition_property::TransitionProperty;
 pub use unsupported_property::UnsupportedProperty;
 pub use unsupported_value::UnsupportedValue;
 pub use value_degraded::ValueDegraded;
+pub use vendor_prefix::VendorPrefix;
 
 use std::collections::HashMap;
 

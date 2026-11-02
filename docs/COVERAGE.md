@@ -229,3 +229,43 @@
 - **`share-element` 的 `wx:for` 静态 key**、**`conic-gradient` 的 px 停止位**、
   **`dead-selector` 对含内联 `<template name>` 文件的组合选择器**：判据已明确，但由于需要
   解析层新增字段（`in_for`）或新的 conic 参数解析，暂未实现；当前六个参考工程命中为 0。
+
+## 本轮修复（2026-10 全量审计后的四批改动）
+
+六条复核 lane 把 53 条规则重新过了一遍，产出 76 条结论；我逐条复核后驳回/修正了 9 条
+（例如 `mask-position` 实际生效、`calc-angle` 无立足点、`min(0, 300px)` 两端都是 0），
+其余按四批落地。**没有新增知识库条目**：改的都是既有规则的判据、措辞与覆盖形状。
+
+**A 批（内容丢失）**：`matcher::subject()` 只统计最右侧 compound；`no-inline-text` 接
+`WxmlGraph` 判 slot 投影、并排除脱离文档流的兄弟；`transition-property` 认 `-webkit-*`
+导致的整条回滚；`scroll-view-family` 三条 `Ancestor → Direct`、`sticky-header` 补
+`RendersFirst`；`component-children` 放过 `<slot>`；`worklet-directive` 认
+`method(fn)` / `listener(fn)` 的处理器名。
+
+**B 批（判据形状）**：前缀渐变（有标准兜底时不报）、`background`/`mask` 简写层数、
+`background: … text`、关键帧前缀名、`transition: .3s` 的隐式 `all`、
+`getBoundingClientRect(undefined)`、`scope_script` 排除 `.wxs`、
+`text-overflow-ellipsis` 的「自身行内内容 + 祖先 `nowrap`」、`text-hard-break-ellipsis`
+只递归文本容器、`text-decoration-target` 只认会画线的声明、`implicit-color` 的
+`inherit` 链、`root-scope-class` 的页面节点与页面作用域检查。
+
+**C 批（级联与折叠）**：`horizontal-scroll-enable-flex` 走级联取值；`fixed-layer` 的
+`contain` 关键字白名单；`draggable-sheet-scroll-to` 的 `size: undefined`；
+`flex-direction` 逐选择器豁免；`legacy-flexbox` 合并同一选择器的多块（`-webkit-box`
+与 `flex` 语义不同，仍报）；`scroll-view-height` 认 `aspect-ratio` 与页面根 `flex: 1`；
+`calc-min-max` 按 fp 的折叠规则重写；`matcher` 递归 `:where()` 并把 `:is`/`:where`
+移出 Skyline 伪类表。
+
+**D 批**：删除 `skyline/calc-angle`（能触发的写法都是 CSS 类型错误，WebView 同样拒绝）；
+`lib-version` 不再为纯 WebView 工程的 `rendererOptions` 抬阈值。
+
+新增规则一条：**`skyline/vendor-prefix`**——只报「带 `-webkit-` 但没有标准兜底」的形态：
+`@-webkit-keyframes` 的动画名没有无前缀孪生块、或 `-webkit-animation*` /
+`-webkit-transition*` 在同一条规则里没有标准属性。带前缀的 `transition` **值**
+（`transition: -webkit-transform …`）仍由 `skyline/transition-property` 报。
+
+> 背景：开发者工具的 `setting.postcss` / `setting.minifyWXSS` 任一开启时，**prod 构建**
+> 会跑 autoprefixer（`iOS >= 8, Chrome >= 37`、`remove: false`），往 `transition` 值里
+> 塞 `-webkit-transform`、并额外生成 `@-webkit-keyframes`；dev 构建整段跳过，所以本地
+> 预览永远复现不出来。autoprefixer 正常会成对输出，因此「成对的前缀块」不报（无害），
+> 只报没有兜底的形态。工具侧的根治仍要看 devtools 是否让 Skyline 页面跳过 autoprefix。

@@ -110,6 +110,7 @@ impl Registry {
             Box::new(wxss::ShorthandPartial),
             Box::new(wxss::TransitionAnimationConflict),
             Box::new(wxss::TransitionProperty),
+            Box::new(wxss::VendorPrefix),
             Box::new(wxss::GradientLimit),
             Box::new(wxss::LegacyFlexbox),
             Box::new(wxss::MediaQuery),
