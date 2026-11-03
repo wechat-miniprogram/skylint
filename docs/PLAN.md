@@ -29,7 +29,7 @@ skylint/
 ```
 
 只有一个 crate：库与 CLI 同包（`cargo build` 出 `skylint`，`cargo test` 一次跑完），
-维护脚本放 `examples/`；发版走 tag 触发的 GitHub Actions（`.github/workflows/release.yml`）。
+维护脚本放 `examples/`；发版走 tag 触发的 GitHub Actions（`.github/workflows/publish.yml`）。
 
 依赖形态（**已落地**）：不依赖 minidev。工程加载器自建，见 §3。
 

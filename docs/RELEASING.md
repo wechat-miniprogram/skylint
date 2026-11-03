@@ -13,7 +13,7 @@ git tag v0.1.0
 git push origin main v0.1.0
 ```
 
-## 流水线（`.github/workflows/release.yml`）
+## 流水线（`.github/workflows/publish.yml`）
 
 | job | 做什么 | 失败点 |
 |---|---|---|
@@ -62,7 +62,7 @@ SHA256SUMS
    |---|---|
    | Repository owner | `wechat-miniprogram` |
    | Repository name | `skylint` |
-   | Workflow filename | `release.yml` |
+   | Workflow filename | `publish.yml` |
 
 3. 之后 tag 触发的 `publish` job 自动走 OIDC，不需要任何 secret。
 
