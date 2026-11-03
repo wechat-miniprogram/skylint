@@ -173,7 +173,7 @@ jobs:
           set -euo pipefail
           if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
             echo "没有可用的 crates.io 凭据：要么在 crates.io 给 skylint 配好" >&2
-            echo "trusted publishing（repo wechat-miniprogram/skylint / workflow release.yml），" >&2
+            echo "trusted publishing（repo wechat-miniprogram/skylint / workflow publish.yml），" >&2
             echo "要么给仓库加 CARGO_REGISTRY_TOKEN secret（首次发布必须这样）。" >&2
             exit 1
           fi
