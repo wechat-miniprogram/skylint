@@ -47,7 +47,8 @@ SHA256SUMS
 换一个 30 分钟的临时 token（`rust-lang/crates-io-auth-action@v1`），仓库里不放组织的
 长期 API token。
 
-一次性配置：
+一次性配置（**已完成**：`skylint` 已在 crates.io 上，trusted publishing 指向
+`publish.yml`；0.1.0 就是走 tag + OIDC 发的，没有用任何 token）：
 
 1. **首次发布必须手工**（crates.io 要求 crate 已存在才能配 trusted publishing）。
    用组织账号在 crates.io 生成一个 API token，本地执行：
@@ -68,3 +69,18 @@ SHA256SUMS
 
 工作流保留了 `secrets.CARGO_REGISTRY_TOKEN` 兜底（`publish` job 里 OIDC 失败时退回
 secret），所以第 1 步之前也可以在仓库里配一个组织 token 应急；两种方式可并存。
+
+### 踩过的坑：工作流文件名必须与 crates.io 上的配置一致
+
+0.1.0 第一次跑发布时 `crates.io` job 失败，报：
+
+```
+Failed to retrieve token from Cargo registry. Status: 400.
+The Trusted Publishing config for repository `wechat-miniprogram/skylint`
+does not match the workflow filename `release.yml` in the JWT.
+Expected workflow filenames: `publish.yml`
+```
+
+trusted publishing 校验的是**工作流文件名**，不是 workflow 的 `name`。所以本仓库的发布
+工作流文件名固定为 `publish.yml`（内容里的 `name: Release` 与它无关）；改名会让发版在
+最后一步失败，且只有 crates.io job 会红，其它产物已经产出。
