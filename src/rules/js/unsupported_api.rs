@@ -1,0 +1,381 @@
+//! Skyline 不支持的 JS API / 页面配置项。
+//!
+//! 条目直接写在 [`ENTRIES`] 里，Rust 侧只做两种匹配：`Call` 命中 callee 精确相等的调用；
+//! `PluginCall` 同上（callee 等于目标或以 `目标.` 开头），但只在插件工程里判。
+//! 加条目只改 [`ENTRIES`]。
+//!
+//! 证据：
+//! - `skyline-overview/references/migration/compatibility.md:198-205`（Q: 不支持 animate
+//!   动画接口，给了 worklet 替代写法）；
+//! - `skyline-overview/SKILL.md:100`（不支持 animate 接口）；
+//! - `skyline-route/references/api/router-api.md:9`（所有 `wx.router` 方法均不支持小程序插件）。
+//!
+//! 注释与字符串里的 `this.animate` 不在 AST 的调用节点上，天然不会命中。
+
+use crate::Severity;
+use crate::project::Project;
+use crate::rules::{Rule, RuleMeta};
+
+use super::{Callee, at_span, in_plugin, renders_in_skyline};
+
+#[derive(Debug, Clone, Copy)]
+enum Entry {
+    /// 调用点：callee 精确等于目标文本。
+    Call {
+        callee: &'static str,
+        message: &'static str,
+        /// 只在 Skyline 渲染的单元里才失效。
+        skyline_only: bool,
+    },
+    /// 调用点：callee 等于目标名或以 `目标名.` 开头，且只在插件工程里判。
+    ///
+    /// 插件限制原文：`skyline-route/references/api/router-api.md:9`「所有 wx.router
+    /// 方法均不支持小程序插件」。插件页内调这些接口不会报错，只是静默无效。
+    PluginCall {
+        prefix: &'static str,
+        message: &'static str,
+    },
+}
+
+const ENTRIES: &[Entry] = &[
+    Entry::Call {
+        callee: "this.animate",
+        message: "Skyline 不支持 `this.animate`，动画不会执行；改用 worklet（wx.worklet.shared + applyAnimatedStyle）",
+        skyline_only: true,
+    },
+    Entry::PluginCall {
+        prefix: "wx.router",
+        message: "小程序插件不支持 wx.router.*（自定义路由），插件页内调用无效",
+    },
+    Entry::Call {
+        callee: "wx.createVideoContext",
+        message: "Skyline 下 `wx.createVideoContext` 很可能失效（playerId 靠 nodeId 反查，自定义组件/页面里取不到，调用会被静默丢弃）；建议弃用，改用 `createSelectorQuery().select('#id').context()`",
+        skyline_only: true,
+    },
+    Entry::Call {
+        callee: "wx.createMapContext",
+        message: "Skyline 下 `wx.createMapContext` 很可能失效（mapId 靠 nodeId 反查，自定义组件/页面里取不到，调用会被静默丢弃）；建议弃用，改用 `createSelectorQuery().select('#id').context()`",
+        skyline_only: true,
+    },
+    Entry::Call {
+        callee: "wx.createLivePlayerContext",
+        message: "Skyline 下 `wx.createLivePlayerContext` 很可能失效（playerId 靠 nodeId 反查，自定义组件/页面里取不到，调用会被静默丢弃）；建议弃用，改用 `createSelectorQuery().select('#id').context()`",
+        skyline_only: true,
+    },
+    Entry::Call {
+        callee: "wx.createCameraContext",
+        message: "`wx.createCameraContext` 已不再维护，Skyline 下暂无 selectorQuery 等价物；插件工程里 pluginId 两侧写法还不一致，需实测确认",
+        skyline_only: true,
+    },
+    Entry::Call {
+        callee: "wx.createLivePusherContext",
+        message: "`wx.createLivePusherContext` 已不再维护，Skyline 下暂无 selectorQuery 等价物；插件工程里 pluginId 两侧写法还不一致，需实测确认",
+        skyline_only: true,
+    },
+    Entry::Call {
+        callee: "wx.createAudioContext",
+        message: "`wx.createAudioContext` 已不再维护；Skyline 没有 `<audio>` 组件，改用 `wx.createInnerAudioContext()`",
+        skyline_only: true,
+    },
+    Entry::Call {
+        callee: "wx.createEditorContext",
+        message: "`wx.createEditorContext` 已不再维护；Skyline 没有 `<editor>` 组件，需确认这个能力是否还需要",
+        skyline_only: true,
+    },
+];
+
+impl Entry {
+    fn message(&self) -> &'static str {
+        match self {
+            Self::Call { message, .. } | Self::PluginCall { message, .. } => message,
+        }
+    }
+}
+
+pub struct UnsupportedApi;
+
+impl UnsupportedApi {
+    pub const ID: &'static str = "skyline/unsupported-api";
+}
+
+impl Rule for UnsupportedApi {
+    fn meta(&self) -> RuleMeta {
+        RuleMeta {
+            id: Self::ID,
+            severity: Severity::Warning,
+            description: "Skyline 不支持的 JS API（如 this.animate、插件内的 wx.router.*）",
+        }
+    }
+
+    fn check(&self, project: &Project) -> Vec<crate::Diagnostic> {
+        let mut out = Vec::new();
+        for file in &project.scripts {
+            for call in file.doc.calls() {
+                for entry in ENTRIES {
+                    // `this.animate` 只在 Skyline 下失效：纯 WebView 页面照常可用。
+                    let span = match entry {
+                        Entry::Call {
+                            callee,
+                            skyline_only,
+                            ..
+                        } => (Callee::Exact(callee).matches(&call.callee)
+                            && (!skyline_only || renders_in_skyline(project, &file.scope)))
+                        .then_some((call.start, call.end)),
+                        Entry::PluginCall { prefix, .. } => (in_plugin(project, &file.path)
+                            && Callee::Namespace(prefix).matches(&call.callee))
+                        .then_some((call.start, call.end)),
+                    };
+                    let Some((start, end)) = span else { continue };
+                    out.push(at_span(
+                        Self::ID,
+                        Severity::Warning,
+                        file,
+                        start,
+                        end,
+                        entry.message(),
+                    ));
+                }
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use crate::rules::Rule;
+
+    use super::UnsupportedApi;
+    use crate::rules::testutil::js::{Fixture, messages, plugin, single, single_with_app};
+
+    /// 单页工程 + 一个额外的脚本文件（用于验证全域扫描的边界）。
+    fn with_script(name: &str, rel: &str, js: &str) -> (Fixture, crate::project::Project) {
+        let f = Fixture::new(name);
+        f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", "<view/>")
+            .write("pages/index/index.js", "Page({});")
+            .write(rel, js);
+        let project = f.project();
+        (f, project)
+    }
+
+    /// 插件工程的 `miniprogramRoot` 是宿主示例小程序，宿主代码用 `wx.router` 没问题。
+    #[test]
+    fn host_pages_in_a_plugin_project_are_not_restricted() {
+        let f = Fixture::new("unsupported-plugin-host");
+        f.write(
+            "project.config.json",
+            r#"{"miniprogramRoot":"dist/miniprogram/","pluginRoot":"dist/plugin/","compileType":"plugin"}"#,
+        )
+        .write(
+            "dist/miniprogram/app.json",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+        )
+        .write("dist/miniprogram/pages/index/index.json", "{}")
+        .write("dist/miniprogram/pages/index/index.wxml", "<view/>")
+        .write(
+            "dist/miniprogram/pages/index/index.js",
+            "Page({ go() { wx.router.navigateTo({ url: '/x' }); } });",
+        );
+        assert!(UnsupportedApi.check(&f.project()).is_empty());
+    }
+
+    /// 没有单元归属的脚本（`utils/`、`app.js`）静态判断不了会不会跑在 Skyline 下，
+    /// 按「不是」处理：`this.animate` 在 WebView 里是好的，报了就是误报。
+    #[test]
+    fn scripts_without_a_unit_are_not_judged() {
+        let (_f, project) = with_script(
+            "unsupported-loose-util",
+            "utils/helper.ts",
+            "export const jump = this.animate('.x', [], 100);",
+        );
+        assert!(UnsupportedApi.check(&project).is_empty());
+    }
+
+    #[test]
+    fn type_declarations_are_not_scanned() {
+        let (_f, project) = with_script(
+            "unsupported-dts",
+            "utils/types.d.ts",
+            "export declare const jump: () => this.animate('.x', [], 100);\n",
+        );
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn npm_build_output_is_not_scanned() {
+        let (_f, project) = with_script(
+            "unsupported-npm",
+            "miniprogram_npm/foo/index.js",
+            "this.animate('.x', [], 100);",
+        );
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn unsupported_calls_are_reported() {
+        let (_f, project) = single(
+            "unsupported-positive",
+            "this.animate('.a', [], 1000);\nPage({\n  data: {},\n});\nthis.animate('.b', [], 200);",
+        );
+        let diagnostics = UnsupportedApi.check(&project);
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.severity == crate::Severity::Warning)
+        );
+        assert_eq!(diagnostics[0].path, "pages/index/index.js");
+        assert!(diagnostics[0].message.contains("this.animate"));
+        assert_eq!(diagnostics[1].message, diagnostics[0].message);
+    }
+
+    /// `onPageScroll` 由 `feature_flag.GetEnablePageScroll()` 支持，不再是无效配置。
+    #[test]
+    fn page_on_page_scroll_is_supported() {
+        let (_f, project) = single("unsupported-page-scroll", "Page({ onPageScroll() {} });");
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
+
+    /// `app.js` 没有单元归属，不判；页面脚本里的调用照报。
+    #[test]
+    fn app_js_is_not_judged_but_page_scripts_are() {
+        let (_f, project) = single_with_app(
+            "unsupported-app",
+            "this.animate('.b', [], 1);",
+            Some("this.animate('.a', [], 1);"),
+        );
+        let diagnostics = UnsupportedApi.check(&project);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].path, "pages/index/index.js");
+    }
+
+    /// 纯 WebView 页面照常支持 `this.animate`，不能报。
+    #[test]
+    fn webview_page_is_not_reported() {
+        let f = Fixture::new("unsupported-webview");
+        f.write(
+            "project.config.json",
+            r#"{"miniprogramRoot":"","compileType":"miniprogram"}"#,
+        )
+        .write(
+            "app.json",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+        )
+        .write("pages/index/index.json", r#"{"renderer":"webview"}"#)
+        .write("pages/index/index.wxml", "<web-view/>")
+        .write(
+            "pages/index/index.js",
+            "Page({ onLoad() { this.animate('.a', [], 1); } });",
+        );
+        assert!(UnsupportedApi.check(&f.project()).is_empty());
+    }
+
+    #[test]
+    fn non_calls_and_non_page_options_are_ignored() {
+        let (_f, project) = single(
+            "unsupported-negative",
+            r#"
+            // this.animate('.a', [], 1);
+            const text = 'this.animate';
+            page.onPageScroll = () => {};
+            wx.Page({ onPageScroll() {} });
+            this.animateLater('.b', [], 1);
+            Page({ onLoad() {} });
+            "#,
+        );
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn non_literal_page_argument_is_ignored() {
+        let (_f, project) = single("unsupported-dynamic", "Page(config);");
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn router_calls_are_reported_only_in_plugin_projects() {
+        let (_f, plugin_project) = plugin(
+            "unsupported-plugin-router",
+            "wx.router.navigateTo({ url: 'x' });\nwx.router.addRouteBuilder('a', b);",
+        );
+        let diagnostics = UnsupportedApi.check(&plugin_project);
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+        assert!(diagnostics.iter().all(|d| d.message.contains("wx.router")));
+
+        let (_n, normal) = single(
+            "unsupported-normal-router",
+            "wx.router.navigateTo({ url: 'x' });",
+        );
+        assert_eq!(messages(&UnsupportedApi, &normal), Vec::<String>::new());
+    }
+
+    #[test]
+    fn plugin_prefix_does_not_match_similar_names() {
+        let (_f, project) = plugin(
+            "unsupported-plugin-prefix",
+            "wx.routers.navigateTo({});\nmywx.router.x();\nwx.routerX.y();",
+        );
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
+
+    /// Skyline 下这三个 context 的 playerId 靠 nodeId 反查，取不到时调用被静默挂起。
+    #[test]
+    fn context_apis_in_skyline_are_reported() {
+        let (_f, project) = single(
+            "unsupported-context-skyline",
+            "Page({ a() {
+                wx.createVideoContext('v', this);
+                wx.createMapContext('m', this);
+                wx.createLivePlayerContext('l', this);
+            } });",
+        );
+        let messages = messages(&UnsupportedApi, &project);
+        assert_eq!(messages.len(), 3, "{messages:#?}");
+        assert!(messages.iter().all(|m| m.contains("createSelectorQuery")));
+    }
+
+    /// WebView 页面里这些 context 照样能用，不能报。
+    #[test]
+    fn context_apis_in_webview_page_are_not_reported() {
+        let f = Fixture::new("unsupported-context-webview");
+        f.write(
+            "project.config.json",
+            r#"{"miniprogramRoot":"","compileType":"miniprogram"}"#,
+        )
+        .write(
+            "app.json",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+        )
+        .write("pages/index/index.json", r#"{"renderer":"webview"}"#)
+        .write("pages/index/index.wxml", "<view/>")
+        .write(
+            "pages/index/index.js",
+            "Page({ a() { wx.createVideoContext('v', this); } });",
+        );
+        assert!(UnsupportedApi.check(&f.project()).is_empty());
+    }
+
+    /// 无 selectorQuery 等价物的那几个：不维护了，同样只提“已不再维护”。
+    #[test]
+    fn deprecated_context_apis_are_reported_in_skyline() {
+        let (_f, project) = single(
+            "unsupported-context-deprecated",
+            "Page({ a() {
+                wx.createCameraContext('c', this);
+                wx.createLivePusherContext('p', this);
+                wx.createAudioContext('a');
+                wx.createEditorContext('e');
+            } });",
+        );
+        let messages = messages(&UnsupportedApi, &project);
+        assert_eq!(messages.len(), 4, "{messages:#?}");
+        assert!(messages.iter().all(|m| m.contains("已不再维护")));
+    }
+}

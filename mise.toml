@@ -1,0 +1,5 @@
+[tools]
+# 固定 stable 通道（仓库 rust-version = 1.97，取 stable 即可）。
+# mr_boxington = true 让 mise 把 cargo 走 mbx（Cargo 编译缓存），无需 mbx setup。
+rust = { version = "stable", mr_boxington = true }
+mr-boxington = "1.26.0"

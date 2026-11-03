@@ -1,0 +1,180 @@
+name: Release
+
+# 推一个 vX.Y.Z tag 就发版：四平台二进制进 GitHub Release，同时把 crate 发到
+# crates.io。版本号只有一个来源（Cargo.toml），tag 必须与它一致，否则直接失败。
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: 校验版本
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: tag 必须是 vX.Y.Z 且与 Cargo.toml 一致
+        id: version
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "tag 必须是 vX.Y.Z，当前是 $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          declared=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if [ "$declared" != "$version" ]; then
+            echo "Cargo.toml 的版本是 $declared，tag 是 $version" >&2
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # 发版前的最后一道闸：tag 指向的提交必须自己就能通过测试，
+      # 不依赖分支上的 CI 结果（tag 也可能打在没跑过 CI 的提交上）。
+      - run: cargo test --locked
+
+  build:
+    name: 构建 ${{ matrix.target }}
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skylint-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/skylint${{ matrix.target == 'x86_64-pc-windows-msvc' && '.exe' || '' }}
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      # 产物布局与手工脚本一致：skylint-<version>-<target>.tar.gz（windows 用 zip），
+      # 内含二进制 + README + LICENSE，另附 SHA256SUMS。
+      - name: 打包
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for dir in artifacts/skylint-*; do
+            target="${dir#artifacts/skylint-}"
+            staging="pkg/skylint-$VERSION-$target"
+            mkdir -p "$staging"
+            find "$dir" -type f -name 'skylint*' -exec cp {} "$staging/" \;
+            chmod +x "$staging"/skylint* || true
+            cp README.md LICENSE "$staging/"
+            if [ "$target" = "x86_64-pc-windows-msvc" ]; then
+              (cd pkg && zip -qr "../dist/skylint-$VERSION-$target.zip" "skylint-$VERSION-$target")
+            else
+              tar -czf "dist/skylint-$VERSION-$target.tar.gz" -C pkg "skylint-$VERSION-$target"
+            fi
+          done
+          (cd dist && sha256sum ./* > SHA256SUMS)
+          ls -l dist
+
+      # 重跑安全：Release 已存在就只补/覆盖产物，不重建。
+      - name: 创建或更新 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* \
+              --title "$tag" \
+              --generate-notes \
+              --verify-tag
+          fi
+
+  publish:
+    name: crates.io
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # OIDC：crates.io 的 trusted publishing 靠它签发 30 分钟临时 token，
+      # 不需要在仓库里放组织的长期 API token。
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: 是否已经发布过
+        id: published
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          set -euo pipefail
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -A "skylint-release-workflow" \
+            "https://crates.io/api/v1/crates/skylint/$VERSION")
+          if [ "$code" = "200" ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # trusted publishing 要求 crate 已存在（首次发布必须用 API token），
+      # 所以这里允许两步都走：OIDC 拿不到就退回仓库 secret。
+      - id: crates-auth
+        if: steps.published.outputs.exists == 'false'
+        uses: rust-lang/crates-io-auth-action@v1
+        continue-on-error: true
+
+      - name: cargo publish
+        if: steps.published.outputs.exists == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.crates-auth.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
+            echo "没有可用的 crates.io 凭据：要么在 crates.io 给 skylint 配好" >&2
+            echo "trusted publishing（repo wechat-miniprogram/skylint / workflow release.yml），" >&2
+            echo "要么给仓库加 CARGO_REGISTRY_TOKEN secret（首次发布必须这样）。" >&2
+            exit 1
+          fi
+          cargo publish --locked
