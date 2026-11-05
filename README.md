@@ -16,7 +16,12 @@ cargo build --release
 ## 安装
 
 ```bash
+# 使用 cargo
+cargo install skylint
+
+# 使用 mise
 mise use -g github:wechat-miniprogram/skylint
+mise use -g cargo:skylint
 ```
 
 ## 使用
