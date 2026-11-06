@@ -61,8 +61,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             unit.virtual_host
         );
 
-        for usage in facts.usages() {
-            println!("usage {}:{} <{}>", usage.doc, usage.line, usage.tag);
+        for usage in facts.usages_recursive(4) {
+            println!(
+                "usage depth={} {}:{} <{}>",
+                usage.depth, usage.doc, usage.line, usage.tag
+            );
         }
         for element in facts.elements() {
             let mut line = format!(
@@ -99,6 +102,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ));
             }
             println!("{line}");
+            for handler in facts.handlers(element) {
+                match &handler.function {
+                    Some(function) => println!(
+                        "    {} -> {}{} @{}:{}",
+                        handler.attribute,
+                        handler.name.as_deref().unwrap_or("?"),
+                        if function.worklet { " (worklet)" } else { "" },
+                        function.script,
+                        function.line
+                    ),
+                    None => println!(
+                        "    {} -> {} (no function)",
+                        handler.attribute,
+                        handler.name.as_deref().unwrap_or("dynamic")
+                    ),
+                }
+            }
         }
 
         let ignored = HashSet::new();

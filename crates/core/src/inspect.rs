@@ -95,6 +95,12 @@ pub struct LayoutFacts {
     pub block_rendered: bool,
     /// `scroll-view` 之类的盒子是否拿到了确定高度（= 不会塌成 0）。
     pub definite_height: bool,
+    /// 自身生效的 `white-space`（不含继承）。
+    pub white_space: Option<String>,
+    /// 自身是否在 WebView 里裁掉溢出（`hidden` / `clip` / `auto` / `scroll`）。
+    pub clips_overflow: bool,
+    /// 自身或任一祖先在 WebView 下本来就会截断（单行三件套或多行 clamp）。
+    pub webview_truncates: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,6 +129,53 @@ pub struct UsageView {
     pub tag: String,
     pub line: u32,
     pub column: u32,
+    /// 距离查询文档的跳数（直接使用点为 1）。
+    pub depth: u32,
+}
+
+/// 元素上的一个事件绑定及其处理函数。
+#[derive(Debug, Clone)]
+pub struct HandlerView {
+    /// 属性名原文（`bind:tap` / `catchtap` …）。
+    pub attribute: String,
+    /// 事件名（去掉 `bind` / `catch` / `capture-` / `mut-` 前缀）。
+    pub event: String,
+    /// 静态写的处理函数名；动态绑定或非裸标识符时为 `None`。
+    pub name: Option<String>,
+    /// 值不是静态裸标识符：`{{handler}}`、`this.fn`、表达式。
+    pub dynamic: bool,
+    /// 在单元脚本里找到的同名函数。
+    pub function: Option<HandlerFunction>,
+}
+
+/// 事件处理函数在脚本里的位置。
+#[derive(Debug, Clone)]
+pub struct HandlerFunction {
+    pub script: String,
+    pub line: u32,
+    pub column: u32,
+    pub worklet: bool,
+}
+
+/// 事件绑定属性名 → 事件名。
+///
+/// 认 `bindtap` / `catchtap` / `bind:tap` / `catch:tap` / `capture-bind:tap` /
+/// `capture-catch:tap` / `mut-bind:tap`；`worklet:` 是另一套语义，不算事件绑定。
+fn event_name(attribute: &str) -> Option<&str> {
+    let rest = attribute
+        .strip_prefix("capture-")
+        .or_else(|| attribute.strip_prefix("mut-"))
+        .unwrap_or(attribute);
+    ["bind:", "catch:", "bind", "catch"]
+        .iter()
+        .find_map(|prefix| rest.strip_prefix(prefix))
+        .filter(|event| {
+            !event.starts_with(':')
+                && event
+                    .chars()
+                    .next()
+                    .is_some_and(|first| first.is_ascii_alphabetic())
+        })
 }
 
 /// 单元（页面 / 组件 / 片段）的配置事实。
@@ -210,15 +263,68 @@ impl<'a> Facts<'a> {
     /// 与 [`Facts::ancestors`] 正交：祖先回答「它上面是什么」，这里回答「它会被
     /// 哪些页面 / 父组件渲染出来」。只给直接使用点，多跳由调用方递归。
     pub fn usages(&self) -> Vec<UsageView> {
+        self.usages_recursive(1)
+    }
+
+    /// 递归使用点：把「父组件被谁用」也展开，`depth` 是跳数。
+    ///
+    /// `max_depth` 至少按 1 算；环（A 用 B、B 又用 A）不会无限展开。
+    pub fn usages_recursive(&self, max_depth: u32) -> Vec<UsageView> {
         let graph = self.graph.get_or_init(|| WxmlGraph::new(self.project));
         graph
-            .component_usages(self.doc.path())
+            .component_usages_recursive(self.doc.path(), max_depth.max(1))
             .into_iter()
-            .map(|site| UsageView {
-                doc: site.doc,
-                tag: site.tag,
-                line: site.line,
-                column: site.column,
+            .map(|hop| UsageView {
+                doc: hop.site.doc,
+                tag: hop.site.tag,
+                line: hop.site.line,
+                column: hop.site.column,
+                depth: hop.depth,
+            })
+            .collect()
+    }
+
+    /// 元素上的全部事件绑定及其处理函数。
+    ///
+    /// 只回答「静态可确定的」：`{{handler}}` 这类动态绑定给出 `name: None`、
+    /// `dynamic: true`；静态值但不是裸标识符（`this.onTap`）也算动态。
+    pub fn handlers(&self, element: &WxmlElement) -> Vec<HandlerView> {
+        let script = self
+            .scope
+            .as_ref()
+            .and_then(|scope| crate::rules::js::scope_script(self.project, scope));
+        element
+            .attributes
+            .iter()
+            .filter_map(|attribute| {
+                let event = event_name(&attribute.name)?;
+                let name = attribute
+                    .value
+                    .as_deref()
+                    .filter(|_| attribute.is_static)
+                    .filter(|value| crate::rules::js::is_identifier(value))
+                    .map(str::to_string);
+                let function = script.zip(name.as_deref()).and_then(|(file, name)| {
+                    let function = file
+                        .doc
+                        .functions()
+                        .into_iter()
+                        .find(|function| function.name == Some(name))?;
+                    let (line, column) = file.doc.position(function.start as usize);
+                    Some(HandlerFunction {
+                        script: file.path.clone(),
+                        line,
+                        column,
+                        worklet: function.has_worklet,
+                    })
+                });
+                Some(HandlerView {
+                    attribute: attribute.name.clone(),
+                    event: event.to_string(),
+                    dynamic: name.is_none(),
+                    name,
+                    function,
+                })
             })
             .collect()
     }
@@ -266,6 +372,7 @@ impl<'a> Facts<'a> {
                 .map(|entry| entry.value.trim().to_string())
         };
         let default_block = self.unit().default_display_block;
+        let ancestors = self.lexical_ancestors(element);
         LayoutFacts {
             display: value("display"),
             flex_direction: value("flex-direction"),
@@ -280,7 +387,27 @@ impl<'a> Facts<'a> {
                 default_block,
                 0,
             ),
+            white_space: value("white-space"),
+            clips_overflow: wxml::clips_overflow(self.project, &self.tree, element),
+            webview_truncates: wxml::webview_truncates(
+                self.project,
+                &self.tree,
+                element,
+                &ancestors,
+            ),
         }
+    }
+
+    /// 本文件内的词法祖先，根在前。跨组件边界的不算（不同文件，级联也另外算）。
+    fn lexical_ancestors(&self, element: &WxmlElement) -> Vec<&WxmlElement> {
+        let mut chain = Vec::new();
+        let mut cursor = self.tree.parent_of(element);
+        while let Some(parent) = cursor {
+            chain.push(parent);
+            cursor = self.tree.parent_of(parent);
+        }
+        chain.reverse();
+        chain
     }
 
     /// 这份文档在 Skyline 下的可达性。
@@ -482,6 +609,108 @@ mod tests {
         // 页面本身没有使用点。
         let page = LoadedDoc::load(&project, "pages/index/index.wxml").unwrap();
         assert!(page.facts(&project).usages().is_empty());
+    }
+
+    /// 事件属性 → 处理函数：静态裸标识符能落到脚本位置，动态值给出 `dynamic`。
+    #[test]
+    fn handlers_resolve_to_functions() {
+        let fixture = Fixture::page(
+            "inspect-handlers",
+            r#"<view bindtap="onTap" catch:touchstart="onTouch" bindlongpress="{{handler}}"/><view worklet:ongesture="onPan"/>"#,
+            "",
+        );
+        // `Fixture::page` 不带脚本，这里补上再重新加载。
+        fixture.write(
+            "pages/index/index.js",
+            "Page({ onTap() {}, onTouch: function () {} });",
+        );
+        let project = fixture.project();
+        let loaded = LoadedDoc::load(&project, "pages/index/index.wxml").unwrap();
+        let facts = loaded.facts(&project);
+        let first = facts.handlers(facts.elements()[0]);
+
+        assert_eq!(first.len(), 3, "{first:#?}");
+        assert_eq!(first[0].event, "tap");
+        assert_eq!(first[0].name.as_deref(), Some("onTap"));
+        assert!(!first[0].dynamic);
+        assert!(first[0].function.is_some(), "应能定位到 onTap");
+        assert_eq!(first[1].event, "touchstart");
+        assert_eq!(first[1].name.as_deref(), Some("onTouch"));
+        assert_eq!(first[2].event, "longpress");
+        assert!(first[2].dynamic);
+        assert!(first[2].name.is_none());
+
+        // `worklet:` 是手势回调，不是事件绑定。
+        let second = facts.handlers(facts.elements()[1]);
+        assert!(second.is_empty(), "{second:#?}");
+    }
+
+    /// 递归反链：内层组件 → 外层组件 → 页面，`depth` 是跳数。
+    #[test]
+    fn usages_recursive_climbs_parent_components() {
+        let fixture = Fixture::new("inspect-usages-recursive");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"outer":"/components/outer/outer"}}"#,
+            )
+            .write("pages/index/index.wxml", "<outer/>")
+            .write(
+                "components/outer/outer.json",
+                r#"{"component":true,"usingComponents":{"inner":"/components/inner/inner"}}"#,
+            )
+            .write("components/outer/outer.wxml", "<inner/>")
+            .write("components/inner/inner.json", r#"{"component":true}"#)
+            .write("components/inner/inner.wxml", "<view/>");
+
+        let project = fixture.project();
+        let loaded = LoadedDoc::load(&project, "components/inner/inner.wxml").unwrap();
+        let facts = loaded.facts(&project);
+        let hops = facts.usages_recursive(3);
+        let pairs: Vec<(&str, u32)> = hops
+            .iter()
+            .map(|hop| (hop.doc.as_str(), hop.depth))
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                ("components/outer/outer.wxml", 1),
+                ("pages/index/index.wxml", 2)
+            ],
+            "{hops:#?}"
+        );
+    }
+
+    /// 截断事实：自身与祖先分开看，`webview_truncates` 会算上祖先。
+    #[test]
+    fn layout_facts_expose_webview_truncation() {
+        let fixture = Fixture::page(
+            "inspect-truncation",
+            r#"<view class="clip"><text class="inner">x</text></view>"#,
+            ".clip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }",
+        );
+        let project = fixture.project();
+        let path = project.pages[0].files.wxml.clone().unwrap();
+        let loaded = LoadedDoc::load(&project, &path).unwrap();
+        let facts = loaded.facts(&project);
+        let [clip, inner] = facts.elements() else {
+            panic!("应有两个元素")
+        };
+
+        let outer = facts.layout(clip);
+        assert_eq!(outer.white_space.as_deref(), Some("nowrap"));
+        assert!(outer.clips_overflow);
+        assert!(outer.webview_truncates);
+
+        let inner = facts.layout(inner);
+        assert_eq!(inner.white_space, None, "white-space 不在解析值里继承");
+        assert!(!inner.clips_overflow);
+        assert!(inner.webview_truncates, "祖先的 nowrap 也算截断");
     }
 
     /// 单元事实：页面/组件、渲染器、组件 options。

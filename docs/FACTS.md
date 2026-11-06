@@ -11,9 +11,9 @@
 |---|---|---|
 | P0 暴露 | **已完成** | `skylint_core::inspect`：`LoadedDoc` → `Facts`（`elements` / `element_at` / `ancestors` / `cascade` / `resolved` / `layout` / `unit` / `reach`），返回拥有所有权的快照 |
 | P1 级联准确化 | **已完成** | `cascade_entries` 按 `(important, specificity, 出现顺序)` 排序，对齐引擎的 `CascadePriority`；内联 `style` 参与排序（`!important` 也解析）；`CascadeView` 带 `selector` / `stylesheet` / `line` / `column` / `at_rules` / `overridden`（升序里前面的就是被覆盖的） |
-| P2 图回链 | **已完成** | `ancestors` 走 `WxmlGraph`（跨 slot / `virtualHost`）；`usages()` 给出「这份组件被哪些使用点引用」（反向边，直接使用点）；`component_options` 进 `UnitFacts` |
-| P3 布局事实 | **部分** | `LayoutFacts.definite_height` 已包装 `scroll_view_height::definite_height`；`block_rendered` / `display` / `flex_direction` / `out_of_flow` / `width_follows_content` 已可用；`text-overflow` 的祖先 `white-space` 还没进 facts |
-| P4 脚本事实 | **未开始** | handler → 函数、内联 `<wxs>` 入脚本图 |
+| P2 图回链 | **已完成** | `ancestors` 走 `WxmlGraph`（跨 slot / `virtualHost`）；`usages()` 给出「这份组件被哪些使用点引用」，`usages_recursive(depth)` 再往上爬父组件；`component_options` 进 `UnitFacts` |
+| P3 布局事实 | **部分** | `LayoutFacts` 已有 `display` / `flex_direction` / `out_of_flow` / `width_follows_content` / `block_rendered` / `definite_height`，以及截断三件套（`white_space` / `clips_overflow` / `webview_truncates`，复用 `webview_truncates`）|
+| P4 脚本事实 | **部分** | `handlers(element)`：事件属性 → 事件名 + 静态处理函数名 + 脚本里的位置（含 `worklet` 标记）；动态绑定与 `this.fn` 标 `dynamic`。内联 `<wxs>` 仍未入脚本图 |
 
 判别力：`cascade_tests.rs` 的 6 条用例里 3 条（specificity / important 压 specificity /
 样式表 important 压内联）在去掉排序后立即变红，说明它们真的在守新口径。

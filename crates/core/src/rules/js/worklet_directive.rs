@@ -219,7 +219,11 @@ fn wxml_bindings(project: &Project, out: &mut Vec<Diagnostic>) {
                 if !attr.is_static {
                     continue;
                 }
-                let Some(name) = attr.value.as_deref().filter(|value| is_identifier(value)) else {
+                let Some(name) = attr
+                    .value
+                    .as_deref()
+                    .filter(|value| super::is_identifier(value))
+                else {
                     continue;
                 };
                 if named_has_worklet(script, name) != Some(false) {
@@ -245,16 +249,6 @@ fn wxml_bindings(project: &Project, out: &mut Vec<Diagnostic>) {
             }
         }
     }
-}
-
-/// 裸标识符（`onPan`、`$handler`）；`this.fn`、`a.b`、表达式都不算。
-fn is_identifier(text: &str) -> bool {
-    let mut chars = text.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    (first.is_ascii_alphabetic() || first == '_' || first == '$')
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
 }
 
 #[cfg(test)]

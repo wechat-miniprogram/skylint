@@ -61,6 +61,13 @@ pub(crate) struct UsageSite {
     pub column: u32,
 }
 
+/// 递归反链上的一跳。
+#[derive(Debug, Clone)]
+pub(crate) struct UsageHop {
+    pub site: UsageSite,
+    pub depth: u32,
+}
+
 /// 逻辑树里的一个元素。
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct NodeId {
@@ -392,6 +399,40 @@ impl WxmlGraph {
         out.dedup_by(|left, right| {
             left.doc == right.doc && left.line == right.line && left.column == right.column
         });
+        out
+    }
+
+    /// 递归使用点（BFS）：把「父组件被谁用」也展开，`depth` 从 1 开始。
+    ///
+    /// 环（A 用 B、B 又用 A）不会无限展开；同一文档只访问一次，命中时取最短跳数。
+    pub(crate) fn component_usages_recursive(
+        &self,
+        doc_path: &str,
+        max_depth: u32,
+    ) -> Vec<UsageHop> {
+        let mut out = Vec::new();
+        let mut frontier = vec![doc_path.to_string()];
+        let mut visited: HashSet<String> = HashSet::from([doc_path.to_string()]);
+        for depth in 1..=max_depth {
+            let mut next = Vec::new();
+            for doc in &frontier {
+                for site in self.component_usages(doc) {
+                    // 去重只用于「要不要继续往上展开」，不能用来过滤输出：
+                    // 同一文档里同一标签的多个使用点都是真实现场。
+                    if visited.insert(site.doc.clone()) {
+                        next.push(site.doc.clone());
+                    }
+                    out.push(UsageHop {
+                        site: site.clone(),
+                        depth,
+                    });
+                }
+            }
+            if next.is_empty() {
+                break;
+            }
+            frontier = next;
+        }
         out
     }
 

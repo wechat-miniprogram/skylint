@@ -101,6 +101,16 @@ pub(crate) fn scope_script<'a>(project: &'a Project, scope: &Scope) -> Option<&'
         .find(|file| &file.scope == scope && !file.path.ends_with(".wxs"))
 }
 
+/// 裸标识符（`onPan`、`$handler`）；`this.fn`、`a.b`、表达式都不算。
+pub(crate) fn is_identifier(text: &str) -> bool {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_' || first == '$')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+
 /// 页面与组件的 WXML 及所属单元，按路径去重（同一文件被多次引用只留一份）。
 ///
 /// 页面显式声明 `renderer: webview` 的整页跳过，与 wxml 规则同口径：那是「这页不迁
