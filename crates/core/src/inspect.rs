@@ -116,6 +116,15 @@ pub enum Renderer {
     Unknown,
 }
 
+/// 一次组件使用点：哪个文档用哪个标签引用了当前这份组件。
+#[derive(Debug, Clone)]
+pub struct UsageView {
+    pub doc: String,
+    pub tag: String,
+    pub line: u32,
+    pub column: u32,
+}
+
 /// 单元（页面 / 组件 / 片段）的配置事实。
 #[derive(Debug, Clone)]
 pub struct UnitFacts {
@@ -194,6 +203,24 @@ impl<'a> Facts<'a> {
                 .collect(),
             open: chain.open,
         }
+    }
+
+    /// 这份文档被哪些使用点引用（只在组件上非空）。
+    ///
+    /// 与 [`Facts::ancestors`] 正交：祖先回答「它上面是什么」，这里回答「它会被
+    /// 哪些页面 / 父组件渲染出来」。只给直接使用点，多跳由调用方递归。
+    pub fn usages(&self) -> Vec<UsageView> {
+        let graph = self.graph.get_or_init(|| WxmlGraph::new(self.project));
+        graph
+            .component_usages(self.doc.path())
+            .into_iter()
+            .map(|site| UsageView {
+                doc: site.doc,
+                tag: site.tag,
+                line: site.line,
+                column: site.column,
+            })
+            .collect()
     }
 
     /// 某属性参与级联的全部声明，升序（末位生效）。
@@ -417,6 +444,44 @@ mod tests {
             .collect();
         assert_eq!(tags, ["text", "c"], "{ancestors:#?}");
         assert_eq!(ancestors.nodes[1].doc, "pages/index/index.wxml");
+    }
+
+    /// 反链：组件模板的事实要知道它被谁用到。
+    #[test]
+    fn usages_point_back_to_the_host() {
+        let fixture = Fixture::new("inspect-usages");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"c":"/components/c/c"}}"#,
+            )
+            .write(
+                "pages/index/index.wxml",
+                r#"<c class="one"/><c class="two"/>"#,
+            )
+            .write("components/c/c.json", r#"{"component":true}"#)
+            .write("components/c/c.wxml", r#"<view/>"#);
+
+        let project = fixture.project();
+        let loaded = LoadedDoc::load(&project, "components/c/c.wxml").unwrap();
+        let facts = loaded.facts(&project);
+        let usages = facts.usages();
+        assert_eq!(usages.len(), 2, "{usages:#?}");
+        assert!(
+            usages
+                .iter()
+                .all(|site| site.doc == "pages/index/index.wxml")
+        );
+        assert!(usages.iter().all(|site| site.tag == "c"));
+
+        // 页面本身没有使用点。
+        let page = LoadedDoc::load(&project, "pages/index/index.wxml").unwrap();
+        assert!(page.facts(&project).usages().is_empty());
     }
 
     /// 单元事实：页面/组件、渲染器、组件 options。

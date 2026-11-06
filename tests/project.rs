@@ -645,6 +645,45 @@ fn plugin_project(name: &str) -> Fixture {
     f
 }
 
+/// 插件页跑在宿主的小程序实例里：`rendererOptions` 是宿主 app 级开关，插件视图要继承。
+/// 不继承的话，插件组件的 `defaultDisplayBlock` / `defaultContentBox` /
+/// `enableScrollViewAutoSize` 都会读成 false，和真机行为相反。
+#[test]
+fn plugin_view_inherits_host_renderer_options() {
+    let f = Fixture::new("plugin-renderer-options");
+    f.write(
+        "project.config.json",
+        r#"{"compileType":"plugin","miniprogramRoot":"dist/miniprogram/","pluginRoot":"dist/plugin/"}"#,
+    )
+    .write(
+        "dist/miniprogram/app.json",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true,"defaultContentBox":true,"enableScrollViewAutoSize":true}}}"#,
+    )
+    .write("dist/miniprogram/pages/index/index.json", "{}")
+    .write("dist/miniprogram/pages/index/index.wxml", "<view/>")
+    .write(
+        "dist/plugin/plugin.json",
+        r#"{"pages":{"novel":"pages/novel/index"},"renderer":"skyline"}"#,
+    )
+    .write("dist/plugin/pages/novel/index.json", "{}")
+    .write("dist/plugin/pages/novel/index.wxml", "<view/>");
+
+    let views = Project::load_views(f.path()).unwrap();
+    let plugin = views
+        .iter()
+        .find(|view| view.plugin_view)
+        .expect("应该有插件视图");
+    assert!(
+        plugin.app_display_block(),
+        "应继承宿主的 defaultDisplayBlock"
+    );
+    assert!(plugin.app_content_box(), "应继承宿主的 defaultContentBox");
+    assert!(
+        plugin.scroll_view_auto_size(),
+        "应继承宿主的 enableScrollViewAutoSize"
+    );
+}
+
 #[test]
 fn plugin_pages_get_their_own_view() {
     let f = plugin_project("plugin-view");

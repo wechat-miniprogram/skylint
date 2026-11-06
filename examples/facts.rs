@@ -61,6 +61,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             unit.virtual_host
         );
 
+        for usage in facts.usages() {
+            println!("usage {}:{} <{}>", usage.doc, usage.line, usage.tag);
+        }
         for element in facts.elements() {
             let mut line = format!(
                 "{}:{}  <{}>",

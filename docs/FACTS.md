@@ -11,8 +11,8 @@
 |---|---|---|
 | P0 暴露 | **已完成** | `skylint_core::inspect`：`LoadedDoc` → `Facts`（`elements` / `element_at` / `ancestors` / `cascade` / `resolved` / `layout` / `unit` / `reach`），返回拥有所有权的快照 |
 | P1 级联准确化 | **已完成** | `cascade_entries` 按 `(important, specificity, 出现顺序)` 排序，对齐引擎的 `CascadePriority`；内联 `style` 参与排序（`!important` 也解析）；`CascadeView` 带 `selector` / `stylesheet` / `line` / `column` / `at_rules` / `overridden`（升序里前面的就是被覆盖的） |
-| P2 图回链 | **部分** | `ancestors` 走 `WxmlGraph`（跨 slot / `virtualHost`，已可用）；`component_options` 已暴露给 `UnitFacts`；**元素 → 使用点**的反链未做 |
-| P3 布局事实 | **部分** | `LayoutFacts.definite_height` 已包装 `scroll_view_height::definite_height`；`block_rendered` / `display` / `flex_direction` / `out_of_flow` / `width_follows_content` 已可用 |
+| P2 图回链 | **已完成** | `ancestors` 走 `WxmlGraph`（跨 slot / `virtualHost`）；`usages()` 给出「这份组件被哪些使用点引用」（反向边，直接使用点）；`component_options` 进 `UnitFacts` |
+| P3 布局事实 | **部分** | `LayoutFacts.definite_height` 已包装 `scroll_view_height::definite_height`；`block_rendered` / `display` / `flex_direction` / `out_of_flow` / `width_follows_content` 已可用；`text-overflow` 的祖先 `white-space` 还没进 facts |
 | P4 脚本事实 | **未开始** | handler → 函数、内联 `<wxs>` 入脚本图 |
 
 判别力：`cascade_tests.rs` 的 6 条用例里 3 条（specificity / important 压 specificity /
@@ -21,9 +21,11 @@
 六个参考工程按 9 字段逐位 diff：**0 增 0 减**——真实工程里没有「同属性跨 specificity
 互相覆盖」的写法，所以这次是「把近似换成准确」而不是「修一批误报」。
 
-> 已知问题（P2 待办）：插件视图的 `app_json` 是 `plugin.json`，所以
-> `app_display_block()` 读不到宿主的 `rendererOptions`；运行时宿主 app.json 对插件页
-> 是生效的。`UnitFacts.default_display_block` 在插件视图里因此可能偏 false。
+> 插件视图的 `rendererOptions` 已修：插件页跑在宿主的小程序实例里，`rendererOptions`
+> 是宿主 app 级开关，所以 `Loaded::plugin()` 现在把宿主 `app.json` 的 `rendererOptions`
+> 带进插件视图（`Project.renderer_options`），三个访问器都读它而不是 `plugin.json`。
+> 判别用例 `plugin_view_inherits_host_renderer_options`；六个参考工程诊断 0 增 0 减
+> （没有哪条规则的结论正好卡在这个分支上）。
 
 ## 结论
 

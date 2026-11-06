@@ -21,7 +21,7 @@ pub mod wxml_graph;
 pub use diag::{Diagnostic, Severity};
 pub use inspect::{
     AncestorView, Ancestors, CascadeView, Facts, LayoutFacts, LoadedDoc, Renderer, UnitFacts,
-    UnitKind,
+    UnitKind, UsageView,
 };
 pub use project::{ComponentUnit, PageUnit, Project};
 pub use report::Report;

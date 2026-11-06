@@ -52,6 +52,15 @@ const MAX_INCLUDE_DEPTH: usize = 16;
 /// 遍历深度上限：项目里不该出现这么深的投影链，超了说明组件互相嵌套成环。
 const MAX_NODES: usize = 512;
 
+/// 一次组件使用点（反链）：哪个文档用哪个标签引用了这份组件。
+#[derive(Debug, Clone)]
+pub(crate) struct UsageSite {
+    pub doc: String,
+    pub tag: String,
+    pub line: u32,
+    pub column: u32,
+}
+
 /// 逻辑树里的一个元素。
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct NodeId {
@@ -348,6 +357,42 @@ impl WxmlGraph {
             let options = self.docs[doc].options;
             (options.multiple_slots, options.virtual_host)
         })
+    }
+
+    /// 哪些文档以哪个标签使用了这份组件（反链）。
+    ///
+    /// `component_options` / `render_docs` 是正向（使用点 → 组件实现），这个方法是反向：
+    /// 给定组件模板里的一个结论（「这个元素会塌成 0」），回答「它会在哪些页面 / 哪个父组件
+    /// 里出现」。只给**直接**使用点，多跳由调用方递归。
+    pub(crate) fn component_usages(&self, doc_path: &str) -> Vec<UsageSite> {
+        let Some(&target) = self.by_path.get(doc_path) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for doc in &self.docs {
+            for (tag, &dest) in &doc.components {
+                if dest != target {
+                    continue;
+                }
+                for element in &doc.elements {
+                    if element.tag.eq_ignore_ascii_case(tag) {
+                        out.push(UsageSite {
+                            doc: doc.path.clone(),
+                            tag: tag.clone(),
+                            line: element.line,
+                            column: element.column,
+                        });
+                    }
+                }
+            }
+        }
+        out.sort_by(|left, right| {
+            (&left.doc, left.line, left.column).cmp(&(&right.doc, right.line, right.column))
+        });
+        out.dedup_by(|left, right| {
+            left.doc == right.doc && left.line == right.line && left.column == right.column
+        });
+        out
     }
 
     /// 这份文档（含递归使用的组件与引入的模板）能渲染到的全部文档路径，含自身。

@@ -116,6 +116,11 @@ pub struct Project {
     /// 该视图的 app 级配置文件（`app.json` / 插件视图的 `plugin.json`），
     /// 诊断路径相对视图根，前缀由报告层补。
     pub app_json_path: String,
+    /// 生效的 `rendererOptions`。宿主视图取自己的 `app.json`；插件视图继承宿主的——
+    /// 插件页跑在宿主的小程序实例里，`rendererOptions` 是宿主 app 级开关
+    /// （`wxapplib/src/skyline/src/runtime/index.ts:124-151`），插件自己的 `plugin.json`
+    /// 并不是它的读者。
+    pub renderer_options: Map<String, Value>,
     /// project.config.json 原始对象（缺失 / 解析失败为空）。
     pub project_config: Map<String, Value>,
     /// project.config.json 原文，定位 `libVersion` 这类值时用；读不到时为空串。
@@ -387,19 +392,14 @@ impl Project {
 
     /// app 级 `defaultDisplayBlock` 是否开启。运行时两种写法都认，见 [`renderer_flag`]。
     pub fn app_display_block(&self) -> bool {
-        self.app_json
-            .get("rendererOptions")
-            .and_then(Value::as_object)
-            .map(|options| renderer_flag(options, "defaultDisplayBlock"))
-            .unwrap_or(false)
+        renderer_flag(&self.renderer_options, "defaultDisplayBlock")
     }
 
     /// app 级 `defaultContentBox` 是否开启。运行时只读 `rendererOptions.skyline` 这一层
     /// （`runtime/index.ts:145`），写在顶层的同名单键不生效，所以这里也只认嵌套写法。
     pub fn app_content_box(&self) -> bool {
-        self.app_json
-            .get("rendererOptions")
-            .and_then(|options| options.get("skyline"))
+        self.renderer_options
+            .get("skyline")
             .and_then(|skyline| skyline.get("defaultContentBox"))
             .is_some_and(truthy)
     }
@@ -407,10 +407,7 @@ impl Project {
     /// app 级 `rendererOptions.skyline.enableScrollViewAutoSize` 是否开启。
     /// 开启后 scroll-view 变成 measurable 节点，尺寸来自内容而不是 flex 分配。
     pub fn scroll_view_auto_size(&self) -> bool {
-        self.app_json
-            .get("rendererOptions")
-            .and_then(Value::as_object)
-            .is_some_and(|options| renderer_flag(options, "enableScrollViewAutoSize"))
+        renderer_flag(&self.renderer_options, "enableScrollViewAutoSize")
     }
 
     /// app.json 顶层的开关（JS 真值语义，如 `convertRpxToVw`）。
@@ -480,6 +477,7 @@ impl Project {
             component_json_source: BTreeMap::new(),
             app_json_source: String::new(),
             app_json_path: "app.json".to_string(),
+            renderer_options: Map::new(),
             project_config: Map::new(),
             project_config_source: String::new(),
             project_private_config: Map::new(),
@@ -573,6 +571,8 @@ struct ViewSpec<'a> {
     /// app 级配置对象：宿主的 `app.json`，或插件的 `plugin.json`。
     app: &'a Map<String, Value>,
     app_source: &'a str,
+    /// 插件视图继承的宿主 `rendererOptions`（宿主视图为 `None`）。
+    inherited_renderer_options: Option<&'a Map<String, Value>>,
     /// 页面清单（相对 `base`）。
     routes: Vec<String>,
     /// 非声明式组件入口（`custom-tab-bar` / `app-bar` / `publicComponents`）。
@@ -630,6 +630,7 @@ impl Loaded {
             report_prefix: "",
             app: &app,
             app_source: &source,
+            inherited_renderer_options: None,
             seeds: app_seeds(&self.fs, &base, &app),
             routes,
             global_style: resolve_unit(&self.exts, &self.fs, &base, "app").wxss,
@@ -646,11 +647,26 @@ impl Loaded {
         let source = self.fs.read_file(&base, "plugin.json")?;
         let app: Map<String, Value> =
             serde_json::from_str(crate::input::strip_bom(&source)).ok()?;
+        // 插件页跑在宿主的小程序实例里：`rendererOptions` 是宿主 app 级开关。
+        let host_base = self.dir("miniprogramRoot").unwrap_or_default();
+        let host_renderer_options: Map<String, Value> = self
+            .fs
+            .read_file(&host_base, "app.json")
+            .and_then(|source| {
+                serde_json::from_str::<Map<String, Value>>(crate::input::strip_bom(&source)).ok()
+            })
+            .and_then(|app| {
+                app.get("rendererOptions")
+                    .and_then(Value::as_object)
+                    .cloned()
+            })
+            .unwrap_or_default();
         Some(self.build(ViewSpec {
             base: &base,
             report_prefix: &format!("{base}/"),
             app: &app,
             app_source: &source,
+            inherited_renderer_options: Some(&host_renderer_options),
             routes: plugin_routes(&app),
             seeds: plugin_seeds(&app),
             global_style: None,
@@ -687,6 +703,16 @@ impl Loaded {
             .collect();
 
         let app_value = Value::Object(view.app.clone());
+        let renderer_options = view
+            .inherited_renderer_options
+            .cloned()
+            .or_else(|| {
+                view.app
+                    .get("rendererOptions")
+                    .and_then(Value::as_object)
+                    .cloned()
+            })
+            .unwrap_or_default();
         let pages: Vec<PageUnit> = page_json
             .iter()
             .map(|(route, json)| {
@@ -822,6 +848,7 @@ impl Loaded {
             } else {
                 "app.json".to_string()
             },
+            renderer_options,
             project_config: self.config.clone(),
             project_config_source: self.config_source.clone(),
             project_private_config: self.private_config.clone(),
