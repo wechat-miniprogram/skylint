@@ -19,8 +19,9 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     Argument, ArrayExpressionElement, ArrowFunctionBody, ArrowFunctionExpression,
     AssignmentExpression, AssignmentTarget, BindingPattern, CallExpression, ChainElement,
-    Expression, Function, FunctionBody, MethodDefinition, ObjectExpression, ObjectProperty,
-    ObjectPropertyKind, PropertyDefinition, PropertyKey, VariableDeclarator,
+    Expression, Function, FunctionBody, ImportDeclaration, ImportDeclarationSpecifier,
+    MethodDefinition, ObjectExpression, ObjectProperty, ObjectPropertyKind, PropertyDefinition,
+    PropertyKey, Statement, VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
 use std::collections::{BTreeMap, BTreeSet};
@@ -66,6 +67,12 @@ pub struct JsDoc {
     calls: Vec<CallInfo>,
     this_data_destructures: Vec<ThisDataDestructure>,
     object_fns: Vec<ObjectFn>,
+    /// 单元根对象（`Page({..})` / `Component({..})`）与 `methods` 的属性绑定。
+    members: Vec<MemberBinding>,
+    /// 模块引用（`require` / `import`）的本地名。
+    requires: Vec<RequireBinding>,
+    /// 运行时挂到 `this` 上的属性（`this.onTap = ...`）。
+    this_binds: Vec<MemberBinding>,
     literals: BTreeMap<String, Lit>,
     dirty_data: BTreeSet<String>,
     dirty_all: bool,
@@ -111,6 +118,9 @@ impl JsDoc {
             calls: collector.calls,
             this_data_destructures: collector.this_data_destructures,
             object_fns: collector.object_fns,
+            members: collector.members,
+            requires: collector.requires,
+            this_binds: collector.this_binds,
             literals: collector.literals,
             dirty_data: collector.dirty_data,
             dirty_all: collector.dirty_all,
@@ -170,6 +180,25 @@ impl JsDoc {
     /// 「解构了 `this.data`」与「在不在 worklet 里」，`calls()` 看不到解构。
     pub fn this_data_destructures(&self) -> &[ThisDataDestructure] {
         &self.this_data_destructures
+    }
+
+    /// `Page({..})` / `Component({..})` 顶层与 `methods` 里的属性绑定，按出现顺序。
+    ///
+    /// WXML 的 `bind:tap="onTap"` 是按**属性名**找到处理函数的，所以这里记的是
+    /// 「键 → 值指向哪里」，而不是「函数叫什么名字」。
+    pub fn members(&self) -> &[MemberBinding] {
+        &self.members
+    }
+
+    /// 模块引用的本地名：`const m = require('./x')`、`import m from './x'`、
+    /// `import { a as b } from './x'`、`const { a } = require('./x')`。
+    pub fn requires(&self) -> &[RequireBinding] {
+        &self.requires
+    }
+
+    /// 运行时挂到 `this` 上的属性（`this.onTap = common.onTap.bind(this)`）。
+    pub fn this_binds(&self) -> &[MemberBinding] {
+        &self.this_binds
     }
 
     /// 所有对象字面量里「值是函数、或指向函数的裸标识符」的属性，按遍历顺序。
@@ -276,6 +305,37 @@ pub struct ObjectFn {
     pub ident: Option<String>,
 }
 
+/// 属性值指向哪里。只保留静态可判的四种形态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueShape {
+    /// 内联函数字面量 / 方法简写。
+    Function,
+    /// 裸标识符（同文件声明的函数、或 `require` / `import` 的本地名）。
+    Ident(String),
+    /// `module.fn` 形式的成员访问。
+    Member { object: String, property: String },
+    /// 其它写法（调用结果、条件表达式……）静态判不了。
+    Other,
+}
+
+/// 单元方法表上的一个属性：键 → 值指向。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberBinding {
+    pub key: String,
+    pub value: ValueShape,
+}
+
+/// 一次模块引用：本地名指向哪个文件的什么导出。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequireBinding {
+    /// 本地名（`const m = require('./x')` 里的 `m`）。
+    pub local: String,
+    /// 原始说明符（`./x`、`@/utils/y`）。
+    pub specifier: String,
+    /// 具名引用时的导出名（`import { noop } from './x'`）；命名空间引用为 `None`。
+    pub imported: Option<String>,
+}
+
 impl ArgInfo {
     /// 某个静态键的位置；键不存在时返回 `None`。
     pub fn key_span(&self, key: &str) -> Option<(u32, u32)> {
@@ -302,6 +362,9 @@ struct Collector {
     calls: Vec<CallInfo>,
     this_data_destructures: Vec<ThisDataDestructure>,
     object_fns: Vec<ObjectFn>,
+    members: Vec<MemberBinding>,
+    requires: Vec<RequireBinding>,
+    this_binds: Vec<MemberBinding>,
     /// `Page({data})` / `Component({data, properties})` 里的字面量取值。
     literals: BTreeMap<String, Lit>,
     /// 被动态写入过的 data 键：`setData({k: 变量})` 或 `setData` 里出现动态键。
@@ -380,6 +443,33 @@ impl<'a> Visit<'a> for Collector {
     }
 
     fn visit_variable_declarator(&mut self, it: &VariableDeclarator<'a>) {
+        // 模块引用的本地名：`const m = require('./x')` / `const { a } = require('./x')`。
+        if let Some(init) = &it.init
+            && let Some(specifier) = require_specifier(init)
+        {
+            match &it.id {
+                BindingPattern::BindingIdentifier(id) => self.requires.push(RequireBinding {
+                    local: id.name.as_str().to_string(),
+                    specifier,
+                    imported: None,
+                }),
+                BindingPattern::ObjectPattern(pattern) => {
+                    for property in &pattern.properties {
+                        let (Some(local), Some(imported)) =
+                            (binding_name(&property.value), key_name(&property.key))
+                        else {
+                            continue;
+                        };
+                        self.requires.push(RequireBinding {
+                            local,
+                            specifier: specifier.clone(),
+                            imported: Some(imported),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
         // 只认「初始化值本身就是函数」，以及链式 API 的身份包装
         // `const f = method(() => {})` / `listener(...)`：这两个包装原样返回入参
         // （`miniprogram-chaining-api-polyfill` 只打 tag），运行时仍是那个函数，
@@ -427,6 +517,36 @@ impl<'a> Visit<'a> for Collector {
         walk::walk_property_definition(self, it);
     }
 
+    fn visit_import_declaration(&mut self, it: &ImportDeclaration<'a>) {
+        let Some(specifier) = it.source.value.as_str() else {
+            return;
+        };
+        let specifier = specifier.to_string();
+        let Some(specifiers) = &it.specifiers else {
+            return;
+        };
+        for item in specifiers.iter() {
+            let (local, imported) = match item {
+                ImportDeclarationSpecifier::ImportSpecifier(specifier) => (
+                    specifier.local.name.as_str().to_string(),
+                    Some(specifier.imported.name().as_str().to_string()),
+                ),
+                ImportDeclarationSpecifier::ImportDefaultSpecifier(specifier) => {
+                    (specifier.local.name.as_str().to_string(), None)
+                }
+                ImportDeclarationSpecifier::ImportNamespaceSpecifier(specifier) => {
+                    (specifier.local.name.as_str().to_string(), None)
+                }
+            };
+            self.requires.push(RequireBinding {
+                local,
+                specifier: specifier.clone(),
+                imported,
+            });
+        }
+        walk::walk_import_declaration(self, it);
+    }
+
     fn visit_assignment_expression(&mut self, it: &AssignmentExpression<'a>) {
         // `this.data.x = ...` 也改写了绑定；`Object.assign(this.data, ...)` 之类整体写入
         // 拿不到键名，按「整份 data 不可信」处理。
@@ -456,6 +576,16 @@ impl<'a> Visit<'a> for Collector {
                     _ => self.dirty_all = true,
                 }
             }
+            // `this.onTap = ...`：运行时挂上去的处理函数。
+            AssignmentTarget::StaticMemberExpression(member)
+                if matches!(&member.object, Expression::ThisExpression(_))
+                    && member.property.name != "data" =>
+            {
+                self.this_binds.push(MemberBinding {
+                    key: member.property.name.to_string(),
+                    value: value_shape(&it.right),
+                });
+            }
             _ => {}
         }
         walk::walk_assignment_expression(self, it);
@@ -463,12 +593,30 @@ impl<'a> Visit<'a> for Collector {
 
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
         let callee = callee_name(&it.callee).unwrap_or_default();
+        // 单元方法表三种写法：`Page/Component({ .. })`、链式 `.methods({ .. })`、
+        // 链式 `.init(({..}) => { .. return { .. } })`。
+        let tail = callee.trim_start_matches('.');
         if matches!(callee.as_str(), "Page" | "Component") {
             if let Some(Expression::ObjectExpression(object)) =
                 it.arguments.first().and_then(arg_expression)
             {
                 self.collect_properties_of(object);
+                self.collect_members(object);
             }
+        } else if matches!(tail, "methods" | "method") {
+            if let Some(Expression::ObjectExpression(object)) =
+                it.arguments.first().and_then(arg_expression)
+            {
+                self.collect_members(object);
+            }
+        } else if tail == "init"
+            && let Some(object) = it
+                .arguments
+                .first()
+                .and_then(arg_expression)
+                .and_then(returned_object)
+        {
+            self.collect_members(object);
         } else if callee.ends_with(".setData") {
             match it.arguments.first().and_then(arg_expression) {
                 Some(Expression::ObjectExpression(object)) => self.collect_set_data(object),
@@ -498,6 +646,34 @@ impl<'a> Visit<'a> for Collector {
 }
 
 impl Collector {
+    /// `Component({..})` 顶层与 `methods` 里的属性：键 → 值指向。
+    ///
+    /// 只从单元方法表收，不从任意对象字面量里造数据：同一文件里 `{ onTap: ... }`
+    /// 这样的局部对象跟事件绑定无关。
+    fn collect_members<'b>(&mut self, object: &ObjectExpression<'b>) {
+        for property in &object.properties {
+            let ObjectPropertyKind::ObjectProperty(property) = property else {
+                continue;
+            };
+            if property.computed {
+                continue;
+            }
+            let Some(key) = key_name(&property.key) else {
+                continue;
+            };
+            if key == "methods" {
+                if let Expression::ObjectExpression(methods) = &property.value {
+                    self.collect_members(methods);
+                }
+                continue;
+            }
+            self.members.push(MemberBinding {
+                key,
+                value: value_shape(&property.value),
+            });
+        }
+    }
+
     /// `Component({ properties })`：只收默认值里的字面量。
     fn collect_properties_of<'b>(&mut self, object: &ObjectExpression<'b>) {
         for property in &object.properties {
@@ -620,6 +796,81 @@ fn is_identity_wrapper(expr: &Expression) -> bool {
             .arguments
             .first()
             .is_some_and(|arg| arg.as_expression().is_some_and(is_function))
+}
+
+/// 函数体里最后一个 `return { .. }` 的对象字面量。
+///
+/// 链式 API 的 `.init(({..}) => { ... return { 方法定义 } })` 把方法表放在返回值里。
+fn returned_object<'a, 'b>(expr: &'b Expression<'a>) -> Option<&'b ObjectExpression<'a>> {
+    let body = match expr {
+        Expression::ArrowFunctionExpression(arrow) => match &arrow.body {
+            ArrowFunctionBody::FunctionBody(body) => Some(body.as_ref()),
+            _ => None,
+        },
+        Expression::FunctionExpression(function) => function.body.as_deref(),
+        _ => None,
+    }?;
+    body.statements.iter().rev().find_map(|statement| {
+        let Statement::ReturnStatement(ret) = statement else {
+            return None;
+        };
+        match &ret.argument {
+            Some(Expression::ObjectExpression(object)) => Some(object.as_ref()),
+            _ => None,
+        }
+    })
+}
+
+/// `require('./x')` 的说明符。
+fn require_specifier(expr: &Expression) -> Option<String> {
+    let Expression::CallExpression(call) = expr else {
+        return None;
+    };
+    let Expression::Identifier(callee) = &call.callee else {
+        return None;
+    };
+    if callee.name != "require" {
+        return None;
+    }
+    let Expression::StringLiteral(literal) = call.arguments.first()?.as_expression()? else {
+        return None;
+    };
+    literal.value.as_str().map(str::to_string)
+}
+
+/// 属性值指向哪里：函数字面量、裸标识符、`m.fn`（含 `.bind(this)`）、其它。
+fn value_shape(expr: &Expression) -> ValueShape {
+    let target = |expr: &Expression| -> Option<(String, String)> {
+        let Expression::StaticMemberExpression(member) = expr else {
+            return None;
+        };
+        let Expression::Identifier(object) = &member.object else {
+            return None;
+        };
+        Some((
+            object.name.as_str().to_string(),
+            member.property.name.as_str().to_string(),
+        ))
+    };
+    match expr {
+        _ if is_function(expr) => ValueShape::Function,
+        Expression::Identifier(id) => ValueShape::Ident(id.name.as_str().to_string()),
+        // `m.fn.bind(this)`：`.bind` 只换 this，目标函数没变。
+        Expression::CallExpression(call) => {
+            let Expression::StaticMemberExpression(member) = &call.callee else {
+                return ValueShape::Other;
+            };
+            if !matches!(member.property.name.as_str(), "bind" | "call") {
+                return ValueShape::Other;
+            }
+            target(&member.object)
+                .map(|(object, property)| ValueShape::Member { object, property })
+                .unwrap_or(ValueShape::Other)
+        }
+        _ => target(expr)
+            .map(|(object, property)| ValueShape::Member { object, property })
+            .unwrap_or(ValueShape::Other),
+    }
 }
 
 fn binding_name(pattern: &BindingPattern) -> Option<String> {

@@ -13,7 +13,7 @@
 | P1 级联准确化 | **已完成** | `cascade_entries` 按 `(important, specificity, 出现顺序)` 排序，对齐引擎的 `CascadePriority`；内联 `style` 参与排序（`!important` 也解析）；`CascadeView` 带 `selector` / `stylesheet` / `line` / `column` / `at_rules` / `overridden`（升序里前面的就是被覆盖的） |
 | P2 图回链 | **已完成** | `ancestors` 走 `WxmlGraph`（跨 slot / `virtualHost`）；`usages()` 给出「这份组件被哪些使用点引用」，`usages_recursive(depth)` 再往上爬父组件；`component_options` 进 `UnitFacts` |
 | P3 布局事实 | **部分** | `LayoutFacts` 已有 `display` / `flex_direction` / `out_of_flow` / `width_follows_content` / `block_rendered` / `definite_height`，以及截断三件套（`white_space` / `clips_overflow` / `webview_truncates`，复用 `webview_truncates`）|
-| P4 脚本事实 | **部分** | `handlers(element)`：事件属性 → 事件名 + 静态处理函数名 + 脚本里的位置（含 `worklet` 标记）；动态绑定与 `this.fn` 标 `dynamic`。内联 `<wxs>` 仍未入脚本图 |
+| P4 脚本事实 | **部分** | `handlers(element)`：事件属性 → 事件名 + 静态处理函数名 + 脚本里的位置（含 `worklet` 标记），并顺着方法表跳转：`Component({ methods })` → 属性值 → 同文件函数 / `require`·`import` 的模块导出 / `this.x = m.f().bind(this)` / 链式 API 的 `.methods({..})` 与 `.init(cb)` 返回值。动态绑定标 `dynamic`；静态写了但找不到函数时只给名字、不给位置。内联 `<wxs>` 仍未入脚本图 |
 
 判别力：`cascade_tests.rs` 的 6 条用例里 3 条（specificity / important 压 specificity /
 样式表 important 压内联）在去掉排序后立即变红，说明它们真的在守新口径。
@@ -26,6 +26,32 @@
 > 带进插件视图（`Project.renderer_options`），三个访问器都读它而不是 `plugin.json`。
 > 判别用例 `plugin_view_inherits_host_renderer_options`；六个参考工程诊断 0 增 0 减
 > （没有哪条规则的结论正好卡在这个分支上）。
+
+### handler 解析链（2026-11 补）
+
+WXML 上的 `bind:tap="onTap"` 是按**属性键**找处理函数的，所以解析从「单元方法表」出发，
+而不是从「函数名」出发：
+
+1. `this.onTap = ...`（运行时覆盖对象方法，优先命）；
+2. `Page({..})` / `Component({..})` 顶层与 `methods` 里的同名键；
+3. 键的值：函数字面量 → 自身；裸标识符 → 同文件函数或 `require`/`import` 的模块导出；
+   `m.fn`（含 `.bind(this)`）→ 模块 `m` 的导出 `fn`；
+4. 兜底：同文件有同名函数（`onTap() {}` 简写）。
+
+跨模块只走**单元脚本的 `require` / `import`**，说明符限相对路径与根路径（`./x`、`/x`），
+候选后缀按打包器顺序试 `原样 → .js → .ts → /index.js → /index.ts`；裸模块名（`lodash`）
+属于 `node_modules`，不进静态检查面。跳数上限 8，`(文件, 名字)` 去重防环。
+
+六工程实测（事件绑定总数 → 能定位到函数体）：businessview 293→289、novel 166→165、
+skit_1 167→167、plugin_1 354→329、plugin_2 413→386、skit-player 282→241
+（改动前分别是 286 / 165 / 164 / 325 / 382 / 241）。剩下的空档分三类：
+
+- **编译产物里的 async 包装**：`var onConfirm = method(_asyncToGenerator(_regenerator.mark(function _callee(){…})))`
+  ——函数体在，但名字绑在 var 上、中间还隔着多层 transpiler 包装，不做模式匹配；
+- **真·解不开**：`bind:tap="onReceive"` 而组件只有 `onReceiveFlower`（businessview
+  `receive-flower.wxml:40`）、`handleRefund` 全仓无定义——这类正是 facts 应输出的
+  「静态写了但找不到」，不是解析能力不足；
+- **WXS**：仍未进脚本图（P4 剩余）。
 
 ## 结论
 

@@ -21,10 +21,12 @@
 //! - 返回的都是**拥有所有权的快照**，不把内部借用漏出去。
 
 use std::cell::OnceCell;
+use std::collections::HashSet;
 
+use crate::input::js::ValueShape;
 use crate::input::wxml::{WxmlDoc, WxmlElement};
 use crate::matcher::Tree;
-use crate::project::{Project, Scope, StyleIsolation};
+use crate::project::{JsFile, Project, Scope, StyleIsolation};
 use crate::rules::wxml::{self, Reach};
 use crate::wxml_graph::WxmlGraph;
 
@@ -151,10 +153,112 @@ pub struct HandlerView {
 /// 事件处理函数在脚本里的位置。
 #[derive(Debug, Clone)]
 pub struct HandlerFunction {
+    /// 最终到达的函数名（与 WXML 上写的键不同时能看出来，如 `onTap: noop` → `noop`）。
+    pub name: String,
     pub script: String,
     pub line: u32,
     pub column: u32,
     pub worklet: bool,
+}
+
+/// handler 解析的最大跳数：成员后再成员、模块后再模块都算一跳。
+const MAX_HANDLER_DEPTH: u32 = 8;
+
+/// 按名字解析处理函数。`seen` 用 `(文件, 名字)` 去重，环不会无限递归。
+fn resolve_name(
+    project: &Project,
+    file: &JsFile,
+    name: &str,
+    budget: &mut u32,
+    seen: &mut HashSet<String>,
+) -> Option<HandlerFunction> {
+    if *budget == 0 {
+        return None;
+    }
+    *budget -= 1;
+    if !seen.insert(format!("{}::{name}", file.path)) {
+        return None;
+    }
+    // 1. 运行时挂到 `this` 上的属性覆盖对象方法（`this.onTap = ...`）。
+    if let Some(binding) = file.doc.this_binds().iter().find(|b| b.key == name)
+        && let Some(found) =
+            resolve_shape(project, file, &binding.key, &binding.value, budget, seen)
+    {
+        return Some(found);
+    }
+    // 2. `Page` / `Component` 对象（含 `methods`）上的属性键。
+    if let Some(binding) = file.doc.members().iter().find(|b| b.key == name)
+        && let Some(found) =
+            resolve_shape(project, file, &binding.key, &binding.value, budget, seen)
+    {
+        return Some(found);
+    }
+    // 3. 具名模块引用：`import { noop } from './x'` 的本地名就是导出名。
+    if let Some(require) = file.doc.requires().iter().find(|r| r.local == name) {
+        let module = project.require_target(&file.path, &require.specifier)?;
+        let export = require.imported.as_deref().unwrap_or(name);
+        return resolve_export(project, module, export, budget, seen);
+    }
+    // 4. 同文件同名函数（`onTap() {}` 简写、`const onTap = () => {}`）。
+    function_at(file, name)
+}
+
+fn resolve_export(
+    project: &Project,
+    module: &JsFile,
+    name: &str,
+    budget: &mut u32,
+    seen: &mut HashSet<String>,
+) -> Option<HandlerFunction> {
+    // 导出形状不在解析面内：按「同名属性 / 同名函数」找，找不到就放弃（不猜）。
+    if let Some(binding) = module.doc.members().iter().find(|b| b.key == name)
+        && let Some(found) =
+            resolve_shape(project, module, &binding.key, &binding.value, budget, seen)
+    {
+        return Some(found);
+    }
+    function_at(module, name)
+}
+
+fn resolve_shape(
+    project: &Project,
+    file: &JsFile,
+    key: &str,
+    shape: &ValueShape,
+    budget: &mut u32,
+    seen: &mut HashSet<String>,
+) -> Option<HandlerFunction> {
+    match shape {
+        // 函数字面量由采集器按属性键/变量名注册，按 key 查。
+        ValueShape::Function => function_at(file, key),
+        ValueShape::Ident(name) => resolve_name(project, file, name, budget, seen),
+        ValueShape::Member { object, property } => {
+            let module = file
+                .doc
+                .requires()
+                .iter()
+                .find(|require| require.local == *object)
+                .and_then(|require| project.require_target(&file.path, &require.specifier))?;
+            resolve_export(project, module, property, budget, seen)
+        }
+        ValueShape::Other => None,
+    }
+}
+
+fn function_at(file: &JsFile, name: &str) -> Option<HandlerFunction> {
+    let function = file
+        .doc
+        .functions()
+        .into_iter()
+        .find(|function| function.name == Some(name))?;
+    let (line, column) = file.doc.position(function.start as usize);
+    Some(HandlerFunction {
+        name: name.to_string(),
+        script: file.path.clone(),
+        line,
+        column,
+        worklet: function.has_worklet,
+    })
 }
 
 /// 事件绑定属性名 → 事件名。
@@ -286,8 +390,12 @@ impl<'a> Facts<'a> {
 
     /// 元素上的全部事件绑定及其处理函数。
     ///
-    /// 只回答「静态可确定的」：`{{handler}}` 这类动态绑定给出 `name: None`、
-    /// `dynamic: true`；静态值但不是裸标识符（`this.onTap`）也算动态。
+    /// 解析顺序对齐运行时：WXML 上的名字先当**属性键**查（`methods` 里的
+    /// `onTap`），键的值再决定去哪：函数字面量 → 自身；裸标识符 → 同文件函数或
+    /// `require` / `import` 的模块导出；`m.fn` → 模块 `m` 的导出 `fn`。最后才回落
+    /// 「同文件有同名函数」——为了兼容 `onTap() {}` 这种简写。
+    ///
+    /// 只给静态可确定的结论：`{{handler}}` 与 `this.fn` 这类标记 `dynamic`。
     pub fn handlers(&self, element: &WxmlElement) -> Vec<HandlerView> {
         let script = self
             .scope
@@ -305,18 +413,8 @@ impl<'a> Facts<'a> {
                     .filter(|value| crate::rules::js::is_identifier(value))
                     .map(str::to_string);
                 let function = script.zip(name.as_deref()).and_then(|(file, name)| {
-                    let function = file
-                        .doc
-                        .functions()
-                        .into_iter()
-                        .find(|function| function.name == Some(name))?;
-                    let (line, column) = file.doc.position(function.start as usize);
-                    Some(HandlerFunction {
-                        script: file.path.clone(),
-                        line,
-                        column,
-                        worklet: function.has_worklet,
-                    })
+                    let mut budget = MAX_HANDLER_DEPTH;
+                    resolve_name(self.project, file, name, &mut budget, &mut HashSet::new())
                 });
                 Some(HandlerView {
                     attribute: attribute.name.clone(),
@@ -643,6 +741,94 @@ mod tests {
         // `worklet:` 是手势回调，不是事件绑定。
         let second = facts.handlers(facts.elements()[1]);
         assert!(second.is_empty(), "{second:#?}");
+    }
+
+    /// 方法表里的三种跳转：同一模块里的 `const noop = method(..)`、跨模块 `import`、
+    /// `this.onX = m.f(..).bind(this)`。都解不出时只给名字、不给函数（不猜）。
+    #[test]
+    fn handlers_resolve_through_methods_and_imports() {
+        let fixture = Fixture::page(
+            "inspect-handler-jumps",
+            r#"<view bindtap="onTap" bind:longpress="onTrack" catch:tap="onReload" bind:tap="onGone"/>"#,
+            "",
+        );
+        fixture
+            .write(
+                "pages/index/index.js",
+                r#"
+                const common = require('../../utils/common');
+                import { track } from '../../utils/track';
+                const noop = method(() => {});
+                Component({
+                  methods: { onTap: noop, onTrack: track },
+                  onLoad() { this.onReload = common.reload.bind(this); },
+                });
+                "#,
+            )
+            .write(
+                "utils/track.js",
+                "export function track(evt) { return evt; }",
+            )
+            .write(
+                "utils/common.js",
+                "module.exports = { reload() { return 1; } };",
+            );
+        let project = fixture.project();
+        let loaded = LoadedDoc::load(&project, "pages/index/index.wxml").unwrap();
+        let facts = loaded.facts(&project);
+        let handlers = facts.handlers(facts.elements()[0]);
+        let located: Vec<(&str, Option<&str>, Option<&str>)> = handlers
+            .iter()
+            .map(|handler| {
+                (
+                    handler.name.as_deref().unwrap_or_default(),
+                    handler.function.as_ref().map(|f| f.name.as_str()),
+                    handler.function.as_ref().map(|f| f.script.as_str()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            located,
+            [
+                ("onTap", Some("noop"), Some("pages/index/index.js")),
+                ("onTrack", Some("track"), Some("utils/track.js")),
+                ("onReload", Some("reload"), Some("utils/common.js")),
+                ("onGone", None, None),
+            ],
+            "{handlers:#?}"
+        );
+    }
+
+    /// 链式 API：`.init(({..}) => { .. return { 方法定义 } })` 的返回值就是方法表。
+    ///
+    /// 键与函数名刻意不同（`onTap: handle`）：同名的话靠「同文件同名函数」的兜底
+    /// 也能过，用例就守不住方法表这条链。
+    #[test]
+    fn handlers_resolve_through_chaining_init() {
+        let fixture = Fixture::page(
+            "inspect-handler-chaining",
+            r#"<view bind:tap="onTap"/>"#,
+            "",
+        );
+        fixture.write(
+            "pages/index/index.js",
+            r#"
+            Component()
+              .init(({ method }) => {
+                const handle = method(() => {});
+                return { onTap: handle };
+              })
+              .register();
+            "#,
+        );
+        let project = fixture.project();
+        let loaded = LoadedDoc::load(&project, "pages/index/index.wxml").unwrap();
+        let facts = loaded.facts(&project);
+        let handlers = facts.handlers(facts.elements()[0]);
+        assert_eq!(handlers.len(), 1, "{handlers:#?}");
+        let function = handlers[0].function.as_ref().expect("应能沿链式方法表定位");
+        assert_eq!(function.name, "handle");
+        assert_eq!(function.script, "pages/index/index.js");
     }
 
     /// 递归反链：内层组件 → 外层组件 → 页面，`depth` 是跳数。

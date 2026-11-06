@@ -206,6 +206,35 @@ impl Project {
         Ok(std::iter::once(host).chain(loaded.plugin()).collect())
     }
 
+    /// 按视图相对路径取脚本。
+    pub(crate) fn script(&self, path: &str) -> Option<&JsFile> {
+        self.scripts.iter().find(|file| file.path == path)
+    }
+
+    /// 把 `require` / `import` 的说明符解析成工程内的脚本。
+    ///
+    /// 只认相对路径（`./x`）与根路径（`/x`）；裸模块名（`lodash`、`@scope/pkg`）
+    /// 属于 `node_modules`，不在静态检查面内，返回 `None`。候选后缀按打包器的
+    /// 常规顺序试：原样 → `.js` → `.ts` → `/index.js` → `/index.ts`。
+    pub(crate) fn require_target(&self, importer: &str, specifier: &str) -> Option<&JsFile> {
+        let base = if let Some(rest) = specifier.strip_prefix('/') {
+            posix_join("", rest)
+        } else if specifier.starts_with('.') {
+            posix_join(&posix_dirname(importer), specifier)
+        } else {
+            return None;
+        };
+        [
+            base.clone(),
+            format!("{base}.js"),
+            format!("{base}.ts"),
+            format!("{base}/index.js"),
+            format!("{base}/index.ts"),
+        ]
+        .iter()
+        .find_map(|candidate| self.script(candidate))
+    }
+
     /// 这份 WXML 所属单元声明的组件标签名（含 app 级）；模板文件没有归属，返回空。
     pub fn declared_components(&self, wxml_path: &str) -> BTreeSet<String> {
         self.declared_components
