@@ -440,6 +440,14 @@ impl<'a> Tree<'a> {
         if unknown { Tri::Unknown } else { Tri::No }
     }
 
+    /// 选择器的优先级（selectors 的 packed 形式：id/class/tag 各占 10 位）。
+    ///
+    /// 解析失败返回 `None`——调用方应当把它当成「判不了」，不要当成 0。
+    pub fn selector_specificity(&self, selector: &str) -> Option<u32> {
+        let list = self.parse(selector)?;
+        list.slice().iter().map(|one| one.specificity()).max()
+    }
+
     /// 这份文档的路径。
     /// 元素的父节点：真实元素与合成占位都能回答，根节点返回 `None`。
     pub fn parent_of<'e>(&'e self, element: &WxmlElement) -> Option<&'e WxmlElement> {

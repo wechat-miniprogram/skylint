@@ -83,6 +83,11 @@ impl FlatElement {
             .iter()
             .find(|attr| attr.name.eq_ignore_ascii_case(name))
     }
+
+    /// `<slot name="x">` 的槽名；默认槽与普通元素为 `None`。
+    pub(crate) fn slot_name(&self) -> Option<&str> {
+        self.slot_name.as_deref()
+    }
 }
 
 /// 逻辑祖先链。
@@ -332,6 +337,17 @@ impl WxmlGraph {
             }
         }
         AncestorChain { nodes: out, open }
+    }
+
+    /// 组件模板的 `options`：`(multipleSlots, virtualHost)`。
+    ///
+    /// 页面与被引入的片段没有这两个开关，返回 `(false, false)`。迁移工具需要它来解释
+    /// 「slot 投影为什么走这条边」「宿主元素是否存在」。
+    pub(crate) fn component_options(&self, doc_path: &str) -> (bool, bool) {
+        self.by_path.get(doc_path).map_or((false, false), |&doc| {
+            let options = self.docs[doc].options;
+            (options.multiple_slots, options.virtual_host)
+        })
     }
 
     /// 这份文档（含递归使用的组件与引入的模板）能渲染到的全部文档路径，含自身。

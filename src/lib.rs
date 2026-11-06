@@ -13,6 +13,8 @@ pub use skylint_core::{
     ComponentUnit, Diagnostic, PageUnit, Project, Registry, Report, Rule, RuleMeta, Severity,
     Target,
 };
-pub use skylint_core::{diag, input, matcher, project, report, rules, suppress, wxml_graph};
+pub use skylint_core::{
+    diag, input, inspect, matcher, project, report, rules, suppress, wxml_graph,
+};
 
 pub mod render;

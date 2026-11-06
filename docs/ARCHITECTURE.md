@@ -61,6 +61,9 @@ println!("{}", report.to_json());
 
 新的集成（迁移流水线、MCP server 等）只依赖 `skylint-core`：
 
+0. **要用「元素为什么这么判」时，直接读 `inspect`**——`LoadedDoc::load` → `facts()`，
+   能拿到级联溯源、逻辑祖先链、布局判定与单元配置，不要自己重算；
+
 1. 用 `Project::load_views` / `single_file` 拿到视图；
 2. 用 `Registry::for_target` + `run_views` 拿诊断，或直接 `Registry::builtin().run(&project, &ignored)`；
 3. 需要「某个元素为什么这么判」时，用 `rules::wxml` 的取值函数（级联、祖先链、`wxml_graph` 的 slot 投影）；

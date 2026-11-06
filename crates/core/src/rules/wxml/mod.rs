@@ -5,6 +5,8 @@
 //! 「页面 + 组件 WXML 遍历」与解析辅助。
 
 pub mod branch;
+#[cfg(test)]
+mod cascade_tests;
 pub mod component_attribute;
 pub mod component_children;
 pub mod horizontal_scroll_enable_flex;
@@ -84,7 +86,7 @@ pub(crate) fn wxml_files(project: &Project) -> impl Iterator<Item = &str> {
 /// 在 Skyline 下渲染到，它就按 [`Reach::Skyline`] 处理（诊断是全局的，不该因为
 /// 某个 WebView 页面也用了它而降级）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Reach {
+pub enum Reach {
     Skyline,
     /// 只被 `renderer: "webview"` 的页面（传递）引用，或它自己就是这类页面的内容。
     WebviewOnly,
@@ -277,10 +279,31 @@ pub(crate) fn display_values(
     out
 }
 
-/// 元素命中的某条属性声明（取级联的最后一个近似值）。
+/// 一条参与级联的声明，带溯源信息。
 ///
-/// 不计算 specificity：按样式表顺序与规则顺序取最后一条（`visit` 侧同口径），
-/// 同名规则里靠后的声明覆盖靠前的，与同优先级 CSS 一致；跨优先级冲突时静态判不了。
+/// 排序口径对齐引擎（`style/cascade_priority.h`）：importance 最高，其次 inline 胜过
+/// 任何选择器，再比 specificity，最后比出现顺序。`cascade_entries` 返回升序，末位生效。
+pub(crate) struct CascadeEntry<'a> {
+    pub value: String,
+    /// 来自样式表时的文件与声明；来自内联 `style` 时都是 `None`。
+    pub sheet: Option<&'a crate::project::StyleSheet>,
+    pub declaration: Option<&'a crate::input::wxss::WxssDeclaration>,
+    /// 命中的选择器原文；内联 `style` 为 `None`。
+    pub selector: Option<String>,
+    /// 选择器优先级（packed u32）；内联 `style` 用 `u32::MAX`。
+    pub specificity: u32,
+    pub important: bool,
+    /// 声明所处的 at-rule 上下文（`@media …`）；内联为空。
+    pub at_rules: &'a [crate::input::wxss::WxssAtRule],
+    pub inline: bool,
+    /// 出现顺序，仅用于同级比较。
+    order: usize,
+}
+
+/// 元素某个属性的有效取值。
+///
+/// 与 [`CascadeEntry`] 同源：这里只留「赢了的那一条」需要的信息，需要被覆盖的
+/// 声明或 at-rule 上下文时用 `cascade_entries`。
 pub(crate) struct Resolved<'a> {
     pub value: String,
     /// 来自样式表时的文件与声明；来自内联 `style` 时都是 `None`。
@@ -288,9 +311,88 @@ pub(crate) struct Resolved<'a> {
     pub declaration: Option<&'a crate::input::wxss::WxssDeclaration>,
 }
 
-/// 元素命中的某属性声明，按级联顺序（内联 `style` 除外）。
+/// 元素某个属性参与级联的全部声明，升序（末位生效）。
 ///
-/// 与 [`resolved_property`] 同口径：不计算 specificity，只按样式表顺序与规则顺序。
+/// 每条都带溯源：来自哪个样式表 / 哪条选择器 / 优先级 / 是否 `!important` /
+/// at-rule 上下文。需要「为什么这条被覆盖」时看它前一条；需要「这个值会不会变」
+/// 时看 `at_rules`。
+pub(crate) fn cascade_entries<'a>(
+    project: &'a Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    property: &str,
+) -> Vec<CascadeEntry<'a>> {
+    let mut entries = Vec::new();
+    let mut order = 0;
+
+    for sheet in project
+        .styles
+        .iter()
+        .filter(|sheet| sheet_covers(sheet, project, tree.path()))
+    {
+        for rule in &sheet.doc.rules {
+            // 一条规则可能有多个选择器，各自优先级不同：取命中里最高的那个。
+            let matched = rule
+                .selectors
+                .iter()
+                .filter(|selector| {
+                    tree.matches(element, selector.text.trim(), Dialect::Skyline) == Tri::Yes
+                })
+                .filter_map(|selector| {
+                    let text = selector.text.trim();
+                    tree.selector_specificity(text).map(|spec| (spec, text))
+                })
+                .max_by_key(|(spec, _)| *spec);
+            let Some((specificity, selector)) = matched else {
+                continue;
+            };
+            for declaration in rule
+                .declarations
+                .iter()
+                .filter(|decl| decl.name.eq_ignore_ascii_case(property))
+            {
+                order += 1;
+                entries.push(CascadeEntry {
+                    value: declaration.value.trim().to_string(),
+                    sheet: Some(sheet),
+                    declaration: Some(declaration),
+                    selector: Some(selector.to_string()),
+                    specificity,
+                    important: declaration.important,
+                    at_rules: &rule.at_rules,
+                    inline: false,
+                    order,
+                });
+            }
+        }
+    }
+
+    if let Some(style) =
+        structure::find_attr(element, "style").and_then(|attr| attr.value.as_deref())
+    {
+        for (value, important) in inline_properties(style, property) {
+            order += 1;
+            entries.push(CascadeEntry {
+                value,
+                sheet: None,
+                declaration: None,
+                selector: None,
+                specificity: u32::MAX,
+                important,
+                at_rules: &[],
+                inline: true,
+                order,
+            });
+        }
+    }
+
+    // 升序：importance → specificity → 出现顺序；末位即生效值。
+    entries.sort_by_key(|entry| (entry.important, entry.specificity, entry.order));
+    entries
+}
+
+/// 元素命中的样式表声明，按级联顺序（内联 `style` 除外）。
+///
 /// 需要知道「丢掉其中一条之后会落到哪一条」时用它——只看有效取值会丢掉这个信息。
 pub(crate) fn matched_declarations<'a>(
     project: &'a Project,
@@ -301,56 +403,25 @@ pub(crate) fn matched_declarations<'a>(
     &'a crate::project::StyleSheet,
     &'a crate::input::wxss::WxssDeclaration,
 )> {
-    project
-        .styles
-        .iter()
-        .filter(|sheet| sheet_covers(sheet, project, tree.path()))
-        .flat_map(|sheet| {
-            sheet
-                .doc
-                .rules
-                .iter()
-                .filter(|rule| {
-                    rule.selectors.iter().any(|selector| {
-                        tree.matches(element, selector.text.trim(), Dialect::Skyline) == Tri::Yes
-                    })
-                })
-                .flat_map(move |rule| {
-                    rule.declarations
-                        .iter()
-                        .filter(|decl| decl.name.eq_ignore_ascii_case(property))
-                        .map(move |decl| (sheet, decl))
-                })
-        })
+    cascade_entries(project, tree, element, property)
+        .into_iter()
+        .filter_map(|entry| Some((entry.sheet?, entry.declaration?)))
         .collect()
 }
 
-/// 元素某个属性的有效取值：内联 `style` 最后生效（`!important` 不计）。
+/// 元素某个属性的有效取值。
 pub(crate) fn resolved_property<'a>(
     project: &'a Project,
     tree: &Tree<'_>,
     element: &WxmlElement,
     property: &str,
 ) -> Option<Resolved<'a>> {
-    let from_sheets = matched_declarations(project, tree, element, property)
-        .pop()
-        .map(|(sheet, declaration)| Resolved {
-            value: declaration.value.trim().to_string(),
-            sheet: Some(sheet),
-            declaration: Some(declaration),
-        });
-
-    let inline = structure::find_attr(element, "style")
-        .and_then(|attr| attr.value.as_deref())
-        .and_then(|style| inline_value(style, property));
-    match inline {
-        Some(value) => Some(Resolved {
-            value,
-            sheet: None,
-            declaration: None,
-        }),
-        None => from_sheets,
-    }
+    let winner = cascade_entries(project, tree, element, property).pop()?;
+    Some(Resolved {
+        value: winner.value,
+        sheet: winner.sheet,
+        declaration: winner.declaration,
+    })
 }
 
 /// WebView 侧本来就会截断吗：多行靠 `-webkit-line-clamp`，单行靠
@@ -495,16 +566,26 @@ pub(crate) fn clamp_lines(
 }
 
 /// 内联 `style` 里某个属性的最后一个取值。
-fn inline_value(style: &str, property: &str) -> Option<String> {
+/// 内联 `style` 里某属性的全部声明：`(值, 是否 !important)`，按出现顺序。
+fn inline_properties(style: &str, property: &str) -> Vec<(String, bool)> {
     style
         .split(';')
         .filter_map(|declaration| {
             let (name, value) = declaration.split_once(':')?;
             name.trim()
                 .eq_ignore_ascii_case(property)
-                .then(|| value.trim().to_string())
+                .then(|| split_important(value.trim()))
         })
-        .next_back()
+        .collect()
+}
+
+/// 拆掉值末尾的 `!important`（大小写不敏感）。
+fn split_important(value: &str) -> (String, bool) {
+    let lower = value.to_ascii_lowercase();
+    match lower.rfind("!important") {
+        Some(index) => (value[..index].trim().to_string(), true),
+        None => (value.trim().to_string(), false),
+    }
 }
 
 fn inline_displays(style: &str) -> impl Iterator<Item = String> + '_ {
@@ -512,7 +593,7 @@ fn inline_displays(style: &str) -> impl Iterator<Item = String> + '_ {
         let (name, value) = declaration.split_once(':')?;
         name.trim()
             .eq_ignore_ascii_case("display")
-            .then(|| value.trim().to_string())
+            .then(|| split_important(value.trim()).0)
     })
 }
 

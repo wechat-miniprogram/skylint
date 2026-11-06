@@ -10,6 +10,7 @@
 
 pub mod diag;
 pub mod input;
+pub mod inspect;
 pub mod matcher;
 pub mod project;
 pub mod report;
@@ -18,6 +19,10 @@ pub mod suppress;
 pub mod wxml_graph;
 
 pub use diag::{Diagnostic, Severity};
+pub use inspect::{
+    AncestorView, Ancestors, CascadeView, Facts, LayoutFacts, LoadedDoc, Renderer, UnitFacts,
+    UnitKind,
+};
 pub use project::{ComponentUnit, PageUnit, Project};
 pub use report::Report;
 pub use rules::{Registry, Rule, RuleMeta, Target};

@@ -86,7 +86,7 @@ impl Rule for ScrollViewHeight {
 /// 元素在 Skyline 下拿到的高度是否确定（= 不会塌成 0）。
 ///
 /// 判不了的情况（动态内联 `style`、递归过深）一律当确定，宁可漏报。
-fn definite_height(
+pub(crate) fn definite_height(
     project: &Project,
     tree: &Tree<'_>,
     element: &WxmlElement,
