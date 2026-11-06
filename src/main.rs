@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
-use skylint::report::Style;
+use skylint::render::{self, Style};
 use skylint::rules::Target;
 use skylint::{Project, Registry, Report};
 
@@ -74,7 +74,8 @@ fn main() -> ExitCode {
     } else {
         print!(
             "{}",
-            report.to_text(
+            render::text(
+                &report,
                 |path| {
                     // 宿主路径相对 miniprogramRoot、插件路径相对项目根，
                     // project.config.json 这类配置又在项目根，依次回落。

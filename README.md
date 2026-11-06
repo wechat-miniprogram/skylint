@@ -63,6 +63,9 @@ WXSS 里用 `/* skylint-disable-next-line */` 同样有效。
 
 退出码：`0` 没有问题，`1` 有 error 级问题，`2` 项目加载失败。
 
+只想要检查结果、不要 CLI 依赖时，直接依赖引擎 `skylint-core`；分层与用法见
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+
 ## License
 
 MIT
