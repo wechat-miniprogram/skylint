@@ -211,7 +211,7 @@ pub fn next(plan: &Plan, ledger: &Ledger) -> Next {
             progress.shared += unit.diagnostics.total;
             continue;
         }
-        if unit.diagnostics.total == 0 {
+        if unit.diagnostics.total == 0 && !ledger.units.contains_key(&unit.id) {
             progress.not_needed += 1;
             continue;
         }

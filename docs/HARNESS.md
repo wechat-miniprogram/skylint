@@ -48,11 +48,18 @@
 
 ```bash
 cd harness
-npm i          # workflow express nitro rollup（+ @types/express typescript）
+npm i
 ```
 
+两个版本约束是踩出来的，不是猜的：
+
+| 依赖 | 为什么 |
+|---|---|
+| `nitro@3.0.261103-rc` | `routes` 这个配置键只在这版及以后存在（3.0.0 只有文件路由）。低版本会 TS 报错、路由也不挂载。 |
+| `rolldown` | 官方文档写的是 `rollup`，但 nitro v3 用 rolldown。缺了它会退化成「无 builder」模式，module 加的编译插件**不生效**，`start()` 报 `invalid workflow function`。 |
+
 `nitro.config.ts` 里 `modules: ["workflow/nitro"]` 是编译 `"use workflow"` /
-`"use step"` 的地方。少了它，`start()` 会报
+`"use step"` 的地方。少了它，`start()` 同样会报
 `'start' received an invalid workflow function`。
 
 ## 4. 目录
@@ -157,3 +164,41 @@ v2 的做法：每个单元一个 `git worktree` + 台账分片，最后合并�
 | 5 | `POST /api/accept` 能唤醒挂起的 run | run 从 `verified` 走到 `accepted` |
 
 第 3、4 条是这个架构真正的价值：**不确定的判定被固化成确定的数据。**
+
+## 12. 已经跑过的 spike（2026-11-07）
+
+目标工程：`weapp-skit-player-plugin` 的拷贝（9 个待迁移单元，13 条诊断），
+agent 与 judge 都是 shell 脚本（不花钱）。
+
+| # | 验的什么 | 结果 |
+|---|---|---|
+| 1 | `POST /api/run` 返回 runId | `wrun_…AS4T` |
+| 2 | agent 故意引入新错误 → L0 拦住 | `failures: 1, gate: l0-static, 新增 1 条` |
+| 3 | 回滚干净 | 回滚后 `git status` 只剩 `.skylint/` |
+| 4 | 第二次改对 → 判定 → `verified` | agent 跑 2 次、judge 跑 1 次 |
+| 5 | 挂起等人，不占算力 | run 状态 `running` 但无 step 在执行 |
+| 6 | **kill 进程重启后 accept 能唤醒** | ledger `verified → accepted` |
+| 7 | **重放不重跑 agent/judge** | 计数仍为 2 / 1 |
+| 8 | 同工程重复 start | 409，返回已在跑的 runId |
+
+### 两个真 bug（spike 才暴露的）
+
+**① `git clean -fd` 会把 `.skylint/` 删掉。** 台账、基线、作业单都在里面，
+而它们恰好是未跟踪文件。回滚一次就丢全部状态。现在改为自己枚举
+`git ls-files --others --exclude-standard` 并跳过 `.skylint/`。
+
+**② 单元文件被 `.gitignore` 排除时，整套隔离静默失效。** 短剧插件的单元在
+`dist/`（构建产物，被忽略），于是 `git diff` 看不见改动、`git checkout` 不
+回滚、越界检查永远通过——而门禁照常给「通过」。现在开工前先
+`git ls-files --error-unmatch` 检查，不在索引里就 `FatalError` 直接停：
+
+```
+FatalError: dist/plugin/components/actor-dialog-inner/actor-dialog-inner.wxml
+不在 git 索引里（被 .gitignore 排除？）
+```
+
+### 一个环境坑
+
+目标仓库里有 `mise.toml` 而没 `mise trust` 过时，step 里所有命令都会以
+退出码 1 失败（错误信息在 stderr）。表现为「agent 永远返回 1」。
+先在该仓库里 `mise trust`，或让 harness 的 `PATH` 不经过 shim。

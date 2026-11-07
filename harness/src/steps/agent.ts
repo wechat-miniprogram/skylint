@@ -3,10 +3,30 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { FatalError } from "workflow";
 
 const run = promisify(execFile);
 
 type Project = { root: string };
+
+/**
+ * 单元文件必须在 git 索引里。
+ *
+ * 否则 `git diff` / `checkout` / `stash` 全部静默失效：改了什么看不见、回滚也不回滚，
+ * 而门禁照常给“通过”。这是最危险的一类错（看起来在跑，实际上没有隔离）。
+ */
+export async function assertTracked(project: Project, unitPath: string): Promise<void> {
+  "use step";
+  try {
+    await run("git", ["ls-files", "--error-unmatch", "--", unitPath], { cwd: project.root });
+  } catch {
+    throw new FatalError(
+      `${unitPath} 不在 git 索引里（被 .gitignore 排除？）。\n` +
+        "快照、回滚、越界检查都靠 git diff，单元文件不被跟踪时它们会静默失效。\n" +
+        "把单元所在目录纳入版本控制（或换成源码目录作为单元）后再跑。",
+    );
+  }
+}
 
 /**
  * 跑一次 agent。
@@ -32,7 +52,9 @@ export async function runAgent(
     "只改这个单元的文件；不要动 .skylint/ 下的任何东西。",
     `这是第 ${attempt} 次尝试：如果 job.attempts 里有上次失败的原因，先解决它。`,
   ].join("\n");
-  const command = template.replaceAll("{prompt}", prompt.replaceAll('"', '\\"'));
+  const command = template
+    .replaceAll("{job}", jobPath)
+    .replaceAll("{prompt}", prompt.replaceAll('"', '\\"'));
 
   try {
     const { stdout, stderr } = await run("sh", ["-c", command], {
@@ -71,22 +93,41 @@ export async function buildProd(
   }
 }
 
-/** 每个单元动手前的快照：重试时靠它回滚，避免「改一半再改一遍」。 */
-export async function snapshot(project: Project, unitId: string): Promise<string> {
+/**
+ * 每个单元动手前的快照：重试时靠它回滚，避免「改一半再改一遍」。
+ *
+ * 存两份：`head`（防 agent 自己 commit）与 `tree`（工作区未提交的改动）。
+ */
+export type Snapshot = { head: string; tree: string };
+
+export async function snapshot(project: Project): Promise<Snapshot> {
   "use step";
-  const { stdout } = await run("git", ["stash", "create"], { cwd: project.root });
-  const sha = stdout.trim();
-  await run("sh", ["-c", `echo ${JSON.stringify(sha)} > .skylint/snapshots/${sanitize(unitId)}`], {
-    cwd: project.root,
-  });
-  return sha;
+  const { stdout: head } = await run("git", ["rev-parse", "HEAD"], { cwd: project.root });
+  const { stdout: tree } = await run("git", ["stash", "create"], { cwd: project.root });
+  return { head: head.trim(), tree: tree.trim() || head.trim() };
 }
 
-/** 回到快照。工作区里只应该有这个单元的改动，所以 `checkout -- .` 足够。 */
-export async function revert(project: Project): Promise<void> {
+/**
+ * 回到快照。
+ *
+ * `git clean` 会连 `.skylint/` 一起删掉（台账、基线、作业单都在里面），所以这里
+ * 自己枚举未跟踪文件并跳过它，不用 `clean -fd`。
+ */
+export async function revert(project: Project, snap: Snapshot): Promise<void> {
   "use step";
-  await run("git", ["checkout", "--", "."], { cwd: project.root });
-  await run("git", ["clean", "-fd", "--", "."], { cwd: project.root });
+  await run("git", ["reset", "--hard", snap.head], { cwd: project.root });
+  await run("git", ["checkout", snap.tree, "--", "."], { cwd: project.root });
+
+  const { stdout } = await run("git", ["ls-files", "--others", "--exclude-standard"], {
+    cwd: project.root,
+  });
+  const strays = stdout
+    .split("\n")
+    .filter(Boolean)
+    .filter((file) => !file.startsWith(".skylint/"));
+  if (strays.length > 0) {
+    await run("rm", ["-f", "--", ...strays], { cwd: project.root });
+  }
 }
 
 /** 这个单元到底改了哪些文件——越界就判失败。 */
@@ -106,6 +147,4 @@ export async function diffText(project: Project): Promise<string> {
   return stdout.length > 200_000 ? `${stdout.slice(0, 200_000)}\n…（已截断）` : stdout;
 }
 
-function sanitize(unitId: string): string {
-  return unitId.replace(/^unit:/, "").replaceAll("/", "__");
-}
+

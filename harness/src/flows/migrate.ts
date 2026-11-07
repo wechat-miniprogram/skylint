@@ -11,15 +11,16 @@
 import { createHook } from "workflow";
 
 import {
+  assertTracked,
   buildProd,
   changedFiles,
   diffText,
   revert,
   runAgent,
   snapshot,
-} from "../steps/agent.js";
-import { judge } from "../steps/judge.js";
-import { nextUnit, record, verifyUnit, writeJob } from "../steps/skylint.js";
+} from "../steps/agent";
+import { judge } from "../steps/judge";
+import { nextUnit, record, verifyUnit, writeJob } from "../steps/skylint";
 
 export type MigrateOptions = {
   /** 被迁移的仓库根（绝对路径） */
@@ -56,19 +57,21 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
     if (!next.unit) break;
 
     const unit = next.unit.id;
+    // 先确认这个单元的文件被 git 跟踪，否则后面的快照/回滚/越界检查全是假的。
+    await assertTracked({ root: options.root }, next.unit.path);
     const jobPath = await writeJob({ root: options.root }, unit);
 
     let verified = false;
     let lastReason = "";
 
     for (let attempt = 1; attempt <= options.maxAttempts; attempt += 1) {
-      await snapshot({ root: options.root }, unit);
+      const snap = await snapshot({ root: options.root });
 
       // 1) agent 改代码。退出码非 0 只说明「这次没成」，不抛错。
       const agent = await runAgent({ root: options.root }, jobPath, attempt);
       if (agent.exitCode !== 0) {
         lastReason = `agent 退出码 ${agent.exitCode}`;
-        await revert({ root: options.root });
+        await revert({ root: options.root }, snap);
         await record({ root: options.root }, unit, "migrated", {
           gate: "agent",
           reason: lastReason,
@@ -84,7 +87,7 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
       );
       if (outside.length > 0) {
         lastReason = `改了单元之外的文件：${outside.slice(0, 3).join(", ")}`;
-        await revert({ root: options.root });
+        await revert({ root: options.root }, snap);
         await record({ root: options.root }, unit, "migrated", {
           gate: "scope",
           reason: lastReason,
@@ -96,7 +99,7 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
       const l0 = await verifyUnit({ root: options.root }, unit);
       if (!l0.passed) {
         lastReason = `新增 ${l0.report.new} 条（error+warning）`;
-        await revert({ root: options.root });
+        await revert({ root: options.root }, snap);
         await record({ root: options.root }, unit, "migrated", {
           gate: "l0-static",
           reason: lastReason,
@@ -111,7 +114,7 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
         l1 = build.tail;
         if (!build.passed) {
           lastReason = "prod 构建失败";
-          await revert({ root: options.root });
+          await revert({ root: options.root }, snap);
           await record({ root: options.root }, unit, "migrated", {
             gate: "l1-build",
             reason: lastReason,
@@ -128,7 +131,7 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
       );
       if (verdict.verdict !== "accept") {
         lastReason = verdict.reasons.map((reason) => reason.quote).join("; ").slice(0, 300) || "AI 拒收";
-        await revert({ root: options.root });
+        await revert({ root: options.root }, snap);
         await record({ root: options.root }, unit, "migrated", {
           gate: "l4-judge",
           reason: lastReason,

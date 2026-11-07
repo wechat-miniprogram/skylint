@@ -22,6 +22,10 @@ cd harness
 npm install          # 或 pnpm i / bun i
 ```
 
+注意：`nitro` 锁在 `3.0.261103-rc`（`routes` 配置键只在这版有），并且必须有
+`rolldown`（官方文档写的是 `rollup`，但 nitro v3 用 rolldown；缺了它编译插件
+不生效，`start()` 会报 `invalid workflow function`）。
+
 ## 跑
 
 ```bash
@@ -103,4 +107,8 @@ AGENT_CMD='my-agent --task "{prompt}"'
   多个单元，必须人工单独处理。
 - **越界检查是目录级的**：`unitDirOf(unit.path)` 之外的文件一律判失败，所以
   跨单元的重构要人工做。
+- **单元文件必须在 git 索引里**：在 `dist/` 这类被忽略的目录上跑，快照/回滚/
+  越界检查都会静默失效，所以开工前会 `git ls-files --error-unmatch` 检查，
+  不在索引里就 `FatalError` 停住。
+- **一个工程同时只能一个 run**：`start()` 带幂等 token，重复调用返回 409。
 - **L2/L3 没接**：automator 冒烟与截图对比留了位置，但没实现。
