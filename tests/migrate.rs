@@ -331,3 +331,176 @@ fn verify_filters_by_unit() {
     assert_eq!(other.new, 0, "别的单元不受影响");
     assert_eq!(other.fixed, 0);
 }
+
+/// 单元图夹具：页面 → a → b。
+fn chain_fixture(name: &str) -> Fixture {
+    let f = Fixture::new(name);
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/"}"#,
+    )
+    .write(
+        "miniprogram/app.json",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+    )
+    .write(
+        "miniprogram/pages/index/index.json",
+        r#"{"usingComponents":{"a":"/components/a/a"}}"#,
+    )
+    .write("miniprogram/pages/index/index.wxml", "<a/>")
+    .write("miniprogram/pages/index/index.js", "Page({})")
+    .write(
+        "miniprogram/components/a/a.json",
+        r#"{"component":true,"usingComponents":{"b":"../b/b"}}"#,
+    )
+    .write("miniprogram/components/a/a.wxml", "<b/>")
+    .write("miniprogram/components/a/a.js", "Component({})")
+    .write("miniprogram/components/b/b.json", r#"{"component":true}"#)
+    .write("miniprogram/components/b/b.wxml", "<view/>")
+    .write("miniprogram/components/b/b.js", "Component({})");
+    f
+}
+
+/// 给每个单元都标上「有诊断」，好在不看真实规则的情况下测排序。
+fn all_units_need_work(root: &Path) -> migrate::Plan {
+    let (projects, report) = analyse(root);
+    let mut plan = migrate::plan(&projects, &report, None);
+    for unit in &mut plan.units {
+        unit.diagnostics.total = 1;
+    }
+    plan
+}
+
+#[test]
+fn next_walks_batches_from_leaves_to_pages() {
+    let f = chain_fixture("next-order");
+    let plan = all_units_need_work(f.path());
+    let mut ledger = migrate::Ledger::default();
+
+    let first = migrate::next_unit(&plan, &ledger).unit.expect("first");
+    assert!(
+        first.path.ends_with("components/b/b.wxml"),
+        "叶子先做：{}",
+        first.path
+    );
+
+    ledger.record(&first.id, migrate::Status::Accepted, None, None);
+    let second = migrate::next_unit(&plan, &ledger).unit.expect("second");
+    assert!(
+        second.path.ends_with("components/a/a.wxml"),
+        "{}",
+        second.path
+    );
+
+    ledger.record(&second.id, migrate::Status::Accepted, None, None);
+    let third = migrate::next_unit(&plan, &ledger).unit.expect("third");
+    assert!(
+        third.path.ends_with("pages/index/index.wxml"),
+        "{}",
+        third.path
+    );
+
+    ledger.record(&third.id, migrate::Status::Accepted, None, None);
+    assert!(
+        migrate::next_unit(&plan, &ledger).unit.is_none(),
+        "全部接受后不该再有下一个"
+    );
+}
+
+#[test]
+fn next_skips_units_without_diagnostics() {
+    let f = chain_fixture("next-skip");
+    let mut plan = all_units_need_work(f.path());
+    // 只留页面需要迁移，两个组件无诊断。
+    for unit in &mut plan.units {
+        if unit.kind == "component" {
+            unit.diagnostics.total = 0;
+        }
+    }
+    let next = migrate::next_unit(&plan, &migrate::Ledger::default());
+
+    assert_eq!(next.progress.total, 1);
+    assert_eq!(next.progress.not_needed, 2);
+    assert!(
+        next.unit
+            .expect("page")
+            .path
+            .ends_with("pages/index/index.wxml")
+    );
+}
+
+#[test]
+fn next_reports_failures_and_terminal_states() {
+    let f = chain_fixture("next-failures");
+    let plan = all_units_need_work(f.path());
+    let mut ledger = migrate::Ledger::default();
+    let unit = migrate::next_unit(&plan, &ledger).unit.expect("unit");
+
+    ledger.record(
+        &unit.id,
+        migrate::Status::Migrated,
+        Some(migrate::Failure {
+            gate: Some("l0-static".to_string()),
+            reason: "new=2".to_string(),
+        }),
+        None,
+    );
+    let next = migrate::next_unit(&plan, &ledger);
+    assert_eq!(
+        next.unit.as_ref().map(|unit| unit.id.as_str()),
+        Some(unit.id.as_str())
+    );
+    assert_eq!(next.failures, 1);
+    assert_eq!(
+        next.last_failure
+            .as_ref()
+            .map(|failure| failure.reason.as_str()),
+        Some("new=2")
+    );
+
+    // blocked 是终态，不再返回。
+    ledger.record(&unit.id, migrate::Status::Blocked, None, None);
+    let after = migrate::next_unit(&plan, &ledger);
+    assert_ne!(
+        after.unit.as_ref().map(|unit| unit.id.as_str()),
+        Some(unit.id.as_str())
+    );
+    assert_eq!(after.progress.blocked, 1);
+}
+
+#[test]
+fn record_accept_clears_last_failure_but_keeps_the_count() {
+    let mut ledger = migrate::Ledger::default();
+    ledger.record(
+        "unit:x",
+        migrate::Status::Migrated,
+        Some(migrate::Failure {
+            gate: None,
+            reason: "boom".to_string(),
+        }),
+        None,
+    );
+    ledger.record("unit:x", migrate::Status::Accepted, None, None);
+
+    let state = &ledger.units["unit:x"];
+    assert_eq!(state.status, migrate::Status::Accepted);
+    assert_eq!(state.failures, 1, "重试次数是历史事实，接受后仍保留");
+    assert!(state.last_failure.is_none(), "接受后不该再挂着上次失败");
+}
+
+#[test]
+fn ledger_prunes_units_missing_from_the_plan() {
+    let f = chain_fixture("ledger-prune");
+    let plan = all_units_need_work(f.path());
+    let mut ledger = migrate::Ledger::default();
+    ledger.record(
+        "unit:components/gone/gone",
+        migrate::Status::Accepted,
+        None,
+        None,
+    );
+
+    let removed = ledger.prune(&plan);
+    assert_eq!(removed, 1);
+    assert!(!ledger.units.contains_key("unit:components/gone/gone"));
+}

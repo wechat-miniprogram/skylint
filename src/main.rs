@@ -61,6 +61,12 @@ enum Command {
     Baseline(BaselineArgs),
     /// 门禁：与基线对比，新增 error/warning 即失败
     Verify(VerifyArgs),
+    /// 台账：看迁移进度
+    Ledger(LedgerArgs),
+    /// 记一条单元状态
+    Record(RecordArgs),
+    /// 下一个该做的单元
+    Next(NextArgs),
 }
 
 #[derive(Debug, Args)]
@@ -140,6 +146,85 @@ struct VerifyArgs {
 }
 
 #[derive(Debug, Args)]
+struct LedgerArgs {
+    /// 项目根目录
+    #[arg(default_value = ".", value_name = "PATH")]
+    path: PathBuf,
+    /// 输出 JSON（机器可读）
+    #[arg(long)]
+    json: bool,
+    /// 删掉计划里已不存在的单元（改名/删除组件后的陈旧条目）
+    #[arg(long)]
+    prune: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum StatusArg {
+    Pending,
+    Planned,
+    Migrated,
+    Verified,
+    Accepted,
+    Blocked,
+    Skipped,
+}
+
+impl From<StatusArg> for migrate::Status {
+    fn from(arg: StatusArg) -> Self {
+        match arg {
+            StatusArg::Pending => Self::Pending,
+            StatusArg::Planned => Self::Planned,
+            StatusArg::Migrated => Self::Migrated,
+            StatusArg::Verified => Self::Verified,
+            StatusArg::Accepted => Self::Accepted,
+            StatusArg::Blocked => Self::Blocked,
+            StatusArg::Skipped => Self::Skipped,
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+struct RecordArgs {
+    /// 项目根目录
+    #[arg(default_value = ".", value_name = "PATH")]
+    path: PathBuf,
+    /// 单元 id 或 WXML 路径
+    #[arg(long, value_name = "UNIT")]
+    unit: String,
+    /// 新状态
+    #[arg(long, value_enum)]
+    status: StatusArg,
+    /// 卡在哪道门禁（配合 `--reason`，表示这次尝试失败了）
+    #[arg(long, value_name = "GATE")]
+    gate: Option<String>,
+    /// 失败原因；给了就记一次失败
+    #[arg(long, value_name = "TEXT")]
+    reason: Option<String>,
+    /// 备注
+    #[arg(long, value_name = "TEXT")]
+    note: Option<String>,
+}
+
+#[derive(Debug, Args)]
+struct NextArgs {
+    /// 项目根目录
+    #[arg(default_value = ".", value_name = "PATH")]
+    path: PathBuf,
+    /// 输出 JSON（机器可读）
+    #[arg(long)]
+    json: bool,
+    /// 顺便生成这个单元的作业单
+    #[arg(long, value_name = "FILE")]
+    job_out: Option<PathBuf>,
+    /// 基线报告
+    #[arg(long, value_name = "FILE")]
+    baseline: Option<PathBuf>,
+    /// 跳过的规则 id（可重复）
+    #[arg(long = "ignore", value_name = "RULE")]
+    ignore: Vec<String>,
+}
+
+#[derive(Debug, Args)]
 struct FactsArgs {
     /// 项目根目录
     #[arg(value_name = "PATH")]
@@ -166,6 +251,9 @@ fn main() -> ExitCode {
         Some(Command::Facts(args)) => run_facts(args),
         Some(Command::Baseline(args)) => run_baseline(args),
         Some(Command::Verify(args)) => run_verify(args),
+        Some(Command::Ledger(args)) => run_ledger(args),
+        Some(Command::Record(args)) => run_record(args),
+        Some(Command::Next(args)) => run_next(args),
         None => run_check(
             cli.path.unwrap_or_else(|| PathBuf::from(".")),
             cli.json,
@@ -261,13 +349,10 @@ fn run_job(args: JobArgs) -> ExitCode {
         );
         return ExitCode::from(1);
     };
-    let Some((project, rel)) = migrate::find_view(&projects, &unit.path) else {
+    let Some(job) = build_job(&projects, &report, &plan, unit, baseline) else {
         eprintln!("skylint: 单元 `{}` 不属于任何视图", unit.id);
         return ExitCode::from(1);
     };
-
-    let diagnostics = migrate::diagnostics_for(&plan, unit, &report);
-    let job = migrate::job(project, rel, unit, &diagnostics, baseline);
 
     if args.json || args.out.is_some() {
         let json = migrate::to_json(&job);
@@ -418,6 +503,251 @@ fn run_verify(args: VerifyArgs) -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+fn run_ledger(args: LedgerArgs) -> ExitCode {
+    let (projects, report) = match analyse(&args.path, &[]) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    let plan = migrate::plan(&projects, &report, None);
+    let path = ledger_path(&args.path);
+    let mut ledger = match load_ledger(&path) {
+        Ok(ledger) => ledger,
+        Err(err) => {
+            eprintln!("skylint: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
+    if args.prune {
+        let removed = ledger.prune(&plan);
+        if let Err(err) = save_ledger(&path, &ledger) {
+            eprintln!("skylint: {err}");
+            return ExitCode::from(2);
+        }
+        eprintln!("清理了 {removed} 个计划里已不存在的单元");
+    }
+
+    if args.json {
+        println!("{}", migrate::to_json(&ledger));
+    } else {
+        print_ledger(&plan, &ledger);
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_record(args: RecordArgs) -> ExitCode {
+    let (projects, report) = match analyse(&args.path, &[]) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    let plan = migrate::plan(&projects, &report, None);
+    let Some(unit) = find_unit(&plan, &args.unit) else {
+        eprintln!(
+            "skylint: 计划里没有单元 `{}`（先跑 `skylint plan`，或 `skylint ledger --prune`）",
+            args.unit
+        );
+        return ExitCode::from(1);
+    };
+
+    let path = ledger_path(&args.path);
+    let mut ledger = match load_ledger(&path) {
+        Ok(ledger) => ledger,
+        Err(err) => {
+            eprintln!("skylint: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let failure = args.reason.map(|reason| migrate::Failure {
+        gate: args.gate.clone(),
+        reason,
+    });
+    ledger.record(&unit.id.clone(), args.status.into(), failure, args.note);
+
+    if let Err(err) = save_ledger(&path, &ledger) {
+        eprintln!("skylint: {err}");
+        return ExitCode::from(2);
+    }
+    let state = ledger.units.get(&unit.id).cloned().unwrap_or_default();
+    eprintln!(
+        "{} → {}（失败 {} 次）",
+        unit.id,
+        state.status.as_str(),
+        state.failures
+    );
+    ExitCode::SUCCESS
+}
+
+fn run_next(args: NextArgs) -> ExitCode {
+    let (projects, report) = match analyse(&args.path, &args.ignore) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    let baseline = baseline_ref(args.baseline.as_deref(), report.diagnostics.len());
+    let plan = migrate::plan(&projects, &report, baseline.clone());
+    let path = ledger_path(&args.path);
+    let ledger = match load_ledger(&path) {
+        Ok(ledger) => ledger,
+        Err(err) => {
+            eprintln!("skylint: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let next = migrate::next_unit(&plan, &ledger);
+
+    if let (Some(unit), Some(out)) = (&next.unit, &args.job_out) {
+        let Some(job) = build_job(&projects, &report, &plan, unit, baseline) else {
+            eprintln!("skylint: 单元 `{}` 不属于任何视图", unit.id);
+            return ExitCode::from(1);
+        };
+        if let Err(err) = write_out(out, &migrate::to_json(&job)) {
+            eprintln!("skylint: {err}");
+            return ExitCode::from(2);
+        }
+        eprintln!("wrote {}", out.display());
+    }
+
+    if args.json {
+        println!("{}", migrate::to_json(&next));
+    } else {
+        print_next(&next);
+    }
+    ExitCode::SUCCESS
+}
+
+fn build_job(
+    projects: &[Project],
+    report: &Report,
+    plan: &Plan,
+    unit: &PlanUnit,
+    baseline: Option<migrate::BaselineRef>,
+) -> Option<migrate::Job> {
+    let (project, rel) = migrate::find_view(projects, &unit.path)?;
+    let diagnostics = migrate::diagnostics_for(plan, unit, report);
+    Some(migrate::job(project, rel, unit, &diagnostics, baseline))
+}
+
+fn ledger_path(root: &Path) -> PathBuf {
+    root.join(".skylint/ledger.json")
+}
+
+fn load_ledger(path: &Path) -> Result<migrate::Ledger, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => migrate::from_json(&text)
+            .map_err(|err| format!("台账格式不对 {}: {err}", path.display())),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(migrate::Ledger::default()),
+        Err(err) => Err(format!("读不到台账 {}: {err}", path.display())),
+    }
+}
+
+fn save_ledger(path: &Path, ledger: &migrate::Ledger) -> Result<(), String> {
+    write_out(path, &format!("{}\n", migrate::to_json(ledger)))
+        .map_err(|err| format!("写不了台账 {}: {err}", path.display()))
+}
+
+fn print_ledger(plan: &Plan, ledger: &migrate::Ledger) {
+    let progress = migrate::next_unit(plan, ledger).progress;
+    println!(
+        "需要迁移 {} 个：accepted {} / 进行中 {} / pending {} / blocked {} / skipped {}",
+        progress.total,
+        progress.accepted,
+        progress.in_progress,
+        progress.pending,
+        progress.blocked,
+        progress.skipped
+    );
+    if progress.not_needed > 0 {
+        println!("另有 {} 个单元无诊断，不需要迁移", progress.not_needed);
+    }
+    if progress.shared > 0 {
+        println!(
+            "共享资源上还有 {} 条诊断（`unit:shared`），不自动排队，需单独审批",
+            progress.shared
+        );
+    }
+    for (index, batch) in plan.batches.iter().enumerate() {
+        println!("\nbatch {index}");
+        for id in batch {
+            let Some(unit) = plan.units.iter().find(|unit| &unit.id == id) else {
+                continue;
+            };
+            if unit.diagnostics.total == 0 || unit.kind == "shared" {
+                continue;
+            }
+            let status = ledger.state(&unit.id);
+            let mark = match status {
+                migrate::Status::Accepted => "✓",
+                migrate::Status::Verified => "~",
+                migrate::Status::Migrated => "~",
+                migrate::Status::Planned => "~",
+                migrate::Status::Blocked => "✗",
+                migrate::Status::Skipped => "-",
+                migrate::Status::Pending => "·",
+            };
+            let failures = ledger
+                .units
+                .get(&unit.id)
+                .map(|state| state.failures)
+                .unwrap_or(0);
+            let tail = if failures > 0 {
+                format!("  失败 {failures} 次")
+            } else {
+                String::new()
+            };
+            println!(
+                "  {mark} {:<48} {:<9} {} 条{tail}",
+                unit.path,
+                status.as_str(),
+                unit.diagnostics.total
+            );
+        }
+    }
+}
+
+fn print_next(next: &migrate::Next) {
+    match &next.unit {
+        Some(unit) => {
+            println!(
+                "下一个：{}（batch {}，{} 条诊断）",
+                unit.id, unit.batch, unit.diagnostics.total
+            );
+            println!("  {}", unit.path);
+            if next.failures > 0 {
+                println!("  已失败 {} 次", next.failures);
+                if let Some(failure) = &next.last_failure {
+                    println!(
+                        "  上次：{}{}",
+                        failure
+                            .gate
+                            .as_deref()
+                            .map(|gate| format!("[{gate}] "))
+                            .unwrap_or_default(),
+                        failure.reason
+                    );
+                }
+            }
+        }
+        None => println!("全部完成"),
+    }
+    let progress = &next.progress;
+    println!(
+        "进度：accepted {} / 进行中 {} / pending {} / blocked {} / skipped {}（共 {}）",
+        progress.accepted,
+        progress.in_progress,
+        progress.pending,
+        progress.blocked,
+        progress.skipped,
+        progress.total
+    );
+    if progress.shared > 0 {
+        println!(
+            "共享资源另有 {} 条诊断（`unit:shared`），需单独审批",
+            progress.shared
+        );
     }
 }
 

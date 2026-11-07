@@ -1,0 +1,232 @@
+//! 迁移台账：哪些单元做到哪一步了。
+//!
+//! 台账是**纯状态**，不含时间戳——何时改的由 git 提交记录回答，写进文件只会让
+//! diff 变噪、让两次运行的结果不可比。它必须能被提交、被 diff、被断点续跑。
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+use super::{Generator, Plan, PlanUnit, SCHEMA_VERSION};
+
+/// 单元状态。终态之后不再由 `next` 返回。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Status {
+    /// 还没开始。
+    #[default]
+    Pending,
+    /// 作业单已生成，agent 还没动。
+    Planned,
+    /// agent 已改完，还没过门禁。
+    Migrated,
+    /// 静态与构建门禁都过了，等人（或策略）接受。
+    Verified,
+    /// 接受，不再处理。
+    Accepted,
+    /// 尝试次数用尽，需要人介入。
+    Blocked,
+    /// 明确跳过（例如页面声明了 `renderer: "webview"`）。
+    Skipped,
+}
+
+impl Status {
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Accepted | Self::Blocked | Self::Skipped)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Planned => "planned",
+            Self::Migrated => "migrated",
+            Self::Verified => "verified",
+            Self::Accepted => "accepted",
+            Self::Blocked => "blocked",
+            Self::Skipped => "skipped",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Ledger {
+    pub schema_version: u32,
+    pub generator: Generator,
+    pub units: BTreeMap<String, UnitState>,
+}
+
+impl Default for Ledger {
+    fn default() -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            generator: Generator::default(),
+            units: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnitState {
+    pub status: Status,
+    /// 记录过几次失败。由 runner 决定上限，台账只记数。
+    #[serde(default)]
+    pub failures: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_failure: Option<Failure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+impl Default for UnitState {
+    fn default() -> Self {
+        Self {
+            status: Status::Pending,
+            failures: 0,
+            last_failure: None,
+            note: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Failure {
+    /// 卡在哪道门禁（`l0-static` / `l1-build` …）；人工记录时可为空。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<String>,
+    pub reason: String,
+}
+
+impl Ledger {
+    pub fn state(&self, unit: &str) -> Status {
+        self.units
+            .get(unit)
+            .map(|state| state.status)
+            .unwrap_or_default()
+    }
+
+    /// 写一条状态。`failure` 有值表示这次尝试失败了（`failures` +1）。
+    ///
+    /// 不做状态机校验：允许 `pending → accepted` 这种跳步（人工直接判掉），
+    /// 语义由 runner 决定，台账只负责持久化。
+    pub fn record(
+        &mut self,
+        unit: &str,
+        status: Status,
+        failure: Option<Failure>,
+        note: Option<String>,
+    ) {
+        let state = self.units.entry(unit.to_string()).or_default();
+        state.status = status;
+        if let Some(failure) = failure {
+            state.failures += 1;
+            state.last_failure = Some(failure);
+        }
+        if note.is_some() {
+            state.note = note;
+        }
+        if status == Status::Accepted {
+            state.last_failure = None;
+        }
+    }
+
+    /// 删掉计划里已经不存在的单元（改名、删除组件后留下的陈旧条目）。
+    pub fn prune(&mut self, plan: &Plan) -> usize {
+        let live: std::collections::BTreeSet<&str> =
+            plan.units.iter().map(|unit| unit.id.as_str()).collect();
+        let stale: Vec<String> = self
+            .units
+            .keys()
+            .filter(|id| !live.contains(id.as_str()))
+            .cloned()
+            .collect();
+        for id in &stale {
+            self.units.remove(id);
+        }
+        stale.len()
+    }
+}
+
+/// 进度统计（只数需要迁移的单元：`diagnostics.total > 0`）。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Progress {
+    pub total: usize,
+    pub pending: usize,
+    /// `planned` + `migrated` + `verified`：正在流程里。
+    pub in_progress: usize,
+    pub accepted: usize,
+    pub blocked: usize,
+    pub skipped: usize,
+    /// 计划里没有诊断、不需要迁移的单元数。
+    pub not_needed: usize,
+    /// 共享资源（`unit:shared`）上的诊断条数。不参与自动排队：
+    /// 改共享样式会影响多个单元，必须单独审批。
+    pub shared: usize,
+}
+
+/// 下一个该做的单元。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Next {
+    /// 全部做完时为 `null`。
+    pub unit: Option<PlanUnit>,
+    pub progress: Progress,
+    /// 这个单元已经失败过几次（runner 据此决定是否放弃）。
+    pub failures: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_failure: Option<Failure>,
+}
+
+/// 按批次顺序取第一个还没到终态的单元。
+///
+/// 批次本身就是拓扑层（`batch(u) = 1 + max(batch(依赖))`），所以「先做叶子」
+/// 由批次顺序保证，不需要再单独做依赖门控。
+pub fn next(plan: &Plan, ledger: &Ledger) -> Next {
+    let mut progress = Progress::default();
+
+    for unit in &plan.units {
+        if unit.kind == "shared" {
+            progress.shared += unit.diagnostics.total;
+            continue;
+        }
+        if unit.diagnostics.total == 0 {
+            progress.not_needed += 1;
+            continue;
+        }
+        progress.total += 1;
+        match ledger.state(&unit.id) {
+            Status::Pending => progress.pending += 1,
+            Status::Planned | Status::Migrated | Status::Verified => progress.in_progress += 1,
+            Status::Accepted => progress.accepted += 1,
+            Status::Blocked => progress.blocked += 1,
+            Status::Skipped => progress.skipped += 1,
+        }
+    }
+
+    let unit = plan
+        .batches
+        .iter()
+        .flatten()
+        .filter_map(|id| plan.units.iter().find(|unit| &unit.id == id))
+        .find(|unit| {
+            unit.kind != "shared"
+                && unit.diagnostics.total > 0
+                && !ledger.state(&unit.id).is_terminal()
+        })
+        .cloned();
+
+    let state = unit
+        .as_ref()
+        .and_then(|unit| ledger.units.get(&unit.id).cloned())
+        .unwrap_or_default();
+
+    Next {
+        unit,
+        progress,
+        failures: state.failures,
+        last_failure: state.last_failure,
+    }
+}

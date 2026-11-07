@@ -5,6 +5,7 @@
 //! `inspect` 与 `report`，避免两套实现漂移。
 
 mod guidance;
+mod ledger;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,6 +18,7 @@ use crate::report::Report;
 use crate::rules::wxml::Reach;
 
 pub use guidance::{Guidance, family_of, guidance_for};
+pub use ledger::{Failure, Ledger, Next, Progress, Status, UnitState, next as next_unit};
 
 /// 产物格式版本。破坏性变更才 +1。
 pub const SCHEMA_VERSION: u32 = 1;

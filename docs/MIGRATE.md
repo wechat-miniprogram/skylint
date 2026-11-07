@@ -208,7 +208,7 @@ skylint facts <PROJECT> <UNIT_WXML> --element 87:3 --property z-index
 | 项 | 归属 |
 |---|---|
 | `skylint verify`（字段级 diff、基线对账、退出码） | **M2，已完成**（见 §9） |
-| `.skylint/ledger.json`、`skylint next` | M3 |
+| `.skylint/ledger.json`、`skylint next` | **M3，已完成**（见 §10） |
 | AI 判定（`judge.schema.json`） | M4 |
 | 编排器（`vercel/workflow`） | M5 |
 | 规则知识（`preconditions` / `counterexamples`）的全量补全 | 随规则演进 |
@@ -271,3 +271,57 @@ skylint verify <PATH> --baseline <FILE> [--unit <ID>] [--json]
   `fixed`、新 id 全部变成 `new`。改名需要同时重生基线。
 - 元素被删掉时，它的旧诊断算 `fixed`（而不是「未知」）——这与「修好了」在数据上
   不可区分，需要人看一眼 diff。
+
+## 10. 台账与排队（M3）
+
+```
+skylint ledger <PATH> [--json] [--prune]
+skylint record <PATH> --unit <ID> --status <S> [--gate G --reason R] [--note N]
+skylint next   <PATH> [--json] [--job-out FILE] [--baseline FILE]
+```
+
+台账固定写在 `<PATH>/.skylint/ledger.json`，**应当提交进仓库**。
+
+### 10.1 状态
+
+| 状态 | 含义 | 终态 |
+|---|---|---|
+| `pending` | 还没开始 | |
+| `planned` | 作业单已生成 | |
+| `migrated` | agent 改完，还没过门禁 | |
+| `verified` | 静态 + 构建都过了，等人接受 | |
+| `accepted` | 接受 | ✓ |
+| `blocked` | 尝试次数用尽，需人介入 | ✓ |
+| `skipped` | 明确跳过 | ✓ |
+
+不做状态机校验：允许 `pending → accepted` 这种跳步（人工直接判掉）。
+**语义由 runner 决定，台账只负责持久化**——否则编排策略就长进 skylint 里了。
+
+### 10.2 不写时间戳
+
+台账是纯状态。何时改的由 git 提交记录回答；写进文件只会让 diff 变噪、
+让两次运行的结果不可比。`--prune` 后文件字节不变（可验证）。
+
+### 10.3 排队
+
+`next` 按 `plan.batches` 顺序取第一个「有诊断且未到终态」的单元。
+
+批次本身就是拓扑层（`batch(u) = 1 + max(batch(依赖))`），所以「叶子先做」由
+批次顺序保证，不需要单独的依赖门控；同一批内可以并行。
+
+**`unit:shared` 不排队**。它承载共享样式（`app.wxss` / `weui.wxss`）的诊断，
+改一处会影响多个单元，必须单独审批。进度里单列 `shared` 条数。
+
+### 10.4 runner 的一轮
+
+```
+skylint next --json --job-out .skylint/jobs/<unit>.json   → 取作业单
+<agent 读 job.json 改代码>
+skylint verify --unit <unit> --baseline .skylint/baseline.json
+skylint record --unit <unit> --status verified            → 或 --status migrated --gate l0-static --reason 'new=2'
+<人工接受>
+skylint record --unit <unit> --status accepted
+```
+
+四条命令都是确定性的；`record` 只记数（`failures`）与最后一条失败原因，
+重试上限由 runner 自己定。
