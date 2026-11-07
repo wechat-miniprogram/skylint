@@ -7,3 +7,8 @@ node_modules
 .tmp
 /.opencode
 /dist
+
+# 编排器的本地 journal（迁移台账 .skylint/ledger.json 相反，要提交）
+harness/.workflow-data
+harness/.nitro
+harness/.output

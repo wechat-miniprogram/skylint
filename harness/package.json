@@ -1,0 +1,21 @@
+{
+  "name": "@skylint/harness",
+  "private": true,
+  "type": "module",
+  "description": "Skyline 迁移编排：Vercel Workflow SDK + skylint CLI",
+  "scripts": {
+    "dev": "nitro dev",
+    "build": "nitro build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "express": "^5",
+    "nitro": "^3",
+    "rollup": "^4",
+    "workflow": "^5"
+  },
+  "devDependencies": {
+    "@types/express": "^5",
+    "typescript": "^5"
+  }
+}

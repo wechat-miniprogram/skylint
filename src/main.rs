@@ -652,10 +652,11 @@ fn save_ledger(path: &Path, ledger: &migrate::Ledger) -> Result<(), String> {
 fn print_ledger(plan: &Plan, ledger: &migrate::Ledger) {
     let progress = migrate::next_unit(plan, ledger).progress;
     println!(
-        "需要迁移 {} 个：accepted {} / 进行中 {} / pending {} / blocked {} / skipped {}",
+        "需要迁移 {} 个：accepted {} / 待接受 {} / 进行中 {} / pending {} / blocked {} / skipped {}",
         progress.total,
         progress.accepted,
-        progress.in_progress,
+        progress.verified,
+        progress.in_progress(),
         progress.pending,
         progress.blocked,
         progress.skipped
@@ -735,9 +736,10 @@ fn print_next(next: &migrate::Next) {
     }
     let progress = &next.progress;
     println!(
-        "进度：accepted {} / 进行中 {} / pending {} / blocked {} / skipped {}（共 {}）",
+        "进度：accepted {} / 待接受 {} / 进行中 {} / pending {} / blocked {} / skipped {}（共 {}）",
         progress.accepted,
-        progress.in_progress,
+        progress.verified,
+        progress.in_progress(),
         progress.pending,
         progress.blocked,
         progress.skipped,

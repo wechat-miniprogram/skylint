@@ -155,8 +155,12 @@ impl Ledger {
 pub struct Progress {
     pub total: usize,
     pub pending: usize,
-    /// `planned` + `migrated` + `verified`：正在流程里。
-    pub in_progress: usize,
+    /// 作业单已生成、agent 还没跑。
+    pub planned: usize,
+    /// agent 改完了，门禁没过。
+    pub migrated: usize,
+    /// 过了门禁，**在等人接受**。`next` 不会返回这类单元。
+    pub verified: usize,
     pub accepted: usize,
     pub blocked: usize,
     pub skipped: usize,
@@ -165,6 +169,21 @@ pub struct Progress {
     /// 共享资源（`unit:shared`）上的诊断条数。不参与自动排队：
     /// 改共享样式会影响多个单元，必须单独审批。
     pub shared: usize,
+}
+
+impl Progress {
+    /// 正在流程里（不含 `verified`：那一步在等人）。
+    pub fn in_progress(&self) -> usize {
+        self.planned + self.migrated
+    }
+}
+
+/// 这个状态还需要跑 agent 吗。
+///
+/// `verified` 不在内：它已经过了门禁，只是在等人接受——再跑一次 agent 会把
+/// 人的等待变成重复劳动。人要打回时显式 `record --status migrated`。
+fn needs_agent(status: Status) -> bool {
+    matches!(status, Status::Pending | Status::Planned | Status::Migrated)
 }
 
 /// 下一个该做的单元。
@@ -199,7 +218,9 @@ pub fn next(plan: &Plan, ledger: &Ledger) -> Next {
         progress.total += 1;
         match ledger.state(&unit.id) {
             Status::Pending => progress.pending += 1,
-            Status::Planned | Status::Migrated | Status::Verified => progress.in_progress += 1,
+            Status::Planned => progress.planned += 1,
+            Status::Migrated => progress.migrated += 1,
+            Status::Verified => progress.verified += 1,
             Status::Accepted => progress.accepted += 1,
             Status::Blocked => progress.blocked += 1,
             Status::Skipped => progress.skipped += 1,
@@ -214,7 +235,7 @@ pub fn next(plan: &Plan, ledger: &Ledger) -> Next {
         .find(|unit| {
             unit.kind != "shared"
                 && unit.diagnostics.total > 0
-                && !ledger.state(&unit.id).is_terminal()
+                && needs_agent(ledger.state(&unit.id))
         })
         .cloned();
 

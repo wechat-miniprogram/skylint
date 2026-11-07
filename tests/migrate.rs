@@ -504,3 +504,32 @@ fn ledger_prunes_units_missing_from_the_plan() {
     assert_eq!(removed, 1);
     assert!(!ledger.units.contains_key("unit:components/gone/gone"));
 }
+
+/// `verified` 在等人接受，`next` 不该再把它派给 agent。
+#[test]
+fn next_skips_units_waiting_for_acceptance() {
+    let f = chain_fixture("next-verified");
+    let plan = all_units_need_work(f.path());
+    let mut ledger = migrate::Ledger::default();
+
+    let leaf = migrate::next_unit(&plan, &ledger).unit.expect("leaf");
+    ledger.record(&leaf.id, migrate::Status::Verified, None, None);
+
+    let next = migrate::next_unit(&plan, &ledger);
+    assert_ne!(
+        next.unit.as_ref().map(|unit| unit.id.as_str()),
+        Some(leaf.id.as_str()),
+        "已过门禁的单元不该重跑"
+    );
+    assert_eq!(next.progress.verified, 1);
+
+    // 人打回：显式改回 migrated，它才重新排队。
+    ledger.record(&leaf.id, migrate::Status::Migrated, None, None);
+    assert_eq!(
+        migrate::next_unit(&plan, &ledger)
+            .unit
+            .as_ref()
+            .map(|unit| unit.id.as_str()),
+        Some(leaf.id.as_str())
+    );
+}
