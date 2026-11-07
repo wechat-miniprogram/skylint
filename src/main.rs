@@ -49,8 +49,18 @@ struct Cli {
     target: TargetArg,
 }
 
+// 顶层只有两类命令：不带子命令是 lint，`migration` 下面全是迁移。
+// 迁移命令的使用者是 agent，名字长短不重要；把它们和 lint 分开，是为了让
+// `skylint --help` 一眼看出「这是个 linter，附带一套迁移工具」。
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// 迁移：单元清单 / 作业单 / 门禁 / 台账（Agent 调用）
+    #[command(subcommand)]
+    Migration(MigrationCommand),
+}
+
+#[derive(Debug, Subcommand)]
+enum MigrationCommand {
     /// 生成单元清单（plan.json）：有哪些单元、什么顺序、各有多少问题
     Plan(PlanArgs),
     /// 生成单个单元的作业单（job.json）：改什么、怎么算过
@@ -115,9 +125,9 @@ struct BaselineArgs {
     /// 项目根目录
     #[arg(default_value = ".", value_name = "PATH")]
     path: PathBuf,
-    /// 写入位置
-    #[arg(long, value_name = "FILE", default_value = ".skylint/baseline.json")]
-    out: PathBuf,
+    /// 写入位置（默认 `<PATH>/.skylint/baseline.json`）
+    #[arg(long, value_name = "FILE")]
+    out: Option<PathBuf>,
     /// 输出 JSON（同时写到 `--out`）
     #[arg(long)]
     json: bool,
@@ -131,7 +141,7 @@ struct VerifyArgs {
     /// 项目根目录
     #[arg(default_value = ".", value_name = "PATH")]
     path: PathBuf,
-    /// 基线文件（`skylint baseline` 生成）
+    /// 基线文件（`skylint migration baseline` 生成）
     #[arg(long, value_name = "FILE")]
     baseline: PathBuf,
     /// 只看这个单元（id 或 WXML 路径）
@@ -246,20 +256,26 @@ struct FactsArgs {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Some(Command::Plan(args)) => run_plan(args),
-        Some(Command::Job(args)) => run_job(args),
-        Some(Command::Facts(args)) => run_facts(args),
-        Some(Command::Baseline(args)) => run_baseline(args),
-        Some(Command::Verify(args)) => run_verify(args),
-        Some(Command::Ledger(args)) => run_ledger(args),
-        Some(Command::Record(args)) => run_record(args),
-        Some(Command::Next(args)) => run_next(args),
+        Some(Command::Migration(command)) => run_migration(command),
         None => run_check(
             cli.path.unwrap_or_else(|| PathBuf::from(".")),
             cli.json,
             cli.ignore,
             cli.target.into(),
         ),
+    }
+}
+
+fn run_migration(command: MigrationCommand) -> ExitCode {
+    match command {
+        MigrationCommand::Plan(args) => run_plan(args),
+        MigrationCommand::Job(args) => run_job(args),
+        MigrationCommand::Facts(args) => run_facts(args),
+        MigrationCommand::Baseline(args) => run_baseline(args),
+        MigrationCommand::Verify(args) => run_verify(args),
+        MigrationCommand::Ledger(args) => run_ledger(args),
+        MigrationCommand::Record(args) => run_record(args),
+        MigrationCommand::Next(args) => run_next(args),
     }
 }
 
@@ -344,7 +360,7 @@ fn run_job(args: JobArgs) -> ExitCode {
 
     let Some(unit) = find_unit(&plan, &args.unit) else {
         eprintln!(
-            "skylint: 找不到单元 `{}`（先跑 `skylint plan` 看清单）",
+            "skylint: 找不到单元 `{}`（先跑 `skylint migration plan` 看清单）",
             args.unit
         );
         return ExitCode::from(1);
@@ -431,8 +447,12 @@ fn run_baseline(args: BaselineArgs) -> ExitCode {
     let identified = migrate::identify(&projects, &plan, &report);
     let baseline = migrate::baseline(&identified);
     let json = migrate::to_json(&baseline);
+    // 默认落在工程根下，不落在当前目录——否则从别处调就会写错地方。
+    let out = args
+        .out
+        .unwrap_or_else(|| args.path.join(".skylint/baseline.json"));
 
-    if let Err(err) = write_out(&args.out, &json) {
+    if let Err(err) = write_out(&out, &json) {
         eprintln!("skylint: {err}");
         return ExitCode::from(2);
     }
@@ -441,7 +461,7 @@ fn run_baseline(args: BaselineArgs) -> ExitCode {
     } else {
         eprintln!(
             "wrote {}（{} 条：e{} w{} i{}）",
-            args.out.display(),
+            out.display(),
             baseline.summary.total,
             baseline.summary.error,
             baseline.summary.warning,
@@ -478,7 +498,7 @@ fn run_verify(args: VerifyArgs) -> ExitCode {
         Some(needle) => match find_unit(&plan, needle) {
             Some(unit) => Some(unit.id.clone()),
             None => {
-                eprintln!("skylint: 找不到单元 `{needle}`（先跑 `skylint plan` 看清单）");
+                eprintln!("skylint: 找不到单元 `{needle}`（先跑 `skylint migration plan` 看清单）");
                 return ExitCode::from(1);
             }
         },
@@ -546,7 +566,7 @@ fn run_record(args: RecordArgs) -> ExitCode {
     let plan = migrate::plan(&projects, &report, None);
     let Some(unit) = find_unit(&plan, &args.unit) else {
         eprintln!(
-            "skylint: 计划里没有单元 `{}`（先跑 `skylint plan`，或 `skylint ledger --prune`）",
+            "skylint: 计划里没有单元 `{}`（先跑 `skylint migration plan`，或 `skylint migration ledger --prune`）",
             args.unit
         );
         return ExitCode::from(1);

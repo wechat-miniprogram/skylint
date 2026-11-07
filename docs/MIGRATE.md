@@ -1,15 +1,26 @@
-# 迁移接口（M1）
+# 迁移接口
 
-本文只定义**单元划分**与三个产物（`plan.json` / `job.json` / `facts`）的契约。
-`verify`、`ledger`、AI 判定与编排器不在本文范围内——它们都是这些契约的消费者。
+本文定义迁移工具链的契约：**单元划分**（`plan`）、**作业单**（`job`）、**元素事实**
+（`facts`）、**门禁**（`baseline` / `verify`）、**台账**（`ledger` / `record` / `next`）。
+AI 判定与编排器不在这里，见 [`HARNESS.md`](HARNESS.md)。
+
+## 0. 命令空间
+
+```
+skylint [PATH]                     # lint（默认，不带子命令）
+skylint migration <COMMAND>        # 迁移，Agent 调用
+```
+
+顶层只留 lint，是为了让 `skylint --help` 一眼看出「这是个 linter，附带一套迁移工具」。
+迁移命令的使用者是 agent，名字长短不重要，所以统一收在 `migration` 下。
 
 ## 1. 职责与不变量
 
 | 产物 | 生成者 | 消费者 | 回答 |
 |---|---|---|---|
-| `plan.json` | `skylint plan` | 编排器、人 | 有哪些单元、什么顺序、各有多少问题 |
-| `job.json` | `skylint job` | **agent** | 这个单元改什么、怎么算过 |
-| `facts` | `skylint facts` | job 生成器、人、规则作者 | 这个元素到底发生了什么 |
+| `plan.json` | `skylint migration plan` | 编排器、人 | 有哪些单元、什么顺序、各有多少问题 |
+| `job.json` | `skylint migration job` | **agent** | 这个单元改什么、怎么算过 |
+| `facts` | `skylint migration facts` | job 生成器、人、规则作者 | 这个元素到底发生了什么 |
 
 **不变量**（后续所有实现都守它）：
 
@@ -132,7 +143,7 @@
   ],
   "acceptance": [
     { "id": "l0-static", "kind": "command",
-      "run": "skylint verify --unit {unit} --baseline {baseline} --json",
+      "run": "skylint migration verify {root} --unit {unit} --baseline {baseline} --json",
       "expect": { "exitCode": 0, "jsonPath": "$.new", "equals": 0 } },
     { "id": "l1-build", "kind": "command",
       "run": "minidev build --no-pack",
@@ -170,16 +181,16 @@ id = "{rule}|{unit.path}|{tag}.{classes 按字典序}|#{occurrence}"
 
 ### 4.3 `acceptance` 是命令模板
 
-`{unit}` / `{unitPath}` / `{baseline}` / `{job}` 由 runner 替换。
+`{root}` / `{unit}` / `{unitPath}` / `{baseline}` / `{job}` 由 runner 替换。
 `expect` 必须是机读判据（`exitCode` / `jsonPath` + `equals` / `threshold`），
 不接受自然语言。
 
 ## 5. `facts`
 
 ```
-skylint facts <PROJECT> <UNIT_WXML>
-skylint facts <PROJECT> <UNIT_WXML> --element 87:3
-skylint facts <PROJECT> <UNIT_WXML> --element 87:3 --property z-index
+skylint migration facts <PROJECT> <UNIT_WXML>
+skylint migration facts <PROJECT> <UNIT_WXML> --element 87:3
+skylint migration facts <PROJECT> <UNIT_WXML> --element 87:3 --property z-index
 ```
 
 - 不带 `--element`：单元事实 + 元素索引（`span` / `tag` / `classes` / `id`）
@@ -207,8 +218,8 @@ skylint facts <PROJECT> <UNIT_WXML> --element 87:3 --property z-index
 
 | 项 | 归属 |
 |---|---|
-| `skylint verify`（字段级 diff、基线对账、退出码） | **M2，已完成**（见 §9） |
-| `.skylint/ledger.json`、`skylint next` | **M3，已完成**（见 §10） |
+| `skylint migration verify`（字段级 diff、基线对账、退出码） | **M2，已完成**（见 §9） |
+| `.skylint/ledger.json`、`skylint migration next` | **M3，已完成**（见 §10） |
 | AI 判定（`judge.schema.json`） | M4 |
 | 编排器（`vercel/workflow`） | M5 |
 | 规则知识（`preconditions` / `counterexamples`）的全量补全 | 随规则演进 |
@@ -233,9 +244,11 @@ M1 已实现并验证：
 ## 9. 门禁（M2）
 
 ```
-skylint baseline <PATH> [--out .skylint/baseline.json]
-skylint verify <PATH> --baseline <FILE> [--unit <ID>] [--json]
+skylint migration baseline <PATH> [--out <FILE>]
+skylint migration verify <PATH> --baseline <FILE> [--unit <ID>] [--json]
 ```
+
+`--out` 默认是 `<PATH>/.skylint/baseline.json`（落在工程根下，不落在当前目录）。
 
 `baseline` 存的是**身份**（`id` / `unit` / `rule` / `severity` / `path` / `span`），
 不存 `message`：措辞随版本变，但问题没变。
@@ -275,9 +288,9 @@ skylint verify <PATH> --baseline <FILE> [--unit <ID>] [--json]
 ## 10. 台账与排队（M3）
 
 ```
-skylint ledger <PATH> [--json] [--prune]
-skylint record <PATH> --unit <ID> --status <S> [--gate G --reason R] [--note N]
-skylint next   <PATH> [--json] [--job-out FILE] [--baseline FILE]
+skylint migration ledger <PATH> [--json] [--prune]
+skylint migration record <PATH> --unit <ID> --status <S> [--gate G --reason R] [--note N]
+skylint migration next   <PATH> [--json] [--job-out FILE] [--baseline FILE]
 ```
 
 台账固定写在 `<PATH>/.skylint/ledger.json`，**应当提交进仓库**。
@@ -315,12 +328,12 @@ skylint next   <PATH> [--json] [--job-out FILE] [--baseline FILE]
 ### 10.4 runner 的一轮
 
 ```
-skylint next --json --job-out .skylint/jobs/<unit>.json   → 取作业单
+skylint migration next --json --job-out .skylint/jobs/<unit>.json   → 取作业单
 <agent 读 job.json 改代码>
-skylint verify --unit <unit> --baseline .skylint/baseline.json
-skylint record --unit <unit> --status verified            → 或 --status migrated --gate l0-static --reason 'new=2'
+skylint migration verify --unit <unit> --baseline .skylint/baseline.json
+skylint migration record --unit <unit> --status verified            → 或 --status migrated --gate l0-static --reason 'new=2'
 <人工接受>
-skylint record --unit <unit> --status accepted
+skylint migration record --unit <unit> --status accepted
 ```
 
 四条命令都是确定性的；`record` 只记数（`failures`）与最后一条失败原因，

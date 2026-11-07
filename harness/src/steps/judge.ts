@@ -22,7 +22,7 @@ export type JudgeVerdict = {
 export type Evidence = {
   unitId: string;
   diff: string;
-  /** `skylint verify --json` 的完整输出 */
+  /** `skylint migration verify --json` 的完整输出 */
   l0: unknown;
   /** 构建日志尾部 */
   l1: string;

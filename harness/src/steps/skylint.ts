@@ -57,7 +57,7 @@ async function skylint(project: Project, args: string[]) {
 /** 取下一个需要 agent 的单元；全部做完时 `unit === null`。 */
 export async function nextUnit(project: Project): Promise<NextUnit> {
   "use step";
-  return JSON.parse(await skylint(project, ["next", project.root, "--json"]));
+  return JSON.parse(await skylint(project, ["migration", "next", project.root, "--json"]));
 }
 
 /** 生成作业单，返回它的绝对路径。 */
@@ -65,6 +65,7 @@ export async function writeJob(project: Project, unitId: string): Promise<string
   "use step";
   const out = `.skylint/jobs/${unitId.replace(/^unit:/, "").replaceAll("/", "__")}.json`;
   await skylint(project, [
+    "migration",
     "job",
     project.root,
     "--unit",
@@ -91,6 +92,7 @@ export async function verifyUnit(
     const { stdout } = await run(
       bin,
       [
+        "migration",
         "verify",
         project.root,
         "--baseline",
@@ -108,7 +110,7 @@ export async function verifyUnit(
       return { passed: false, report: JSON.parse(failure.stdout) };
     }
     // 退出码 2 = 基线读不到 / 工程加载失败，这不是「改坏了」，是环境问题。
-    throw new Error(`skylint verify 跑不起来：${failure.stderr ?? ""}`);
+    throw new Error(`skylint migration verify 跑不起来：${failure.stderr ?? ""}`);
   }
 }
 
@@ -119,7 +121,7 @@ export async function record(
   failure?: { gate?: string; reason: string },
 ): Promise<void> {
   "use step";
-  const args = ["record", project.root, "--unit", unitId, "--status", status];
+  const args = ["migration", "record", project.root, "--unit", unitId, "--status", status];
   if (failure) {
     args.push("--reason", failure.reason);
     if (failure.gate) args.push("--gate", failure.gate);

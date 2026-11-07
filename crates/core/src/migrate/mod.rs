@@ -178,7 +178,7 @@ pub struct FindingFacts {
 pub struct Acceptance {
     pub id: &'static str,
     pub kind: &'static str,
-    /// 命令模板：`{unit}` / `{unitPath}` / `{baseline}` / `{job}` 由 runner 替换。
+    /// 命令模板：`{root}` / `{unit}` / `{unitPath}` / `{baseline}` / `{job}` 由 runner 替换。
     pub run: &'static str,
     pub expect: Expect,
 }
@@ -521,7 +521,7 @@ pub fn job(
             Acceptance {
                 id: "l0-static",
                 kind: "command",
-                run: "skylint verify --unit {unit} --baseline {baseline} --json",
+                run: "skylint migration verify {root} --unit {unit} --baseline {baseline} --json",
                 expect: Expect {
                     exit_code: Some(0),
                     json_path: Some("$.new"),

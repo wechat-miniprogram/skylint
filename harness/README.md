@@ -27,7 +27,7 @@ npm install          # 或 pnpm i / bun i
 ```bash
 # 1) 先在被迁移的仓库里冻结基线（在 skylint 仓库外执行）
 cd /path/to/your-miniprogram
-skylint baseline . --out .skylint/baseline.json
+skylint migration baseline . --out .skylint/baseline.json
 
 # 2) 起编排器
 cd harness
@@ -39,7 +39,7 @@ curl -X POST localhost:3000/api/run \
   -d '{"root":"/path/to/your-miniprogram","maxUnits":1}'
 
 # 4) 进度 / 运行详情
-skylint ledger /path/to/your-miniprogram
+skylint migration ledger /path/to/your-miniprogram
 npx workflow web            # 本地 UI，读 .workflow-data/
 npx workflow inspect runs
 

@@ -5,7 +5,7 @@
  *   POST /api/accept  { unit, approved, comment? }                              → { ok }
  *   GET  /api/health
  *
- * 没有 UI：进度看 `skylint ledger`，运行详情看 `npx workflow web`。
+ * 没有 UI：进度看 `skylint migration ledger`，运行详情看 `npx workflow web`。
  */
 import express from "express";
 import { resumeHook, start } from "workflow/api";

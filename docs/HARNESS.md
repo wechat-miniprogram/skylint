@@ -8,23 +8,20 @@
 ## 1. 一图说清
 
 ```
-        ┌─────────────────────── 编排器（Workflow SDK）───────────────────────┐
-        │  workflow: 循环 / 重试 / 等 hook（挂起不占算力）                     │
-        │                                                                     │
-        │  step ─▶ skylint next --json        取下一个单元                     │
-        │  step ─▶ skylint job --out          生成作业单                       │
-        │  step ─▶ git stash create           快照                             │
-        │  step ─▶ $AGENT_CMD                 改代码（任意 agent）              │
-        │  step ─▶ git diff --name-only       越界检查                         │
-        │  step ─▶ skylint verify --json      L0 门禁（确定性）                 │
-        │  step ─▶ $BUILD_CMD                 L1 门禁（prod 构建）              │
-        │  step ─▶ $JUDGE_CMD                 L4 判定（唯一不确定的一步）        │
-        │  step ─▶ skylint record             写台账                           │
-        │  hook ◀── POST /api/accept          人工确认（可等几天）              │
-        └─────────────────────────────────────────────────────────────────────┘
-                                   │
-                        状态落两处：.workflow-data/（journal）、
-                                   .skylint/ledger.json（进度，提交进仓库）
+┌──────────────────── 编排器（Workflow SDK）────────────────────┐
+│  workflow：循环 / 重试 / 等 hook（挂起不占算力）               │
+│                                                              │
+│  step ─▶ skylint migration next      取下一个单元             │
+│  step ─▶ skylint migration job       生成作业单               │
+│  step ─▶ git stash create            快照                     │
+│  step ─▶ $AGENT_CMD                  改代码（任意 agent）      │
+│  step ─▶ git diff --name-only        越界检查                 │
+│  step ─▶ skylint migration verify    L0 门禁（确定性）         │
+│  step ─▶ $BUILD_CMD                  L1 门禁（prod 构建）      │
+│  step ─▶ $JUDGE_CMD                  L4 判定（唯一不确定）      │
+│  step ─▶ skylint migration record    写台账                   │
+│  hook ◀── POST /api/accept           人工确认（可等几天）      │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 **编排器不碰规则、不碰样式语义、不解析 agent 的自然语言。** 它只认退出码和 JSON。
@@ -77,11 +74,11 @@ harness/
 
 | 命令 | 用途 | 退出码含义 |
 |---|---|---|
-| `skylint next <root> --json` | 取下一个单元 | 0；`unit: null` 表示做完 |
-| `skylint job <root> --unit <id> --out <f>` | 生成作业单 | 0 / 1 找不到单元 / 2 环境错 |
-| `skylint verify <root> --baseline <f> --unit <id> --json` | L0 门禁 | 0 通过 / 1 有新增 / 2 环境错 |
-| `skylint record <root> --unit <id> --status <s>` | 写台账 | 0 / 1 单元不在计划里 |
-| `skylint ledger <root> --json` | 读进度 | 0 |
+| `skylint migration next <root> --json` | 取下一个单元 | 0；`unit: null` 表示做完 |
+| `skylint migration job <root> --unit <id> --out <f>` | 生成作业单 | 0 / 1 找不到单元 / 2 环境错 |
+| `skylint migration verify <root> --baseline <f> --unit <id> --json` | L0 门禁 | 0 通过 / 1 有新增 / 2 环境错 |
+| `skylint migration record <root> --unit <id> --status <s>` | 写台账 | 0 / 1 单元不在计划里 |
+| `skylint migration ledger <root> --json` | 读进度 | 0 |
 
 **退出码 2 与 1 必须分开**：1 是「代码改坏了」（该回滚重试），2 是「工具跑不起来」
 （该停下来看环境）。混在一起会让 agent 无限重试一个环境问题。
@@ -147,14 +144,14 @@ v2 的做法：每个单元一个 `git worktree` + 台账分片，最后合并�
 | L3 截图对比 | 同上 |
 | `unit:shared`（共享样式） | 不排队，人工处理 |
 | 并行 | 见 §9 |
-| CI 集成 | 直接调 `skylint verify` 即可，不需要编排器 |
+| CI 集成 | 直接调 `skylint migration verify` 即可，不需要编排器 |
 
 ## 11. 验证清单（接之前先跑这五条）
 
 | # | 验证 | 判据 |
 |---|---|---|
 | 1 | `npm run dev` 起得来，`POST /api/run` 返回 runId | `.workflow-data/` 出现 run |
-| 2 | 一个单元跑完并 `record verified` | `skylint ledger` 显示 `verified` |
+| 2 | 一个单元跑完并 `record verified` | `skylint migration ledger` 显示 `verified` |
 | 3 | kill 进程后重启，run 能续跑 | 已完成的 step 不重跑（`workflow inspect` 看 attempts） |
 | 4 | L4 判定只执行一次 | 重放后结论不变（step 结果被复用） |
 | 5 | `POST /api/accept` 能唤醒挂起的 run | run 从 `verified` 走到 `accepted` |
