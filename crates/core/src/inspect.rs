@@ -23,6 +23,8 @@
 use std::cell::OnceCell;
 use std::collections::HashSet;
 
+use serde::Serialize;
+
 use crate::input::js::ValueShape;
 use crate::input::wxml::{WxmlDoc, WxmlElement};
 use crate::matcher::Tree;
@@ -45,8 +47,13 @@ impl LoadedDoc {
     }
 }
 
-/// 一个元素在运行时（逻辑树，含 slot 投影）的祖先。
-#[derive(Debug, Clone)]
+/// 元素在运行时（逻辑树，含 slot 投影）的祖先。
+///
+/// **是并集不是链**：组件被多个地方使用时，`nodes` 会把每个使用点的祖先路径
+/// 依次接在一起（`open` 表示其中至少一条停在静态不可知的边上）。因此它不能用
+/// 作稳定标识，也不能当成「唯一的父链」来解释顺序。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AncestorView {
     pub doc: String,
     pub tag: String,
@@ -58,14 +65,16 @@ pub struct AncestorView {
 
 /// 祖先链。`open` 表示链尾落在静态不可知的边上（动态槽名、未渲染的组件…），
 /// 依赖祖先的结论此时应当放弃。
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Ancestors {
     pub nodes: Vec<AncestorView>,
     pub open: bool,
 }
 
 /// 一条参与级联的声明（快照）。数组按优先级升序，末位生效。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CascadeView {
     pub value: String,
     pub important: bool,
@@ -84,7 +93,8 @@ pub struct CascadeView {
 }
 
 /// 元素在 Skyline 下的布局判定（都是规则层已经算过的结论）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LayoutFacts {
     pub display: Option<String>,
     pub flex_direction: Option<String>,
@@ -125,7 +135,8 @@ pub enum Renderer {
 }
 
 /// 一次组件使用点：哪个文档用哪个标签引用了当前这份组件。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UsageView {
     pub doc: String,
     pub tag: String,
@@ -136,7 +147,8 @@ pub struct UsageView {
 }
 
 /// 元素上的一个事件绑定及其处理函数。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HandlerView {
     /// 属性名原文（`bind:tap` / `catchtap` …）。
     pub attribute: String,
@@ -151,7 +163,8 @@ pub struct HandlerView {
 }
 
 /// 事件处理函数在脚本里的位置。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HandlerFunction {
     /// 最终到达的函数名（与 WXML 上写的键不同时能看出来，如 `onTap: noop` → `noop`）。
     pub name: String,
@@ -331,12 +344,18 @@ impl<'a> Facts<'a> {
         &self.elements
     }
 
-    /// 按开始标签在源码里的位置（1-based 行、UTF-16 列）找元素。
+    /// 按源码位置（1-based 行、UTF-16 列）找元素：返回包含该位置的**最深**元素。
+    ///
+    /// 诊断常落在属性值或文本上而不是标签起点，所以按区间包含判定，不要求正好落在
+    /// 开始标签上。`WxmlElement` 的位置来自编译器，是 0-based 行，这里统一换算。
     pub fn element_at(&self, line: u32, column: u32) -> Option<&'a WxmlElement> {
+        let line = line.saturating_sub(1);
+        let column = column.saturating_sub(1);
         self.elements
             .iter()
             .copied()
-            .find(|element| element.tag_start.line == line && element.tag_start.utf16_col == column)
+            .filter(|element| contains(&element.start, &element.end, line, column))
+            .max_by_key(|element| (element.start.line, element.start.utf16_col))
     }
 
     /// 运行时（逻辑树）祖先，近 → 远。
@@ -596,6 +615,18 @@ impl<'a> Facts<'a> {
             scroll_view_auto_size: self.project.scroll_view_auto_size(),
         }
     }
+}
+
+/// 源码位置是否落在 `[start, end]` 内（均为 0-based 行、UTF-16 列）。
+fn contains(
+    start: &glass_easel_template_compiler::parse::Position,
+    end: &glass_easel_template_compiler::parse::Position,
+    line: u32,
+    column: u32,
+) -> bool {
+    let after_start = line > start.line || (line == start.line && column >= start.utf16_col);
+    let before_end = line < end.line || (line == end.line && column <= end.utf16_col);
+    after_start && before_end
 }
 
 #[cfg(test)]

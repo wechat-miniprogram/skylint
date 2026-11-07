@@ -1,0 +1,227 @@
+//! 迁移接口的端到端测试：真造工程，验证三件容易漂的事——批次顺序、诊断归属、
+//! 以及「元素挪了位置诊断 id 不变」。
+
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use skylint::migrate;
+use skylint::rules::Target;
+use skylint::{Project, Registry, Report};
+
+struct Fixture {
+    root: PathBuf,
+}
+
+impl Fixture {
+    fn new(name: &str) -> Self {
+        let root =
+            std::env::temp_dir().join(format!("skylint-migrate-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        Self { root }
+    }
+
+    fn write(&self, rel: &str, content: &str) -> &Self {
+        let path = self.root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, content).unwrap();
+        self
+    }
+
+    fn path(&self) -> &Path {
+        &self.root
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+fn analyse(root: &Path) -> (Vec<Project>, Report) {
+    let projects = Project::load_views(root).expect("project");
+    let registry = Registry::builtin().for_target(Target::Skyline);
+    let views: Vec<&Project> = projects.iter().collect();
+    let diagnostics = registry.run_views(&views, &HashSet::new());
+    let report = Report::from_views(&projects, diagnostics);
+    (projects, report)
+}
+
+/// 页面 → a → b：b 必须在第 0 批，a 在第 1 批，页面最后。
+#[test]
+fn batches_put_leaves_before_their_users() {
+    let f = Fixture::new("batches");
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/"}"#,
+    )
+    .write(
+        "miniprogram/app.json",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+    )
+    .write(
+        "miniprogram/pages/index/index.json",
+        r#"{"usingComponents":{"a":"/components/a/a"}}"#,
+    )
+    .write("miniprogram/pages/index/index.wxml", "<a/>")
+    .write("miniprogram/pages/index/index.js", "Page({})")
+    .write(
+        "miniprogram/components/a/a.json",
+        r#"{"component":true,"usingComponents":{"b":"../b/b"}}"#,
+    )
+    .write("miniprogram/components/a/a.wxml", "<b/>")
+    .write("miniprogram/components/a/a.js", "Component({})")
+    .write("miniprogram/components/b/b.json", r#"{"component":true}"#)
+    .write("miniprogram/components/b/b.wxml", "<view/>")
+    .write("miniprogram/components/b/b.js", "Component({})");
+
+    let (projects, report) = analyse(f.path());
+    let plan = migrate::plan(&projects, &report, None);
+    let batch = |suffix: &str| {
+        plan.units
+            .iter()
+            .find(|unit| unit.path.ends_with(suffix))
+            .unwrap_or_else(|| panic!("missing unit {suffix}"))
+            .batch
+    };
+
+    assert_eq!(batch("components/b/b.wxml"), 0, "叶子组件先做");
+    assert_eq!(batch("components/a/a.wxml"), 1);
+    assert_eq!(batch("pages/index/index.wxml"), 2, "页面最后");
+    assert_eq!(plan.batches.len(), 3);
+}
+
+/// 不属于任何单元文件的诊断（app.json）进 `unit:shared`。
+#[test]
+fn shared_unit_collects_diagnostics_outside_any_unit() {
+    let f = Fixture::new("shared");
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/"}"#,
+    )
+    .write(
+        "miniprogram/app.json",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+    )
+    .write("miniprogram/pages/index/index.json", r#"{}"#)
+    .write("miniprogram/pages/index/index.wxml", "<view/>")
+    .write("miniprogram/pages/index/index.js", "Page({})");
+
+    let (projects, report) = analyse(f.path());
+    let plan = migrate::plan(&projects, &report, None);
+    let shared = plan
+        .units
+        .iter()
+        .find(|unit| unit.kind == "shared")
+        .expect("app.json 的诊断不属于任何单元，必须有 shared");
+
+    assert!(
+        shared
+            .diagnostics
+            .by_rule
+            .contains_key("skyline/default-layout-drift"),
+        "app 级开关的诊断应落在 shared：{:?}",
+        shared.diagnostics.by_rule
+    );
+    // 页面单元不该把这些诊断算到自己头上。
+    let page = plan
+        .units
+        .iter()
+        .find(|unit| unit.path == "pages/index/index.wxml")
+        .expect("page unit");
+    assert_eq!(page.diagnostics.total, 0);
+}
+
+fn inline_text_fixture(name: &str, wxss: &str) -> Fixture {
+    let f = Fixture::new(name);
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/"}"#,
+    )
+    .write(
+        "miniprogram/app.json",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true,"defaultContentBox":true}}}"#,
+    )
+    .write("miniprogram/pages/index/index.json", r#"{}"#)
+    .write(
+        "miniprogram/pages/index/index.wxml",
+        r#"<view class="box">hello <view class="inner">x</view></view>"#,
+    )
+    .write("miniprogram/pages/index/index.js", "Page({})")
+    .write("miniprogram/pages/index/index.wxss", wxss);
+    f
+}
+
+fn job_for_page(root: &Path) -> migrate::Job {
+    let (projects, report) = analyse(root);
+    let plan = migrate::plan(&projects, &report, None);
+    let unit = plan
+        .units
+        .iter()
+        .find(|unit| unit.path == "pages/index/index.wxml")
+        .expect("page unit");
+    let (project, rel) = migrate::find_view(&projects, &unit.path).expect("view");
+    let diagnostics = migrate::diagnostics_for(&plan, unit, &report);
+    migrate::job(project, rel, unit, &diagnostics, None)
+}
+
+/// 元素整体下移一行，诊断 id 不变（行列只用于展示）。
+#[test]
+fn finding_id_survives_line_shift() {
+    let f = inline_text_fixture("shift", ".box { display: block; }");
+    let before = job_for_page(f.path());
+    let finding = before
+        .findings
+        .iter()
+        .find(|finding| finding.rule == "skyline/no-inline-text")
+        .expect("no-inline-text");
+    assert_eq!(finding.span.line, 1);
+    assert_eq!(
+        finding.anchor.as_ref().map(|anchor| anchor.classes.clone()),
+        Some(vec!["box".to_string()])
+    );
+
+    // 在最上面插一行空行：所有行号 +1，元素本身没变。
+    f.write(
+        "miniprogram/pages/index/index.wxml",
+        "\n<view class=\"box\">hello <view class=\"inner\">x</view></view>",
+    );
+    let after = job_for_page(f.path());
+    let moved = after
+        .findings
+        .iter()
+        .find(|finding| finding.rule == "skyline/no-inline-text")
+        .expect("no-inline-text");
+
+    assert_eq!(moved.span.line, 2, "行号应该跟着移动");
+    assert_eq!(moved.id, finding.id, "id 不该随行号变化");
+}
+
+/// 只内联规则声明关心的属性，不把整份级联塞进作业单。
+#[test]
+fn cascade_only_carries_declared_properties() {
+    let f = inline_text_fixture(
+        "cascade",
+        ".box { display: block; z-index: 3; color: red; }",
+    );
+    let job = job_for_page(f.path());
+    let finding = job
+        .findings
+        .iter()
+        .find(|finding| finding.rule == "skyline/no-inline-text")
+        .expect("no-inline-text");
+    let cascade = &finding.facts.as_ref().expect("facts").cascade;
+
+    assert!(cascade.contains_key("display"));
+    assert!(
+        !cascade.contains_key("z-index"),
+        "no-inline-text 没声明 z-index，不该内联"
+    );
+    assert!(!cascade.contains_key("color"));
+    assert!(
+        !finding.counterexamples.is_empty(),
+        "规则应该带反例，否则 agent 容易过度发挥"
+    );
+}

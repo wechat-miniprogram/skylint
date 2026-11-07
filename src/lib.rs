@@ -14,7 +14,7 @@ pub use skylint_core::{
     Target,
 };
 pub use skylint_core::{
-    diag, input, inspect, matcher, project, report, rules, suppress, wxml_graph,
+    diag, input, inspect, matcher, migrate, project, report, rules, suppress, wxml_graph,
 };
 
 pub mod render;

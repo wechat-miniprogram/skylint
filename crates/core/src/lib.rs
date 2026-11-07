@@ -12,6 +12,7 @@ pub mod diag;
 pub mod input;
 pub mod inspect;
 pub mod matcher;
+pub mod migrate;
 pub mod project;
 pub mod report;
 pub mod rules;
@@ -23,6 +24,7 @@ pub use inspect::{
     AncestorView, Ancestors, CascadeView, Facts, HandlerFunction, HandlerView, LayoutFacts,
     LoadedDoc, Renderer, UnitFacts, UnitKind, UsageView,
 };
+pub use migrate::{Anchor, Finding, Job, Plan, PlanUnit};
 pub use project::{ComponentUnit, PageUnit, Project};
 pub use report::Report;
 pub use rules::{Registry, Rule, RuleMeta, Target};

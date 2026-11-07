@@ -14,6 +14,12 @@
 | P2 图回链 | **已完成** | `ancestors` 走 `WxmlGraph`（跨 slot / `virtualHost`）；`usages()` 给出「这份组件被哪些使用点引用」，`usages_recursive(depth)` 再往上爬父组件；`component_options` 进 `UnitFacts` |
 | P3 布局事实 | **部分** | `LayoutFacts` 已有 `display` / `flex_direction` / `out_of_flow` / `width_follows_content` / `block_rendered` / `definite_height`，以及截断三件套（`white_space` / `clips_overflow` / `webview_truncates`，复用 `webview_truncates`）|
 | P4 脚本事实 | **部分** | `handlers(element)`：事件属性 → 事件名 + 静态处理函数名 + 脚本里的位置（含 `worklet` 标记），并顺着方法表跳转：`Component({ methods })` → 属性值 → 同文件函数 / `require`·`import` 的模块导出 / `this.x = m.f().bind(this)` / 链式 API 的 `.methods({..})` 与 `.init(cb)` 返回值。动态绑定标 `dynamic`；静态写了但找不到函数时只给名字、不给位置。内联 `<wxs>` 仍未入脚本图 |
+| M1 迁移接口 | **已完成** | `skylint_core::migrate`：`plan()` / `job()` / `facts_doc()` / `element_detail()`，契约见 `docs/MIGRATE.md`；CLI 对应 `skylint plan` / `job` / `facts` |
+
+两处对 `inspect` 的修正（M1 顺带发现）：
+
+- `Facts::element_at(line, column)` 以前按「开始标签正好落在该位置」比对，而 `WxmlElement` 的位置来自编译器、是 0-based 行，和诊断的 1-based 行差一 —— 它当时没有任何调用者，所以没人发现。现在按**区间包含**取最深元素，行列都换算成 0-based 再比。
+- `Facts::ancestors()` 对**组件**返回的是**多个使用点的并集**，不是单条父链（`nodes` 把每个使用点的路径依次接在一起）。名字叫 ancestors 容易让人当成链，已写进类型注释；迁移的稳定 id 因此不把祖先链算进去。
 
 判别力：`cascade_tests.rs` 的 6 条用例里 3 条（specificity / important 压 specificity /
 样式表 important 压内联）在去掉排序后立即变红，说明它们真的在守新口径。
