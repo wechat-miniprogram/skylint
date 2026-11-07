@@ -8,7 +8,7 @@ mod guidance;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::diag::{Diagnostic, Severity};
 use crate::inspect::{Facts, LayoutFacts, LoadedDoc, Renderer, UnitKind};
@@ -23,11 +23,11 @@ pub const SCHEMA_VERSION: u32 = 1;
 
 // ---------------------------------------------------------------- 公共类型
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Generator {
-    pub name: &'static str,
-    pub version: &'static str,
+    pub name: String,
+    pub version: String,
     /// 生成时的提交；未知为 `null`（不影响两次 `plan` 的字节一致性）。
     pub commit: Option<String>,
 }
@@ -35,8 +35,8 @@ pub struct Generator {
 impl Default for Generator {
     fn default() -> Self {
         Self {
-            name: "skylint",
-            version: env!("CARGO_PKG_VERSION"),
+            name: "skylint".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
             commit: None,
         }
     }
@@ -143,7 +143,7 @@ pub struct Finding {
     pub counterexamples: Vec<&'static str>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Span {
     pub line: u32,
@@ -556,7 +556,6 @@ fn finding(project: &Project, doc: Option<&LoadedDoc>, diagnostic: &Diagnostic) 
     let resolved = doc.and_then(|doc| {
         let facts = doc.facts(project);
         let element = facts.element_at(diagnostic.line, diagnostic.column)?;
-        let anchor = anchor_for(&facts, element);
         let mut cascade = BTreeMap::new();
         for property in guidance.facts {
             let entries = facts.cascade(element, property);
@@ -564,24 +563,16 @@ fn finding(project: &Project, doc: Option<&LoadedDoc>, diagnostic: &Diagnostic) 
                 cascade.insert(property.to_string(), entries);
             }
         }
-        Some((
-            anchor,
-            FindingFacts {
-                layout: facts.layout(element),
-                cascade,
-                ancestors: facts.ancestors(element),
-                handlers: facts.handlers(element),
-            },
-        ))
+        Some(FindingFacts {
+            layout: facts.layout(element),
+            cascade,
+            ancestors: facts.ancestors(element),
+            handlers: facts.handlers(element),
+        })
     });
 
-    let id = match &resolved {
-        Some((anchor, _)) => anchor_id(&diagnostic.rule, &diagnostic.path, anchor),
-        None => format!(
-            "{}|{}|{}:{}",
-            diagnostic.rule, diagnostic.path, diagnostic.line, diagnostic.column
-        ),
-    };
+    // id 与 `identify()` 用同一份计算，避免作业单和门禁对不上。
+    let (id, anchor) = identify_one(project, doc, diagnostic);
 
     Finding {
         id,
@@ -590,8 +581,8 @@ fn finding(project: &Project, doc: Option<&LoadedDoc>, diagnostic: &Diagnostic) 
         message: diagnostic.message.clone(),
         help: diagnostic.help.clone(),
         span,
-        anchor: resolved.as_ref().map(|(anchor, _)| anchor.clone()),
-        facts: resolved.map(|(_, facts)| facts),
+        anchor,
+        facts: resolved,
         preconditions: guidance.preconditions.to_vec(),
         counterexamples: guidance.counterexamples.to_vec(),
     }
@@ -847,4 +838,301 @@ fn owns(unit: &PlanUnit, path: &str) -> bool {
 /// 产物序列化。放在引擎侧，集成层不必依赖 serde。
 pub fn to_json<T: Serialize>(value: &T) -> String {
     serde_json::to_string_pretty(value).expect("migrate 产物总是可序列化")
+}
+
+// ---------------------------------------------------------------- 稳定标识
+
+/// 一条诊断的稳定身份。`baseline` / `verify` / `job` 共用这一份计算。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Identified {
+    pub id: String,
+    /// 归属单元 id（`unit:shared` 表示不属于任何单元）。
+    pub unit: String,
+    pub rule: String,
+    pub severity: Severity,
+    pub path: String,
+    pub span: Span,
+    pub message: String,
+}
+
+/// 给全部诊断算稳定 id。同一份代码重复调用结果一致；元素挪行不变。
+pub fn identify(views: &[Project], plan: &Plan, report: &Report) -> Vec<Identified> {
+    let mut docs: BTreeMap<String, Option<LoadedDoc>> = BTreeMap::new();
+    let mut out = Vec::with_capacity(report.diagnostics.len());
+
+    for diagnostic in &report.diagnostics {
+        let unit = plan
+            .units
+            .iter()
+            .find(|unit| unit.kind != "shared" && owns(unit, &diagnostic.path))
+            .or_else(|| plan.units.iter().find(|unit| unit.kind == "shared"));
+        let unit_id = unit.map(|unit| unit.id.clone()).unwrap_or_default();
+
+        // 只有 WXML 诊断能拿到元素；样式/脚本/配置落回行列 id。
+        let (id, _) = match diagnostic.path.ends_with(".wxml") {
+            true => match find_view(views, &diagnostic.path) {
+                Some((project, rel)) => {
+                    let doc = docs
+                        .entry(diagnostic.path.clone())
+                        .or_insert_with(|| LoadedDoc::load(project, rel));
+                    identify_one(project, doc.as_ref(), diagnostic)
+                }
+                None => identify_one_fallback(diagnostic),
+            },
+            false => identify_one_fallback(diagnostic),
+        };
+
+        out.push(Identified {
+            id,
+            unit: unit_id,
+            rule: diagnostic.rule.clone(),
+            severity: diagnostic.severity,
+            path: diagnostic.path.clone(),
+            span: Span {
+                line: diagnostic.line,
+                column: diagnostic.column,
+                end_line: diagnostic.end_line,
+                end_column: diagnostic.end_column,
+            },
+            message: diagnostic.message.clone(),
+        });
+    }
+    out
+}
+
+/// `finding()` 与 `identify()` 共用的 id 计算。
+fn identify_one(
+    project: &Project,
+    doc: Option<&LoadedDoc>,
+    diagnostic: &Diagnostic,
+) -> (String, Option<Anchor>) {
+    let anchor = doc.and_then(|doc| {
+        let facts = doc.facts(project);
+        let element = facts.element_at(diagnostic.line, diagnostic.column)?;
+        Some(anchor_for(&facts, element))
+    });
+    let id = match &anchor {
+        Some(anchor) => anchor_id(&diagnostic.rule, &diagnostic.path, anchor),
+        None => identify_one_fallback(diagnostic).0,
+    };
+    (id, anchor)
+}
+
+fn identify_one_fallback(diagnostic: &Diagnostic) -> (String, Option<Anchor>) {
+    (
+        format!(
+            "{}|{}|{}:{}",
+            diagnostic.rule, diagnostic.path, diagnostic.line, diagnostic.column
+        ),
+        None,
+    )
+}
+
+// ---------------------------------------------------------------- baseline
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Baseline {
+    pub schema_version: u32,
+    pub generator: Generator,
+    pub summary: BaselineSummary,
+    pub findings: Vec<BaselineFinding>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BaselineSummary {
+    pub total: usize,
+    pub error: usize,
+    pub warning: usize,
+    pub info: usize,
+}
+
+/// 基线里只存身份与位置，不存 message：措辞随版本变，但问题没变。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BaselineFinding {
+    pub id: String,
+    /// 归属单元，`--unit` 过滤用。
+    pub unit: String,
+    pub rule: String,
+    pub severity: Severity,
+    pub path: String,
+    pub span: Span,
+}
+
+pub fn baseline(identified: &[Identified]) -> Baseline {
+    let mut summary = BaselineSummary::default();
+    let mut findings = Vec::with_capacity(identified.len());
+    for finding in identified {
+        summary.total += 1;
+        match finding.severity {
+            Severity::Error => summary.error += 1,
+            Severity::Warning => summary.warning += 1,
+            Severity::Info => summary.info += 1,
+        }
+        findings.push(BaselineFinding {
+            id: finding.id.clone(),
+            unit: finding.unit.clone(),
+            rule: finding.rule.clone(),
+            severity: finding.severity,
+            path: finding.path.clone(),
+            span: finding.span.clone(),
+        });
+    }
+    findings.sort_by(|a, b| a.id.cmp(&b.id));
+    Baseline {
+        schema_version: SCHEMA_VERSION,
+        generator: Generator::default(),
+        summary,
+        findings,
+    }
+}
+
+// ---------------------------------------------------------------- verify
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyReport {
+    pub schema_version: u32,
+    pub baseline: BaselineRef,
+    /// 只看这个单元时给出；全量时为 `null`。
+    pub unit: Option<String>,
+    /// 基线与当前 skylint 版本不同：规则集可能变了，结果要人看一眼。
+    pub version_mismatch: bool,
+    /// **新增的 error + warning**（门禁判据：`new == 0`）。
+    pub new: usize,
+    /// 新增的 info（不拦门禁）。
+    pub new_info: usize,
+    pub fixed: usize,
+    /// 同一 id、严重级变了（例如规则被调档）。
+    pub changed: usize,
+    pub findings: Vec<DiffEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffEntry {
+    /// `new` / `fixed` / `severity-changed`
+    pub kind: &'static str,
+    pub id: String,
+    pub rule: String,
+    pub severity: Severity,
+    pub path: String,
+    pub span: Span,
+    /// 当前诊断的 message；`fixed` 没有。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+pub fn verify(
+    baseline: &Baseline,
+    current: &[Identified],
+    unit: Option<&str>,
+    baseline_file: Option<String>,
+) -> VerifyReport {
+    let baseline_by_id: BTreeMap<&str, &BaselineFinding> = baseline
+        .findings
+        .iter()
+        .filter(|finding| unit.is_none_or(|wanted| finding.unit == wanted))
+        .map(|finding| (finding.id.as_str(), finding))
+        .collect();
+
+    let mut findings = Vec::new();
+    let mut new = 0;
+    let mut new_info = 0;
+    let mut changed = 0;
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+
+    for finding in current {
+        if unit.is_some_and(|wanted| finding.unit != wanted) {
+            continue;
+        }
+        seen.insert(finding.id.as_str());
+        match baseline_by_id.get(finding.id.as_str()) {
+            None => {
+                match finding.severity {
+                    Severity::Info => new_info += 1,
+                    _ => new += 1,
+                }
+                findings.push(DiffEntry {
+                    kind: "new",
+                    id: finding.id.clone(),
+                    rule: finding.rule.clone(),
+                    severity: finding.severity,
+                    path: finding.path.clone(),
+                    span: finding.span.clone(),
+                    message: Some(finding.message.clone()),
+                });
+            }
+            Some(previous) if previous.severity != finding.severity => {
+                changed += 1;
+                findings.push(DiffEntry {
+                    kind: "severity-changed",
+                    id: finding.id.clone(),
+                    rule: finding.rule.clone(),
+                    severity: finding.severity,
+                    path: finding.path.clone(),
+                    span: finding.span.clone(),
+                    message: Some(finding.message.clone()),
+                });
+            }
+            Some(_) => {}
+        }
+    }
+
+    let mut fixed = 0;
+    for previous in baseline_by_id.values() {
+        if seen.contains(previous.id.as_str()) {
+            continue;
+        }
+        fixed += 1;
+        findings.push(DiffEntry {
+            kind: "fixed",
+            id: previous.id.clone(),
+            rule: previous.rule.clone(),
+            severity: previous.severity,
+            path: previous.path.clone(),
+            span: previous.span.clone(),
+            message: None,
+        });
+    }
+
+    findings.sort_by(|a, b| {
+        (a.kind, &a.path, a.span.line, a.span.column).cmp(&(
+            b.kind,
+            &b.path,
+            b.span.line,
+            b.span.column,
+        ))
+    });
+
+    VerifyReport {
+        schema_version: SCHEMA_VERSION,
+        baseline: BaselineRef {
+            file: baseline_file,
+            sha256: None,
+            diagnostics: baseline.summary.total,
+        },
+        unit: unit.map(str::to_string),
+        version_mismatch: baseline.generator.version != Generator::default().version,
+        new,
+        new_info,
+        fixed,
+        changed,
+        findings,
+    }
+}
+
+impl VerifyReport {
+    /// 门禁判据：新增 error/warning 即失败；只新增 info 不拦。
+    pub fn blocks(&self) -> bool {
+        self.new > 0
+    }
+}
+
+/// 产物反序列化（基线文件）。同样放在引擎侧，集成层不必依赖 serde。
+pub fn from_json<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
+    serde_json::from_str(text).map_err(|err| err.to_string())
 }

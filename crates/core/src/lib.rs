@@ -24,7 +24,7 @@ pub use inspect::{
     AncestorView, Ancestors, CascadeView, Facts, HandlerFunction, HandlerView, LayoutFacts,
     LoadedDoc, Renderer, UnitFacts, UnitKind, UsageView,
 };
-pub use migrate::{Anchor, Finding, Job, Plan, PlanUnit};
+pub use migrate::{Anchor, Baseline, Finding, Job, Plan, PlanUnit, VerifyReport};
 pub use project::{ComponentUnit, PageUnit, Project};
 pub use report::Report;
 pub use rules::{Registry, Rule, RuleMeta, Target};

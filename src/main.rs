@@ -57,6 +57,10 @@ enum Command {
     Job(JobArgs),
     /// 查看单元与元素事实
     Facts(FactsArgs),
+    /// 冻结基线：当前全部诊断的稳定身份
+    Baseline(BaselineArgs),
+    /// 门禁：与基线对比，新增 error/warning 即失败
+    Verify(VerifyArgs),
 }
 
 #[derive(Debug, Args)]
@@ -101,6 +105,41 @@ struct JobArgs {
 }
 
 #[derive(Debug, Args)]
+struct BaselineArgs {
+    /// 项目根目录
+    #[arg(default_value = ".", value_name = "PATH")]
+    path: PathBuf,
+    /// 写入位置
+    #[arg(long, value_name = "FILE", default_value = ".skylint/baseline.json")]
+    out: PathBuf,
+    /// 输出 JSON（同时写到 `--out`）
+    #[arg(long)]
+    json: bool,
+    /// 跳过的规则 id（可重复）
+    #[arg(long = "ignore", value_name = "RULE")]
+    ignore: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct VerifyArgs {
+    /// 项目根目录
+    #[arg(default_value = ".", value_name = "PATH")]
+    path: PathBuf,
+    /// 基线文件（`skylint baseline` 生成）
+    #[arg(long, value_name = "FILE")]
+    baseline: PathBuf,
+    /// 只看这个单元（id 或 WXML 路径）
+    #[arg(long, value_name = "UNIT")]
+    unit: Option<String>,
+    /// 输出 JSON（机器可读）
+    #[arg(long)]
+    json: bool,
+    /// 跳过的规则 id（可重复）
+    #[arg(long = "ignore", value_name = "RULE")]
+    ignore: Vec<String>,
+}
+
+#[derive(Debug, Args)]
 struct FactsArgs {
     /// 项目根目录
     #[arg(value_name = "PATH")]
@@ -125,6 +164,8 @@ fn main() -> ExitCode {
         Some(Command::Plan(args)) => run_plan(args),
         Some(Command::Job(args)) => run_job(args),
         Some(Command::Facts(args)) => run_facts(args),
+        Some(Command::Baseline(args)) => run_baseline(args),
+        Some(Command::Verify(args)) => run_verify(args),
         None => run_check(
             cli.path.unwrap_or_else(|| PathBuf::from(".")),
             cli.json,
@@ -294,6 +335,90 @@ fn run_facts(args: FactsArgs) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+fn run_baseline(args: BaselineArgs) -> ExitCode {
+    let (projects, report) = match analyse(&args.path, &args.ignore) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    let plan = migrate::plan(&projects, &report, None);
+    let identified = migrate::identify(&projects, &plan, &report);
+    let baseline = migrate::baseline(&identified);
+    let json = migrate::to_json(&baseline);
+
+    if let Err(err) = write_out(&args.out, &json) {
+        eprintln!("skylint: {err}");
+        return ExitCode::from(2);
+    }
+    if args.json {
+        println!("{json}");
+    } else {
+        eprintln!(
+            "wrote {}（{} 条：e{} w{} i{}）",
+            args.out.display(),
+            baseline.summary.total,
+            baseline.summary.error,
+            baseline.summary.warning,
+            baseline.summary.info
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+fn run_verify(args: VerifyArgs) -> ExitCode {
+    let text = match std::fs::read_to_string(&args.baseline) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!("skylint: 读不到基线 {}: {err}", args.baseline.display());
+            return ExitCode::from(2);
+        }
+    };
+    let baseline: migrate::Baseline = match migrate::from_json(&text) {
+        Ok(baseline) => baseline,
+        Err(err) => {
+            eprintln!("skylint: 基线格式不对 {}: {err}", args.baseline.display());
+            return ExitCode::from(2);
+        }
+    };
+
+    let (projects, report) = match analyse(&args.path, &args.ignore) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    let plan = migrate::plan(&projects, &report, None);
+
+    // `--unit` 既可以是 id，也可以是 WXML 路径。
+    let unit = match args.unit.as_deref() {
+        Some(needle) => match find_unit(&plan, needle) {
+            Some(unit) => Some(unit.id.clone()),
+            None => {
+                eprintln!("skylint: 找不到单元 `{needle}`（先跑 `skylint plan` 看清单）");
+                return ExitCode::from(1);
+            }
+        },
+        None => None,
+    };
+
+    let identified = migrate::identify(&projects, &plan, &report);
+    let result = migrate::verify(
+        &baseline,
+        &identified,
+        unit.as_deref(),
+        Some(args.baseline.display().to_string()),
+    );
+
+    if args.json {
+        println!("{}", migrate::to_json(&result));
+    } else {
+        print_verify(&result);
+    }
+
+    if result.blocks() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 // ---------------------------------------------------------------- 共用
@@ -499,5 +624,32 @@ fn print_element(detail: &migrate::ElementDetail) {
                 .map(|function| format!("  {}:{}", function.script, function.line))
                 .unwrap_or_default()
         );
+    }
+}
+
+fn print_verify(report: &migrate::VerifyReport) {
+    if report.version_mismatch {
+        eprintln!("⚠ 基线与当前 skylint 版本不同：规则集可能变了，新增/修复的数量要人看一眼");
+    }
+    println!(
+        "新增 {} 条（error+warning），新增 info {} 条，修复 {} 条，调档 {} 条",
+        report.new, report.new_info, report.fixed, report.changed
+    );
+    if let Some(unit) = &report.unit {
+        println!("只看：{unit}");
+    }
+    for finding in &report.findings {
+        let sign = match finding.kind {
+            "new" => "+",
+            "fixed" => "-",
+            _ => "~",
+        };
+        println!(
+            "  {sign} [{}] {}  {}:{}:{}",
+            finding.severity, finding.rule, finding.path, finding.span.line, finding.span.column
+        );
+        if let Some(message) = &finding.message {
+            println!("     {message}");
+        }
     }
 }

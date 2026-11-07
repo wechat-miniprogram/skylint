@@ -207,7 +207,7 @@ skylint facts <PROJECT> <UNIT_WXML> --element 87:3 --property z-index
 
 | 项 | 归属 |
 |---|---|
-| `skylint verify`（字段级 diff、基线对账、退出码） | M2 |
+| `skylint verify`（字段级 diff、基线对账、退出码） | **M2，已完成**（见 §9） |
 | `.skylint/ledger.json`、`skylint next` | M3 |
 | AI 判定（`judge.schema.json`） | M4 |
 | 编排器（`vercel/workflow`） | M5 |
@@ -229,3 +229,45 @@ M1 已实现并验证：
 | 级联只含声明属性 | `tests/migrate.rs::cascade_only_carries_declared_properties` |
 
 `baseline.sha256` 在 M1 恒为 `null`——摘要属于 `verify`（M2），这里不假装有。
+
+## 9. 门禁（M2）
+
+```
+skylint baseline <PATH> [--out .skylint/baseline.json]
+skylint verify <PATH> --baseline <FILE> [--unit <ID>] [--json]
+```
+
+`baseline` 存的是**身份**（`id` / `unit` / `rule` / `severity` / `path` / `span`），
+不存 `message`：措辞随版本变，但问题没变。
+
+### 9.1 判据
+
+| 情况 | 计入 | 拦门禁 |
+|---|---|---|
+| 当前有、基线没有，且 severity 是 error / warning | `new` | **是** |
+| 当前有、基线没有，且 severity 是 info | `newInfo` | 否 |
+| 基线有、当前没有 | `fixed` | 否 |
+| 同一 `id`，severity 变了 | `changed` | 否 |
+
+退出码：`new > 0` → 1，否则 0。`job.acceptance` 的 `l0-static` 就是判 `$.new == 0`。
+
+### 9.2 为什么按 id 不按行列
+
+行列一变，按位置 diff 会把「元素整体下移一行」算成「修了一条、新增一条」。
+`tests/migrate.rs::verify_ignores_line_shift` 守着这条：插两行空行后
+`new == 0 && fixed == 0`。
+
+非 WXML 诊断（`.wxss` / `.js` / `app.json`）没有元素，id 退化为
+`rule|path|line:column`——这些位置由声明本身决定，改别处不会漂。
+
+### 9.3 版本不一致
+
+基线里带 `generator.version`。与当前 skylint 版本不同时，`versionMismatch: true`
+并往 stderr 打一行警告：规则集变了，新增/修复的数量要人看一眼，而不是当成 agent 改坏了。
+
+### 9.4 已知边界
+
+- 规则措辞改变不算变化（baseline 不存 message），但**规则 id 改名**会让旧 id 全部变成
+  `fixed`、新 id 全部变成 `new`。改名需要同时重生基线。
+- 元素被删掉时，它的旧诊断算 `fixed`（而不是「未知」）——这与「修好了」在数据上
+  不可区分，需要人看一眼 diff。

@@ -225,3 +225,109 @@ fn cascade_only_carries_declared_properties() {
         "规则应该带反例，否则 agent 容易过度发挥"
     );
 }
+
+fn baseline_of(root: &Path) -> migrate::Baseline {
+    let (projects, report) = analyse(root);
+    let plan = migrate::plan(&projects, &report, None);
+    migrate::baseline(&migrate::identify(&projects, &plan, &report))
+}
+
+fn verify_now(root: &Path, baseline: &migrate::Baseline) -> migrate::VerifyReport {
+    let (projects, report) = analyse(root);
+    let plan = migrate::plan(&projects, &report, None);
+    let current = migrate::identify(&projects, &plan, &report);
+    migrate::verify(baseline, &current, None, None)
+}
+
+#[test]
+fn verify_is_clean_on_unchanged_code() {
+    let f = inline_text_fixture("verify-same", ".box { display: block; }");
+    let baseline = baseline_of(f.path());
+    let result = verify_now(f.path(), &baseline);
+
+    assert_eq!(result.new, 0);
+    assert_eq!(result.fixed, 0);
+    assert!(!result.blocks());
+}
+
+/// 门禁的核心性质：挪行不算新增，也不算修复。
+#[test]
+fn verify_ignores_line_shift() {
+    let f = inline_text_fixture("verify-shift", ".box { display: block; }");
+    let baseline = baseline_of(f.path());
+
+    f.write(
+        "miniprogram/pages/index/index.wxml",
+        "\n\n<view class=\"box\">hello <view class=\"inner\">x</view></view>",
+    );
+    let result = verify_now(f.path(), &baseline);
+
+    assert_eq!(result.new, 0, "挪行不该产生新诊断：{:?}", result.findings);
+    assert_eq!(result.fixed, 0, "挪行不该把旧诊断算成修复");
+    assert!(!result.blocks());
+}
+
+#[test]
+fn verify_reports_new_finding_and_blocks() {
+    let f = inline_text_fixture("verify-new", ".box { display: block; }");
+    let baseline = baseline_of(f.path());
+
+    f.write(
+        "miniprogram/pages/index/index.wxml",
+        "<view class=\"box\">hello <view class=\"inner\">x</view></view>\n<view class=\"other\">hi <view/></view>",
+    );
+    let result = verify_now(f.path(), &baseline);
+
+    assert_eq!(result.new, 1);
+    assert_eq!(result.fixed, 0);
+    assert!(result.blocks());
+    assert_eq!(result.findings[0].kind, "new");
+    assert!(result.findings[0].id.contains("view.other"));
+}
+
+#[test]
+fn verify_reports_fixed_finding() {
+    let f = inline_text_fixture("verify-fixed", ".box { display: block; }");
+    let baseline = baseline_of(f.path());
+
+    // 去掉文本，只剩元素：no-inline-text 不再成立。
+    f.write(
+        "miniprogram/pages/index/index.wxml",
+        "<view class=\"box\"><view class=\"inner\">x</view></view>",
+    );
+    let result = verify_now(f.path(), &baseline);
+
+    assert_eq!(result.new, 0);
+    assert_eq!(result.fixed, 1);
+    assert!(!result.blocks(), "修复不该拦门禁");
+    assert_eq!(result.findings[0].kind, "fixed");
+}
+
+/// `--unit` 只比对这个单元，别的单元的变化不算进来。
+#[test]
+fn verify_filters_by_unit() {
+    let f = inline_text_fixture("verify-unit", ".box { display: block; }");
+    let baseline = baseline_of(f.path());
+    let (projects, report) = analyse(f.path());
+    let plan = migrate::plan(&projects, &report, None);
+    let page = plan
+        .units
+        .iter()
+        .find(|unit| unit.path == "pages/index/index.wxml")
+        .expect("page unit");
+
+    f.write(
+        "miniprogram/pages/index/index.wxml",
+        "<view class=\"box\">hello <view class=\"inner\">x</view></view>\n<view class=\"other\">hi <view/></view>",
+    );
+    let (projects, report) = analyse(f.path());
+    let plan = migrate::plan(&projects, &report, None);
+    let current = migrate::identify(&projects, &plan, &report);
+
+    let only_page = migrate::verify(&baseline, &current, Some(&page.id), None);
+    assert_eq!(only_page.new, 1);
+
+    let other = migrate::verify(&baseline, &current, Some("unit:pages/other/other"), None);
+    assert_eq!(other.new, 0, "别的单元不受影响");
+    assert_eq!(other.fixed, 0);
+}
