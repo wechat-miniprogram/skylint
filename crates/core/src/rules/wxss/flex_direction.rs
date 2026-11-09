@@ -3,17 +3,23 @@
 //! 同一个选择器下没有 `flex-direction` 时，迁移后布局方向会翻转，报 warning。
 //!
 //! 声明可以分散在多条同名规则里（`.a { display: flex }` 与 `.a { flex-direction: row }`
-//! 分开写、或其中一条在 `@media` 里），所以按「整份样式表里同选择器出现过 flex-direction」
-//! 判断，而不是只看单条规则。
+//! 分开写、或其中一条在 `@media` 里），也可能写在内联 `style` 或命中同一元素的其他
+//! 选择器上。所以按「这条规则命中的每个元素在级联后都有方向」判断，而不是只看单条规则
+//! 的声明或选择器原文。
 
+use std::collections::HashMap;
+
+use crate::input::wxml::{WxmlDoc, WxmlElement};
+use crate::input::wxss::{WxssDoc, WxssRule, WxssSelector};
+use crate::matcher::Tree;
 use crate::project::Project;
+use crate::rules::wxml::resolved_property;
 use crate::{Diagnostic, Severity};
 
-use crate::input::wxss::{WxssDoc, WxssRule, WxssSelector};
 use crate::rules::{Rule, RuleMeta};
 
 use super::value_util::at_declaration;
-use super::visit_matching_rules;
+use super::{all_matches_satisfy, visit_matching_rules};
 
 pub struct FlexDirection;
 
@@ -31,6 +37,8 @@ impl Rule for FlexDirection {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
+        // 元素级豁免要读 WXML，跨规则复用同一份缓存（按路径只解析一次）。
+        let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
         let per_block = visit_matching_rules(project, |sheet, rule, out| {
             // `defaultDisplayBlock: true` 时 Skyline 的 flex-direction 默认值就是 row，
             // 与 WebView 一致，这条警告不成立。
@@ -47,9 +55,6 @@ impl Rule for FlexDirection {
             if rule.selectors.is_empty() {
                 return;
             }
-            if declares_direction(rule) || declares_flex_direction_elsewhere(doc, rule) {
-                return;
-            }
             // 同一条规则里 display 写多次时以后面的为准；最后一条不是 flex 就不报。
             let Some(display) = rule
                 .declarations
@@ -60,6 +65,18 @@ impl Rule for FlexDirection {
                 return;
             };
             if !crate::rules::wxml::is_flex_value(&display.value) {
+                return;
+            }
+            if declares_direction(rule)
+                || declares_flex_direction_elsewhere(doc, rule)
+                || all_matches_satisfy(
+                    project,
+                    sheet,
+                    &rule.selectors,
+                    &mut docs,
+                    |tree, element| declares_element_direction(project, tree, element),
+                )
+            {
                 return;
             }
             // 未开 `defaultDisplayBlock` 时这类告警通常是一整片（本工程 97 条），
@@ -161,6 +178,21 @@ fn is_direction(value: &str) -> bool {
     matches!(value, "row" | "row-reverse" | "column" | "column-reverse")
 }
 
+/// 元素在级联（含内联 `style` 与其他选择器）后是否已经带上方向。
+///
+/// 口径与 [`declares_direction`] 一致：具体方向或动态表达式算已声明，`flex-flow`
+/// 任意声明也算；`initial` / `unset` / `revert` 不算（两端初始值仍然相反）。
+fn declares_element_direction(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
+    let direction = resolved_property(project, tree, element, "flex-direction");
+    if direction.is_some_and(|resolved| {
+        let value = resolved.value.trim().to_ascii_lowercase();
+        super::value_util::text_is_dynamic(&value) || is_direction(&value)
+    }) {
+        return true;
+    }
+    resolved_property(project, tree, element, "flex-flow").is_some()
+}
+
 fn shares_selector(selector: &WxssSelector, selectors: &[WxssSelector]) -> bool {
     let key = selector.text.trim();
     selectors.iter().any(|other| other.text.trim() == key)
@@ -200,6 +232,45 @@ mod tests {
             "flex-capitalized",
             r#"<view class="Btn"/>"#,
             r#".Btn { display: flex; }"#,
+        );
+        assert_eq!(messages(&FlexDirection, &project).len(), 1);
+    }
+
+    /// 内联 `style` 已经给了方向时，`.row { display: flex }` 不再翻转。
+    #[test]
+    fn inline_style_counts_as_declaring_a_direction() {
+        let (_f, project) = page(
+            "flex-inline-direction",
+            r#"<view class="row" style="flex-direction: row"/><view class="flow" style="flex-flow: wrap"/>"#,
+            r#"
+            .row { display: flex; }
+            .flow { display: flex; }
+            "#,
+        );
+        assert!(messages(&FlexDirection, &project).is_empty());
+    }
+
+    /// 不同原文但命中同一元素的选择器也计入：`.row` 与 `view.row.active` 落在同一节点上。
+    #[test]
+    fn a_different_selector_on_the_same_element_counts() {
+        let (_f, project) = page(
+            "flex-other-selector",
+            r#"<view class="row active"/>"#,
+            r#"
+            .row { display: flex; }
+            view.row.active { flex-direction: row; }
+            "#,
+        );
+        assert!(messages(&FlexDirection, &project).is_empty());
+    }
+
+    /// 只有**所有**命中元素都有方向时才豁免：部分带内联方向的规则仍要报。
+    #[test]
+    fn a_partially_styled_rule_is_still_reported() {
+        let (_f, project) = page_opt_out(
+            "flex-partial-inline",
+            r#"<view class="row" style="flex-direction: row"/><view class="row"/>"#,
+            r#".row { display: flex; }"#,
         );
         assert_eq!(messages(&FlexDirection, &project).len(), 1);
     }

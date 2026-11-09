@@ -435,8 +435,16 @@ impl Project {
 
     /// app 级 `rendererOptions.skyline.enableScrollViewAutoSize` 是否开启。
     /// 开启后 scroll-view 变成 measurable 节点，尺寸来自内容而不是 flex 分配。
+    ///
+    /// 运行时只读嵌套这一层（`wxapplib/src/skyline/src/runtime/index.ts:148`：
+    /// `rendererOptions?.skyline?.enableScrollViewAutoSize || false`）。写在
+    /// `rendererOptions` 顶层的同名单键**不生效**——不像 `defaultDisplayBlock`
+    /// （`renderer_flag` 那种「顶层 OR 嵌套」），所以这里不能走 [`renderer_flag`]。
     pub fn scroll_view_auto_size(&self) -> bool {
-        renderer_flag(&self.renderer_options, "enableScrollViewAutoSize")
+        self.renderer_options
+            .get("skyline")
+            .and_then(|skyline| skyline.get("enableScrollViewAutoSize"))
+            .is_some_and(truthy)
     }
 
     /// app.json 顶层的开关（JS 真值语义，如 `convertRpxToVw`）。
@@ -1826,5 +1834,42 @@ fn truthy(value: &Value) -> bool {
         Value::Number(number) => number.as_f64().is_some_and(|number| number != 0.0),
         Value::String(text) => !text.is_empty(),
         Value::Array(_) | Value::Object(_) => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Project;
+    use crate::rules::testutil::Fixture;
+
+    fn load(name: &str, app_json: &str) -> Project {
+        let fixture = Fixture::new(name);
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write("app.json", app_json)
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", "<view/>");
+        fixture.project()
+    }
+
+    #[test]
+    fn scroll_view_auto_size_reads_the_skyline_layer() {
+        let project = load(
+            "project-scroll-auto-size-nested",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"enableScrollViewAutoSize":true}}}"#,
+        );
+        assert!(project.scroll_view_auto_size());
+    }
+
+    /// 运行时只读 `rendererOptions.skyline.enableScrollViewAutoSize`
+    /// （`runtime/index.ts:148`）；顶层的同名单键不生效，认了它会让
+    /// `scroll-view-height` 整条规则静默（全工程漏报）。
+    #[test]
+    fn scroll_view_auto_size_ignores_the_top_level_key() {
+        let project = load(
+            "project-scroll-auto-size-top-level",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"enableScrollViewAutoSize":true}}"#,
+        );
+        assert!(!project.scroll_view_auto_size());
     }
 }

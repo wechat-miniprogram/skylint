@@ -1,7 +1,10 @@
 //! `box-sizing` 在 Skyline 下只接受 `content-box` / `border-box`。
 //!
-//! 与 WebView 的差异是**默认值**：Skyline 默认 `border-box`，WebView 默认
-//! `content-box`。声明不受支持的值时样式直接失效，所以报 error。
+//! `padding-box` / `margin-box` 在 WebView 同样非法（MDN formal syntax 只有
+//! `content-box | border-box`），两端都丢弃该声明，差异只在**回落值**：未开
+//! `defaultContentBox` 时 Skyline 回落 `border-box`（`skyline/css/css_properties/box_sizing.cc`
+//! 的 ApplyInitial），WebView 回落 `content-box`；开了开关后两端都回落
+//! `content-box`，这类非法值不再产生差异。
 
 use crate::project::Project;
 use crate::{Diagnostic, Severity};
@@ -21,7 +24,7 @@ impl Rule for BoxSizing {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Error,
-            description: "box-sizing 的值在 Skyline 下不受支持，声明会被忽略",
+            description: "box-sizing 的值在两端都非法，Skyline 与 WebView 的回落值不同",
         }
     }
 
@@ -55,13 +58,18 @@ impl Rule for BoxSizing {
                 }
                 return;
             }
+            // 非法值两端都会丢弃，差异只在回落值；开了 defaultContentBox 后两端都
+            // 回落 content-box，没有可见差异，不报。
+            if project.app_content_box() {
+                return;
+            }
             out.push(at_value_with(
                 Self::ID,
                 doc,
                 decl,
                 Severity::Error,
-                format!("`box-sizing: {value}` 在 Skyline 下不受支持，该声明会被忽略"),
-                "Skyline 只支持 content-box / border-box，且默认值为 border-box（WebView 为 content-box）；请显式声明并复核元素尺寸",
+                format!("`box-sizing: {value}` 在 Skyline 与 WebView 下都不是合法值，该声明会被忽略；Skyline 回落 border-box，WebView 回落 content-box"),
+                "Skyline 只接受 content-box / border-box；未开启 defaultContentBox 时它的回落值是 border-box（WebView 是 content-box），请显式声明并复核元素尺寸",
             ));
         })
     }
@@ -84,7 +92,7 @@ mod tests {
     use crate::rules::Rule;
 
     use super::BoxSizing;
-    use crate::rules::testutil::wxss::{messages, page};
+    use crate::rules::testutil::wxss::{Fixture, messages, page};
 
     #[test]
     fn box_sizing_reports_unsupported_values() {
@@ -101,6 +109,7 @@ mod tests {
         assert_eq!(diags.len(), 3);
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Error));
         assert!(diags[0].message.contains("padding-box"));
+        assert!(diags[0].message.contains("content-box"));
         assert!(diags[0].help.as_deref().unwrap().contains("border-box"));
     }
 
@@ -135,6 +144,31 @@ mod tests {
         assert_eq!(diags.len(), 2, "{diags:#?}");
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
         assert!(diags[0].message.contains("border-box"));
+    }
+
+    /// 非法值两端都会丢弃，差异只在回落值：开了 defaultContentBox 后两端都回落
+    /// content-box，没有可见差异，不报。
+    #[test]
+    fn invalid_values_are_silent_with_default_content_box() {
+        let f = Fixture::new("box-sizing-content-box");
+        f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultContentBox":true}}}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<view class="a"/><view class="b"/>"#,
+            )
+            .write(
+                "pages/index/index.wxss",
+                r#"
+                .a { box-sizing: padding-box; }
+                .b { box-sizing: margin-box; }
+                "#,
+            );
+        assert_eq!(messages(&BoxSizing, &f.project()), Vec::<String>::new());
     }
 
     /// 预处理器变量不是「不受支持的值」，必须全静默（SCSS / Less 工程上 error 级误报）。

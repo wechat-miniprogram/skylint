@@ -597,10 +597,12 @@ impl WxmlGraph {
         let tree = &self.docs[component];
         if tree.options.multiple_slots {
             let Some(attr) = child.attr("slot") else {
+                // 默认槽的两种存储形态都认：`input/wxml.rs` 把 `<slot/>` 与静态空
+                // `name=""` 归一成 `None`，其余构建路径可能留下 `Some("")`。
                 return match tree
                     .slots
                     .iter()
-                    .find(|(name, _)| name.as_deref() == Some(""))
+                    .find(|(name, _)| name.is_none() || name.as_deref() == Some(""))
                 {
                     Some(&(_, idx)) => Parents::Nodes(vec![NodeId {
                         doc: component,
@@ -962,6 +964,37 @@ mod tests {
             "graph-missing-slot",
             r#"<panel><view slot="b" class="target"/></panel>"#,
             r#"<view class="host"><slot name="a"/></view>"#,
+            "Component({ options: { multipleSlots: true } });",
+        );
+        let (tags, open) = chain(&fixture, "pages/index/index.wxml", "target");
+        assert!(tags.is_empty(), "{tags:?}");
+        assert!(open);
+    }
+
+    /// `multipleSlots` 下未写 `slot` 的子节点进默认槽（`<slot/>` 在槽表里是 `None`）。
+    #[test]
+    fn multiple_slots_default_slot_takes_unlabelled_children() {
+        let fixture = fixture_with(
+            "graph-multiple-default-slot",
+            r#"<panel><view class="target"/></panel>"#,
+            r#"<view class="host"><slot name="title"/><slot/></view>"#,
+            "Component({ options: { multipleSlots: true } });",
+        );
+        let (tags, open) = chain(&fixture, "pages/index/index.wxml", "target");
+        assert_eq!(
+            tags,
+            vec!["slot".to_string(), "view".to_string(), "panel".to_string()]
+        );
+        assert!(!open);
+    }
+
+    /// `multipleSlots` 下没有默认槽：未写 `slot` 的子节点不渲染，祖先不可知。
+    #[test]
+    fn multiple_slots_without_default_slot_is_unknown() {
+        let fixture = fixture_with(
+            "graph-multiple-no-default",
+            r#"<panel><view class="target"/></panel>"#,
+            r#"<view class="host"><slot name="title"/></view>"#,
             "Component({ options: { multipleSlots: true } });",
         );
         let (tags, open) = chain(&fixture, "pages/index/index.wxml", "target");

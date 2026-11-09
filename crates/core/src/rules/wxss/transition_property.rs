@@ -8,8 +8,13 @@
 //! 引擎的 case 列表只有长写（`MarginLeft`、`BorderTopWidth`、`BackgroundColor` 等），
 //! 简写 `margin`/`padding`/`flex`/`border`/`background` 会落到 `default:` 分支被丢弃
 //! （`transition_property.cc:308-310`），所以白名单里也只保留长写。
+//!
+//! 同规则内标准兜底豁免：解析层失败的声明会被整条丢弃，并不影响同一 `WxssRule` 里
+//! 的其它声明。因此若同名属性还有另一条不含解析失败属性名的声明（如 `transition:
+//! transform .35s`），最终生效的过渡与 WebView 一致，不再报。兜底声明的 duration /
+//! delay 等参数若与此条不同，最终以兜底声明为准；本规则不比较参数，接受这点边界差异。
 
-use crate::input::wxss::ValueToken;
+use crate::input::wxss::{ValueToken, WxssDeclaration, WxssRule};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
@@ -104,44 +109,147 @@ const TIMING_KEYWORDS: [&str; 8] = [
 /// CSS Transitions Level 2 的行为关键字（`transition-behavior`），也不是属性名。
 const BEHAVIOR_KEYWORDS: [&str; 2] = ["allow-discrete", "normal"];
 
-/// 文本/字体相关、且**不在** float-pigment 的 `TransitionPropertyItem` 闭集里
-/// （`float-pigment-css/src/parser/property.rs:1028-1101`）的属性名。含它们的
-/// `transition` 值在解析层就失败，整条声明回滚。
-const TEXT_FONT_FATAL: [&str; 8] = [
-    "text-align",
-    "text-shadow",
-    "direction",
-    "white-space",
-    "word-break",
-    "font-style",
-    "font-family",
-    "font-feature-settings",
+/// float-pigment 的 `TransitionPropertyItem` 是闭集
+/// （`float-pigment-css/src/property.rs:1028-1101`，需跟 fp 版本同步）。闭集之外的
+/// 属性名（含所有 `-` 前缀名）会让整条 `transition` 在解析层就失败。
+const TRANSITION_PROPERTY_ITEMS: &[&str] = &[
+    "none",
+    "transform",
+    "transform-origin",
+    "line-height",
+    "opacity",
+    "all",
+    "height",
+    "width",
+    "min-height",
+    "max-height",
+    "min-width",
+    "max-width",
+    "margin-top",
+    "margin-right",
+    "margin-bottom",
+    "margin-left",
+    "margin",
+    "padding-top",
+    "padding-right",
+    "padding-bottom",
+    "padding-left",
+    "padding",
+    "top",
+    "right",
+    "bottom",
+    "left",
+    "flex-grow",
+    "flex-shrink",
+    "flex-basis",
+    "border-top-width",
+    "border-right-width",
+    "border-bottom-width",
+    "border-left-width",
+    "border-top-color",
+    "border-right-color",
+    "border-bottom-color",
+    "border-left-color",
+    "border-top-left-radius",
+    "border-top-right-radius",
+    "border-bottom-left-radius",
+    "border-bottom-right-radius",
+    "border",
+    "border-width",
+    "border-radius",
+    "border-color",
+    "border-left",
+    "border-top",
+    "border-right",
+    "border-bottom",
+    "z-index",
+    "filter",
+    "backdrop-filter",
+    "box-shadow",
+    "color",
+    "text-decoration-color",
+    "text-decoration-thickness",
+    "text-underline-offset",
+    "font-size",
+    "font-weight",
+    "letter-spacing",
+    "word-spacing",
+    "background-color",
+    "background-position",
+    "background-size",
+    "background",
+    "flex",
+    "background-position-x",
+    "background-position-y",
+    "mask-size",
+    "mask-position-x",
+    "mask-position-y",
+    "mask-position",
+    "mask",
 ];
 
-/// 在闭集里、但引擎的 `transition_property.cc` 没有对应 case（走 `default:` 只丢这一项）
-/// 的属性名——同一行里其它属性照样过渡。
-const ITEM_ONLY: [&str; 1] = ["line-height"];
-
+/// 闭集内、但 `transition_property.cc:22-311` 的 switch 没有对应 case（`margin` /
+/// `padding` / `border*` / `background*` / `flex` / `text-underline-offset` /
+/// `line-height` 等）的属性：落到 `default:` 只丢这一项，同一声明里其它属性照样过渡。
 const ITEM_ONLY_TAIL: &str = "该属性不会产生过渡动画，同一声明里的其它属性仍然生效";
-const OTHER_TAIL: &str = "该属性不在 Skyline 的可动画属性白名单内";
+const ROLLBACK_TAIL: &str =
+    "解析器不认识这个属性名，整条声明会被丢弃，同一声明里的其它属性也不会产生过渡";
 
-/// `visibility` 比普通的不在白名单里更糟：float-pigment 的 `TransitionPropertyItem`
-/// 枚举里根本没有它（`float-pigment-css/src/parser/property.rs:1028-1101`），含它的
-/// `transition`/`transition-property` 值整条解析失败，声明被丢弃——同一行里的
-/// `transform`/`opacity` 也一起没了。
-const DROPS_DECLARATION: &[&str] = &["visibility"];
-
-/// 解析层就失败的属性名：`visibility` 与上面那批文本/字体属性，外加所有厂商前缀名
-/// （fp 的属性名闭集里没有任何 `-webkit-*` 别名）。后果是**整条** `transition`
-/// 回滚——`transition: -webkit-transform .35s, transform .35s` 的后半段也会一起消失。
+/// 解析层就失败的属性名：不在 fp 的属性名闭集里，含所有厂商前缀名（闭集里没有
+/// 任何 `-webkit-*` 别名）。后果是**整条** `transition` 回滚——
+/// `transition: -webkit-transform .35s, transform .35s` 的后半段也会一起消失。
 fn is_parse_fatal(ident: &str) -> bool {
     ident.starts_with('-')
-        || DROPS_DECLARATION
+        || !TRANSITION_PROPERTY_ITEMS
             .iter()
             .any(|name| name.eq_ignore_ascii_case(ident))
-        || TEXT_FONT_FATAL
+}
+
+/// 不是属性名的词元：全局关键字、时间函数、`transition-behavior` 关键字。
+fn is_keyword(ident: &str, shorthand: bool) -> bool {
+    GLOBAL_KEYWORDS
+        .iter()
+        .any(|keyword| keyword.eq_ignore_ascii_case(ident))
+        || BEHAVIOR_KEYWORDS
             .iter()
-            .any(|name| name.eq_ignore_ascii_case(ident))
+            .any(|keyword| keyword.eq_ignore_ascii_case(ident))
+        || (shorthand
+            && TIMING_KEYWORDS
+                .iter()
+                .any(|keyword| keyword.eq_ignore_ascii_case(ident)))
+}
+
+/// 值里所有不属于可动画白名单、也不是关键字的属性名（去重，保留原文大小写）。
+fn offending_idents(decl: &WxssDeclaration, shorthand: bool) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
+    for token in &decl.tokens {
+        let ValueToken::Ident(ident) = token else {
+            continue;
+        };
+        if ANIMATABLE_PROPERTIES.contains(&ident.to_ascii_lowercase().as_str())
+            || is_keyword(ident, shorthand)
+        {
+            continue;
+        }
+        if !out.iter().any(|seen| seen.eq_ignore_ascii_case(ident)) {
+            out.push(ident);
+        }
+    }
+    out
+}
+
+/// 同一规则块里是否还有另一条同名声明，且它的取值没有任何解析层失败的属性名。
+/// 这样的声明就是标准兜底写法，最终过渡由它决定。
+fn has_standard_sibling(rule: &WxssRule, decl: &WxssDeclaration, name: &str) -> bool {
+    rule.declarations.iter().any(|other| {
+        other.offset != decl.offset
+            && other.name.eq_ignore_ascii_case(name)
+            && !other.value.trim().is_empty()
+            && !is_dynamic(&other.tokens)
+            && offending_idents(other, name == "transition")
+                .iter()
+                .all(|ident| !is_parse_fatal(ident))
+    })
 }
 
 pub struct TransitionProperty;
@@ -160,46 +268,23 @@ impl Rule for TransitionProperty {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit_declarations(project, |sheet, _rule, decl, out| {
+        visit_declarations(project, |sheet, rule, decl, out| {
             let doc = &sheet.doc;
             let name = decl.name.to_ascii_lowercase();
-            let longhand = name == "transition-property";
-            if !longhand && name != "transition" {
+            let shorthand = name == "transition";
+            if !shorthand && name != "transition-property" {
                 return;
             }
             if decl.value.trim().is_empty() || is_dynamic(&decl.tokens) {
                 return;
             }
-            let mut offenders: Vec<&str> = Vec::new();
-            for token in &decl.tokens {
-                let ValueToken::Ident(ident) = token else {
-                    continue;
-                };
-                if ANIMATABLE_PROPERTIES.contains(&ident.to_ascii_lowercase().as_str()) {
-                    continue;
-                }
-                // 全局关键字、时间函数、transition-behavior 关键字都不是属性名。
-                if GLOBAL_KEYWORDS
-                    .iter()
-                    .any(|keyword| keyword.eq_ignore_ascii_case(ident))
-                    || BEHAVIOR_KEYWORDS
-                        .iter()
-                        .any(|keyword| keyword.eq_ignore_ascii_case(ident))
-                    || (!longhand
-                        && TIMING_KEYWORDS
-                            .iter()
-                            .any(|keyword| keyword.eq_ignore_ascii_case(ident)))
-                {
-                    continue;
-                }
-                if !offenders
-                    .iter()
-                    .any(|seen| seen.eq_ignore_ascii_case(ident))
-                {
-                    offenders.push(ident);
-                }
-            }
+            let offenders = offending_idents(decl, shorthand);
             if offenders.is_empty() {
+                return;
+            }
+            let drops_whole = offenders.iter().any(|ident| is_parse_fatal(ident));
+            // 同一规则里还有标准写法时，解析失败的那条被丢弃后最终过渡仍与 WebView 一致。
+            if drops_whole && has_standard_sibling(rule, decl, &name) {
                 return;
             }
             let list = offenders
@@ -207,18 +292,10 @@ impl Rule for TransitionProperty {
                 .map(|ident| format!("`{ident}`"))
                 .collect::<Vec<_>>()
                 .join("、");
-            let drops_whole = offenders.iter().any(|ident| is_parse_fatal(ident));
             let tail = if drops_whole {
-                // 值是整条解析失败的：连同一行里受支持的属性也不会过渡。
-                "解析器不认识这个属性名，整条声明会被丢弃，同一声明里的其它属性也不会产生过渡"
-            } else if offenders.iter().any(|ident| {
-                ITEM_ONLY
-                    .iter()
-                    .any(|name| name.eq_ignore_ascii_case(ident))
-            }) {
-                ITEM_ONLY_TAIL
+                ROLLBACK_TAIL
             } else {
-                OTHER_TAIL
+                ITEM_ONLY_TAIL
             };
             out.push(at_value(
                 Self::ID,
@@ -273,7 +350,6 @@ mod tests {
             "{}",
             diags[2].message
         );
-        assert!(!diags[2].message.contains(super::OTHER_TAIL));
         // 同一声明里多个违规 ident 合成一条。
         assert!(diags[3].message.contains("`text-align`"));
         assert!(!diags[3].message.contains("`font-size`"));
@@ -396,6 +472,74 @@ mod tests {
         assert_eq!(
             messages(&TransitionProperty, &project),
             Vec::<String>::new()
+        );
+    }
+
+    /// weui 的四行叠写：同规则里还有标准 `transition: transform`，解析失败的
+    /// `-webkit-transform`（无论单独出现还是混在标准属性后面）都不再报。
+    #[test]
+    fn standard_sibling_in_same_rule_exempts_rollback() {
+        let (_f, project) = page(
+            "transition-standard-sibling",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
+            r#"
+            .a {
+              transition: -webkit-transform .35s ease;
+              transition: transform .35s ease;
+              transition: transform .35s ease;
+              transition: transform .35s ease, -webkit-transform .35s ease;
+            }
+            .b { transition-property: -webkit-transform; transition-property: transform; }
+            .c { transition: -webkit-transform .35s, opacity .35s; transition: opacity .35s; }
+            "#,
+        );
+        assert_eq!(
+            messages(&TransitionProperty, &project),
+            Vec::<String>::new()
+        );
+    }
+
+    /// 标准兜底只在同一个规则块内生效：别的选择器里的标准写法救不了这条。
+    #[test]
+    fn standard_sibling_in_another_rule_does_not_exempt() {
+        let (_f, project) = page(
+            "transition-standard-sibling-isolation",
+            r#"<view class="a"/><view class="b"/>"#,
+            r#"
+            .a { transition: -webkit-transform .35s ease; }
+            .b { transition: transform .35s ease; }
+            "#,
+        );
+        let diags = TransitionProperty.check(&project);
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("`-webkit-transform`"));
+    }
+
+    /// 判据是 fp 的属性名闭集：`position` 在闭集外，整条回滚；
+    /// `border-radius` 在闭集内但 Apply 层没有 case，只丢这一项。
+    #[test]
+    fn closed_set_membership_decides_rollback() {
+        let (_f, project) = page(
+            "transition-closed-set",
+            r#"<view class="a"/><view class="b"/>"#,
+            r#"
+            .a { transition: position .2s; }
+            .b { transition: border-radius .2s, color .2s; }
+            "#,
+        );
+        let diags = TransitionProperty.check(&project);
+        assert_eq!(diags.len(), 2);
+        assert!(
+            diags[0].message.contains("整条声明会被丢弃"),
+            "{}",
+            diags[0].message
+        );
+        assert!(diags[1].message.contains("`border-radius`"));
+        assert!(!diags[1].message.contains("`color`"));
+        assert!(
+            diags[1].message.contains("其它属性仍然生效"),
+            "{}",
+            diags[1].message
         );
     }
 

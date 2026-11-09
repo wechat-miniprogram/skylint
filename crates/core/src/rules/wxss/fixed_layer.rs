@@ -120,14 +120,22 @@ fn has_containing_block(project: &Project, tree: &Tree<'_>, ancestors: &[&WxmlEl
             .map(|resolved| clean_value(&resolved.value).to_ascii_lowercase())
     };
     ancestors.iter().any(|ancestor| {
+        // CSS-wide 关键字把属性恢复成初始值：`transform: initial` 等于 `transform: none`，
+        // 不建立包含块（`unset` / `revert` / `revert-layer` 同理）。
         let set = |property: &str| {
-            resolve(ancestor, property)
-                .is_some_and(|value| !value.is_empty() && value != "none" && value != "normal")
+            resolve(ancestor, property).is_some_and(|value| {
+                !value.is_empty()
+                    && value != "none"
+                    && value != "normal"
+                    && !super::is_css_wide_keyword(&value)
+            })
         };
         let animated = resolve(ancestor, "will-change").is_some_and(|value| {
-            ["transform", "perspective", "filter"]
-                .iter()
-                .any(|trigger| value.contains(trigger))
+            // `will-change: initial` / `unset` 之类不启用任何触发条件。
+            !super::is_css_wide_keyword(&value)
+                && ["transform", "perspective", "filter"]
+                    .iter()
+                    .any(|trigger| value.contains(trigger))
         });
         // `contain` 只有 layout / paint 会建立 fixed 的包含块；`size` / `style` 不会。
         let contain = resolve(ancestor, "contain").is_some_and(|value| {
@@ -255,6 +263,28 @@ mod tests {
              .bar { position: fixed; }",
         );
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// CSS-wide 关键字让属性回到初始值（`transform: none`），祖先并没有建立包含块。
+    #[test]
+    fn css_wide_keywords_do_not_form_containing_blocks() {
+        for (name, declaration) in [
+            ("initial", "transform: initial;"),
+            ("unset", "transform: unset;"),
+            ("revert", "transform: revert;"),
+            ("revert-layer", "transform: revert-layer;"),
+            ("will-change", "will-change: initial;"),
+        ] {
+            let wxml = r#"<view class="panel">
+  <view class="bar"/>
+</view>"#;
+            let diagnostics = check(
+                &format!("fixed-layer-wide-{name}"),
+                wxml,
+                &format!(".panel {{ {declaration} }} .bar {{ position: fixed; }}"),
+            );
+            assert!(diagnostics.is_empty(), "{name}: {diagnostics:#?}");
+        }
     }
 
     #[test]

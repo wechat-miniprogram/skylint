@@ -18,7 +18,7 @@ use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
 use crate::rules::Target;
-use crate::rules::wxml::webview_truncates;
+use crate::rules::wxml::{resolved_property, webview_truncates};
 
 use super::{element_diagnostic, structure::find_attr, visit, walk};
 
@@ -51,7 +51,7 @@ impl Rule for TextTruncation {
                 }
                 // 只看真正起截断作用的写法：`overflow="visible"`、`max-lines="0"`
                 // 在两个渲染器下表现一致，报出来是噪音。
-                let attributes = truncating_attributes(element);
+                let attributes = truncating_attributes(project, &tree, element);
                 if attributes.is_empty() || webview_truncates(project, &tree, element, ancestors) {
                     return;
                 }
@@ -80,29 +80,39 @@ impl Rule for TextTruncation {
 
 /// 元素上真正会起截断作用的属性。
 ///
-/// `max-lines="0"` / `overflow="visible"` / `overflow="scroll"` 在两个渲染器下
-/// 表现一致，不算截断。动态值（`max-lines="{{n}}"`）按可能截断处理。
-fn truncating_attributes(element: &WxmlElement) -> Vec<&'static str> {
+/// `max-lines="0"` / `overflow="visible"` / `overflow="scroll"` / `overflow="hidden"`
+/// 在两个渲染器下表现一致，不算截断。动态值（`max-lines="{{n}}"`）按可能截断处理。
+///
+/// `overflow` 单独出现时还要看 `white-space`：Skyline 默认允许折行，只有元素不换行
+/// （`nowrap`）时 `clip` / `ellipsis` 才有可裁掉的内容。转换器也把 `hidden` 当
+/// `visible` 处理（`text_shadow_node.cc:266-285`），故它一律不算。
+fn truncating_attributes(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+) -> Vec<&'static str> {
     let mut out = Vec::new();
-    if let Some(attr) = find_attr(element, "max-lines") {
-        let meaningful = match attr.value.as_deref() {
+    let max_lines = find_attr(element, "max-lines").is_some_and(|attr| {
+        match attr.value.as_deref() {
             Some(value) => value.trim().parse::<u32>().is_ok_and(|lines| lines > 0),
             // 动态取值：可能是任何行数。
             None => true,
-        };
-        if meaningful {
-            out.push("max-lines");
         }
+    });
+    if max_lines {
+        out.push("max-lines");
     }
     if let Some(attr) = find_attr(element, "overflow") {
         let meaningful = match attr.value.as_deref() {
             Some(value) => matches!(
                 value.trim().to_ascii_lowercase().as_str(),
-                "ellipsis" | "hidden" | "clip"
+                "ellipsis" | "clip"
             ),
             None => true,
         };
-        if meaningful {
+        let nowrap = resolved_property(project, tree, element, "white-space")
+            .is_some_and(|resolved| resolved.value.trim().eq_ignore_ascii_case("nowrap"));
+        if meaningful && (max_lines || nowrap) {
             out.push("overflow");
         }
     }
@@ -129,12 +139,49 @@ mod tests {
     }
 
     #[test]
-    fn overflow_is_reported() {
+    fn nowrap_overflow_is_reported() {
+        let fixture = Fixture::page(
+            "webview/overflow-nowrap",
+            "<view><text class=\"desc\" overflow=\"ellipsis\">a</text></view>",
+            ".desc { white-space: nowrap; }",
+        );
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].message.contains("overflow"));
+    }
+
+    /// Skyline 默认允许折行，`overflow="ellipsis"` 单独出现时没有可裁的内容，
+    /// WebView 不认这个属性也不产生差异。
+    #[test]
+    fn overflow_without_nowrap_is_fine() {
         let diagnostics = check(&project(
-            "webview/overflow",
+            "webview/overflow-wrap",
             "<view><text overflow=\"ellipsis\">a</text></view>",
         ));
-        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn overflow_hidden_is_fine() {
+        // 转换器把 `hidden` 落到 `kVisible`：两个渲染器都不截断。
+        let diagnostics = check(&project(
+            "webview/overflow-hidden",
+            "<view><text overflow=\"hidden\">a</text><text class=\"desc\" overflow=\"hidden\">b</text></view>",
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn max_lines_with_overflow_reports_both() {
+        let fixture = Fixture::page(
+            "webview/max-lines-overflow",
+            "<view><text max-lines=\"2\" overflow=\"ellipsis\">a</text></view>",
+            "text { white-space: normal; }",
+        );
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].message.contains("max-lines"));
+        assert!(diagnostics[0].message.contains("overflow"));
     }
 
     #[test]

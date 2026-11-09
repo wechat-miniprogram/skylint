@@ -105,9 +105,18 @@ pub(crate) fn definite_height(
     ) {
         return true;
     }
-    // `min-height` 是地板：定长的它就把盒子顶到那个高度。
+    // `min-height` 是地板：定长的它就把盒子顶到那个高度。但零长度不产生高度——
+    // `min-height: 0` 是 flex 里最常见的复位写法，语义是允许塌到 0。
     if length_value(project, tree, element, "min-height").is_some_and(|min| {
-        !min.contains('%') || parent_definite(project, tree, element, default_block, depth)
+        // 只取第一个 token（尾部注解不影响数值），去掉单位后判零。
+        let zero = min.split_ascii_whitespace().next().is_some_and(|token| {
+            token
+                .trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '%')
+                .parse::<f64>()
+                .is_ok_and(|value| value == 0.0)
+        });
+        !zero
+            && (!min.contains('%') || parent_definite(project, tree, element, default_block, depth))
     }) {
         return true;
     }
@@ -413,6 +422,25 @@ mod tests {
         ] {
             let diagnostics = check(name, SKYLINE_APP, css);
             assert!(diagnostics.is_empty(), "{name}: {diagnostics:#?}");
+        }
+    }
+
+    /// `min-height: 0` 是 flex 的复位写法：允许塌到 0，不是确定高度。
+    #[test]
+    fn zero_min_height_is_not_a_height() {
+        for (name, css) in [
+            ("svh-min-height-zero", ".list { min-height: 0; }"),
+            ("svh-min-height-zero-px", ".list { min-height: 0px; }"),
+            ("svh-min-height-zero-rpx", ".list { min-height: 0rpx; }"),
+            ("svh-min-height-zero-percent", ".list { min-height: 0%; }"),
+            ("svh-min-height-zero-float", ".list { min-height: 0.0px; }"),
+            (
+                "svh-min-height-zero-important",
+                ".list { min-height: 0 !important; }",
+            ),
+        ] {
+            let diagnostics = check(name, SKYLINE_APP, css);
+            assert_eq!(diagnostics.len(), 1, "{name}: {diagnostics:#?}");
         }
     }
 

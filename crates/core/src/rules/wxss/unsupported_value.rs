@@ -145,6 +145,18 @@ impl Rule for UnsupportedValue {
                     advice,
                 )
             };
+            // 迁移工程的标准写法：基础块服务 WebView，`.x.skyline` 分支在 Skyline 下
+            // 覆盖掉这条声明。此时基础声明永远不生效，报「取值不支持」是反着看。
+            if super::overridden_in_renderer_branch(
+                project,
+                sheet,
+                rule,
+                &name,
+                self.target(),
+                &mut docs,
+            ) {
+                return;
+            }
             out.push(at_declaration(
                 Self::ID,
                 doc,
@@ -236,6 +248,39 @@ mod tests {
         assert_eq!(diags[0].help.as_deref(), Some("改用 flex 布局替代 grid"));
     }
 
+    /// 迁移工程的标准写法：基础声明在 WebView 生效，`.x.skyline` 分支在 Skyline
+    /// 下换成合法值，基础声明永远不生效，不该报。
+    #[test]
+    fn renderer_branch_override_exempts_the_base_declaration() {
+        let (_f, project) = page(
+            "value-skyline-branch",
+            r#"<view class="a {{renderer}}"/><view class="b"/>"#,
+            r#"
+            .a { display: grid; }
+            .a.skyline { display: flex; }
+            .b { display: grid; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert!(diags[0].message.contains("display: grid"));
+        assert_eq!(diags[0].line, 4, "只会剩下没有分支覆盖的 `.b`：{diags:?}");
+    }
+
+    /// 分支类名要在 WXML 里真的由 `renderer` 拼出来才算数：没有绑定就是真问题。
+    #[test]
+    fn renderer_branch_without_binding_is_still_reported() {
+        let (_f, project) = page(
+            "value-skyline-branch-static",
+            r#"<view class="a"/>"#,
+            r#"
+            .a { display: grid; }
+            .a.skyline { display: flex; }
+            "#,
+        );
+        assert_eq!(UnsupportedValue.check(&project).len(), 1);
+    }
+
     #[test]
     fn value_ignores_supported_values_vars_and_partial_matches() {
         let (_f, project) = page(
@@ -286,29 +331,33 @@ mod tests {
         assert!(diags[0].help.as_deref().unwrap().contains("inline-flex"));
     }
 
-    /// 行向 flex 里的非拉伸项，主轴尺寸本来就由内容决定，`fit-content` 被丢弃不改变渲染；
-    /// 列向容器、或自己写了 `flex` 会拉伸时，差异仍然成立。
+    /// 只有显式行向 flex 里的非拉伸项，主轴尺寸才由内容决定，`fit-content` 被丢弃
+    /// 不改变渲染；列向容器（含缺省 `flex-direction`）、或自己写了 `flex` 会拉伸时，
+    /// 差异仍然成立。
     #[test]
-    fn intrinsic_size_keywords_follow_row_flex_content_width() {
+    fn intrinsic_size_keywords_follow_explicit_row_flex_content_width() {
         let (_f, project) = page(
             "value-intrinsic-row-flex",
             r#"
             <view class="row"><view class="a"/><view class="b"/></view>
             <view class="col"><view class="c"/></view>
             <view class="row"><view class="d"/></view>
+            <view class="p"><view class="e"/></view>
             "#,
             r#"
-            .row { display: flex; }
+            .row { display: flex; flex-direction: row; }
             .col { display: flex; flex-direction: column; }
+            .p { display: flex; }
             .a { width: fit-content; }
             .b { width: fit-content; flex: 1; }
             .c { width: fit-content; }
             .d { width: fit-content; }
+            .e { width: fit-content; }
             "#,
         );
         let diags = UnsupportedValue.check(&project);
-        // `.b` 会按剩余空间拉伸、`.c` 在列向容器里不是主轴尺寸。
-        assert_eq!(diags.len(), 2, "{diags:?}");
+        // `.b` 会按剩余空间拉伸、`.c` 是列向容器、`.e` 的父级缺省方向是 column。
+        assert_eq!(diags.len(), 3, "{diags:?}");
         assert!(
             diags
                 .iter()
@@ -340,18 +389,18 @@ mod tests {
     /// 就当成非 flex → 误报。旧实现把标识符统一小写，所以大写开头的父类名
     /// 会把这条豁免整个打掉。
     #[test]
-    fn intrinsic_size_keywords_read_capitalized_parent_class() {
+    fn intrinsic_size_keywords_read_capitalized_row_flex_parent_class() {
         let (_f, project) = page(
             "value-capitalized-parent",
             r#"<view class="Panel"><view class="btn"/></view>"#,
             r#"
-            .Panel { display: flex; }
+            .Panel { display: flex; flex-direction: row; }
             .btn { width: fit-content; }
             "#,
         );
         assert!(
             messages(&UnsupportedValue, &project).is_empty(),
-            "父级是大写开头的类名也要能取到 display"
+            "父级是大写开头的类名且是显式行向 flex 时才该豁免"
         );
     }
 
