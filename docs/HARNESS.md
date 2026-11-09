@@ -149,7 +149,7 @@ v2 的做法：每个单元一个 `git worktree` + 台账分片，最后合并�
 |---|---|
 | L2 automator 冒烟 | 位置留了（`steps/agent.ts`），没实现 |
 | L3 截图对比 | 同上 |
-| `unit:shared`（共享样式） | 不排队，人工处理 |
+| `unit:shared`（共享样式） | 不排队，人工处理；第三方库先用 `.skylint/config.json` 的 `exclude` 排掉 |
 | 并行 | 见 §9 |
 | CI 集成 | 直接调 `skylint migration verify` 即可，不需要编排器 |
 

@@ -8,6 +8,7 @@
 //! [`Diagnostic`]。需要单个元素的计算值时走 [`rules::wxml`] 里的取值函数，不必自己
 //! 重算级联。
 
+pub mod config;
 pub mod diag;
 pub mod input;
 pub mod inspect;
@@ -19,6 +20,7 @@ pub mod rules;
 pub mod suppress;
 pub mod wxml_graph;
 
+pub use config::Excludes;
 pub use diag::{Diagnostic, Severity};
 pub use inspect::{
     AncestorView, Ancestors, CascadeView, Facts, HandlerFunction, HandlerView, LayoutFacts,

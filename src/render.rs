@@ -95,6 +95,16 @@ pub fn text(report: &Report, source: impl Fn(&str) -> Option<String>, style: Sty
             "note: 工程里没有任何 renderer 声明，以上按 Skyline 默认口径检查；WebView 页面请显式写 \"renderer\": \"webview\""
         );
     }
+    // 排除必须说出来：否则「零命中」与「被排掉了」在输出上分不出来。
+    if report.excluded.diagnostics > 0 {
+        let _ = writeln!(
+            out,
+            "excluded: {} 份文件（{} 条诊断）来自 {}，见 .skylint/config.json",
+            report.excluded.files.len(),
+            report.excluded.diagnostics,
+            report.excluded.files.join(", ")
+        );
+    }
     out
 }
 
@@ -174,6 +184,7 @@ mod tests {
                 renderer_declared: true,
             },
             diagnostics: vec![d],
+            excluded: Default::default(),
         }
     }
 

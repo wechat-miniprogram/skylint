@@ -168,6 +168,57 @@ fn job_keeps_findings_from_non_wxss_style_sources() {
     assert!(diagnostics[0].path.ends_with("index.scss"));
 }
 
+/// `.skylint/config.json` 的 `exclude` 把第三方样式排除掉，但要把排除本身记下来。
+///
+/// 现实数据：businessview 的 `unit:shared` 98 条里有 90 条来自三份字节相同的
+/// `weui.wxss`（第三方库，本来就不该手改）。排除后共享资源只剩 8 条。
+#[test]
+fn exclude_drops_vendor_styles_but_records_them() {
+    let f = Fixture::new("exclude");
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/"}"#,
+    )
+    .write(
+        "miniprogram/app.json",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+    )
+    .write("miniprogram/app.wxss", ".x { float: left; }\n")
+    .write("miniprogram/pages/index/index.json", r#"{}"#)
+    .write("miniprogram/pages/index/index.wxml", "<view class=\"x\"/>")
+    .write("miniprogram/pages/index/index.js", "Page({})");
+
+    let (_, before) = analyse(f.path());
+    assert!(
+        before.diagnostics.iter().any(|d| d.path == "app.wxss"),
+        "排除前 app.wxss 上的命中应该在"
+    );
+    assert_eq!(before.excluded.diagnostics, 0);
+
+    f.write(
+        ".skylint/config.json",
+        r#"{"schemaVersion":1,"exclude":["*.wxss"]}"#,
+    );
+    let (projects, after) = analyse(f.path());
+    assert!(
+        !after.diagnostics.iter().any(|d| d.path == "app.wxss"),
+        "排除后 app.wxss 上的命中应该消失"
+    );
+    assert_eq!(after.excluded.diagnostics, 1);
+    assert_eq!(after.excluded.files, vec!["app.wxss".to_string()]);
+
+    // 排除要一路传到 plan：shared 不能再算这些条数。
+    let plan = migrate::plan(&projects, &after, None);
+    let shared = plan.units.iter().find(|unit| unit.kind == "shared");
+    assert!(
+        shared.is_none_or(|unit| !unit
+            .diagnostics
+            .by_rule
+            .contains_key("skyline/unsupported-property")),
+        "被排除文件的诊断不应计入 unit:shared"
+    );
+}
+
 /// 不属于任何单元文件的诊断（app.json）进 `unit:shared`。
 #[test]
 fn shared_unit_collects_diagnostics_outside_any_unit() {

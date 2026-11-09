@@ -51,6 +51,30 @@ runner 拿它去做 `git diff` / `checkout`。两者弄混，在「工程根不�
 `weui.wxss`、`utils/*.js` 等）。它的改动会影响多个单元，因此必须单独审批，
 不允许塞进任何组件的 job。
 
+### 2.1 第三方文件：`.skylint/config.json`
+
+实测（businessview）：`unit:shared` 98 条诊断里 **90 条来自三份字节完全相同的
+`weui.wxss`**——第三方库，本来就不该手改。不处理的话，共享资源看起来「做不完」，
+而实际上真正要动的只有 3 份文件 8 条。
+
+```json
+{
+  "schemaVersion": 1,
+  "exclude": ["packages/*/styles/weui.wxss"]
+}
+```
+
+- 匹配语义：`*` 匹配任意字符（**含 `/`**），`?` 匹配单字符；所以
+  `packages/*/styles/weui.wxss` 与 `**/weui.wxss` 等价。
+- 排除后 `plan` / `job` / `baseline` / `verify` 全部看不见这些诊断——**所以它必须在
+  文件里，不能是命令行开关**：作业单里的验收命令如果和基线用不同的过滤集，门禁
+  会立刻失真。
+- 排除**不静默**：`Report.excluded` 会给出被跳过的文件与条数，终端输出的末尾也有
+  一行 `excluded: 3 份文件（90 条诊断）来自 …`。「零命中」和「被排掉了」必须能分开。
+
+剩下的共享诊断仍然人工做：改完跑
+`skylint migration verify <root> --unit unit:shared --baseline .skylint/baseline.json`。
+
 **批次（`batch`）**是依赖深度：`depth(u) = 0`（不引用其他组件）→
 `1 + max(depth(被引用组件))`。数字小的先做，页面在最后一层。同层可并行。
 
