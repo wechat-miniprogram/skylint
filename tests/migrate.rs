@@ -93,6 +93,81 @@ fn batches_put_leaves_before_their_users() {
     assert_eq!(plan.batches.len(), 3);
 }
 
+/// `path` 是报告路径（相对 `miniprogramRoot`），`fsPath` 是工程根相对路径。
+///
+/// runner 要拿它去做 `git diff` / `checkout`，两者弄混就会在「工程根不是
+/// miniprogramRoot」的所有真实工程上静默失效。
+#[test]
+fn plan_carries_filesystem_paths() {
+    let f = Fixture::new("fspath");
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/"}"#,
+    )
+    .write(
+        "miniprogram/app.json",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+    )
+    .write("miniprogram/pages/index/index.json", r#"{}"#)
+    .write("miniprogram/pages/index/index.wxml", "<view/>")
+    .write("miniprogram/pages/index/index.js", "Page({})");
+
+    let (projects, report) = analyse(f.path());
+    let plan = migrate::plan(&projects, &report, None);
+    let page = plan
+        .units
+        .iter()
+        .find(|unit| unit.kind == "page")
+        .expect("page unit");
+
+    assert_eq!(page.path, "pages/index/index.wxml");
+    assert_eq!(page.fs_path, "miniprogram/pages/index/index.wxml");
+    assert!(
+        f.path().join(&page.fs_path).is_file(),
+        "fs_path 要能直接落到磁盘"
+    );
+}
+
+/// 样式源是 `.scss` 时，作业单也要拿到这条诊断。
+///
+/// 以前 `owns()` 按后缀白名单（wxml/wxss/js/ts/wxs/json）判归属，`.scss` / `.less`
+/// 的命中被算进 plan 的计数、却在 `job` 里被丢掉——agent 拿到的是 `findings: []`。
+#[test]
+fn job_keeps_findings_from_non_wxss_style_sources() {
+    let f = Fixture::new("scss-owner");
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/","setting":{"useCompilerPlugins":["sass"]}}"#,
+    )
+    .write(
+        "miniprogram/app.json",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+    )
+    .write("miniprogram/pages/index/index.json", r#"{}"#)
+    .write("miniprogram/pages/index/index.wxml", "<view class=\"sw\"/>")
+    .write("miniprogram/pages/index/index.js", "Page({})")
+    .write(
+        "miniprogram/pages/index/index.scss",
+        ".sw { transition: background-color 0.1s, border 0.1s; }\n",
+    );
+
+    let (projects, report) = analyse(f.path());
+    let plan = migrate::plan(&projects, &report, None);
+    let unit = plan
+        .units
+        .iter()
+        .find(|unit| unit.kind == "page")
+        .expect("page unit");
+
+    assert_eq!(
+        unit.diagnostics.total, 1,
+        "plan 要把 .scss 上的命中算进单元"
+    );
+    let diagnostics = migrate::diagnostics_for(&plan, unit, &report);
+    assert_eq!(diagnostics.len(), 1, "job 也要拿到同一条");
+    assert!(diagnostics[0].path.ends_with("index.scss"));
+}
+
 /// 不属于任何单元文件的诊断（app.json）进 `unit:shared`。
 #[test]
 fn shared_unit_collects_diagnostics_outside_any_unit() {

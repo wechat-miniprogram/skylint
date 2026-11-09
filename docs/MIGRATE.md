@@ -42,6 +42,11 @@ skylint migration <COMMAND>        # 迁移，Agent 调用
 路径一律是**报告路径**（插件视图带 `pluginRoot/` 前缀），与诊断的 `path` 同源，
 这样 `findings` 与 `plan` 可以直接对账。
 
+**报告路径不等于文件路径**：宿主视图的 `path` 相对 `miniprogramRoot`（`miniprogram/`），
+插件视图又带 `pluginRoot/` 前缀。所以每个单元另给一个 `fsPath`（工程根相对，`/` 分隔），
+runner 拿它去做 `git diff` / `checkout`。两者弄混，在「工程根不是 `miniprogramRoot`」的
+所有真实工程上都会静默失效（改动看不见、回滚不回滚、越界检查永远通过）。
+
 **`shared` 伪单元**承载所有不属于任何单元文件的诊断（`app.wxss`、共享的
 `weui.wxss`、`utils/*.js` 等）。它的改动会影响多个单元，因此必须单独审批，
 不允许塞进任何组件的 job。
@@ -60,6 +65,13 @@ skylint migration <COMMAND>        # 迁移，Agent 调用
     {
       "id": "unit:components/comment-dialog/comment-dialog",
       "path": "components/comment-dialog/comment-dialog.wxml",
+      "fsPath": "miniprogram/components/comment-dialog/comment-dialog.wxml",
+      "files": [
+        "components/comment-dialog/comment-dialog.wxml",
+        "components/comment-dialog/comment-dialog.scss",
+        "components/comment-dialog/comment-dialog.ts",
+        "components/comment-dialog/comment-dialog.json"
+      ],
       "kind": "component",
       "renderer": "skyline",
       "reach": "skyline",

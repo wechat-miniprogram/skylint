@@ -72,6 +72,17 @@ pub struct PlanUnit {
     pub id: String,
     /// 报告路径（插件视图带前缀），与诊断的 `path` 同源。
     pub path: String,
+    /// 工程根相对的**文件系统**路径。
+    ///
+    /// `path` 是报告路径，宿主视图下它相对 `miniprogramRoot`（不是工程根），
+    /// 插件视图下又带 `pluginRoot/` 前缀——两种视图不一致。runner 要拿它去
+    /// `git diff` / `checkout`，必须有一份不带歧义的路径，所以这里算好。
+    pub fs_path: String,
+    /// 这个单元的全部文件（报告路径）：wxml / 样式 / 脚本 / json。
+    ///
+    /// 诊断归属按它判，而不是按「同名的某几个后缀」——样式源可以是 `.scss` /
+    /// `.less`，枚举后缀会静默丢诊断（作业单里 findings 为空）。
+    pub files: Vec<String>,
     pub kind: &'static str,
     pub renderer: &'static str,
     pub reach: &'static str,
@@ -119,6 +130,8 @@ pub struct Job {
 pub struct JobUnit {
     pub id: String,
     pub path: String,
+    /// 工程根相对的文件系统路径，见 [`PlanUnit::fs_path`]。
+    pub fs_path: String,
     pub kind: &'static str,
     pub renderer: &'static str,
     pub reach: &'static str,
@@ -293,6 +306,8 @@ pub fn plan(views: &[Project], report: &Report, baseline: Option<BaselineRef>) -
         units.push(PlanUnit {
             id: seed.id.clone(),
             path: seed.path.clone(),
+            fs_path: fs_path(project, &seed.rel),
+            files: seed.files.clone(),
             kind: seed.kind,
             renderer,
             reach,
@@ -306,6 +321,8 @@ pub fn plan(views: &[Project], report: &Report, baseline: Option<BaselineRef>) -
         units.push(PlanUnit {
             id: "unit:shared".to_string(),
             path: String::new(),
+            fs_path: String::new(),
+            files: Vec::new(),
             kind: "shared",
             renderer: "unknown",
             reach: "webview",
@@ -353,6 +370,18 @@ struct Seed {
 fn unit_id(prefix: &str, wxml: &str) -> String {
     let base = wxml.strip_suffix(".wxml").unwrap_or(wxml);
     format!("unit:{prefix}{base}")
+}
+
+/// 视图相对路径 → 工程根相对路径（`/` 分隔）。
+///
+/// 宿主视图的 `miniprogram_root` 是 `miniprogram/`，插件视图的根是 `pluginRoot`，
+/// 两者都不是工程根，所以不能直接把报告路径当文件路径用。
+fn fs_path(project: &Project, rel: &str) -> String {
+    project
+        .abs(rel)
+        .strip_prefix(&project.root)
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| rel.to_string())
 }
 
 fn unit_files(prefix: &str, files: &crate::project::UnitFiles) -> Vec<String> {
@@ -466,6 +495,7 @@ pub fn job(
             JobUnit {
                 id: plan_unit.id.clone(),
                 path: plan_unit.path.clone(),
+                fs_path: plan_unit.fs_path.clone(),
                 kind: kind_str(&unit.kind),
                 renderer: renderer_str(unit.renderer),
                 reach: reach_str(unit.reach),
@@ -480,6 +510,7 @@ pub fn job(
         None => JobUnit {
             id: plan_unit.id.clone(),
             path: plan_unit.path.clone(),
+            fs_path: plan_unit.fs_path.clone(),
             kind: plan_unit.kind,
             renderer: plan_unit.renderer,
             reach: plan_unit.reach,
@@ -828,13 +859,7 @@ pub fn diagnostics_for<'a>(
 
 /// 诊断路径是否属于这个单元（同名资源 + 常见扩展名）。
 fn owns(unit: &PlanUnit, path: &str) -> bool {
-    let base = unit.path.strip_suffix(".wxml").unwrap_or(&unit.path);
-    if path == base {
-        return true;
-    }
-    path.strip_prefix(base)
-        .and_then(|rest| rest.strip_prefix('.'))
-        .is_some_and(|ext| matches!(ext, "wxml" | "wxss" | "js" | "ts" | "wxs" | "json"))
+    unit.files.iter().any(|file| file == path)
 }
 
 /// 产物序列化。放在引擎侧，集成层不必依赖 serde。

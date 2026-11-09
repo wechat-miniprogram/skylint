@@ -48,11 +48,15 @@ export async function judge(project: { root: string }, evidence: Evidence): Prom
     evidence.diff.slice(0, 200_000),
   ].join("\n");
 
-  const { stdout } = await run("sh", ["-c", command.replaceAll("{prompt}", prompt.replaceAll('"', '\\"'))], {
-    cwd: project.root,
-    maxBuffer: 64 * 1024 * 1024,
-    timeout: Number(process.env.JUDGE_TIMEOUT_MS ?? 10 * 60 * 1000),
-  });
+  const { stdout } = await run(
+    "sh",
+    ["-c", `${command.replaceAll("{prompt}", prompt.replaceAll('"', '\\"'))} < /dev/null`],
+    {
+      cwd: project.root,
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: Number(process.env.JUDGE_TIMEOUT_MS ?? 10 * 60 * 1000),
+    },
+  );
 
   const parsed = parseVerdict(stdout);
   if (!parsed) {

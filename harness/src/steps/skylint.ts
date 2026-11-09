@@ -20,6 +20,8 @@ export type NextUnit = {
   unit: {
     id: string;
     path: string;
+    /** 工程根相对的文件路径（`path` 是报告路径，可能相对 miniprogramRoot）。 */
+    fsPath: string;
     batch: number;
     diagnostics: { total: number };
   } | null;

@@ -58,7 +58,8 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
 
     const unit = next.unit.id;
     // 先确认这个单元的文件被 git 跟踪，否则后面的快照/回滚/越界检查全是假的。
-    await assertTracked({ root: options.root }, next.unit.path);
+    // 用 fsPath：`path` 是报告路径，宿主视图下它相对 miniprogramRoot。
+    await assertTracked({ root: options.root }, next.unit.fsPath);
     const jobPath = await writeJob({ root: options.root }, unit);
 
     let verified = false;
@@ -81,7 +82,7 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
 
       // 2) 越界检查：只允许改这个单元目录下的文件。
       const files = await changedFiles({ root: options.root });
-      const unitDir = unitDirOf(next.unit.path);
+      const unitDir = unitDirOf(next.unit.fsPath);
       const outside = files.filter(
         (file) => !file.startsWith(unitDir) && !file.startsWith(".skylint/"),
       );

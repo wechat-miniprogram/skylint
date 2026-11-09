@@ -57,7 +57,7 @@ export async function runAgent(
     .replaceAll("{prompt}", prompt.replaceAll('"', '\\"'));
 
   try {
-    const { stdout, stderr } = await run("sh", ["-c", command], {
+    const { stdout, stderr } = await run("sh", ["-c", `${command} < /dev/null`], {
       cwd: project.root,
       maxBuffer: 128 * 1024 * 1024,
       timeout: Number(process.env.AGENT_TIMEOUT_MS ?? 30 * 60 * 1000),
@@ -81,7 +81,7 @@ export async function buildProd(
   "use step";
   const command = process.env.BUILD_CMD ?? "npx minidev build --no-pack";
   try {
-    const { stdout, stderr } = await run("sh", ["-c", command], {
+    const { stdout, stderr } = await run("sh", ["-c", `${command} < /dev/null`], {
       cwd: project.root,
       maxBuffer: 64 * 1024 * 1024,
       timeout: Number(process.env.BUILD_TIMEOUT_MS ?? 10 * 60 * 1000),

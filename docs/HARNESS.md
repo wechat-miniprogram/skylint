@@ -165,7 +165,9 @@ v2 的做法：每个单元一个 `git worktree` + 台账分片，最后合并�
 
 第 3、4 条是这个架构真正的价值：**不确定的判定被固化成确定的数据。**
 
-## 12. 已经跑过的 spike（2026-11-07）
+## 12. 已经跑过的 spike（2026-11-07 / 11-09）
+
+### spike 1 · 假 agent，验管道（11-07）
 
 目标工程：`weapp-skit-player-plugin` 的拷贝（9 个待迁移单元，13 条诊断），
 agent 与 judge 都是 shell 脚本（不花钱）。
@@ -202,3 +204,65 @@ FatalError: dist/plugin/components/actor-dialog-inner/actor-dialog-inner.wxml
 目标仓库里有 `mise.toml` 而没 `mise trust` 过时，step 里所有命令都会以
 退出码 1 失败（错误信息在 stderr）。表现为「agent 永远返回 1」。
 先在该仓库里 `mise trust`，或让 harness 的 `PATH` 不经过 shim。
+
+### spike 2 · 真 agent，验作业单够不够（11-09）
+
+目标工程：`businessview` 的拷贝（269 条诊断），agent = `opencode run --auto
+--model codebuddy/claude-sonnet-5.5`，judge 仍是假脚本（把「作业单够不够」和
+「判定准不准」分开验）。
+
+**单元 A · `custom-switch`（1 条 transition-property）**
+
+agent 把 `transition: background-color 0.1s, border 0.1s` 改成
+`transition: background-color 0.1s`——正确且最小（`border` 本来就不是可动画属性，
+WebView 下也是空转）。L0 一次过，`verified / failures: 0`。
+
+**单元 B · `auth-mgr`（scroll-view-height + scroll-view-type）**
+
+这一条才是真考验：两个 finding 落在同一个 `<scroll-view>` 上，且带一个陷阱——
+它只有内联 `max-height: 500px`，不产生高度。agent 的处理：
+
+```diff
+- <scroll-view ... style="max-height:500px;" scroll-y="{{true}}" class="related-list">
++ <scroll-view type="list" ... scroll-y="{{true}}" class="related-list">
+  .related-list {
++   height: 500px;
+  }
+```
+
+L0：新增 0、修复 2、exit 0。它自己的总结：
+
+> `max-height` 换成固定 `height` 后，列表项很少时弹窗里会留出空白，不再按内容收缩。
+> 要保留「内容少就收缩」，得在 `app.json` 里打开 `enableScrollViewAutoSize`。
+> 那是全局配置，不在这个单元的范围内，所以我没改。要不要改，由你定。
+
+**这就是 B 档该有的行为**：改对了、说清了行为变化、把超出单元范围的开关
+交给人和它自己没做验证——不需要人中途介入追问。作业单里的 `cascade`
+（内联 `max-height: 500px`）+ `layout.definiteHeight: false` + help 文字三者合起来
+就够它做这个判断。
+
+### spike 2 暴露的三个 bug
+
+**① `plan` 与 `job` 对单元归属的判定不一致（严重）。** `plan` 按单元的真实文件
+列表统计诊断，`job` 却按后缀白名单（`wxml|wxss|js|ts|wxs|json`）判——`.scss`
+不在名单里，于是 businessview 的 `custom-switch` 在 `plan` 里有 1 条诊断、
+`job` 里却是 `findings: []`。**agent 拿到的是空作业单**，只能瞎猜。
+现在 `PlanUnit.files` 直接列出单元的真实文件，`owns()` 做精确匹配，
+不再维护后缀白名单（这类 bug 与之前 `.less/.scss` 样式规则覆盖率归零是同一类）。
+
+**② 报告路径不是文件路径。** `plan`/`job` 的 `path` 是报告路径（宿主视图相对
+`miniprogramRoot`，插件视图带 `pluginRoot/`），runner 却拿它去 `git diff`。
+新增 `fsPath`（工程根相对）供 runner 用。
+
+**③ agent CLI 会等 stdin 的 EOF。** `execFile` 默认给子进程一个不关闭的 stdin，
+`opencode run` 和 `codex exec` 都会停下来等输入——表现为「agent 卡住不动、CPU 0%」。
+现在所有 `sh -c` 都带 `< /dev/null`。
+
+### 接 agent 的两条硬要求
+
+| 要求 | 原因 | 各家写法 |
+|---|---|---|
+| 必须关掉 stdin | 否则子进程等 EOF 挂住 | 统一用 `sh -c '… < /dev/null'` |
+| 必须自动批准工具调用 | 非交互模式下等人批准＝挂住 | opencode `--auto`；codex `--sandbox workspace-write`（approval never）；claude `--permission-mode acceptEdits` |
+
+两个都命不中时的症状一样：进程在跑、CPU 0%、不产生 diff。

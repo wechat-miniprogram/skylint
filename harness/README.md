@@ -72,15 +72,18 @@ curl -X POST localhost:3000/api/accept \
 # Claude Code
 AGENT_CMD='claude -p --permission-mode acceptEdits "{prompt}"'
 
-# opencode
-AGENT_CMD='opencode run --format json "{prompt}"'
+# opencode（--auto 必须带，否则非交互模式下等人批准会挂住）
+AGENT_CMD='opencode run --auto --model codebuddy/claude-sonnet-5.5 "{prompt}"'
 
 # 任何 CLI
 AGENT_CMD='my-agent --task "{prompt}"'
 ```
 
-硬门槛只有一条：**必须能非交互执行并用退出码表达成败**。只能开 TTY 的 agent
-进不来。
+硬门槛两条：**必须能非交互执行并用退出码表达成败**；**必须自动批准工具调用**。
+只能开 TTY 的 agent 进不来。
+
+stdin 已经统一关掉（`sh -c '… < /dev/null'`）：`codex exec` 与 `opencode run`
+都会等 stdin 的 EOF，不关就表现为「进程在跑、CPU 0%、不产生 diff」。
 
 ## 两层状态，别混
 
