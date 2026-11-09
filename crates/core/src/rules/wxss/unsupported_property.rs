@@ -78,6 +78,25 @@ impl Rule for UnsupportedProperty {
                 ) {
                     continue;
                 }
+                // `float` 在 flex item 与脱离文档流的元素上本来就不生效（CSS 规范），
+                // WebView 也忽略——两端一致，报「Skyline 不支持」是反着看。
+                // 只豁免「命中的节点全都属于这两类」的情况。
+                if name == "float"
+                    && super::all_matches_satisfy(
+                        project,
+                        sheet,
+                        &rule.selectors,
+                        &mut docs,
+                        |tree, element| {
+                            crate::rules::wxml::is_out_of_flow(project, tree, element)
+                                || tree.parent_of(element).is_some_and(|parent| {
+                                    crate::rules::wxml::flex_container(project, tree, parent)
+                                })
+                        },
+                    )
+                {
+                    continue;
+                }
                 let (line, column) = doc.position(decl.offset);
                 let (end_line, end_column) = doc.position(decl.offset + decl.name.len());
                 out.push(
@@ -131,6 +150,31 @@ mod tests {
         assert!(diags.iter().any(|d| d.message.contains("`mask-clip`")));
         assert!(diags.iter().any(|d| d.message.contains("`justify-items`")));
         assert_eq!(diags[0].help.as_deref(), Some("使用 flex 布局"));
+    }
+
+    /// `float` 在 flex item 与脱离文档流的元素上本来就不生效，WebView 也忽略。
+    ///
+    /// 只豁免「命中的节点全都属于这两类」：只要有一处是普通块级子节点，
+    /// 丢弃 float 就是真差异，照报。
+    #[test]
+    fn float_is_exempted_only_when_every_match_ignores_it() {
+        let (_f, project) = page(
+            "property-float-gating",
+            r#"<view class="row"><image class="ic"/><view class="abs"/></view><view class="block"><image class="ic2"/></view>"#,
+            r#"
+            .row { display: flex; }
+            .ic { float: right; }
+            .abs { position: absolute; float: left; }
+            .block { display: block; }
+            .ic2 { float: left; }
+            "#,
+        );
+        let diags = UnsupportedProperty.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert!(
+            diags[0].message.contains("`float`") && diags[0].line == 6,
+            "只有块级父级下的那个 float 该报：{diags:#?}"
+        );
     }
 
     /// 声明恰好是属性的初始值（`object-fit: fill`、`background-clip: border-box`）时，
@@ -310,6 +354,27 @@ mod tests {
             "#,
         );
         assert_eq!(messages(&UnsupportedProperty, &project).len(), 1);
+    }
+
+    /// 分支类名不必叫 `skyline`：把 `renderer` 代成两个取值后只在一边出现的类，
+    /// 同样是直接证据。
+    ///
+    /// `class="name {{renderer === 'skyline' ? 'sky' : ''}}"` 下 `.name.sky` 就是
+    /// Skyline 分支——旧实现只认 `.name.skyline`，这种写法会被报成真问题。
+    #[test]
+    fn branch_class_name_does_not_have_to_be_the_vocabulary() {
+        let (_f, project) = page(
+            "property-skyline-ternary",
+            r#"<text class="name {{renderer === 'skyline' ? 'sky' : ''}}">x</text>"#,
+            r#"
+            .name { -webkit-line-clamp: 2; }
+            .name.sky { -webkit-line-clamp: unset; }
+            "#,
+        );
+        assert_eq!(
+            messages(&UnsupportedProperty, &project),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

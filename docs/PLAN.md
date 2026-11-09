@@ -716,11 +716,17 @@ WidgetSpan 内部排版。因此原先计划的「`<text>` 子节点 display 收
 | `fixed` 提升 / `defaultContentBox` | 反向时 WebView 是正常层叠 / 本来就是 content-box |
 | CSS 能力差异（`position:sticky`、`clip-path`、`scroll-snap`、`object-fit`） | 差距几乎全是 WebView 更强，反向无需规则 |
 
-待办（严重度高但两个参考工程零使用，未落）：`wx.router.getRouteContext` 直接解引用
-（纯 WebView 下返回 `undefined` → TypeError 白屏）、`ScrollViewContext.triggerRefresh` 系列
-（只 `publishSync('operateSkylineScrollView')`，WebView 不监听 → 纯 no-op）、
-`NodesRef.ref()`（`res.ref = undefined` + warn）、`node()` 取 `snapshot` / `draggable-sheet` /
-`open-container`（返回 fake 上下文）、`navigateTo({routeType})`（静默降级成默认转场）。
+**已复核、不再落规则的候选**（2026-11 回源码复核，逐条给了理由）：`wx.router.getRouteContext`
+——包装层 `getRouteContext(compIns)` 依赖 `compIns.getPageId()` 与 `routeContexts`，后者由
+`genRouteConfig` 填充，而 `genRouteConfig` 里**没有 renderer 分支**（`skyline.js:61684`），
+所以「纯 WebView 下恒返回 undefined」这个前提不成立，修法也不唯一；`navigateTo({routeType})`
+同理——`spaData` 在 WebView 下取 `Global.singlePageData`（源码注释写明「兼容 webview 模式」），
+不是「静默降级」。`ScrollViewContext.triggerRefresh` 系列与 `NodesRef.ref()` 事实成立
+（`operateSkylineScrollView` 只有 Skyline 的 scroll-view 组件监听，`skyline/src/components/
+wx-scroll-view/index.ts:596`），但 callee 是**实例方法**、接收者变量名任意，静态判不了是不是
+`ScrollViewContext`，不满足「静态可判定」的门槛；`node()` 取 snapshot / draggable-sheet /
+open-container 同样卡在这一步。这五条要落成规则，前置是 JS 层的类型/数据流推断，
+不是加表项。
 
 **顺手修正的一处旧文案**：`skyline/default-layout-drift` 原来说「position 默认 relative、text-align 默认 start 这两项没有开关能对齐」。`text-align` 两边初值都是 `start`（`skyline/css/css_properties/text_align.cc:44-47` 的 `ApplyInitial` 就是 `Start`），木有差异；只有 `position`（Skyline `Relative`、`position.cc:39-42` vs CSS `static`）成立。
 
@@ -988,11 +994,19 @@ skit_1 28 → 28、skit-player 179 → 179、businessview 406 → 405（−1 dea
 反向五个工程零变化，businessview 3 → 2（同上 dead-selector）。
 测试 751 + 30 + 3 全绿，clippy 0，`docs/RULES.md` 55 条（error 15）。
 
-**仍未做**（见 P15 候选）
+**仍未做 / 已复核**（2026-11）
 
-`~foo` / `^foo` 的作用域语义尚未进匹配层（`has_class` 逐词比较，静态 `~foo` 对页面 sheet 里的 `.foo` 判 `No`）；
-`float` 缺 flex/grid item 门控（声明级规则拿不到元素，要先给 `unsupported-property` 加元素证据）；
-`overridden_by_renderer_class` 只认「class 由 `renderer` 拼出」这一种证据（把类叫 `.sky` 或改用 `wx:if` 分支时认不出）。
+`~foo` / `^foo` 不进匹配层是对的：`~` / `^` 是 glass-easel 的样式隔离后缀（编译期/框架侧注入，见
+上一节 `root-scope-class`），源码里手写 `.~foo` 时 fp 的 css 解析器不认这个词元，两端都不生效；
+六个参考工程的 1240 个 wxss 里 `.~x` / `.^x` 零出现。
+
+`float` 缺 flex/grid item 门控 —— **已补**：`unsupported-property` 现在用 `all_matches_satisfy`
+要求「命中的节点全是 flex item 或脱离文档流的元素」时才豁免。六工程 0 变化：businessview 那唯一一条
+命中落在 `biz-index.wxml` 的 `.nav-right`（非 flex 父级）上，是真差异。
+
+`overridden_by_renderer_class` 只认一种证据 —— **已扩到第二种**：把 `renderer` 代成两个取值后
+只在一边出现的类（`branch_classes`），`.name.sky` + `class="name {{renderer === 'skyline' ? 'sky' : ''}}"`
+也能认出来。六工程 0 变化（现有工程都用 `.skyline` 词汇类名）。
 
 ## 5. 五个视图与规则族
 

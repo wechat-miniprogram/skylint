@@ -125,6 +125,10 @@ pub(crate) fn overridden_in_renderer_branch(
         .iter()
         .map(|selector| normalize_selector(&selector.text))
         .collect();
+    // 分支类名有两种来源：renderer 的取值词汇（`.x.skyline`），以及把 `renderer`
+    // 代成两个取值后只在一边出现的类（`.x.sky`）。后者是直接证据，不需要再证
+    // 一次「class 由 renderer 拼出」。
+    let branches = branch_classes(project, sheet, docs, branch);
     let variant = sheet.doc.rules.iter().find(|other| {
         !std::ptr::eq(*other, rule)
             && other
@@ -133,17 +137,81 @@ pub(crate) fn overridden_in_renderer_branch(
                 .any(|decl| decl.name.eq_ignore_ascii_case(property))
             && other.selectors.iter().any(|selector| {
                 let variant = normalize_selector(&selector.text);
-                mine.iter()
-                    .any(|mine| is_same_element_variant(mine, &variant, branch))
+                mine.iter().any(|mine| {
+                    is_same_element_variant(mine, &variant, branch)
+                        || branches
+                            .iter()
+                            .any(|class| is_same_element_variant(mine, &variant, class))
+                })
             })
     });
     let Some(_) = variant else {
         return false;
     };
-    // 变异存在还不够：必须证明确实有这个渲染器分支的元素存在。
-    rule.selectors
-        .iter()
-        .any(|selector| class_depends_on_renderer(project, sheet, &selector.text, docs))
+    // 词汇类名要靠 WXML 侧证明这个分支真的存在；求值得到的类名本身就是证明。
+    if branches.is_empty() {
+        return rule
+            .selectors
+            .iter()
+            .any(|selector| class_depends_on_renderer(project, sheet, &selector.text, docs));
+    }
+    true
+}
+
+/// 把 `renderer` 代成目标取值与另一个取值，只在目标取值下出现的类。
+///
+/// 这是 `class="{{renderer === 'skyline' ? 'sky' : ''}}"` / `class="{{renderer}}"`
+/// 这类写法的直接证据——作者不必把类名叫成 `skyline`。
+fn branch_classes(
+    project: &Project,
+    sheet: &StyleSheet,
+    docs: &mut HashMap<String, Option<WxmlDoc>>,
+    branch: &str,
+) -> Vec<String> {
+    let other = if branch == "skyline" {
+        "webview"
+    } else {
+        "skyline"
+    };
+    let mut found: Vec<String> = Vec::new();
+    for scope in &sheet.scopes {
+        for path in scope_wxml(project, scope) {
+            let Some(doc) = docs
+                .entry(path.to_string())
+                .or_insert_with(|| crate::rules::wxml::load_doc(project, path))
+                .as_ref()
+            else {
+                continue;
+            };
+            for element in doc.elements() {
+                if element.in_template() {
+                    continue;
+                }
+                let Some(attr) = element.attributes.iter().find(|attr| attr.name == "class") else {
+                    continue;
+                };
+                if !attr.references_renderer {
+                    continue;
+                }
+                let Some(expression) = &attr.expression else {
+                    continue;
+                };
+                let tokens = |value: &str| {
+                    let mut env = crate::input::env::Env::default();
+                    env.insert("renderer", crate::input::env::Lit::Str(value.to_string()));
+                    crate::input::expr::class_tokens(expression, &env)
+                };
+                let target = tokens(branch);
+                let opposite = tokens(other);
+                for class in &target.definite {
+                    if !opposite.definite.contains(class) && !found.contains(class) {
+                        found.push(class.clone());
+                    }
+                }
+            }
+        }
+    }
+    found
 }
 
 /// 选择器主体所在的节点，`class` 是否真的由 `renderer` 拼出来。
