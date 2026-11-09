@@ -170,7 +170,6 @@ jobs:
         if: steps.published.outputs.exists == 'false'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.crates-auth.outputs.token }}
-          VERSION: ${{ needs.verify.outputs.version }}
         run: |
           set -euo pipefail
           if [ -z "${CARGO_REGISTRY_TOKEN}" ]; then
@@ -179,18 +178,4 @@ jobs:
             echo "要么给仓库加 CARGO_REGISTRY_TOKEN secret（首次发布必须这样）。" >&2
             exit 1
           fi
-          # 工作区里有两个 crate：先发 skylint-core（facade 依赖它），再发 skylint。
-          # 依赖列表里写的是 version，包里的 path 会被 cargo publish 改写掉，所以
-          # core 必须在索引里可解析之后才能发第二个。
-          if ! curl -sf -o /dev/null -A "skylint-release-workflow" \
-              "https://crates.io/api/v1/crates/skylint-core/$VERSION"; then
-            cargo publish --locked -p skylint-core
-            for _ in $(seq 1 60); do
-              if curl -sf -o /dev/null -A "skylint-release-workflow" \
-                  "https://crates.io/api/v1/crates/skylint-core/$VERSION"; then
-                break
-              fi
-              sleep 2
-            done
-          fi
-          cargo publish --locked -p skylint
+          cargo publish --locked

@@ -11,7 +11,7 @@ use miette::{
     Report as MietteReport,
 };
 
-use skylint_core::{Diagnostic, Report, Severity};
+use crate::{Diagnostic, Report, Severity};
 
 /// 终端渲染参数。宽度的意义是源码片段的行内折行阈值（超长行 miette 会切成
 /// `╭─▶` / `╰─▶` 多段，反而难读），所以宁可比终端略宽。
@@ -168,7 +168,7 @@ fn offset(source: &str, line: u32, column: u32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use skylint_core::report::Summary;
+    use crate::report::Summary;
 
     const WXML: &str = "line1\n  <scroll-view class=\"a\" scroll-y enhanced show-scrollbar=\"{{false}}\">\nline3\n";
 

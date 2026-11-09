@@ -4,12 +4,12 @@
 //! cargo run --example facts -- <项目根> <wxml 路径> [属性…]
 //! ```
 //!
-//! 这是 `skylint_core::inspect` 的最小用法示例：迁移工具拿它生成作业单，不需要自己
+//! 这是 `skylint::inspect` 的最小用法示例：迁移工具拿它生成作业单，不需要自己
 //! 重算级联或祖先链。
 
 use std::collections::HashSet;
 
-use skylint_core::{LoadedDoc, Project, Registry};
+use skylint::{LoadedDoc, Project, Registry};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);

@@ -1435,18 +1435,11 @@ checksum = "33f4fe9184a62d842c9ef383018f3306d8ba224fd9d836f56d7288308847c256"
 name = "skylint"
 version = "0.2.0"
 dependencies = [
- "clap 4.6.7",
- "miette",
- "skylint-core",
-]
-
-[[package]]
-name = "skylint-core"
-version = "0.2.0"
-dependencies = [
  "anyhow",
+ "clap 4.6.7",
  "cssparser 0.38.0",
  "glass-easel-template-compiler",
+ "miette",
  "oxc-css-parser",
  "oxc_allocator",
  "oxc_ast",

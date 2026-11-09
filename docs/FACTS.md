@@ -9,12 +9,12 @@
 
 | 阶段 | 状态 | 落下的是什么 |
 |---|---|---|
-| P0 暴露 | **已完成** | `skylint_core::inspect`：`LoadedDoc` → `Facts`（`elements` / `element_at` / `ancestors` / `cascade` / `resolved` / `layout` / `unit` / `reach`），返回拥有所有权的快照 |
+| P0 暴露 | **已完成** | `skylint::inspect`：`LoadedDoc` → `Facts`（`elements` / `element_at` / `ancestors` / `cascade` / `resolved` / `layout` / `unit` / `reach`），返回拥有所有权的快照 |
 | P1 级联准确化 | **已完成** | `cascade_entries` 按 `(important, specificity, 出现顺序)` 排序，对齐引擎的 `CascadePriority`；内联 `style` 参与排序（`!important` 也解析）；`CascadeView` 带 `selector` / `stylesheet` / `line` / `column` / `at_rules` / `overridden`（升序里前面的就是被覆盖的） |
 | P2 图回链 | **已完成** | `ancestors` 走 `WxmlGraph`（跨 slot / `virtualHost`）；`usages()` 给出「这份组件被哪些使用点引用」，`usages_recursive(depth)` 再往上爬父组件；`component_options` 进 `UnitFacts` |
 | P3 布局事实 | **部分** | `LayoutFacts` 已有 `display` / `flex_direction` / `out_of_flow` / `width_follows_content` / `block_rendered` / `definite_height`，以及截断三件套（`white_space` / `clips_overflow` / `webview_truncates`，复用 `webview_truncates`）|
 | P4 脚本事实 | **部分** | `handlers(element)`：事件属性 → 事件名 + 静态处理函数名 + 脚本里的位置（含 `worklet` 标记），并顺着方法表跳转：`Component({ methods })` → 属性值 → 同文件函数 / `require`·`import` 的模块导出 / `this.x = m.f().bind(this)` / 链式 API 的 `.methods({..})` 与 `.init(cb)` 返回值。动态绑定标 `dynamic`；静态写了但找不到函数时只给名字、不给位置。内联 `<wxs>` 仍未入脚本图 |
-| M1 迁移接口 | **已完成** | `skylint_core::migrate`：`plan()` / `job()` / `facts_doc()` / `element_detail()`，契约见 `docs/MIGRATE.md`；CLI 对应 `skylint migration plan` / `job` / `facts` |
+| M1 迁移接口 | **已完成** | `skylint::migrate`：`plan()` / `job()` / `facts_doc()` / `element_detail()`，契约见 `docs/MIGRATE.md`；CLI 对应 `skylint migration plan` / `job` / `facts` |
 
 两处对 `inspect` 的修正（M1 顺带发现）：
 
@@ -221,7 +221,7 @@ resolved_property(...) -> Option<Resolved { value, sheet, declaration }>
 每个属性都要遍历样式表，预生成会慢一个数量级）。
 
 ```rust
-// skylint_core::inspect
+// skylint::inspect
 pub struct Facts<'a> {
     project: &'a Project,
     doc: &'a WxmlDoc,
