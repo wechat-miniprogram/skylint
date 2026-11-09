@@ -1,7 +1,10 @@
 //! 必须声明 `'worklet'` 的函数位置：WXML 手势绑定、`applyAnimatedStyle`、路由动画处理函数。
 //!
 //! 三个来源都问同一个问题——「这个函数会被搬到 UI 线程执行吗」，答案是肯定的那几处
-//! 就必须有 `'worklet'` 指令，否则它退回 JS 线程，跨线程的延迟会让交互动画抖动：
+//! 就必须有 `'worklet'` 指令。缺指令不是「退回 JS 线程、只是慢一点」：手势回调**根本
+//! 不会被注册**（`wx-gesture/index.ts:206-235` 拿不到 worklet 函数时只发一条组件警告，
+//! 不会调用 `addWorkletEventHandler`，事件到达时也没有可执行的处理器）；updater 与
+//! 路由动画处理函数也不会被当作 worklet 执行。
 //!
 //! - `worklet:ongesture="onPan"` 等 WXML 绑定（台账 #152）；
 //! - `this.applyAnimatedStyle(selector, updater)` 的第二个实参（#154）；
@@ -51,7 +54,7 @@ impl Rule for WorkletDirective {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Error,
-            description: "worklet: 绑定、applyAnimatedStyle 与路由动画处理函数缺少 'worklet' 指令",
+            description: "worklet: 绑定、applyAnimatedStyle 与路由动画处理函数缺少 'worklet' 指令（回调不会注册）",
         }
     }
 
@@ -85,7 +88,7 @@ fn updater_diagnostic(file: &JsFile, call: &CallInfo) -> Option<Diagnostic> {
             arg.start,
             arg.end,
             "updater 是内联函数，但".to_string(),
-            "在内联函数体的第一行加 `'worklet'`".to_string(),
+            "把 updater 声明成 worklet 函数：在内联函数体第一行加 `'worklet'`，例如 `() => { 'worklet'; return { transform: 'none' }; }`".to_string(),
         )
     } else {
         let name = arg.ident.as_deref()?;
@@ -96,7 +99,9 @@ fn updater_diagnostic(file: &JsFile, call: &CallInfo) -> Option<Diagnostic> {
             call.start,
             call.end,
             format!("updater `{name}` "),
-            format!("在 `{name}` 的函数体第一行加 `'worklet'`"),
+            format!(
+                "把 `{name}` 声明成 worklet 函数：在函数体第一行加 `'worklet'`（`function {name}() {{ 'worklet'; ... }}`）"
+            ),
         )
     };
     Some(
@@ -106,7 +111,7 @@ fn updater_diagnostic(file: &JsFile, call: &CallInfo) -> Option<Diagnostic> {
             file,
             start,
             end,
-            format!("`applyAnimatedStyle` 的 {subject}没有 `'worklet'` 指令，样式不会随共享变量在 UI 线程更新"),
+            format!("`applyAnimatedStyle` 的 {subject}没有 `'worklet'` 指令，不会被当作 worklet 执行，样式不会随共享变量在 UI 线程更新"),
         )
         .help(help),
     )
@@ -135,7 +140,7 @@ fn route_animation_diagnostics(file: &JsFile) -> Vec<Diagnostic> {
             let (subject, help) = if item.fn_worklet == Some(false) {
                 (
                     format!("`{key}` 是内联函数，但"),
-                    format!("在 `{key}` 的函数体第一行加 `'worklet'`"),
+                    format!("把 `{key}` 声明成 worklet 函数：在函数体第一行加 `'worklet'`（`{key}: () => {{ 'worklet'; return {{}}; }}`）"),
                 )
             } else {
                 let name = item.ident.as_deref()?;
@@ -144,7 +149,7 @@ fn route_animation_diagnostics(file: &JsFile) -> Vec<Diagnostic> {
                 }
                 (
                     format!("`{key}` "),
-                    format!("在 `{name}` 的函数体第一行加 `'worklet'`"),
+                    format!("把 `{name}` 声明成 worklet 函数：在函数体第一行加 `'worklet'`（`function {name}() {{ 'worklet'; ... }}`）"),
                 )
             };
             Some(
@@ -154,7 +159,7 @@ fn route_animation_diagnostics(file: &JsFile) -> Vec<Diagnostic> {
                     file,
                     item.key_start,
                     item.key_end,
-                    format!("路由动画的 {subject}没有 `'worklet'` 指令，动画不会在 UI 线程执行"),
+                    format!("路由动画的 {subject}没有 `'worklet'` 指令，不会被当作 worklet 执行，动画不会更新"),
                 )
                 .help(help),
             )
@@ -239,11 +244,11 @@ fn wxml_bindings(project: &Project, out: &mut Vec<Diagnostic>) {
                         path,
                         Severity::Error,
                         format!(
-                            "`worklet:{event}` 绑定到 `{name}`，但 `{name}` 没有声明 `'worklet'` 指令，手势回调会退回 JS 线程"
+                            "`worklet:{event}` 绑定到 `{name}`，但 `{name}` 没有声明 `'worklet'` 指令——回调不会被注册，手势事件不会执行"
                         ),
                     )
                     .help(format!(
-                        "在 `{name}` 的函数体第一行加 `'worklet'`，或改用 `bind:{event}` 的普通绑定"
+                        "把 `{name}` 声明成 worklet 函数：在函数体第一行加 `'worklet'`（`function {name}(e) {{ 'worklet'; ... }}`，方法简写 `{name}(e) {{ 'worklet'; ... }}`）；不想用 worklet 时改用 `bind:{event}` 的普通绑定"
                     )),
                 );
             }
@@ -291,6 +296,9 @@ mod tests {
         assert_eq!((diagnostics[0].line, diagnostics[0].column), (1, 47));
         assert!(diagnostics[0].message.contains("worklet:ongesture"));
         assert!(diagnostics[0].message.contains("onPan"));
+        // 缺指令是「不注册」，不是「退回 JS 线程」。
+        assert!(diagnostics[0].message.contains("不会被注册"));
+        assert!(!diagnostics[0].message.contains("退回 JS 线程"));
     }
 
     #[test]
@@ -425,6 +433,7 @@ mod tests {
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(diagnostics[0].message.contains("applyAnimatedStyle"));
         assert!(diagnostics[0].message.contains("内联函数"));
+        assert!(diagnostics[0].message.contains("不会被当作 worklet 执行"));
     }
 
     #[test]

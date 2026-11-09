@@ -21,10 +21,10 @@
 | `skyline/horizontal-scroll-enable-flex` | warning | skyline | 横向滚动的 `<scroll-view>` 需开启 `enable-flex` 以兼容 WebView |
 | `skyline/text-hard-break-ellipsis` | info | skyline | 多行省略里含硬换行时，Skyline 默认不给末行省略号 |
 | `skyline/inline-run` | info | skyline | WebView 下并排的文本级元素在 Skyline 下会各自换行 |
-| `skyline/no-pseudo` | warning | skyline | Skyline 不支持该伪类/伪元素，选择器不会命中 |
+| `skyline/no-pseudo` | warning | skyline | Skyline 不支持该伪类/伪元素：条件被丢弃（命中范围变大）或整条规则被跳过（声明不生效） |
 | `skyline/box-sizing` | error | skyline | box-sizing 的值在两端都非法，Skyline 与 WebView 的回落值不同 |
 | `skyline/flex-direction` | warning | skyline | display: flex 未声明 flex-direction，迁移后默认方向会从 row 变为 column |
-| `skyline/fixed-layer` | warning | skyline | `position: fixed` 在 Skyline 下被提升成与页面根平级的独立层，没有有效 `z-index` 时先后不可控 |
+| `skyline/fixed-layer` | warning | skyline | `position: fixed` 在 Skyline 下被提到页面根，祖先的包含块不再约束它（WebView 下相对该祖先定位），两端位置不同 |
 | `skyline/fixed-z-index-inversion` | warning | skyline | `position: fixed` 在 Skyline 下跳出祖先的层叠上下文，上下顺序可能与 WebView 相反 |
 | `skyline/text-overflow-ellipsis` | warning | skyline | text-overflow: ellipsis 在 Skyline 下只对 `<text>` 生效 |
 | `skyline/attribute-selector` | warning | skyline | 属性选择器在 Skyline 下不参与匹配：主体只有属性时整条声明失效，否则命中范围被放宽 |
@@ -46,14 +46,14 @@
 | `skyline/media-query` | warning | skyline | 媒体查询条件在 Skyline 下被丢弃，块内声明对全部设备生效 |
 | `skyline/multi-value-limit` | warning | skyline | background / mask 的多值数量超出 Skyline 支持范围 |
 | `skyline/filter-limit` | warning | skyline | filter / backdrop-filter 使用了不支持的函数或组合 |
-| `skyline/text-decoration-line` | warning | skyline | text-decoration-line 只支持单值，多值组合不生效 |
+| `skyline/text-decoration-line` | warning | skyline | text-decoration-line 只支持单值；多值或特殊线型会让 line 回落到 none（简写里其它子属性仍生效） |
 | `skyline/text-decoration-target` | warning | skyline | text-decoration 在 Skyline 下只对 `<text>` / `<span>` / `<input>` / `<navigator>` 生效 |
 | `skyline/calc-min-max` | warning | skyline | min() / max() / clamp() 在 Skyline 下求值为 0，整个表达式失效 |
 | `skyline/gradient-unsupported` | warning | skyline | repeating / 厂商前缀渐变不被 Skyline 解析，mask 也不支持 conic 渐变 |
 | `skyline/unsupported-api` | warning | skyline | Skyline 不支持的 JS API（如 this.animate、插件内的 wx.router.*） |
 | `skyline/wxs-sync-query` | warning | skyline | WXS 里同步形式的 `getBoundingClientRect()` / `getComputedStyle()` 在 Skyline 下拿不到值 |
 | `skyline/worklet-api-scope` | error | skyline | scrollViewContext.scrollTo 必须在 worklet 内调用，worklet 内不能调用 wx.* |
-| `skyline/worklet-directive` | error | skyline | worklet: 绑定、applyAnimatedStyle 与路由动画处理函数缺少 'worklet' 指令 |
+| `skyline/worklet-directive` | error | skyline | worklet: 绑定、applyAnimatedStyle 与路由动画处理函数缺少 'worklet' 指令（回调不会注册） |
 | `skyline/worklet-data-freeze` | error | skyline | worklet 内解构 this.data 会冻结 this.data，导致 setData 失效 |
 | `skyline/worklet-compile-setting` | warning | skyline | 工程使用了 worklet，但 project.config.json 没有开启 setting.compileWorklet |
 | `skyline/scroll-context-ref` | warning | skyline | 用 scrollViewContext.scrollTo 前没有通过 NodesRef.ref 拿到 scroll-view 引用 |

@@ -1,4 +1,11 @@
 //! 属性可用，但该**整值**在 Skyline 下不支持，声明会被静默忽略。
+//!
+//! 例外不能按「忽略」写：`white-space: pre | pre-wrap | pre-line` 是被映射成 `normal`
+//! 并照常 Apply（`skyline/css/css_properties/white_space.cc:29-33`）；`text-align:
+//! justify-all | match-parent`、`vertical-align: text-top | text-bottom`、`display:
+//! grid | flow-root | inline-grid` 则返回 `CSSUnsetValue` 后走 `ApplyInitial`。两者都会
+//! 覆盖级联里更早的值，文案要能让人算出最终结果（`.x{white-space:nowrap}` 后面再写
+//! `.x{white-space:pre}`，最终是 `normal`）。
 
 use std::collections::HashMap;
 
@@ -40,6 +47,22 @@ fn intrinsic_size_keyword(name: &str, value: &str) -> Option<&'static str> {
             || value
                 .strip_prefix(keyword)
                 .is_some_and(|rest| rest.starts_with('('))
+    })
+}
+
+/// 引擎返回 `CSSUnsetValue` 后按 `ApplyInitial` 回落的取值 → 初始值。
+///
+/// 与「fp 解析失败、声明被丢弃」不同：unset 会在该条声明的位置生效为初始值，
+/// 覆盖级联里更早的值，而不是退回上一条声明。
+fn initial_value(name: &str, value: &str) -> Option<&'static str> {
+    Some(match (name, value) {
+        // display.cc:43-50 的 ApplyInitial：默认 flex，开启默认块级布局时为 block。
+        ("display", "grid" | "flow-root" | "inline-grid") => "`display: flex`",
+        // text_align.cc:44-47：初始值是 start。
+        ("text-align", "justify-all" | "match-parent") => "`text-align: start`",
+        // vertical_align.cc:47-50：初始值是 baseline。
+        ("vertical-align", "text-top" | "text-bottom") => "`vertical-align: baseline`",
+        _ => return None,
     })
 }
 
@@ -118,10 +141,22 @@ impl Rule for UnsupportedValue {
                     "换成明确长度；`auto` 只在父级是行向 flex（或元素脱离文档流）时等于内容宽。父级是列向 flex 时给元素写 `align-self: flex-start`，其余情况用 `display: inline-flex`",
                 )
             } else if let Some(advice) = table.value(&name, &value) {
-                (
-                    format!("`{name}: {raw}` 这个取值在 Skyline 下不受支持，声明会被忽略"),
-                    advice,
-                )
+                // white-space 是映射成 normal 后照常 Apply；其余几类返回 CSSUnsetValue
+                // 后走 ApplyInitial。两者都会覆盖级联里更早的值，不能写成「声明被忽略」。
+                let message = if name == "white-space"
+                    && matches!(value.as_str(), "pre" | "pre-wrap" | "pre-line")
+                {
+                    format!(
+                        "`{name}: {raw}` 在 Skyline 下会被映射成 `normal` 并照常生效（不是忽略声明）：它会覆盖级联里更早的值，`.x{{white-space:nowrap}} .x{{white-space:{value}}}` 最终是 `normal`，不是 `nowrap`"
+                    )
+                } else if let Some(initial) = initial_value(&name, &value) {
+                    format!(
+                        "`{name}: {raw}` 在 Skyline 下不被支持，引擎按 unset 处理并回落到初始值 {initial}：它会覆盖级联里更早的值，而不是退回上一条声明"
+                    )
+                } else {
+                    format!("`{name}: {raw}` 这个取值在 Skyline 下不受支持，声明会被忽略")
+                };
+                (message, advice)
             } else if let Some(advice) = table.length_valued(&name, &value) {
                 // 该属性只认关键字：长度值连解析都过不了，整条声明被丢弃。
                 (
@@ -304,6 +339,55 @@ mod tests {
             "#,
         );
         assert_eq!(messages(&UnsupportedValue, &project), Vec::<String>::new());
+    }
+
+    /// `white-space: pre | pre-wrap | pre-line` 不是被忽略：引擎把它映射成 `normal`
+    /// 并照常 Apply，所以后写的这条会覆盖级联里更早的 `nowrap`。
+    #[test]
+    fn white_space_values_are_applied_as_normal() {
+        let (_f, project) = page(
+            "value-white-space-mapped",
+            r#"<view class="a"/><view class="b"/>"#,
+            r#"
+            .a { white-space: pre; }
+            .b { white-space: pre-line; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 2, "{diags:?}");
+        assert!(diags.iter().all(
+            |d| d.message.contains("映射成 `normal`") && d.message.contains("最终是 `normal`")
+        ));
+        assert!(!diags.iter().any(|d| d.message.contains("声明会被忽略")));
+    }
+
+    /// `display` / `text-align` / `vertical-align` 的这几个值在 C++ 里返回
+    /// `CSSUnsetValue`，随后走 `ApplyInitial`——同样会覆盖级联里更早的值。
+    #[test]
+    fn unset_values_fall_back_to_initial_value() {
+        let (_f, project) = page(
+            "value-unset-initial",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
+            r#"
+            .a { display: grid; }
+            .b { text-align: justify-all; }
+            .c { vertical-align: text-top; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 3, "{diags:?}");
+        assert!(diags.iter().all(|d| d.message.contains("回落到初始值")));
+        assert!(diags.iter().any(|d| d.message.contains("`display: flex`")));
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("`text-align: start`"))
+        );
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("`vertical-align: baseline`"))
+        );
     }
 
     #[test]

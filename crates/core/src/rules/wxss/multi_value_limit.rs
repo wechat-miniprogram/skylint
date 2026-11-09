@@ -1,4 +1,10 @@
 //! 背景 / 遮罩的多值数量限制。
+//!
+//! 超限后不是「多出的层失效」，而是该长写的整条值回退：fp 解析到 >2 层时 `break` 出
+//! switch，最终返回 `CSSUnsetValue`（`parser/mod.rs` 的 background / mask 解析路径），
+//! 引擎再走 `ApplyInitial`——image 回到 `none`、position 回到 `0% 0%`、size 回到 `auto`
+//! （`skyline/css/css_properties/background_*.cc`、`mask_*.cc` 的 `ApplyInitial`）。
+//! `background` / `mask` 简写展开后只有 image 那条长写回退，位置 / 尺寸 / 平铺仍按原值生效。
 
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
@@ -36,19 +42,25 @@ impl Rule for MultiValueLimit {
             if count <= max {
                 return;
             }
-            let shorthand = matches!(
-                decl.name.to_ascii_lowercase().as_str(),
-                "background" | "mask"
-            );
-            let message = format!(
-                "`{}` 在 Skyline 下最多支持 {max} 层，当前有 {count} 层；超出的部分会让整条{}失效",
-                decl.name,
-                if shorthand {
-                    "背景/遮罩图"
+            let base = decl.name.to_ascii_lowercase();
+            let message = if matches!(base.as_str(), "background" | "mask") {
+                // 简写会展开成多个长写，图片那条回退到 none，其它长写仍按解析结果生效。
+                let image = if base == "mask" {
+                    "遮罩图"
                 } else {
-                    "声明"
-                }
-            );
+                    "背景图"
+                };
+                format!(
+                    "`{}` 在 Skyline 下最多支持 {max} 层，当前有 {count} 层；超限时{image}（`{base}-image`）整条回退到初始值 `none`，各层都不渲染；位置 / 尺寸 / 平铺仍按各自的值生效",
+                    decl.name,
+                )
+            } else {
+                format!(
+                    "`{}` 在 Skyline 下最多支持 {max} 层，当前有 {count} 层；超限时引擎不会只丢掉多出的层，而是把整条值当成 unset 并回落到初始值（{}）",
+                    decl.name,
+                    fallback_value(&base)
+                )
+            };
             out.push(at_value(
                 Self::ID,
                 doc,
@@ -57,6 +69,22 @@ impl Rule for MultiValueLimit {
                 "将多值拆成多条声明，或只保留 Skyline 支持的层数",
             ));
         })
+    }
+}
+
+/// 超限后整条值回退到的初始值（对应各长写属性的 `ApplyInitial`）。
+fn fallback_value(name: &str) -> &'static str {
+    match name.to_ascii_lowercase().as_str() {
+        "background-image" | "mask-image" => "背景图 / 遮罩图为 `none`",
+        "background-position"
+        | "mask-position"
+        | "background-position-x"
+        | "mask-position-x"
+        | "background-position-y"
+        | "mask-position-y" => "位置为 `0% 0%`",
+        "background-size" | "mask-size" => "尺寸为 `auto`",
+        "background-repeat" | "mask-repeat" => "平铺方式为 `repeat`",
+        _ => "初始值",
     }
 }
 
@@ -100,6 +128,13 @@ mod tests {
         let diags = MultiValueLimit.check(&project);
         assert_eq!(diags.len(), 1, "{diags:#?}");
         assert!(diags[0].message.contains("3 层"));
+        // 简写只丢图片那条长写，其它长写不受影响；措辞不能说「只丢多出的层」。
+        assert!(diags[0].message.contains("回退到初始值 `none`"));
+        assert!(
+            diags[0]
+                .message
+                .contains("位置 / 尺寸 / 平铺仍按各自的值生效")
+        );
     }
 
     #[test]
@@ -123,6 +158,24 @@ mod tests {
         assert_eq!(diags.len(), 9);
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
         assert!(diags.iter().any(|d| d.message.contains("3 层")));
+        assert!(
+            diags
+                .iter()
+                .filter(|d| d.message.contains("background-image"))
+                .all(|d| d.message.contains("`none`"))
+        );
+        assert!(
+            diags
+                .iter()
+                .filter(|d| d.message.contains("background-position"))
+                .all(|d| d.message.contains("`0% 0%`"))
+        );
+        assert!(
+            diags
+                .iter()
+                .filter(|d| d.message.contains("background-size"))
+                .all(|d| d.message.contains("`auto`"))
+        );
     }
 
     #[test]

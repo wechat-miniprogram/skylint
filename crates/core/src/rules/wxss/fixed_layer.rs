@@ -42,7 +42,7 @@ impl Rule for FixedLayer {
         RuleMeta {
             id: FixedLayer::ID,
             severity: Severity::Warning,
-            description: "`position: fixed` 在 Skyline 下被提升成与页面根平级的独立层，没有有效 `z-index` 时先后不可控",
+            description: "`position: fixed` 在 Skyline 下被提到页面根，祖先的包含块不再约束它（WebView 下相对该祖先定位），两端位置不同",
         }
     }
 

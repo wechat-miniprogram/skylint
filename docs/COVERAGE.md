@@ -62,7 +62,7 @@
 | 54 | 1A WXSS 值 | `background-position` 最多 2 组 | skyline-skills/skills/skyline-wxss/SKILL.md:86 | 已实现 | `skyline/multi-value-limit` |
 | 55 | 1A WXSS 值 | `background-repeat` 不支持多组值 | skyline-skills/skills/skyline-wxss/SKILL.md:87 | 不实现 | 引擎接受 1~2 组（`css/image_property_utils.h:517-524`），上限已改 2，>2 才报 |
 | 56 | 1A WXSS 值 | `background-size` 不支持多组值 | skyline-skills/skills/skyline-wxss/SKILL.md:87 | 不实现 | 引擎接受 1~2 组（`css/image_property_utils.h:650-660`），上限已改 2，>2 才报 |
-| 57 | 1A WXSS 值 | `calc()` 不支持角度计算 | skyline-skills/skills/skyline-wxss/SKILL.md:91 | 已实现 | `skyline/calc-angle` |
+| 57 | 1A WXSS 值 | `calc()` 不支持角度计算 | skyline-skills/skills/skyline-wxss/SKILL.md:91 | 已实现 | `skyline/calc-min-max`（calc 求值错误的统一入口） |
 | 58 | 1A WXSS 值 | `background` 简写中 attachment/origin/clip 不生效 | skyline-skills/skills/skyline-wxss/SKILL.md:115 | 已实现 | `skyline/shorthand-partial` |
 | 59 | 1A WXSS 值 | `text-decoration` 简写中 thickness 不生效 | skyline-skills/skills/skyline-wxss/SKILL.md:116 | 已实现 | `skyline/shorthand-partial` |
 | 60 | 1A WXSS 值 | `mask` 简写中 origin/clip 不生效 | skyline-skills/skills/skyline-wxss/SKILL.md:117 | 已实现 | `skyline/shorthand-partial` |

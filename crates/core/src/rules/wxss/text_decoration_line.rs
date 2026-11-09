@@ -1,9 +1,13 @@
 //! `text-decoration-line` 只支持单值。
 //!
-//! `text-decoration` 简写会展开到 line（`style_property_shorthand.cc:213-223`），
-//! 所以 `text-decoration: underline line-through` 同样丢线；fp 的
-//! `TextDecorationLineItem` 只有 overline / line-through / underline / blink
-//! （`typing.rs:1518-1523`），`spelling-error` / `grammar-error` 整条解析失败。
+//! 丢值不在 fp，而在 C++：fp **能解析** `spelling-error` / `grammar-error`
+//! （`typing.rs:1506-1511` 的枚举、`property.rs:1448-1449` 的语法），它们不是解析失败。
+//! `css_properties/text_decoration_line.cc:49-52` 的 `default: break` 让 `ParseValue`
+//! 返回 `CSSUnsetValue`，非继承属性按 `ApplyInitial` 回落到初始值 `none`（同文件 `:32-35`，
+//! 多值 `List` 也只 `Diag` 后返回 `CSSUnsetValue`）。
+//!
+//! `text-decoration` 简写会展开到四个长写（`style_property_shorthand.cc:213-223`），
+//! 所以简写里的线型丢失只影响 line，color / style / thickness 仍然生效。
 
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
@@ -29,7 +33,7 @@ impl Rule for TextDecorationLine {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Warning,
-            description: "text-decoration-line 只支持单值，多值组合不生效",
+            description: "text-decoration-line 只支持单值；多值或特殊线型会让 line 回落到 none（简写里其它子属性仍生效）",
         }
     }
 
@@ -66,13 +70,18 @@ impl Rule for TextDecorationLine {
             if !invalid && lines <= 1 {
                 return;
             }
+            let suffix = if name == "text-decoration" {
+                "；简写里只有线型失效，color / style / thickness 仍然生效"
+            } else {
+                ""
+            };
             let message = if invalid {
                 format!(
-                    "`{name}: {value}` 里的线型不被支持（只有 underline / overline / line-through / blink），整条声明会被丢弃"
+                    "`{name}: {value}` 里的线型在 Skyline 下不被支持（fp 能解析 spelling-error / grammar-error，但 C++ 映射层没有对应分支），line 会回落到初始值 `none`{suffix}"
                 )
             } else {
                 format!(
-                    "`{name}: {value}` 一次声明了 {lines} 种线型，Skyline 只支持单值，整条声明会被丢弃"
+                    "`{name}: {value}` 一次声明了 {lines} 种线型，Skyline 只支持单值，line 会回落到初始值 `none`{suffix}"
                 )
             };
             out.push(at_value(
@@ -107,6 +116,7 @@ mod tests {
         let diags = TextDecorationLine.check(&project);
         assert_eq!(diags.len(), 3);
         assert!(diags.iter().all(|d| d.severity == crate::Severity::Warning));
+        assert!(diags[0].message.contains("回落到初始值 `none`"));
     }
 
     /// 简写会展开到 line，多线型与 fp 不认的值同样不生效。
@@ -125,6 +135,17 @@ mod tests {
         assert_eq!(diags.len(), 2, "{diags:#?}");
         assert!(diags[0].message.contains("2 种线型"));
         assert!(diags[1].message.contains("不被支持"));
+        // 简写里丢的只有 line，其它长写仍生效。
+        assert!(
+            diags[0]
+                .message
+                .contains("color / style / thickness 仍然生效")
+        );
+        assert!(
+            diags[1]
+                .message
+                .contains("color / style / thickness 仍然生效")
+        );
     }
 
     #[test]

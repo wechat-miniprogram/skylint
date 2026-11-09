@@ -49,17 +49,17 @@ const ENTRIES: &[Entry] = &[
     },
     Entry::Call {
         callee: "wx.createVideoContext",
-        message: "Skyline 下 `wx.createVideoContext` 很可能失效（playerId 靠 nodeId 反查，自定义组件/页面里取不到，调用会被静默丢弃）；建议弃用，改用 `createSelectorQuery().select('#id').context()`",
+        message: "Skyline 下 `wx.createVideoContext` 必须把组件实例作为第二个参数传入（`wx.createVideoContext('id', this)`）；省略 `this` 时拿不到 nodeId，context 可能定位不到节点。建议改用 `createSelectorQuery().select('#id').context()`",
         skyline_only: true,
     },
     Entry::Call {
         callee: "wx.createMapContext",
-        message: "Skyline 下 `wx.createMapContext` 很可能失效（mapId 靠 nodeId 反查，自定义组件/页面里取不到，调用会被静默丢弃）；建议弃用，改用 `createSelectorQuery().select('#id').context()`",
+        message: "Skyline 下 `wx.createMapContext` 必须把组件实例作为第二个参数传入（`wx.createMapContext('id', this)`）；省略 `this` 时拿不到 nodeId，context 可能定位不到节点。建议改用 `createSelectorQuery().select('#id').context()`",
         skyline_only: true,
     },
     Entry::Call {
         callee: "wx.createLivePlayerContext",
-        message: "Skyline 下 `wx.createLivePlayerContext` 很可能失效（playerId 靠 nodeId 反查，自定义组件/页面里取不到，调用会被静默丢弃）；建议弃用，改用 `createSelectorQuery().select('#id').context()`",
+        message: "Skyline 下 `wx.createLivePlayerContext` 必须把组件实例作为第二个参数传入（`wx.createLivePlayerContext('id', this)`）；省略 `this` 时拿不到 nodeId，context 可能定位不到节点。建议改用 `createSelectorQuery().select('#id').context()`",
         skyline_only: true,
     },
     Entry::Call {
@@ -75,11 +75,6 @@ const ENTRIES: &[Entry] = &[
     Entry::Call {
         callee: "wx.createAudioContext",
         message: "`wx.createAudioContext` 已不再维护；Skyline 没有 `<audio>` 组件，改用 `wx.createInnerAudioContext()`",
-        skyline_only: true,
-    },
-    Entry::Call {
-        callee: "wx.createEditorContext",
-        message: "`wx.createEditorContext` 已不再维护；Skyline 没有 `<editor>` 组件，需确认这个能力是否还需要",
         skyline_only: true,
     },
 ];
@@ -325,7 +320,7 @@ mod tests {
         assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
     }
 
-    /// Skyline 下这三个 context 的 playerId 靠 nodeId 反查，取不到时调用被静默挂起。
+    /// Skyline 下这三个 context 都要求把组件实例作为第二个参数，否则拿不到 nodeId。
     #[test]
     fn context_apis_in_skyline_are_reported() {
         let (_f, project) = single(
@@ -338,7 +333,38 @@ mod tests {
         );
         let messages = messages(&UnsupportedApi, &project);
         assert_eq!(messages.len(), 3, "{messages:#?}");
-        assert!(messages.iter().all(|m| m.contains("createSelectorQuery")));
+        assert!(messages.iter().all(|m| {
+            m.contains("必须把组件实例作为第二个参数传入")
+                && m.contains("省略 `this` 时拿不到 nodeId")
+                && m.contains("可能定位不到节点")
+                && m.contains("createSelectorQuery")
+        }));
+    }
+
+    /// 静态判断不了省略 `this` 的调用，两种写法都报；文案要覆盖省略的情形。
+    #[test]
+    fn context_apis_report_with_and_without_component_instance() {
+        let (_f, project) = single(
+            "unsupported-context-arity",
+            "Page({ a() {
+                wx.createVideoContext('v');
+                wx.createVideoContext('v2', this);
+            } });",
+        );
+        let messages = messages(&UnsupportedApi, &project);
+        assert_eq!(messages.len(), 2, "{messages:#?}");
+        assert_eq!(messages[0], messages[1]);
+        assert!(messages[0].contains("省略 `this` 时拿不到 nodeId"));
+    }
+
+    /// 当前 SDK 没有 `wx.createEditorContext`，不再报。
+    #[test]
+    fn editor_context_is_not_reported() {
+        let (_f, project) = single(
+            "unsupported-context-editor",
+            "Page({ a() { wx.createEditorContext('e'); } });",
+        );
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
     }
 
     /// WebView 页面里这些 context 照样能用，不能报。
@@ -371,11 +397,10 @@ mod tests {
                 wx.createCameraContext('c', this);
                 wx.createLivePusherContext('p', this);
                 wx.createAudioContext('a');
-                wx.createEditorContext('e');
             } });",
         );
         let messages = messages(&UnsupportedApi, &project);
-        assert_eq!(messages.len(), 4, "{messages:#?}");
+        assert_eq!(messages.len(), 3, "{messages:#?}");
         assert!(messages.iter().all(|m| m.contains("已不再维护")));
     }
 }

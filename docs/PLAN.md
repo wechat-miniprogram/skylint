@@ -730,7 +730,9 @@ open-container 同样卡在这一步。这五条要落成规则，前置是 JS �
 
 **顺手修正的一处旧文案**：`skyline/default-layout-drift` 原来说「position 默认 relative、text-align 默认 start 这两项没有开关能对齐」。`text-align` 两边初值都是 `start`（`skyline/css/css_properties/text_align.cc:44-47` 的 `ApplyInitial` 就是 `Start`），木有差异；只有 `position`（Skyline `Relative`、`position.cc:39-42` vs CSS `static`）成立。
 
-实测命中（`--target webview`）：plugin_2 63、novel 19、skit_1 23、plugin_1 53、businessview 12。
+实测命中（`--target webview`，2026-11-09 A/B 批之后）：businessview 3、novel 16、skit_1 6、
+plugin_1 14、plugin_2 22、skit-player 0。早期快照的 63/19/23/53/12 里大头是
+`text-truncation` 的 overflow-only 误报，已修正。
 正向方向逐字段 diff 五个工程**零变化**（170 / 23 / 27 / 326 / 175）。
 
 `pinned-renderer` 与 `text-children` 的验收来自真实分支：`weapp-novel-plugin_1` 的 `feat-glass-easel-webview`
@@ -992,13 +994,15 @@ skit-player 180 → 179（−1 fixed-layer）。反向：businessview 0 → 3（
 plugin_1 117 → 116、plugin_2 117 → 116（−1 scroll-view-type 的 webview 分支；另有 23 条只是消息文案变化），
 skit_1 28 → 28、skit-player 179 → 179、businessview 406 → 405（−1 dead-selector 的 `.weui-agree a`）。
 反向五个工程零变化，businessview 3 → 2（同上 dead-selector）。
-测试 751 + 30 + 3 全绿，clippy 0，`docs/RULES.md` 55 条（error 15）。
+测试 751 + 30 + 3 全绿，clippy 0，`docs/RULES.md` 66 条（error 18）。
 
 **仍未做 / 已复核**（2026-11）
 
-`~foo` / `^foo` 不进匹配层是对的：`~` / `^` 是 glass-easel 的样式隔离后缀（编译期/框架侧注入，见
-上一节 `root-scope-class`），源码里手写 `.~foo` 时 fp 的 css 解析器不认这个词元，两端都不生效；
-六个参考工程的 1240 个 wxss 里 `.~x` / `.^x` 零出现。
+`~foo` / `^foo` 的结论文案已推翻：它不是编译期注入的语法，真实 WXML 就手写（`ad-banner.wxml:1` 的
+`~novel-bottom-banner-{{…}}`），由 glass-easel 运行时 `_$resolvePrefixes`
+（`glass-easel/src/class_list.ts:116-149` 的 `_$resolvePrefixes`；本机位于
+`wxapplib/.slim/clonedeps/repos/wechat-miniprogram__glass-easel/`）解析。类被登记到根 scope 后组件本地规则失效，
+这一族由 `skyline/root-scope-class` 负责（`ad-banner` 的 2 条命中为真）。
 
 `float` 缺 flex/grid item 门控 —— **已补**：`unsupported-property` 现在用 `all_matches_satisfy`
 要求「命中的节点全是 flex item 或脱离文档流的元素」时才豁免。六工程 0 变化：businessview 那唯一一条

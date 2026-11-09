@@ -1,16 +1,27 @@
-//! Skyline 不支持的伪类 / 伪元素。
+//! Skyline 不支持的伪类 / 伪元素，以及两种后果相反的失败方式。
 //!
 //! 白名单依据不是文档而是引擎：`css/css_parser_impl.h:271-329` 只把
 //! `fp::PseudoClassesType` 的 7 个值映射成 `PseudoClassType`（`empty` / `host` /
-//! `only-child` / `first-child` / `last-child` / `not()` / `nth-child()`），其余值走
-//! `default` 分支报 `unsupported pseudo-class type`；`selector_matcher.cc:168-232`
-//! 逐个实现匹配。伪元素只实现了 `::before` / `::after`（changelog 1.0.0）。
-//! 所以 `:hover` / `:active` / `:focus` 这类确实是负例，而 `:first-child` 等必须放过。
+//! `only-child` / `first-child` / `last-child` / `not()` / `nth-child()`），
+//! `selector_matcher.cc:168-232` 逐个实现匹配。伪元素只实现了 `::before` / `::after`
+//! （changelog 1.0.0）。所以 `:hover` / `:active` / `:focus` 这类确实是负例，
+//! 而 `:first-child` 等必须放过。
+//!
+//! 不支持分两类，后果完全不同：
+//!
+//! - **整条规则被跳过**：fp 解析层直接返回 `Err(Unsupported)`
+//!   （`parser/selector.rs:388-398` 的伪类、`:401-421` 的函数、`:310-320` 的伪元素），
+//!   `parser/mod.rs:989-991` 用 `SkipErrorBlock` 丢掉整条规则，块里的声明全部不生效。
+//!   `:hover` / `:active` / `:focus` / `:is()` / `:where()` / `::placeholder` 属于这一类。
+//! - **条件被丢弃、规则继续生效**：fp 能解析，但 C++ 映射层没有对应分支
+//!   （`css_parser_impl.h:328-332` 只 `Diag`，`pseudo_class` 保持 `kNone`；伪元素同理，
+//!   `:344-345` 的 `default: break` 让 `pseudo_element` 保持 `kNone`）。约束没了，
+//!   样式会作用到**更多**节点。目前只有 `:nth-of-type()` 与 `::selection`
+//!   （含单冒号写法）属于这一类。
 //!
 //! 两处特殊：`fp` 把单冒号的 `:before` / `:after` 解析成伪元素并给一条
-//! `InvalidPseudoElement` 警告但不拒绝（`selector.rs:345-375`），样式仍然生效；
-//! `:nth-of-type()` 能被 `fp` 解析，但 `PseudoClassesType::Tag` 里没有它，
-//! 落到 `default` 分支报错——所以它是不支持的，而 `:nth-last-child()` 在 `fp` 层就拒了。
+//! `InvalidPseudoElement` 警告但不拒绝（`selector.rs:357-377`），样式仍然生效；
+//! 单冒号的 `:selection` 同样被解析成伪元素（`:378-387`），但 C++ 层不认，按「丢条件」处理。
 
 use crate::project::Project;
 use crate::{Diagnostic, Severity};
@@ -29,7 +40,7 @@ impl Rule for NoPseudo {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Warning,
-            description: "Skyline 不支持该伪类/伪元素，选择器不会命中",
+            description: "Skyline 不支持该伪类/伪元素：条件被丢弃（命中范围变大）或整条规则被跳过（声明不生效）",
         }
     }
 
@@ -48,30 +59,60 @@ impl Rule for NoPseudo {
                     }
                     let text =
                         format!("{}{}", if pseudo.element { "::" } else { ":" }, pseudo.name);
+                    let kind = if pseudo.element {
+                        "伪元素"
+                    } else {
+                        "伪类"
+                    };
+                    let (message, help) = match fate_of(pseudo.element, &pseudo.name) {
+                        Fate::SkippedRule => (
+                            format!(
+                                "选择器 `{}` 中的{kind} `{text}` 在 Skyline 下不受支持：fp 解析器直接拒绝，整条规则被跳过，块里的声明全部不生效",
+                                selector.text
+                            ),
+                            "Skyline 只支持 ::before/::after 与 :not()/:first-child/:last-child/:only-child/:nth-child()/:empty/:host；请改用 class 或调整 WXML 结构，按压反馈用 `hover-class`".to_string(),
+                        ),
+                        Fate::DroppedCondition => (
+                            format!(
+                                "选择器 `{}` 中的{kind} `{text}` 在 Skyline 下不受支持：引擎只丢掉这个条件、规则照常生效，样式会作用到更多节点（不再受该{kind}约束）",
+                                selector.text
+                            ),
+                            "引擎不会按这个条件过滤：要么删掉它，要么改用 class 等静态选择器；别把它当成「条件不成立」，否则样式会作用到比预期更多的节点".to_string(),
+                        ),
+                    };
                     let (line, column) = doc.position(pseudo.offset);
                     let (end_line, end_column) = doc.position(pseudo.offset + pseudo.len);
                     out.push(
-                            Diagnostic::new(
-                                Self::ID,
-                                Severity::Warning,
-                                format!(
-                                    "选择器 `{}` 中的伪{} `{}` 在 Skyline 下不受支持",
-                                    selector.text,
-                                    if pseudo.element { "元素" } else { "类" },
-                                    text
-                                ),
-                                doc.path(),
-                                line,
-                                column,
-                            )
-                            .end(end_line, end_column)
-                            .help(
-                                "Skyline 只支持 ::before/::after 与 :not()/:first-child/:last-child/:only-child/:nth-child()/:empty/:host；请改用 class 或调整 WXML 结构，按压反馈用 `hover-class`",
-                            ),
-                        );
+                        Diagnostic::new(
+                            Self::ID,
+                            Severity::Warning,
+                            message,
+                            doc.path(),
+                            line,
+                            column,
+                        )
+                        .end(end_line, end_column)
+                        .help(help),
+                    );
                 }
             }
         })
+    }
+}
+
+/// 引擎对不支持伪类 / 伪元素的两种结局。
+#[derive(Clone, Copy)]
+enum Fate {
+    /// fp 解析层 `Err(Unsupported)`，整条规则被 `SkipErrorBlock` 丢掉。
+    SkippedRule,
+    /// fp 能解析、C++ 映射层没有分支：只丢条件，规则继续生效，命中范围变大。
+    DroppedCondition,
+}
+
+fn fate_of(element: bool, name: &str) -> Fate {
+    match (element, name) {
+        (_, "selection") | (false, "nth-of-type") => Fate::DroppedCondition,
+        _ => Fate::SkippedRule,
     }
 }
 
@@ -128,6 +169,15 @@ mod tests {
         // 多选择器规则只报带伪类的那个。
         assert!(diags.iter().any(|d| d.message.contains(".e")));
         assert!(!diags.iter().any(|d| d.message.contains(".d")));
+        // 两类结局要在文案里分开：`:hover` 整条规则被跳过，`:nth-of-type` 只丢条件。
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains(":hover") && d.message.contains("整条规则被跳过"))
+        );
+        assert!(diags
+            .iter()
+            .any(|d| d.message.contains(":nth-of-type") && d.message.contains("作用到更多节点")));
     }
 
     /// 引擎实现了 7 个伪类：`css_parser_impl.h:271-329` 的映射 + `selector_matcher.cc:168-232`。
