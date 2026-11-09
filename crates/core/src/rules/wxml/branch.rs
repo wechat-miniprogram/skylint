@@ -5,7 +5,7 @@
 //! 与「互斥分支里的两个候选」，口径必须一致，否则同一个写法会在不同规则里得出
 //! 相反结论。
 
-use crate::input::wxml::{Branch, WxmlElement, WxmlNode};
+use crate::input::wxml::{Branch, WxmlElement, WxmlNode, WxmlText};
 
 /// 两个元素是否分属同一个 `wx:if` 的不同分支：互斥，运行时不会同时渲染。
 ///
@@ -28,20 +28,59 @@ pub(crate) fn element_children(element: &WxmlElement) -> impl Iterator<Item = &W
     })
 }
 
-/// 能同时渲染的直接子元素数量的**最大值**。
+/// 参与「能同时渲染的直接子节点数」计数的节点：元素与有内容的文本。
 ///
+/// 文本在运行时也是 `TextShadowNode`，真实占据子节点列表；空白文本只是 WXML
+/// 缩进，不产生节点，因此不计。两者都带条件分支栈，按同一套互斥规则分组。
+#[derive(Clone, Copy)]
+enum RenderedChild<'a> {
+    Element(&'a WxmlElement),
+    Text(&'a WxmlText),
+}
+
+impl<'a> RenderedChild<'a> {
+    fn branches(self) -> &'a [Branch] {
+        match self {
+            Self::Element(element) => &element.branches,
+            Self::Text(text) => &text.branches,
+        }
+    }
+}
+
+fn rendered_children(element: &WxmlElement) -> impl Iterator<Item = RenderedChild<'_>> {
+    element.children.iter().filter_map(|node| match node {
+        WxmlNode::Element(element) => Some(RenderedChild::Element(element)),
+        WxmlNode::Text(text) if text.is_meaningful() => Some(RenderedChild::Text(text)),
+        _ => None,
+    })
+}
+
+/// 能同时渲染的直接子元素数量的**最大值**（只数元素）。
+pub(crate) fn max_rendered_children(element: &WxmlElement) -> usize {
+    count_rendered(
+        &element_children(element)
+            .map(RenderedChild::Element)
+            .collect::<Vec<_>>(),
+        0,
+    )
+}
+
+/// 同上，但有内容的文本子节点也各算一个。
+///
+/// `<tap-gesture-handler>点我<view/></tap-gesture-handler>` 在运行时有两个直接子节点
+/// （文本 + 元素），`Exactly(1)` 与 `RendersFirst` 都必须按 2 判。
+pub(crate) fn max_rendered_nodes(element: &WxmlElement) -> usize {
+    count_rendered(&rendered_children(element).collect::<Vec<_>>(), 0)
+}
+
 /// 同一个 `wx:if` 的不同分支互斥，取各分支里最多的那一支；不同分支组之间可以同时
 /// 渲染，直接相加。因此 `if` 一个子节点 + `else` 两个子节点算 2，而不是按摊平结果
 /// 数出的 3，也不是贪心保留的 1。
-pub(crate) fn max_rendered_children(element: &WxmlElement) -> usize {
-    count_rendered(&element_children(element).collect::<Vec<_>>(), 0)
-}
-
-fn count_rendered(children: &[&WxmlElement], depth: usize) -> usize {
+fn count_rendered(children: &[RenderedChild<'_>], depth: usize) -> usize {
     let mut total = 0;
-    let mut groups: Vec<(u32, Vec<&WxmlElement>)> = Vec::new();
+    let mut groups: Vec<(u32, Vec<RenderedChild<'_>>)> = Vec::new();
     for &child in children {
-        match child.branches.get(depth) {
+        match child.branches().get(depth) {
             None => total += 1,
             Some(branch) => match groups.iter_mut().find(|(group, _)| *group == branch.group) {
                 Some((_, bucket)) => bucket.push(child),
@@ -50,9 +89,9 @@ fn count_rendered(children: &[&WxmlElement], depth: usize) -> usize {
         }
     }
     for (_, bucket) in groups {
-        let mut arms: Vec<(u32, Vec<&WxmlElement>)> = Vec::new();
+        let mut arms: Vec<(u32, Vec<RenderedChild<'_>>)> = Vec::new();
         for child in bucket {
-            let arm = child.branches[depth].arm;
+            let arm = child.branches()[depth].arm;
             match arms.iter_mut().find(|(value, _)| *value == arm) {
                 Some((_, list)) => list.push(child),
                 None => arms.push((arm, vec![child])),
@@ -65,4 +104,57 @@ fn count_rendered(children: &[&WxmlElement], depth: usize) -> usize {
             .unwrap_or(0);
     }
     total
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode, parse};
+
+    fn element<'a>(doc: &'a WxmlDoc, tag: &str) -> &'a WxmlElement {
+        doc.elements().find(|element| element.tag == tag).unwrap()
+    }
+
+    fn fixture(source: &str) -> WxmlDoc {
+        parse("t.wxml", source, &crate::input::env::Env::default()).unwrap()
+    }
+
+    /// 元素计数不受文本影响：现有调用方（互斥分组）口径不变。
+    #[test]
+    fn element_count_ignores_text() {
+        let doc = fixture("<tap-gesture-handler>点我<view/></tap-gesture-handler>");
+        let handler = element(&doc, "tap-gesture-handler");
+        assert_eq!(super::max_rendered_children(handler), 1);
+        assert_eq!(super::max_rendered_nodes(handler), 2);
+    }
+
+    /// 空白文本只是缩进，不算子节点。
+    #[test]
+    fn whitespace_text_is_not_counted() {
+        let doc = fixture("<sticky-header>\n  <view/>\n</sticky-header>");
+        assert_eq!(super::max_rendered_nodes(element(&doc, "sticky-header")), 1);
+    }
+
+    /// 文本同样带分支栈：互斥分支里的文本取最多的一支，不叠加。
+    #[test]
+    fn text_in_mutually_exclusive_branches_counts_once() {
+        let doc = fixture(
+            "<tap-gesture-handler><block wx:if=\"{{a}}\">点我</block><block wx:else><view/></block></tap-gesture-handler>",
+        );
+        assert_eq!(
+            super::max_rendered_nodes(element(&doc, "tap-gesture-handler")),
+            1
+        );
+    }
+
+    /// 顺带确认解析层真的把文本挂在父元素下（计数口径的前提）。
+    #[test]
+    fn text_children_are_visible_in_the_parse_tree() {
+        let doc = fixture("<view>文字</view>");
+        let view = element(&doc, "view");
+        assert!(
+            view.children
+                .iter()
+                .any(|node| matches!(node, WxmlNode::Text(text) if text.is_meaningful()))
+        );
+    }
 }

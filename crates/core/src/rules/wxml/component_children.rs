@@ -16,8 +16,10 @@
 //!
 //! - `Only`：直接元素子节点只能是这些标签。`text` 是特殊值，表示「文本节点也允许」，
 //!   其余按标签名精确匹配。
-//! - `Exactly`：直接元素子节点个数必须正好是 n；文本子节点（含空白）一律不计，因为
-//!   WXML 里换行缩进就是文本节点。
+//! - `OnlyUnmounted`：直接子节点只能是这些标签，文本节点与所有非白名单元素（含
+//!   inline 组件）都违规：运行时会直接把它们从子节点列表里筛掉。
+//! - `Exactly`：直接子节点（元素 + 有内容的文本）个数必须正好是 n；空白文本只是
+//!   WXML 缩进，不计。
 //! - `RequiresChild`：自身条件全部成立时，直接子节点里必须有一个该属性取到目标值的
 //!   节点。多个条件必须同时成立；不带 `=值` 的条件只要求属性存在（未被静态置为假）。
 //!   动态属性值不触发。
@@ -40,6 +42,12 @@
 //!   声明 slot="refresher"」。取 none 时不给自定义节点，下拉刷新区就是空白，故为
 //!   warning 而不是 error。触发还要 `refresher-enabled`（:193 默认 false）：没开
 //!   下拉刷新时 `refresher-default-style` 不产生任何刷新节点。
+//! - swiper 只挂载 `swiper-item`：`Swiper::GetSwiperItemChildrenListHandle()`
+//!   （skyline/widgets/swiper.cc:82-88）按 `IsSwiperItem()` 过滤子节点，`Mount()`
+//!   （:165）用的就是这个过滤后的列表——普通 `<view>` / `<image>` / 文本子节点
+//!   完全不渲染。WebView 侧模板是 `<slot></slot>`
+//!   （wxapplib/src/wx-component/src/wx-swiper/wx-swiper.js:49），这些内容会按普通
+//!   内容渲染（只是不成为一页），所以内容消失是 Skyline 独有的迁移差异。
 
 use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
@@ -73,6 +81,17 @@ const ROWS: &[Constraint] = &[
         // 收缩到内容。是布局差异而不是坏掉，所以按 warning 报。
         severity: Severity::Warning,
         help: "把 `<navigator>` 的内容改成 `<text>` 或文本节点；需要自定义布局时改用 `bind:tap` 的 `<view>`",
+    },
+    Constraint {
+        tag: "swiper",
+        // `Swiper::GetSwiperItemChildrenListHandle()`（`widgets/swiper.cc:82-88`）只收集
+        // `IsSwiperItem()` 的子节点，`Mount()`（:165）用的就是这个过滤后的列表：普通
+        // `<view>` / `<image>` / 文本子节点完全不挂载。WebView 侧的 `<slot>` 模板
+        // （`wxapplib/src/wx-component/src/wx-swiper/wx-swiper.js:49`）会把它们当普通
+        // 内容渲染（只是不成为一页），所以内容消失是 Skyline 独有的差异，按 error 报。
+        relation: Relation::ChildrenOnlyUnmounted(&["swiper-item"]),
+        severity: Severity::Error,
+        help: "把内容包进 `<swiper-item>`；`<swiper>` 只挂载 `swiper-item` 直接子节点",
     },
     Constraint {
         tag: "pan-gesture-handler",
@@ -301,7 +320,7 @@ mod tests {
             r#"<pan-gesture-handler worklet:ongesture="onPan"><view/><view/></pan-gesture-handler>"#,
         ));
         assert_eq!(diagnostics.len(), 1);
-        assert!(diagnostics[0].message.contains("2 个直接子元素"));
+        assert!(diagnostics[0].message.contains("2 个直接子节点"));
         assert_eq!(diagnostics[0].column, 2);
     }
 
@@ -388,7 +407,7 @@ mod tests {
             ),
         ));
         assert_eq!(diagnostics.len(), 1);
-        assert!(diagnostics[0].message.contains("2 个直接子元素"));
+        assert!(diagnostics[0].message.contains("2 个直接子节点"));
     }
 
     #[test]
@@ -404,7 +423,7 @@ mod tests {
             ),
         ));
         assert_eq!(diagnostics.len(), 1);
-        assert!(diagnostics[0].message.contains("2 个直接子元素"));
+        assert!(diagnostics[0].message.contains("2 个直接子节点"));
     }
 
     #[test]
@@ -433,7 +452,7 @@ mod tests {
             ),
         ));
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-        assert!(diagnostics[0].message.contains("2 个直接子元素"));
+        assert!(diagnostics[0].message.contains("2 个直接子节点"));
     }
 
     /// 模板定义体里的手势组件只在实例化处渲染，真实子节点静态不可知，不判。
@@ -452,6 +471,32 @@ mod tests {
         let diagnostics = check(&project(
             "gesture-text",
             r#"<tap-gesture-handler>点我</tap-gesture-handler>"#,
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 文本 + 一个元素在运行时是两个直接子节点（文本是 TextShadowNode），`Exactly(1)` 要报。
+    #[test]
+    fn gesture_handler_with_text_and_element_is_reported() {
+        let diagnostics = check(&project(
+            "gesture-text-view",
+            r#"<tap-gesture-handler>点我<view/></tap-gesture-handler>"#,
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("2 个直接子节点"));
+    }
+
+    /// 文本与元素分属互斥分支时只算一个（文本同样带分支栈，不能叠加）。
+    #[test]
+    fn text_and_element_in_mutually_exclusive_branches_are_allowed() {
+        let diagnostics = check(&project(
+            "gesture-text-branch",
+            concat!(
+                r#"<tap-gesture-handler>"#,
+                r#"<block wx:if="{{a}}">点我</block>"#,
+                r#"<block wx:else><view/></block>"#,
+                r#"</tap-gesture-handler>"#,
+            ),
         ));
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
@@ -485,6 +530,78 @@ mod tests {
     #[test]
     fn other_components_are_not_counted() {
         let diagnostics = check(&project("view-multi", "<view><view/><view/><view/></view>"));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    // ---- swiper：直接子节点只能是 swiper-item ----
+
+    #[test]
+    fn swiper_with_view_child_is_reported() {
+        let diagnostics = check(&project(
+            "swiper-view",
+            "<swiper><view/><swiper-item/></swiper>",
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+        assert!(diagnostics[0].message.contains("<swiper-item>"));
+        assert!(diagnostics[0].message.contains("<view>"));
+    }
+
+    /// 文本子节点同样不会被挂载，要报；但缩进空白不算。
+    #[test]
+    fn swiper_with_text_child_is_reported() {
+        let diagnostics = check(&project(
+            "swiper-text",
+            "<swiper>说明文字<swiper-item/></swiper>",
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("文本"));
+    }
+
+    #[test]
+    fn swiper_whitespace_between_items_is_allowed() {
+        let diagnostics = check(&project(
+            "swiper-whitespace",
+            "<swiper>\n  <swiper-item><view/></swiper-item>\n  <swiper-item/>\n</swiper>",
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// `wx:for` 摊平后产出 `<view>` 也要能报出来。
+    #[test]
+    fn swiper_for_producing_view_is_reported() {
+        let diagnostics = check(&project(
+            "swiper-for-view",
+            r#"<swiper><view wx:for="{{list}}"/></swiper>"#,
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("<view>"));
+    }
+
+    #[test]
+    fn swiper_for_producing_swiper_item_is_allowed() {
+        let diagnostics = check(&project(
+            "swiper-for-item",
+            r#"<swiper><swiper-item wx:for="{{list}}"/></swiper>"#,
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// `<image>` 在 WebView 下本就是 inline-block，但 swiper 根本不挂载它。
+    #[test]
+    fn swiper_with_inline_child_is_reported() {
+        let diagnostics = check(&project(
+            "swiper-inline",
+            r#"<swiper><image src="a.png"/><swiper-item/></swiper>"#,
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("<image>"));
+    }
+
+    /// `<slot>` 里有什么由使用方投影决定，静态不可知。
+    #[test]
+    fn swiper_with_slot_is_allowed() {
+        let diagnostics = check(&project("swiper-slot", "<swiper><slot/></swiper>"));
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 

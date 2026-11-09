@@ -8,14 +8,15 @@
 //! - `Direct`：直接父节点必须是目标之一（渲染树，block/wx:if/wx:for 已摊平）
 //! - `FirstChild`：父节点是目标容器时，子标签必须是它的第一个元素子节点
 //! - `Unique`：最近的目标容器内，子标签最多出现一次（多余的不会生效）
-//! - `RendersFirst`：子标签只渲染第一个直接子元素，多写的会被静默丢弃
+//! - `RendersFirst`：子标签只渲染第一个直接子节点，多写的会被静默丢弃（见 `sticky_header.cc`）
 //! - `RequiresAttr { name, unless }`：子标签必须显式声明 `name`；`unless` 为
 //!   `(attr, v)` 时，自身 `<attr>=<v>` 不再要求（典型：list-builder 的 child-height
 //!   只在定高模式必填）
 //! - `AllowedValues`：子标签该属性只能取这些静态值；未声明不报
 //! - `Within`：最近的该容器祖先下，子标签必须声明 `name=value`
 //! - `ChildrenOnly`：直接元素子节点只能是这些标签。`text` 是特殊值，表示文本节点也允许
-//! - `Exactly`：直接元素子节点个数必须正好是 n；文本子节点（含空白）不计
+//! - `ChildrenOnlyUnmounted`：同上，但文本节点与非白名单元素一律违规（运行时不挂载它们）
+//! - `Exactly`：直接子节点（元素 + 有内容的文本）个数必须正好是 n；空白文本不计
 //! - `RequiresChild`：自身条件全部成立时，直接子节点里必须有一个该属性取到目标值的节点
 //! - `RequiresChildTag`：自身条件全部成立时，直接子节点里必须有一个该标签的节点
 //! - 目标写法：`Target { tag, attr }`，多个目标直接列成数组
@@ -27,15 +28,16 @@
 //!   「排在前面」、不算重复、不算顺序违规。两个独立的 `wx:if` 之间不互斥，仍按原样判定；
 //!   无条件元素与条件分支元素也不互斥（两者可能同时渲染）。
 //!
-//! `Exactly` 数的是「能同时渲染的子元素」的最大值：同一个 `wx:if` 的不同分支互斥，
-//! 取各分支里最多的那一支；不同分支组之间相加。
+//! `Exactly` / `RendersFirst` 数的是「能同时渲染的子节点」的最大值：同一个 `wx:if` 的
+//! 不同分支互斥，取各分支里最多的那一支；不同分支组之间相加。子节点包含有内容的文本
+//! （运行时是 `TextShadowNode`），空白文本只是 WXML 缩进，不计。
 
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlAttribute, WxmlDoc, WxmlElement, WxmlNode};
 use crate::wxml_graph::WxmlGraph;
 
-use super::branch::{element_children, exclusive, max_rendered_children};
-use super::{element_diagnostic, is_builtin};
+use super::branch::{element_children, exclusive, max_rendered_children, max_rendered_nodes};
+use super::{element_diagnostic, is_builtin, span_diagnostic};
 
 /// 一个允许的父/祖先节点，`attr` 是该节点必须满足的属性。
 #[derive(Debug, Clone, Copy)]
@@ -85,7 +87,10 @@ pub(crate) enum Relation {
     },
     /// 直接元素子节点只能是这些标签。`text` 是特殊值，表示文本节点也算合法。
     ChildrenOnly(&'static [&'static str]),
-    /// 直接元素子节点个数必须正好是 n；文本子节点不计。
+    /// 直接子节点只能是这些标签，文本节点与一切非白名单元素（含 inline 组件）都违规：
+    /// 运行时根列表只收集这些标签，其余子节点根本不挂载（`<swiper>`）。
+    ChildrenOnlyUnmounted(&'static [&'static str]),
+    /// 直接子节点（元素 + 有内容的文本）个数必须正好是 n；空白文本不计。
     Exactly(u32),
     /// 自身条件成立时，直接子节点里必须有 `child_attr=child_value`。
     RequiresChild {
@@ -419,12 +424,19 @@ fn renders_first_violation(element: &WxmlElement) -> Option<String> {
     if element.unknown_children {
         return None;
     }
-    let count = max_rendered_children(element);
-    if count < 2 {
+    let nodes = max_rendered_nodes(element);
+    if nodes < 2 {
         return None;
     }
+    // 文本节点运行时也占一个直接子节点（`FirstChild()` 会先拿到它），元素个数的文案
+    // 只在两者一致时沿用，避免「1 个元素」与「有 2 个」同时出现。
+    let noun = if max_rendered_children(element) == nodes {
+        "直接子元素"
+    } else {
+        "直接子节点（含文本节点）"
+    };
     Some(format!(
-        "`<{}>` 有 {count} 个直接子元素，只渲染第一个，其余会被静默丢弃",
+        "`<{}>` 有 {nodes} 个{noun}，只渲染第一个，其余会被静默丢弃",
         element.tag
     ))
 }
@@ -541,49 +553,69 @@ fn children_violations(
             .help(constraint.help)
     };
     match &constraint.relation {
-        Relation::ChildrenOnly(allowed) => element_children(element)
-            // 文本子节点不是元素，天然不在候选集里：`text` 只表示它们合法。
-            .filter(|child| {
-                // `<slot>` 只是投影位置的占位，不渲染成盒子：那里有什么子节点由使用方决定，
-                // 静态不可知，按不可判定放过。
-                !child.is_slot
-                    && !allowed.contains(&child.tag.as_str())
-                    && !INLINE_TEXT_TAGS.contains(&child.tag.as_str())
-            })
-            .map(|child| {
-                element_diagnostic(
-                    id,
-                    doc,
-                    child,
-                    path,
-                    constraint.severity,
-                    format!(
-                        "`<{}>` 只能嵌套 {}，当前子节点是 `<{}>`",
-                        element.tag,
-                        render_allowed(allowed),
-                        child.tag
-                    ),
-                )
-                .help(constraint.help)
-            })
-            .collect(),
+        Relation::ChildrenOnly(allowed) | Relation::ChildrenOnlyUnmounted(allowed) => {
+            // swiper 连 inline 文本级组件都不挂载（`ChildrenOnlyUnmounted`），因此不做
+            // `INLINE_TEXT_TAGS` 豁免——那些节点在这里同样会直接消失。
+            let unmounted = matches!(&constraint.relation, Relation::ChildrenOnlyUnmounted(_));
+            let mut out: Vec<Diagnostic> = element_children(element)
+                // 文本子节点不是元素，天然不在候选集里：`text` 只表示它们合法。
+                .filter(|child| {
+                    // `<slot>` 只是投影位置的占位，不渲染成盒子：那里有什么子节点由使用方决定，
+                    // 静态不可知，按不可判定放过。
+                    !child.is_slot
+                        && !allowed.contains(&child.tag.as_str())
+                        && (unmounted || !INLINE_TEXT_TAGS.contains(&child.tag.as_str()))
+                })
+                .map(|child| {
+                    element_diagnostic(
+                        id,
+                        doc,
+                        child,
+                        path,
+                        constraint.severity,
+                        format!(
+                            "`<{}>` 只能嵌套 {}，当前子节点是 `<{}>`",
+                            element.tag,
+                            render_allowed(allowed),
+                            child.tag
+                        ),
+                    )
+                    .help(constraint.help)
+                })
+                .collect();
+            if unmounted {
+                out.extend(element.children.iter().filter_map(|node| {
+                    let WxmlNode::Text(text) = node else {
+                        return None;
+                    };
+                    text.is_meaningful().then(|| {
+                        span_diagnostic(
+                            id,
+                            doc,
+                            text.start,
+                            text.end,
+                            path,
+                            constraint.severity,
+                            format!(
+                                "`<{}>` 只能嵌套 {}，当前子节点是文本",
+                                element.tag,
+                                render_allowed(allowed)
+                            ),
+                        )
+                        .help(constraint.help)
+                    })
+                }));
+            }
+            out
+        }
         Relation::Exactly(expected) => {
             // 子节点里有 `<slot>`：真实数量取决于使用方投影，静态不可知。
             if element_children(element).any(|child| child.is_slot) {
                 return Vec::new();
             }
-            let count = max_rendered_children(element);
+            let count = max_rendered_nodes(element);
             // 有 `<template is>` / `<include>` 子节点时展开内容不可知。
             if element.unknown_children && count < *expected as usize {
-                return Vec::new();
-            }
-            // 只有文本子节点也算有响应目标（文本节点能接手势事件），不算漏。
-            if count == 0
-                && element
-                    .children
-                    .iter()
-                    .any(|child| matches!(child, WxmlNode::Text(text) if text.is_meaningful()))
-            {
                 return Vec::new();
             }
             if count == *expected as usize {
@@ -596,7 +628,7 @@ fn children_violations(
                 )
             } else {
                 format!(
-                    "`<{}>` 有 {count} 个直接子元素；手势组件不参与布局，事件只绑定到唯一的直接子节点",
+                    "`<{}>` 有 {count} 个直接子节点；手势组件不参与布局，事件只绑定到唯一的直接子节点",
                     element.tag
                 )
             };
@@ -712,6 +744,7 @@ pub(crate) fn check_element(
         }
         match &constraint.relation {
             Relation::ChildrenOnly(_)
+            | Relation::ChildrenOnlyUnmounted(_)
             | Relation::Exactly(_)
             | Relation::RequiresChild { .. }
             | Relation::RequiresChildTag { .. } => {
@@ -757,6 +790,7 @@ pub(crate) fn check_element(
                 element, &projected, open, from_graph, container, name, value,
             ),
             Relation::ChildrenOnly(_)
+            | Relation::ChildrenOnlyUnmounted(_)
             | Relation::Exactly(_)
             | Relation::RequiresChild { .. }
             | Relation::RequiresChildTag { .. } => {
@@ -769,5 +803,69 @@ pub(crate) fn check_element(
                     .help(constraint.help),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::input::env::Env;
+    use crate::input::wxml::{WxmlElement, parse};
+
+    fn element<'a>(doc: &'a crate::input::wxml::WxmlDoc, tag: &str) -> &'a WxmlElement {
+        doc.elements().find(|element| element.tag == tag).unwrap()
+    }
+
+    fn renders_first(source: &str) -> Option<String> {
+        let doc = parse("t.wxml", source, &Env::default()).unwrap();
+        super::renders_first_violation(element(&doc, "sticky-header"))
+    }
+
+    /// 文本与元素各占一个直接子节点：`GetChildHandle()` 会先拿到文本，`<view>` 被丢弃。
+    #[test]
+    fn renders_first_counts_text_and_element() {
+        let message = renders_first("<sticky-header>标题<view/></sticky-header>").unwrap();
+        assert!(
+            message.contains("2 个直接子节点（含文本节点）"),
+            "{message}"
+        );
+    }
+
+    /// 纯文本只有一个直接子节点，不会丢内容。
+    #[test]
+    fn renders_first_allows_a_single_text() {
+        assert!(renders_first("<sticky-header>标题</sticky-header>").is_none());
+    }
+
+    /// 缩进空白不产生节点，不能报。
+    #[test]
+    fn renders_first_ignores_whitespace() {
+        assert!(renders_first("<sticky-header>\n  <view/>\n</sticky-header>").is_none());
+    }
+
+    /// 文本与元素分属互斥分支时只算一个。
+    #[test]
+    fn renders_first_counts_only_the_largest_branch() {
+        assert!(
+            renders_first(concat!(
+                "<sticky-header>",
+                "<block wx:if=\"{{a}}\">标题</block>",
+                "<block wx:else><view/></block>",
+                "</sticky-header>",
+            ))
+            .is_none()
+        );
+        assert!(
+            renders_first(
+                "<sticky-header><block wx:if=\"{{a}}\">标题<view/></block></sticky-header>",
+            )
+            .is_some()
+        );
+    }
+
+    /// 元素专属的旧文案保持不动：scroll-view 家族用例依赖「N 个直接子元素」。
+    #[test]
+    fn renders_first_keeps_element_wording_without_text() {
+        let message = renders_first("<sticky-header><view/><view/></sticky-header>").unwrap();
+        assert!(message.contains("2 个直接子元素"), "{message}");
     }
 }

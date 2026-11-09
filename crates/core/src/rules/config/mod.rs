@@ -12,16 +12,22 @@
 //! 无关的过时告警）。
 
 pub mod autoprefix_build;
+pub mod component_framework;
 pub mod config_ignored;
 pub mod default_layout_drift;
+pub mod lazy_code_loading;
 pub mod lib_version;
+pub mod navigation_style;
 pub mod renderer_options;
 pub mod webview_tabbar_renderer;
 
 pub use autoprefix_build::AutoprefixBuild;
+pub use component_framework::ComponentFramework;
 pub use config_ignored::ConfigIgnored;
 pub use default_layout_drift::DefaultLayoutDrift;
+pub use lazy_code_loading::LazyCodeLoading;
 pub use lib_version::LibVersion;
+pub use navigation_style::NavigationStyle;
 pub use renderer_options::RendererOptions;
 pub use webview_tabbar_renderer::TabBarRenderer;
 

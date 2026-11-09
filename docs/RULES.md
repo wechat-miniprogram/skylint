@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 62 条：error 15 条、warning 41 条、info 6 条。
+共 66 条：error 18 条、warning 42 条、info 6 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
@@ -71,3 +71,7 @@
 | `webview/text-children` | error | webview | `<text>` 里的元素子节点在 WebView 下被丢弃（只保留文本与嵌套 text） |
 | `webview/pinned-renderer` | warning | webview | 单元的 renderer 被固定成常量，回退 WebView 后所有按它分叉的地方都判错 |
 | `webview/tabbar-renderer` | error | webview | 自定义 tabBar 声明 renderer: "skyline"，退回 WebView 时抛异常 |
+| `skyline/lazy-code-loading` | error | skyline | 页面显式声明 Skyline 渲染时，app.json 必须设置 lazyCodeLoading: "requiredComponents" |
+| `skyline/component-framework` | error | skyline | Skyline 页面的 componentFramework 解析结果必须是 glass-easel |
+| `skyline/navigation-style` | error | skyline | Skyline 页面的 navigationStyle 必须解析为 custom，且不能同时写 navigationBar* 字段 |
+| `skyline/universal-selector` | warning | skyline | 主体是 `*`（或只剩属性选择器）的规则在 Skyline 下不进规则集，声明全部不生效 |

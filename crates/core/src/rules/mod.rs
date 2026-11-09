@@ -141,6 +141,10 @@ impl Registry {
             Box::new(wxml::TextChildren),
             Box::new(wxml::PinnedRenderer),
             Box::new(config::TabBarRenderer),
+            Box::new(config::LazyCodeLoading),
+            Box::new(config::ComponentFramework),
+            Box::new(config::NavigationStyle),
+            Box::new(wxss::UniversalSelector),
         ])
     }
 
