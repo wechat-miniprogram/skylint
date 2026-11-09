@@ -50,11 +50,13 @@
 //! 或互相矛盾就不报」的原则，不对 sticky-header 的挂载位置做任何约束。
 
 use crate::diag::{Diagnostic, Severity};
+use crate::input::wxml::WxmlNode;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
+use super::branch::element_children;
 use super::structure::{self, Condition, Constraint, Relation, Target};
-use super::{element_diagnostic, is_builtin, visit, walk_skyline};
+use super::{element_diagnostic, is_builtin, span_diagnostic, visit, walk_skyline};
 
 pub const ID: &str = "skyline/scroll-view-family";
 
@@ -259,6 +261,64 @@ impl Rule for ScrollViewFamily {
                         )
                         .help("把 `<nested-scroll-header>` 移到 `<nested-scroll-body>` 之前，与它平级"),
                     );
+                }
+
+                // `<scroll-view type="nested">` 的直接子节点只认 header / body：
+                // `skyline_scroll_view.dart:1750-1756` 只把 `nestedHeaderChildren` 与
+                // `nestedBody` 交给 `NestedScrollView`；`:1551-1557` 的
+                // `whereType<NestedScrollHeader>()` 与 `:1559-1562` 的
+                // `firstWhere((child) => child is NestedScrollBody)` 都只看这两类 widget，
+                // 其余元素与有内容的文本不会进入构建结果，等于整段丢弃。
+                if !element.in_template()
+                    && element.tag == "scroll-view"
+                    && matches!(
+                        structure::check_attr(element, "type", "nested"),
+                        structure::AttrCheck::Ok
+                    )
+                {
+                    let help = "把内容移进 `<nested-scroll-header>` 或 `<nested-scroll-body>`";
+                    let message = |subject: &str| {
+                        format!(
+                            "{subject}不会渲染：`<scroll-view type=\"nested\">` 只渲染 \
+                             `<nested-scroll-header>` 与 `<nested-scroll-body>` 两个直接子节点，其余会被整段丢弃"
+                        )
+                    };
+                    for child in element_children(element) {
+                        if child.is_slot
+                            || child.tag == "nested-scroll-header"
+                            || child.tag == "nested-scroll-body"
+                        {
+                            continue;
+                        }
+                        out.push(
+                            element_diagnostic(
+                                ID,
+                                doc,
+                                child,
+                                doc.path(),
+                                Severity::Error,
+                                message(&format!("`<{}>` ", child.tag)),
+                            )
+                            .help(help),
+                        );
+                    }
+                    for text in element.children.iter().filter_map(|node| match node {
+                        WxmlNode::Text(text) if text.is_meaningful() => Some(text),
+                        _ => None,
+                    }) {
+                        out.push(
+                            span_diagnostic(
+                                ID,
+                                doc,
+                                text.start,
+                                text.end,
+                                doc.path(),
+                                Severity::Error,
+                                message("这段文本"),
+                            )
+                            .help(help),
+                        );
+                    }
                 }
             });
         })
@@ -493,6 +553,97 @@ mod tests {
         ));
         // 不再直接挂在 nested scroll 下（Direct）+ 挂在了 body 里（Within）。
         assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+    }
+
+    // ---- nested 的直接子节点只能是 header / body ----
+
+    #[test]
+    fn nested_scroll_with_plain_element_child_is_reported() {
+        let diagnostics = check(&project(
+            "nested-extra-element",
+            r#"<scroll-view type="nested"><view/><nested-scroll-body><view/></nested-scroll-body></scroll-view>"#,
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+        assert!(
+            diagnostics[0].message.contains("`<view>` 不会渲染"),
+            "{}",
+            diagnostics[0].message
+        );
+        assert!(
+            diagnostics[0]
+                .help
+                .as_deref()
+                .unwrap()
+                .contains("nested-scroll-header")
+        );
+    }
+
+    #[test]
+    fn nested_scroll_with_text_child_is_reported() {
+        let diagnostics = check(&project(
+            "nested-extra-text",
+            r#"<scroll-view type="nested">丢<nested-scroll-body><view/></nested-scroll-body></scroll-view>"#,
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].severity, Severity::Error);
+        assert!(
+            diagnostics[0].message.contains("这段文本不会渲染"),
+            "{}",
+            diagnostics[0].message
+        );
+        // 落在文本节点上，不是父元素上。
+        assert_eq!(diagnostics[0].column, 28);
+    }
+
+    #[test]
+    fn each_non_nested_child_is_reported_separately() {
+        let diagnostics = check(&project(
+            "nested-extra-many",
+            r#"<scroll-view type="nested"><view/>文字<image/><nested-scroll-body><view/></nested-scroll-body></scroll-view>"#,
+        ));
+        assert_eq!(diagnostics.len(), 3, "{diagnostics:#?}");
+        assert!(diagnostics.iter().all(|d| d.message.contains("不会渲染")));
+    }
+
+    #[test]
+    fn nested_scroll_with_only_header_and_body_is_allowed() {
+        let diagnostics = check(&project(
+            "nested-extra-ok",
+            r#"<scroll-view type="nested"><nested-scroll-header><view/></nested-scroll-header><nested-scroll-body><view/></nested-scroll-body></scroll-view>"#,
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 同样的子节点在 list / custom 下合法：门控只在 `type="nested"` 生效。
+    #[test]
+    fn non_nested_scroll_with_same_children_is_not_reported() {
+        let diagnostics = check(&project(
+            "nested-extra-other-types",
+            concat!(
+                r#"<scroll-view type="list"><view/>文字</scroll-view>"#,
+                r#"<scroll-view type="custom"><view/>文字</scroll-view>"#,
+            ),
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn nested_scroll_slot_and_whitespace_are_not_reported() {
+        let diagnostics = check(&project(
+            "nested-extra-slot",
+            "<scroll-view type=\"nested\">\n  <slot/>\n  <nested-scroll-body><view/></nested-scroll-body>\n</scroll-view>",
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn nested_scroll_with_dynamic_type_is_skipped() {
+        let diagnostics = check(&project(
+            "nested-extra-dynamic",
+            r#"<scroll-view type="{{t}}"><view/>文字</scroll-view>"#,
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     // ---- draggable-sheet ----
@@ -900,12 +1051,18 @@ mod tests {
     }
 
     #[test]
-    fn nested_header_after_body_with_sibling_between_is_allowed() {
+    fn nested_header_after_body_with_sibling_between_is_reported_for_the_sibling() {
+        // 顺序无关仍然成立（只有一条诊断），但夹在中间的非 header/body 节点会被整段丢弃。
         let diagnostics = check(&project(
             "nested-before-between",
             r#"<scroll-view type="nested"><nested-scroll-body><view/></nested-scroll-body><view/><nested-scroll-header><view/></nested-scroll-header></scroll-view>"#,
         ));
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0].message.contains("`<view>` 不会渲染"),
+            "{}",
+            diagnostics[0].message
+        );
     }
 
     #[test]
@@ -948,7 +1105,7 @@ mod tests {
     fn nested_scroll_without_body_is_reported() {
         let diagnostics = check(&project(
             "nested-no-body",
-            r#"<scroll-view type="nested"><view/></scroll-view>"#,
+            r#"<scroll-view type="nested"/>"#,
         ));
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(diagnostics[0].message.contains("nested-scroll-body"));
@@ -956,9 +1113,10 @@ mod tests {
 
     #[test]
     fn nested_body_must_be_a_direct_child() {
+        // 用一个合法的直接子节点（header）包住 body，避免同时命中「其余子节点不渲染」。
         let diagnostics = check(&project(
             "nested-body-indirect",
-            r#"<scroll-view type="nested"><view><nested-scroll-body/></view></scroll-view>"#,
+            r#"<scroll-view type="nested"><nested-scroll-header><nested-scroll-body/></nested-scroll-header></scroll-view>"#,
         ));
         // 两条独立事实：外层缺少「直接子节点」（RequiresChildTag），以及 body 的位置错了（Direct）。
         assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");

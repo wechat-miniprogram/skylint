@@ -120,6 +120,137 @@ pub fn subject(selector: &str) -> Option<Subject> {
     Some(subject)
 }
 
+/// 跨文档匹配用的扁平节点：只保留受限选择器文法需要的信息。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct FlatNode {
+    pub tag: String,
+    /// `None` = id 由运行时决定，静态判不了（按不命中处理）。
+    pub id: Option<String>,
+    /// **任何取值下都会出现**的 class 词：动态 class 只取确定项，拿不准的词不进。
+    pub classes: Vec<String>,
+}
+
+/// 受限选择器：compound 之间只有后代 / 子代组合符，compound 里只有标签 / id / class / `*`。
+///
+/// 存在的理由：`tag_selector_isolation` 要回答「这条选择器会不会命中**另一个单元**里
+/// 的节点」，而那个节点的祖先可能在组件边界另一侧（`page view` 里的 `page` 根本不在
+/// 组件文档里），单文档的 [`Tree`] 匹配不到。这里把选择器拆成 compound 序列，配合
+/// 调用方给出的逐条祖先路径（[`crate::wxml_graph::WxmlGraph::ancestor_paths`]）匹配。
+///
+/// 超出子集的写法（属性、伪类、兄弟组合符……）返回 `None`，调用方跳过——宁可漏报。
+#[derive(Debug, Clone)]
+pub struct FlatSelector {
+    /// 右 → 左：`compounds[0]` 是主体。
+    compounds: Vec<FlatCompound>,
+    /// `combinators[i]` 连接 `compounds[i]` 与 `compounds[i + 1]`。
+    combinators: Vec<Combinator>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct FlatCompound {
+    tag: Option<String>,
+    id: Option<String>,
+    classes: Vec<String>,
+}
+
+impl FlatCompound {
+    fn matches(&self, node: &FlatNode) -> bool {
+        if let Some(tag) = &self.tag
+            && !node.tag.eq_ignore_ascii_case(tag)
+        {
+            return false;
+        }
+        if let Some(id) = &self.id
+            && node.id.as_deref() != Some(id.as_str())
+        {
+            return false;
+        }
+        self.classes
+            .iter()
+            .all(|class| node.classes.iter().any(|seen| seen == class))
+    }
+}
+
+/// 解析成 [`FlatSelector`]；不在受限文法里返回 `None`。
+pub fn flat_selector(text: &str) -> Option<FlatSelector> {
+    let list = imp::parse(text)?;
+    let [selector] = list.slice() else {
+        return None;
+    };
+    let mut compounds = vec![FlatCompound::default()];
+    let mut combinators = Vec::new();
+    for component in selector.iter_raw_match_order() {
+        match component {
+            Component::LocalName(name) => {
+                compounds.last_mut()?.tag = Some(name.name.0.to_ascii_lowercase());
+            }
+            Component::ID(id) => compounds.last_mut()?.id = Some(id.0.clone()),
+            Component::Class(class) => compounds.last_mut()?.classes.push(class.0.clone()),
+            Component::ExplicitUniversalType => {}
+            Component::Combinator(combinator) => {
+                if !matches!(combinator, Combinator::Descendant | Combinator::Child) {
+                    return None;
+                }
+                combinators.push(*combinator);
+                compounds.push(FlatCompound::default());
+            }
+            _ => return None,
+        }
+    }
+    (compounds.len() == combinators.len() + 1).then_some(FlatSelector {
+        compounds,
+        combinators,
+    })
+}
+
+impl FlatSelector {
+    /// 主体是纯标签或纯 id：Skyline 的隔离语义只对这两类主体有「跨组件失效」。
+    pub fn subject_is_tag_or_id_only(&self) -> bool {
+        let subject = &self.compounds[0];
+        subject.classes.is_empty() && (subject.tag.is_some() ^ subject.id.is_some())
+    }
+
+    pub fn subject_is_tag(&self) -> bool {
+        self.compounds[0].tag.is_some()
+    }
+
+    /// 没有组合符：单 compound，不需要祖先路径。
+    pub fn is_simple(&self) -> bool {
+        self.combinators.is_empty()
+    }
+
+    /// 主体是否命中该节点（快速过滤用）。
+    pub fn matches_subject(&self, node: &FlatNode) -> bool {
+        self.compounds[0].matches(node)
+    }
+
+    /// 主体命中 `subject` 且祖先满足选择器；`ancestors` 从近到远。
+    pub fn matches(&self, subject: &FlatNode, ancestors: &[FlatNode]) -> bool {
+        if !self.matches_subject(subject) {
+            return false;
+        }
+        let mut cursor = 0usize;
+        for (index, combinator) in self.combinators.iter().enumerate() {
+            let compound = &self.compounds[index + 1];
+            match combinator {
+                Combinator::Descendant => {
+                    let rest = ancestors.get(cursor..).unwrap_or_default();
+                    let Some(offset) = rest.iter().position(|node| compound.matches(node)) else {
+                        return false;
+                    };
+                    cursor += offset + 1;
+                }
+                Combinator::Child => match ancestors.get(cursor) {
+                    Some(node) if compound.matches(node) => cursor += 1,
+                    _ => return false,
+                },
+                _ => return false,
+            }
+        }
+        true
+    }
+}
+
 /// 选择器里影响「静态能不能判」的形状。
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Shape {

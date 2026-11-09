@@ -52,6 +52,18 @@ const MAX_INCLUDE_DEPTH: usize = 16;
 /// 遍历深度上限：项目里不该出现这么深的投影链，超了说明组件互相嵌套成环。
 const MAX_NODES: usize = 512;
 
+/// 单条祖先路径的分叉上限：多使用点会乘出指数条路径，超过就截断（宁可漏报）。
+const MAX_PATHS: usize = 32;
+
+/// 单条祖先路径上的一节。
+#[derive(Clone)]
+pub(crate) enum AncestorRef<'a> {
+    /// 渲染树里真实存在的元素（跨组件边界时来自别的文档）。
+    Element { element: &'a FlatElement },
+    /// 页面根：WXML 里没有对应标签，但 WebView 的 DOM 根是 `<page>`。
+    PageRoot,
+}
+
 /// 一次组件使用点（反链）：哪个文档用哪个标签引用了这份组件。
 #[derive(Debug, Clone)]
 pub(crate) struct UsageSite {
@@ -353,6 +365,68 @@ impl WxmlGraph {
             }
         }
         AncestorChain { nodes: out, open }
+    }
+
+    /// 渲染树里某个元素的**逐条**祖先路径（近 → 远）。
+    ///
+    /// [`Self::ancestors`] 是多使用点的并集，只能回答「有没有一条成立」；选择器匹配要
+    /// 按顺序逐级回溯（后代 / 子代组合符），必须拿到真实的单条路径，所以单独提供。
+    /// 静态不可知的边不产出路径（宁可漏报），路径数超过 [`MAX_PATHS`] 时截断。
+    pub(crate) fn ancestor_paths<'a>(
+        &'a self,
+        doc_path: &str,
+        element: &WxmlElement,
+    ) -> Vec<Vec<AncestorRef<'a>>> {
+        let Some(&doc) = self.by_path.get(doc_path) else {
+            return Vec::new();
+        };
+        let Some(&start) = self.docs[doc]
+            .by_start
+            .get(&(element.tag_start.line, element.tag_start.utf16_col))
+        else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        self.collect_paths(NodeId { doc, idx: start }, &mut Vec::new(), &mut out);
+        out
+    }
+
+    fn collect_paths<'a>(
+        &'a self,
+        node: NodeId,
+        prefix: &mut Vec<AncestorRef<'a>>,
+        out: &mut Vec<Vec<AncestorRef<'a>>>,
+    ) {
+        if out.len() >= MAX_PATHS {
+            return;
+        }
+        match self.parents(node) {
+            Parents::Nodes(nodes) if nodes.is_empty() => out.push(prefix.clone()),
+            Parents::Nodes(nodes) => {
+                for parent in nodes {
+                    if out.len() >= MAX_PATHS || prefix.len() >= MAX_NODES {
+                        return;
+                    }
+                    prefix.push(AncestorRef::Element {
+                        element: &self.docs[parent.doc].elements[parent.idx],
+                    });
+                    self.collect_paths(parent, prefix, out);
+                    prefix.pop();
+                }
+            }
+            // 页面根在 WXML 里没有对应标签，但 WebView 的 DOM 根是 `<page>`，
+            // `page view {}` 这类选择器靠它才成立。
+            Parents::Top => {
+                if self.docs[node.doc].is_page {
+                    prefix.push(AncestorRef::PageRoot);
+                    out.push(prefix.clone());
+                    prefix.pop();
+                } else {
+                    out.push(prefix.clone());
+                }
+            }
+            Parents::Unknown => {}
+        }
     }
 
     /// 组件模板的 `options`：`(multipleSlots, virtualHost)`。

@@ -13,14 +13,14 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde_json::{Map, Value};
 
-use crate::input::wxml::WxmlDoc;
+use crate::input::wxml::{WxmlAttribute, WxmlDoc};
 use crate::project::{Project, Scope, StyleIsolation};
 use crate::rules::RuleMeta;
 use crate::{Diagnostic, Severity};
 
-use super::selector::SimpleSelector;
 use super::visit_rules;
-use crate::matcher::{Dialect, Tree, Tri};
+use crate::matcher::{FlatNode, FlatSelector, flat_selector};
+use crate::wxml_graph::{AncestorRef, WxmlGraph};
 
 pub const ID: &str = "skyline/tag-selector-isolation";
 
@@ -68,6 +68,8 @@ impl crate::rules::Rule for TagSelectorIsolation {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut hits: BTreeMap<(String, usize), Hit> = BTreeMap::new();
         let mut docs: HashMap<&str, Option<WxmlDoc>> = HashMap::new();
+        // 只有带组合符的选择器才需要渲染树；纯标签 / 纯 id 的单 compound 用不到它。
+        let graph: std::cell::OnceCell<WxmlGraph> = std::cell::OnceCell::new();
 
         visit_rules(project, |sheet, rule, _out| {
             let doc = &sheet.doc;
@@ -125,19 +127,19 @@ impl crate::rules::Rule for TagSelectorIsolation {
                     continue;
                 }
                 for selector in &rule.selectors {
-                    let Some(simple) = SimpleSelector::parse(selector) else {
+                    let Some(flat) = flat_selector(selector.text.trim()) else {
                         continue;
                     };
-                    let is_tag = simple.is_tag_only();
-                    if !is_tag && !simple.is_id_only() {
+                    if !flat.subject_is_tag_or_id_only() {
                         continue;
                     }
+                    let is_tag = flat.subject_is_tag();
                     // legacy 放开的是标签选择器；id 选择器无论配置如何都不跨组件
                     if is_tag && legacy {
                         continue;
                     }
                     let Some((unit, foreign_tag)) =
-                        find_foreign(project, &foreign, selector.text.trim(), &mut docs)
+                        find_foreign(project, &graph, &foreign, &flat, &mut docs)
                     else {
                         continue;
                     };
@@ -184,10 +186,15 @@ impl crate::rules::Rule for TagSelectorIsolation {
 }
 
 /// 在外部单元里找第一个命中该选择器的节点。
+///
+/// 主体的祖先可能跨在组件边界另一侧（`page view` 的 `page` 不在组件文档里），
+/// 所以带组合符的选择器走 [`WxmlGraph::ancestor_paths`] 的逐条路径；单 compound
+/// 不需要路径，直接匹配主体。
 fn find_foreign<'a>(
     project: &'a Project,
+    graph: &std::cell::OnceCell<WxmlGraph>,
     units: &[&'a str],
-    selector: &str,
+    selector: &FlatSelector,
     docs: &mut HashMap<&'a str, Option<WxmlDoc>>,
 ) -> Option<(String, String)> {
     for unit in units {
@@ -214,15 +221,66 @@ fn find_foreign<'a>(
             // 该单元 WXML 解析失败只跳过它，不影响其它外部单元。
             continue;
         };
-        let tree = Tree::new(doc);
         for element in doc.elements() {
             // 「WebView 能不能命中」才是这条规则关心的方向。
-            if tree.matches(element, selector, Dialect::WebView) == Tri::Yes {
+            let node = node_of(&element.tag, &element.attributes);
+            if !selector.matches_subject(&node) {
+                continue;
+            }
+            let matched = selector.is_simple() || {
+                let graph = graph.get_or_init(|| WxmlGraph::new(project));
+                graph.ancestor_paths(wxml_path, element).iter().any(|path| {
+                    let ancestors: Vec<FlatNode> = path.iter().map(ancestor_node).collect();
+                    selector.matches(&node, &ancestors)
+                })
+            };
+            if matched {
                 return Some((unit.to_string(), element.tag.clone()));
             }
         }
     }
     None
+}
+
+/// 扁平节点 → 匹配用的描述。动态 class 只取「任何取值下都出现」的词，
+/// 动态 id 当作未知（按不命中处理）——宁可漏报也不要凭空报一条。
+fn node_of(tag: &str, attributes: &[WxmlAttribute]) -> FlatNode {
+    let id = attributes
+        .iter()
+        .find(|attr| attr.name.eq_ignore_ascii_case("id"))
+        .filter(|attr| attr.is_static)
+        .and_then(|attr| attr.value.clone());
+    let classes = attributes
+        .iter()
+        .find(|attr| attr.name.eq_ignore_ascii_case("class"))
+        .map(|attr| match &attr.class_tokens {
+            Some(tokens) => tokens.definite.clone(),
+            None if attr.is_static => attr
+                .value
+                .as_deref()
+                .unwrap_or("")
+                .split_whitespace()
+                .map(str::to_string)
+                .collect(),
+            None => Vec::new(),
+        })
+        .unwrap_or_default();
+    FlatNode {
+        tag: tag.to_ascii_lowercase(),
+        id,
+        classes,
+    }
+}
+
+fn ancestor_node(ancestor: &AncestorRef<'_>) -> FlatNode {
+    match ancestor {
+        AncestorRef::Element { element } => node_of(&element.tag, &element.attributes),
+        // WebView 的 DOM 根就是 `<page>`。
+        AncestorRef::PageRoot => FlatNode {
+            tag: "page".to_string(),
+            ..FlatNode::default()
+        },
+    }
 }
 
 #[cfg(test)]
@@ -408,6 +466,58 @@ mod tests {
             .write("components/c/c.wxss", "view { margin: 0; }");
         let diagnostics = check(&fixture);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    // ---- 带祖先组合符的选择器 ----
+
+    /// `page view` 是真实工程里的全局重置写法（`weapp-skit-player-plugin` 的
+    /// `playlet.wxss:2`）：WebView 的 DOM 根是 `<page>`，这条会命中也组件内部的
+    /// `<view>`；Skyline 下页面样式表不跨组件，必须报。注意 `page` 在 WXML 里没有
+    /// 对应标签，只能靠页面根补上。
+    #[test]
+    fn page_descendant_tag_selector_reaches_component_nodes() {
+        let fixture = fixture("page-descendant", "page view { box-sizing: content-box; }");
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].message.contains("page view"));
+        assert!(diagnostics[0].message.contains("components/c/c"));
+    }
+
+    /// 类祖先只在组件真的挂在它下面时才算：`.other view` 在 `.other` 外面不该报。
+    #[test]
+    fn class_ancestor_must_really_apply() {
+        let unrelated = fixture("class-ancestor-miss", ".other view { color: red; }");
+        assert!(check(&unrelated).is_empty(), "{:?}", check(&unrelated));
+
+        let related = fixture("class-ancestor-hit", "page .page view { color: red; }");
+        assert_eq!(check(&related).len(), 1);
+    }
+
+    /// 子代组合符要求紧邻的父节点匹配：组件宿主 `c` 夹在中间，`.page > view` 不算。
+    #[test]
+    fn child_combinator_respects_the_component_host() {
+        let fixture = fixture("child-combinator", ".page > view { color: red; }");
+        assert!(check(&fixture).is_empty(), "{:?}", check(&fixture));
+    }
+
+    /// 主体带 class 的选择器不归这条规则管（隔离只对纯标签 / 纯 id 主体生效）。
+    #[test]
+    fn class_subject_with_ancestor_is_not_this_rule() {
+        let fixture = fixture("class-subject", "page view.inner { color: red; }");
+        assert!(check(&fixture).is_empty(), "{:?}", check(&fixture));
+    }
+
+    /// 超出受限文法的写法（属性 / 伪类 / 兄弟组合符）跳过，不报。
+    #[test]
+    fn unsupported_shapes_are_skipped() {
+        for (name, selector) in [
+            ("shape-attr", "page [data-x] view { color: red; }"),
+            ("shape-pseudo", "page view:hover { color: red; }"),
+            ("shape-sibling", ".page + view { color: red; }"),
+        ] {
+            let fixture = fixture(name, selector);
+            assert!(check(&fixture).is_empty(), "{selector} 不该报");
+        }
     }
 
     // ---- negative ----
