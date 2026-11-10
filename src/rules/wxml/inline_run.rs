@@ -9,9 +9,11 @@
 //! （`shadow_node.cc:205-209`、`text_span.cc:280-285`、`text.cc:188-201`）。
 //! 只想「横向排列」就显式 `display: flex`——两种渲染器都按 flex 排，天然一致。
 //!
-//! 裸文本与元素混排归 `no-inline-text`，这里只补「没有裸文本」的那一半：兄弟全是
-//! 被当成 inline 的元素。父级是 flex/grid 时不报（两边都按 flex item 排，无差异）；
-//! 元素显式写了非 inline 的 `display` 时也不报（作者已经明确要块级）。
+//! 裸文本与元素混排归 `no-inline-text`（「裸文本 + **单个** `<text>` 兄弟」也在
+//! 那里，比如 `<view>客服电话：<text>1010-5335</text></view>`）；这里只补「没有
+//! 裸文本」的那一半：兄弟全是被当成 inline 的元素。父级是 flex/grid 时不报（两边
+//! 都按 flex item 排，无差异）；元素显式写了非 inline 的 `display` 时也不报
+//! （作者已经明确要块级）。
 
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
@@ -96,7 +98,7 @@ fn check_element(
 /// 不写才依赖默认值（Skyline 默认 block / flex，WebView 默认 inline）。
 /// 绝对定位、占满整行、带纵向外边距的成员也不是行内内容：前两者两端都脱离
 /// 行内流，后者作者已经用纵向间距表达「各占一行」。
-fn is_inline_member(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
+pub(crate) fn is_inline_member(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
     INLINE_TAGS.contains(&element.tag.as_str())
         && display_values(project, tree, element).is_empty()
         && !has_dynamic_style(element)
