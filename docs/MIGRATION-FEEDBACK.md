@@ -150,20 +150,34 @@ split 文件名）与 `job.unit.files`（与 `next.unit.files` 同源）。
 4. **`facts` 的元素 `id` 里带字面量 `<element>`**、`verify` 的 `baseline.sha256`
    恒为 null。已分别改成 `element|...` 与删除该键。
 
-## 待修（已派工）
+## 已修（第二轮后半）
 
 - **样式类 finding 没有定位事实**：`anchor` / `facts` 为 null，agent 只知道
-  「某 wxss 第 N 行有 float」，不知道该选择器在本单元命中了哪些 WXML 节点、
-  规则块里还有什么声明。需要 `selector` / `property` / `declarations` / `matches`。
-- **共享文件的 finding 被静默塞进页面作业单**：`movie/styles/common.wxss` 的 8 条
+  「某 wxss 第 N 行有 float」。现已补 `selector` / `property` / `declarations` /
+  `matches`（+`matchCount`）：匹配只遍历 `unit.files` 里的 wxml，最多回 5 条。
+- **共享文件的 finding 被静默塞进页面作业单**：`movie/styles/common.wxss` 的 6 条
   同时归属 13 个页面，agent 改它会波及 13 页，而作业单验收只覆盖当前单元。
-  需要 `shared: true` + `affectedUnits`，并在文档里明确它不属于本单元验收范围。
-- **两条规则缺口**（实机截图发现，规则零命中）：
-  - `::before { content }` 参与行内排版：WebView 同行、Skyline 换行，修法是给容器
-    加 `display:flex`。`no-pseudo` 只管伪类。
-  - 裸文本 + `<text>` 兄弟在普通容器里换行：`no-inline-text` 把 `<text>` 当行内标签
-    豁免、`inline-run` 只数「≥2 个文本级元素」，中间这个组合漏掉。修法是把整行包进
-    一个 `<text>`。
+  现在 finding 带 `shared: true` + `affectedUnits`，job 顶层有 `sharedFindings`。
+  注意：被多单元引用的文件**不进** `unit:shared`（那里只收「无归属」诊断），
+  所以要按全工程 `verify` 或逐受影响单元验证——文档 §4.5 已写明。
+- **伪元素参与的引内排版**：新增规则 `skyline/pseudo-inline-layout`（warning）。
+  判据经引擎核实：Skyline 只实现 `::before/::after`，`content` 只接受字符串字面量
+  （`css/css_properties/content.cc:60-83`），非文本宿主的伪元素只支持 block/flex
+  （`shadow/pseudo_node.cc:47-52`），所以宿主里只要有裸文本或默认参与行内流的
+  文本级子元素，Skyline 下伪元素必然独占一行（WebView 是 inline）。修法：宿主加
+  `display:flex; flex-direction:row`，或换成真实节点包进同一个 `<text>`。
+  美团工程实测新增 3 条（`cinema/cinema.wxss:234`、`cinema/movie.wxss:50`、
+  `goods/_common.wxss:79`），忽略这条规则后与 776 条基线逐字段一致。
+
+## 更正一处早前的误判
+
+我先前说「裸文本 + 单个 `<text>` 被 `no-inline-text` 豁免、只有 `inline-run` 管
+≥2 个文本级元素，中间有缺口」——**这是错的**。`no-inline-text` 从未使用
+`INLINE_TEXT_TAGS`（该常量只在 `structure.rs` 的 `component-children` 约束里用），
+`movie/tpls/_detail.wxml` 的「客服电话」那行本来就会被它报出（`1:2241`），
+历史基线里也一直有这条 finding。真实原因是我在 `verify` 里看到 `fixed 1` 却没去
+核对它属于谁。现已补一条精确回归测试锁住该写法，`inline-run` 的判据不动
+（否则会与 `no-inline-text` 对同一行双重上报，并改变六工程基线）。
 
 ## 工具链（不是 skylint 的问题，但会拖慢迁移）
 
