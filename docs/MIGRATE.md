@@ -221,17 +221,40 @@ runner 拿它去做 `git diff` / `checkout`。两者弄混，在「工程根不�
 
 ### 4.2 `id` 算法
 
+**WXML 诊断**（不变）：
+
 ```
 id = "{rule}|{path}|{tag}.{classes 按字典序}|#{occurrence}"
 ```
 
 `path` 是诊断所在文档的路径（单元 WXML 或它引用的模板）。
-
 `occurrence` 是同文档内、同 `(tag, classes)` 元素中的序号。没有元素时退化为
 `{rule}|{path}|{line}:{column}`。
 
-**行列不参与（WXML 诊断）**：元素上移一行不该产生一个「新诊断」。
-`span` 只用于展示与编辑器跳转。
+**非 WXML 诊断**（结构稳定，按选择器 / 声明定位）：
+
+```
+声明：   "{rule}|{path}|{selector}|{property}|#{occurrence}"
+选择器： "{rule}|{path}|{selector}|#{occurrence}"
+at-rule："{rule}|{path}|@{at-rule 名} {prelude}|#{occurrence}"
+```
+
+- `selector` 是规则里逗号分隔的全部选择器按源码顺序用 `, ` 连接后的原文；
+  `property` 小写化。
+- `occurrence` 是同文件内、同 `selector` + 同 `property` 的第 n 条声明（从 0 起，
+  按源码顺序）。同一选择器里两条 `background` 各有独立身份：删掉其中一条只会
+  `fixed` 那一条，另一条照旧匹配。
+- 因此改样式上方代码、插空行、整块挪动都不会改变 id；只有选择器 / 属性本身变了
+  才算新诊断。
+
+拿不到选择器 / 属性时（`.js` / `.json` 诊断、解析失败的样式、未建模的 at-rule，
+如带前缀 `@keyframes`）退回：
+
+```
+id = "{rule}|{path}|{line}:{column}"
+```
+
+**这类 id 仍会随行号漂移**，改 `.js` / `.json` 或那类样式后建议重建基线。
 
 **祖先链不参与**：`Facts::ancestors` 对组件是**多个使用点的并集**（不是单条链），
 放进 id 会让「某个页面多引用了一次这个组件」把诊断变成新的。
@@ -311,7 +334,8 @@ skylint migration verify <PATH> --baseline <FILE> [--unit <ID>] [--json]
 
 `--out` 默认是 `<PATH>/.skylint/baseline.json`（落在工程根下，不落在当前目录）。
 
-`baseline` 存的是**身份**（`id` / `unit` / `rule` / `severity` / `path` / `span`）。
+`baseline` 存的是**身份**（`id` / `unit` / `rule` / `severity` / `path` / `span`），
+以及 id 格式标记 `idFormat`（新基线为 `"structural"`；旧基线没有这个字段）。
 另外存一份 `message` / `help` 只用于 `verify` 的 `fixed` 条目展示——身份判定
 仍只看 `id`，措辞变化不影响结论。
 
@@ -332,8 +356,10 @@ skylint migration verify <PATH> --baseline <FILE> [--unit <ID>] [--json]
 `tests/migrate.rs::verify_ignores_line_shift` 守着这条：插两行空行后
 `new == 0 && fixed == 0`。
 
-非 WXML 诊断（`.wxss` / `.js` / `app.json`）没有元素，id 退化为
-`rule|path|line:column`——这些位置由声明本身决定，改别处不会漂。
+非 WXML 诊断（`.wxss`）用 §4.2 的结构身份（选择器 + 属性），在文件上方插空行、
+整块挪动同样不会误报；`tests/migrate.rs::wxss_line_shift_keeps_identity` 守着这条。
+只有拿不到结构的 `.js` / `.json` / 未建模 at-rule 才退回 `rule|path|line:column`，
+那类仍会随行号漂移。
 
 ### 9.3 版本不一致
 
@@ -342,10 +368,22 @@ skylint migration verify <PATH> --baseline <FILE> [--unit <ID>] [--json]
 
 ### 9.4 已知边界
 
-- 规则措辞改变不算变化（baseline 不存 message），但**规则 id 改名**会让旧 id 全部变成
-  `fixed`、新 id 全部变成 `new`。改名需要同时重生基线。
+- 规则措辞改变不算变化（baseline 里的 `message` / `help` 只用于展示，不参与身份），
+  但**规则 id 改名**会让旧 id 全部变成 `fixed`、新 id 全部变成 `new`。改名需要
+  同时重生基线。
 - 元素被删掉时，它的旧诊断算 `fixed`（而不是「未知」）——这与「修好了」在数据上
   不可区分，需要人看一眼 diff。
+
+### 9.5 旧基线（`idFormat: "legacy"`）
+
+旧版 `baseline.json` 没有 `idFormat` 字段，非 WXML id 是
+`rule|path|line:column`。`verify` 不会静默：`--json` 输出 `baselineFormat: "legacy"`，
+人读输出也会打一行警告。匹配时按 `(rule, path)` 分组、再按源码顺序对齐，所以
+插空行 / 整块挪动不会误报；代价是「删一条 + 加一条」这种同数量变化区分不出来，
+`fixed` 的逐条定位也只是近似。
+
+**升级到本版本后必须重建基线**（`skylint migration baseline <PATH>`）：新基线会
+写入 `idFormat: "structural"`，才能获得逐条的稳定身份。
 
 ## 10. 台账与排队（M3）
 

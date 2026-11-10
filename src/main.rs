@@ -981,6 +981,11 @@ fn print_verify(report: &migrate::VerifyReport) {
     if report.version_mismatch {
         eprintln!("⚠ 基线与当前 skylint 版本不同：规则集可能变了，新增/修复的数量要人看一眼");
     }
+    if report.baseline_format == "legacy" {
+        eprintln!(
+            "⚠ 基线是旧格式（id 含行列），只能按 rule + 文件 + 顺序宽松匹配；请重建基线以获得结构稳定 id"
+        );
+    }
     println!(
         "新增 {} 条（error+warning），新增 info {} 条，修复 {} 条，调档 {} 条",
         report.new, report.new_info, report.fixed, report.changed

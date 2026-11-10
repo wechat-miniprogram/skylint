@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::diag::{Diagnostic, Severity};
+use crate::input::wxss::WxssRule;
 use crate::inspect::{Facts, LayoutFacts, LoadedDoc, Renderer, UnitKind};
 use crate::project::{Project, Scope, UnitFiles};
 use crate::report::Report;
@@ -955,18 +956,16 @@ pub fn identify(views: &[Project], plan: &Plan, report: &Report) -> Vec<Identifi
             .or_else(|| plan.units.iter().find(|unit| unit.kind == "shared"));
         let unit_id = unit.map(|unit| unit.id.clone()).unwrap_or_default();
 
-        // 只有 WXML 诊断能拿到元素；样式/脚本/配置落回行列 id。
-        let (id, _) = match diagnostic.path.ends_with(".wxml") {
-            true => match find_view(views, &diagnostic.path) {
-                Some((project, rel)) => {
-                    let doc = docs
-                        .entry(diagnostic.path.clone())
-                        .or_insert_with(|| LoadedDoc::load(project, rel));
-                    identify_one(project, doc.as_ref(), diagnostic)
-                }
-                None => identify_one_fallback(diagnostic),
-            },
-            false => identify_one_fallback(diagnostic),
+        // WXML 按元素锚点；样式按 selector + property；JS / JSON 等退回行列。
+        let (id, _) = match find_view(views, &diagnostic.path) {
+            Some((project, rel)) if diagnostic.path.ends_with(".wxml") => {
+                let doc = docs
+                    .entry(diagnostic.path.clone())
+                    .or_insert_with(|| LoadedDoc::load(project, rel));
+                identify_one(project, doc.as_ref(), diagnostic)
+            }
+            Some((project, _)) => identify_one(project, None, diagnostic),
+            None => identify_one_fallback(diagnostic),
         };
 
         out.push(Identified {
@@ -1001,9 +1000,117 @@ fn identify_one(
     });
     let id = match &anchor {
         Some(anchor) => anchor_id(&diagnostic.rule, &diagnostic.path, anchor),
-        None => identify_one_fallback(diagnostic).0,
+        // 样式诊断按「选择器 + 声明属性」定身份；改上方代码不再让后面全部漂移。
+        None => style_identity(project, diagnostic)
+            .unwrap_or_else(|| identify_one_fallback(diagnostic).0),
     };
     (id, anchor)
+}
+
+/// 一条样式规则的全部选择器原文（逗号分隔时合并，保持源码顺序）。
+fn selector_text(rule: &WxssRule) -> String {
+    rule.selectors
+        .iter()
+        .map(|selector| selector.text.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// 非 WXML 诊断的结构化身份：`rule|path|selector|property|#occurrence`。
+///
+/// 定位不到选择器 / 属性时返回 `None`，由调用方退化成 `rule|path|line:column`。
+/// 旧格式基线仍可被 `verify` 兼容匹配，见 [`baseline_format`]。
+fn style_identity(project: &Project, diagnostic: &Diagnostic) -> Option<String> {
+    let rel = strip_prefix(project, &diagnostic.path)?;
+    let doc = project
+        .styles
+        .iter()
+        .map(|sheet| &sheet.doc)
+        .find(|doc| doc.path() == rel)?;
+    let offset = doc.offset(diagnostic.line, diagnostic.column);
+
+    // 1) at-rule：`@media` 这类诊断落在 prelude 上。同一条 at-rule 会在它内部
+    // 每一条规则里重复出现，按 prelude 起点去重。
+    let mut at_rules: BTreeMap<usize, (&str, &str)> = BTreeMap::new();
+    for rule in &doc.rules {
+        for at in &rule.at_rules {
+            at_rules.entry(at.offset).or_insert((&at.name, &at.prelude));
+        }
+    }
+    let at_rules: Vec<(usize, &str, &str)> = at_rules
+        .into_iter()
+        .map(|(offset, (name, prelude))| (offset, name, prelude))
+        .collect();
+    for (index, (start, name, prelude)) in at_rules.iter().enumerate() {
+        if *start <= offset && offset <= *start + prelude.len() {
+            let occurrence = at_rules[..index]
+                .iter()
+                .filter(|(_, other_name, other_prelude)| {
+                    *other_name == *name && *other_prelude == *prelude
+                })
+                .count();
+            return Some(format!(
+                "{}|{}|@{} {}|#{}",
+                diagnostic.rule, diagnostic.path, name, prelude, occurrence
+            ));
+        }
+    }
+
+    // 2) 声明：所在规则的完整选择器列表 + 属性名；同选择器同属性按源码顺序编号。
+    for rule in &doc.rules {
+        for declaration in &rule.declarations {
+            if declaration.offset <= offset && offset <= declaration.value_end() {
+                let selector = selector_text(rule);
+                let property = declaration.name.to_ascii_lowercase();
+                let occurrence = doc
+                    .rules
+                    .iter()
+                    .filter(|other| selector_text(other) == selector)
+                    .flat_map(|other| other.declarations.iter())
+                    .filter(|other| {
+                        other.name.eq_ignore_ascii_case(&property)
+                            && other.offset < declaration.offset
+                    })
+                    .count();
+                return Some(format!(
+                    "{}|{}|{}|{}|#{}",
+                    diagnostic.rule, diagnostic.path, selector, property, occurrence
+                ));
+            }
+        }
+    }
+
+    // 3) 诊断落在选择器自身上（如 `tag-selector-isolation` / `no-pseudo`）。
+    let mut best: Option<&crate::input::wxss::WxssSelector> = None;
+    for rule in &doc.rules {
+        for selector in &rule.selectors {
+            if selector.offset <= offset && offset <= selector.offset + selector.text.len() {
+                best = Some(match best {
+                    Some(previous) if previous.offset > selector.offset => previous,
+                    _ => selector,
+                });
+            }
+        }
+    }
+    let selector = best?;
+    let occurrence = doc
+        .rules
+        .iter()
+        .flat_map(|rule| rule.selectors.iter())
+        .filter(|other| other.text == selector.text && other.offset < selector.offset)
+        .count();
+    Some(format!(
+        "{}|{}|{}|#{}",
+        diagnostic.rule, diagnostic.path, selector.text, occurrence
+    ))
+}
+
+/// 非 WXML 的新格式 id 以 `|#<occurrence>` 结尾；旧格式是 `rule|path|line:column`。
+fn baseline_format(baseline: &Baseline) -> &'static str {
+    match baseline.id_format {
+        IdFormat::Structural => "current",
+        IdFormat::Legacy => "legacy",
+    }
 }
 
 fn identify_one_fallback(diagnostic: &Diagnostic) -> (String, Option<Anchor>) {
@@ -1023,8 +1130,20 @@ fn identify_one_fallback(diagnostic: &Diagnostic) -> (String, Option<Anchor>) {
 pub struct Baseline {
     pub schema_version: u32,
     pub generator: Generator,
+    /// id 格式标记。旧基线没有这个字段，反序列化为 `Legacy`。
+    #[serde(default)]
+    pub id_format: IdFormat,
     pub summary: BaselineSummary,
     pub findings: Vec<BaselineFinding>,
+}
+
+/// 基线里的 id 格式。`Legacy` 是 `rule|path|line:column`（非 WXML）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum IdFormat {
+    #[default]
+    Legacy,
+    Structural,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1079,6 +1198,7 @@ pub fn baseline(identified: &[Identified]) -> Baseline {
     Baseline {
         schema_version: SCHEMA_VERSION,
         generator: Generator::default(),
+        id_format: IdFormat::Structural,
         summary,
         findings,
     }
@@ -1095,6 +1215,8 @@ pub struct VerifyReport {
     pub unit: Option<String>,
     /// 基线与当前 skylint 版本不同：规则集可能变了，结果要人看一眼。
     pub version_mismatch: bool,
+    /// `current`（结构稳定 id）或 `legacy`（旧的行列 id；按 rule+文件+顺序宽松匹配）。
+    pub baseline_format: &'static str,
     /// **新增的 error + warning**（门禁判据：`new == 0`）。
     pub new: usize,
     /// 新增的 info（不拦门禁）。
@@ -1128,12 +1250,64 @@ pub fn verify(
     unit: Option<&str>,
     baseline_file: Option<String>,
 ) -> VerifyReport {
-    let baseline_by_id: BTreeMap<&str, &BaselineFinding> = baseline
+    let format = baseline_format(baseline);
+    let legacy = format == "legacy";
+    let scoped: Vec<&BaselineFinding> = baseline
         .findings
         .iter()
         .filter(|finding| unit.is_none_or(|wanted| finding.unit == wanted))
-        .map(|finding| (finding.id.as_str(), finding))
         .collect();
+    let baseline_by_id: BTreeMap<&str, &BaselineFinding> = scoped
+        .iter()
+        .map(|finding| (finding.id.as_str(), *finding))
+        .collect();
+
+    // 旧基线没有结构信息，只能按 `(rule, path)` 分组、再按源码顺序对齐：插入空行 /
+    // 整块挪动不会改变序号，所以不会误报。代价是「删一条 + 加一条」这种同数量
+    // 变化分不出来——文档要求升级后重建基线。
+    let legacy_by_key: BTreeMap<(&str, &str, usize), &BaselineFinding> = if legacy {
+        let mut groups: BTreeMap<(&str, &str), Vec<&BaselineFinding>> = BTreeMap::new();
+        for finding in &scoped {
+            if !finding.path.ends_with(".wxml") {
+                groups
+                    .entry((finding.rule.as_str(), finding.path.as_str()))
+                    .or_default()
+                    .push(finding);
+            }
+        }
+        let mut map = BTreeMap::new();
+        for ((rule, path), mut group) in groups {
+            group.sort_by_key(|finding| (finding.span.line, finding.span.column));
+            for (occurrence, finding) in group.into_iter().enumerate() {
+                map.insert((rule, path, occurrence), finding);
+            }
+        }
+        map
+    } else {
+        BTreeMap::new()
+    };
+    let current_occurrence: BTreeMap<usize, usize> = if legacy {
+        let mut groups: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
+        for (index, finding) in current.iter().enumerate() {
+            if unit.is_none_or(|wanted| finding.unit == wanted) && !finding.path.ends_with(".wxml")
+            {
+                groups
+                    .entry((finding.rule.as_str(), finding.path.as_str()))
+                    .or_default()
+                    .push(index);
+            }
+        }
+        let mut map = BTreeMap::new();
+        for (_, mut indexes) in groups {
+            indexes.sort_by_key(|&index| (current[index].span.line, current[index].span.column));
+            for (occurrence, index) in indexes.into_iter().enumerate() {
+                map.insert(index, occurrence);
+            }
+        }
+        map
+    } else {
+        BTreeMap::new()
+    };
 
     let mut findings = Vec::new();
     let mut new = 0;
@@ -1141,12 +1315,24 @@ pub fn verify(
     let mut changed = 0;
     let mut seen: BTreeSet<&str> = BTreeSet::new();
 
-    for finding in current {
+    for (index, finding) in current.iter().enumerate() {
         if unit.is_some_and(|wanted| finding.unit != wanted) {
             continue;
         }
-        seen.insert(finding.id.as_str());
-        match baseline_by_id.get(finding.id.as_str()) {
+        let matched = baseline_by_id
+            .get(finding.id.as_str())
+            .copied()
+            .or_else(|| {
+                (legacy && !finding.path.ends_with(".wxml"))
+                    .then(|| current_occurrence.get(&index))
+                    .flatten()
+                    .and_then(|occurrence| {
+                        legacy_by_key
+                            .get(&(finding.rule.as_str(), finding.path.as_str(), *occurrence))
+                            .copied()
+                    })
+            });
+        match matched {
             None => {
                 match finding.severity {
                     Severity::Info => new_info += 1,
@@ -1164,6 +1350,7 @@ pub fn verify(
                 });
             }
             Some(previous) if previous.severity != finding.severity => {
+                seen.insert(previous.id.as_str());
                 changed += 1;
                 findings.push(DiffEntry {
                     kind: "severity-changed",
@@ -1176,7 +1363,9 @@ pub fn verify(
                     help: finding.help.clone(),
                 });
             }
-            Some(_) => {}
+            Some(previous) => {
+                seen.insert(previous.id.as_str());
+            }
         }
     }
 
@@ -1215,6 +1404,7 @@ pub fn verify(
         },
         unit: unit.map(str::to_string),
         version_mismatch: baseline.generator.version != Generator::default().version,
+        baseline_format: format,
         new,
         new_info,
         fixed,

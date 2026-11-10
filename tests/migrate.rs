@@ -426,6 +426,23 @@ fn inline_text_fixture(name: &str, wxss: &str) -> Fixture {
     f
 }
 
+fn style_fixture(name: &str, wxml: &str, wxss: &str) -> Fixture {
+    let f = Fixture::new(name);
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/"}"#,
+    )
+    .write(
+        "miniprogram/app.json",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+    )
+    .write("miniprogram/pages/index/index.json", r#"{}"#)
+    .write("miniprogram/pages/index/index.wxml", wxml)
+    .write("miniprogram/pages/index/index.js", "Page({})")
+    .write("miniprogram/pages/index/index.wxss", wxss);
+    f
+}
+
 fn job_for_page(root: &Path) -> migrate::Job {
     let (projects, report) = analyse(root);
     let plan = migrate::plan(&projects, &report, None);
@@ -596,6 +613,141 @@ fn verify_baseline_ref_has_no_sha256() {
         !json.contains("\"sha256\""),
         "baseline 摘要字段应当去掉而不是输出 null：{json}"
     );
+}
+
+/// 样式诊断按 selector + property 定身份：顶部插空行、整块挪动都不算变化。
+#[test]
+fn wxss_line_shift_keeps_identity() {
+    let f = style_fixture(
+        "wxss-shift",
+        r#"<view class="x"/><view class="y"/>"#,
+        ".x { float: left; }\n.y { float: right; }\n",
+    );
+    let baseline = baseline_of(f.path());
+    assert_eq!(
+        baseline
+            .findings
+            .iter()
+            .filter(|finding| finding.path == "pages/index/index.wxss")
+            .count(),
+        2
+    );
+
+    f.write(
+        "miniprogram/pages/index/index.wxss",
+        "\n\n\n\n\n.x { float: left; }\n.y { float: right; }\n",
+    );
+    let shifted = verify_now(f.path(), &baseline);
+    assert_eq!(
+        shifted.new, 0,
+        "插空行不该产生新诊断：{:?}",
+        shifted.findings
+    );
+    assert_eq!(shifted.fixed, 0, "插空行不该把旧诊断算成修复");
+
+    // 整块挪动：两个规则的顺序对调，身份仍按选择器算。
+    f.write(
+        "miniprogram/pages/index/index.wxss",
+        ".y { float: right; }\n.x { float: left; }\n",
+    );
+    let moved = verify_now(f.path(), &baseline);
+    assert_eq!(moved.new, 0, "挪整块不该产生新诊断：{:?}", moved.findings);
+    assert_eq!(moved.fixed, 0, "挪整块不该把旧诊断算成修复");
+}
+
+/// 真正新增一条违规 → new 1。
+#[test]
+fn wxss_new_declaration_is_one_new_finding() {
+    let f = style_fixture("wxss-new", r#"<view class="x"/>"#, ".x { float: left; }\n");
+    let baseline = baseline_of(f.path());
+
+    f.write(
+        "miniprogram/pages/index/index.wxss",
+        ".x { float: left; }\n.x { float: right; }\n",
+    );
+    let result = verify_now(f.path(), &baseline);
+    assert_eq!(result.new, 1, "新增声明应只算一条：{:?}", result.findings);
+    assert_eq!(result.fixed, 0);
+}
+
+/// 删掉一条既有声明 → fixed 1。
+#[test]
+fn wxss_deleted_declaration_is_one_fixed_finding() {
+    let f = style_fixture(
+        "wxss-delete",
+        r#"<view class="x"/>"#,
+        ".x { float: left; }\n",
+    );
+    let baseline = baseline_of(f.path());
+
+    f.write("miniprogram/pages/index/index.wxss", ".x { color: red; }\n");
+    let result = verify_now(f.path(), &baseline);
+    assert_eq!(result.new, 0);
+    assert_eq!(
+        result.fixed, 1,
+        "删掉声明应只算一条修复：{:?}",
+        result.findings
+    );
+}
+
+/// 同一选择器里两条同类声明：删掉其中一条只算 fixed 1，另一条照旧匹配。
+#[test]
+fn duplicate_property_occurrence_keeps_the_other_finding() {
+    let f = style_fixture(
+        "wxss-duplicate",
+        r#"<view class="x"/>"#,
+        ".x { float: left; float: right; }\n",
+    );
+    let baseline = baseline_of(f.path());
+    assert_eq!(
+        baseline
+            .findings
+            .iter()
+            .filter(|finding| finding.path == "pages/index/index.wxss")
+            .count(),
+        2
+    );
+
+    f.write(
+        "miniprogram/pages/index/index.wxss",
+        ".x { float: left; }\n",
+    );
+    let result = verify_now(f.path(), &baseline);
+    assert_eq!(result.new, 0, "另一条同类声明不该变成新增");
+    assert_eq!(result.fixed, 1, "只应报删掉的那一条");
+}
+
+/// 旧基线（id 是 rule|path|line:column）要显式标记 legacy，并在插空行后不乱报。
+#[test]
+fn legacy_baseline_matches_across_line_shift() {
+    let f = style_fixture(
+        "wxss-legacy",
+        r#"<view class="x"/>"#,
+        ".x { float: left; }\n",
+    );
+    let mut baseline = baseline_of(f.path());
+    baseline.id_format = migrate::IdFormat::Legacy;
+    for finding in &mut baseline.findings {
+        if !finding.path.ends_with(".wxml") {
+            finding.id = format!(
+                "{}|{}|{}:{}",
+                finding.rule, finding.path, finding.span.line, finding.span.column
+            );
+        }
+    }
+
+    f.write(
+        "miniprogram/pages/index/index.wxss",
+        "\n\n\n\n\n.x { float: left; }\n",
+    );
+    let result = verify_now(f.path(), &baseline);
+    assert_eq!(result.baseline_format, "legacy");
+    assert_eq!(
+        result.new, 0,
+        "旧基线按 rule+文件+顺序对齐：{:?}",
+        result.findings
+    );
+    assert_eq!(result.fixed, 0);
 }
 
 /// `--unit` 只比对这个单元，别的单元的变化不算进来。
