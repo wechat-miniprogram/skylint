@@ -168,7 +168,7 @@ fn job_keeps_findings_from_non_wxss_style_sources() {
     assert!(diagnostics[0].path.ends_with("index.scss"));
 
     let (project, rel) = migrate::find_view(&projects, &unit.path).expect("view");
-    let job = migrate::job(project, rel, unit, &diagnostics, None);
+    let job = migrate::job(project, rel, &plan, unit, &diagnostics, None);
     assert_eq!(job.findings.len(), 1);
     assert_eq!(
         job.findings[0].path, "pages/index/index.scss",
@@ -329,7 +329,7 @@ fn included_template_diagnostics_belong_to_the_page() {
     assert_eq!(template.len(), 1, "模板上只有一条 no-inline-text");
 
     let (project, rel) = migrate::find_view(&projects, &unit.path).expect("view");
-    let job = migrate::job(project, rel, unit, &diagnostics, None);
+    let job = migrate::job(project, rel, &plan, unit, &diagnostics, None);
     assert!(
         job.findings
             .iter()
@@ -345,6 +345,158 @@ fn included_template_diagnostics_belong_to_the_page() {
             .any(|unit| unit.diagnostics.by_rule.contains_key(&template[0].rule)),
         "模板诊断不能落进 unit:shared"
     );
+}
+
+/// 样式诊断要能直接告诉 agent「改哪个选择器、这块钱还有什么、命中本单元哪些节点」。
+#[test]
+fn style_findings_carry_selector_declarations_and_matches() {
+    let f = style_fixture(
+        "style-context",
+        r#"<view class="box"><view class="card"/></view>"#,
+        ".card { display: block; float: left; color: red; }\n",
+    );
+    let job = job_for_page(f.path());
+    let finding = job
+        .findings
+        .iter()
+        .find(|finding| finding.rule == "skyline/unsupported-property")
+        .expect("float 应该被报出来");
+
+    assert_eq!(finding.selector.as_deref(), Some(".card"));
+    assert_eq!(finding.property.as_deref(), Some("float"));
+    let declarations: Vec<_> = finding
+        .declarations
+        .iter()
+        .map(|declaration| declaration.property.as_str())
+        .collect();
+    assert_eq!(declarations, ["display", "float", "color"]);
+    assert_eq!(finding.declarations[1].value, "left");
+
+    assert_eq!(finding.match_count, 1);
+    assert_eq!(finding.matches.len(), 1);
+    assert_eq!(finding.matches[0].path, "pages/index/index.wxml");
+    assert_eq!(finding.matches[0].tag, "view");
+    assert_eq!(finding.matches[0].line, 1);
+
+    assert!(!finding.shared, "普通页面自带样式不是共享文件");
+    assert_eq!(finding.affected_units, 0);
+    assert!(job.shared_findings.is_empty());
+}
+
+/// 匹配只算本单元文件：别的页面也有 `.card` 时不能算进来，否则 agent 会改错页面。
+#[test]
+fn style_matches_stay_within_the_unit() {
+    let f = Fixture::new("style-matches-unit");
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/"}"#,
+    )
+    .write(
+        "miniprogram/app.json",
+        r#"{"pages":["pages/index/index","pages/other/other"],"renderer":"skyline"}"#,
+    )
+    .write("miniprogram/pages/index/index.json", r#"{}"#)
+    .write(
+        "miniprogram/pages/index/index.wxml",
+        r#"<view class="box"><view class="card"/></view>"#,
+    )
+    .write("miniprogram/pages/index/index.js", "Page({})")
+    .write(
+        "miniprogram/pages/index/index.wxss",
+        ".card { float: left; }\n",
+    )
+    .write("miniprogram/pages/other/other.json", r#"{}"#)
+    .write(
+        "miniprogram/pages/other/other.wxml",
+        r#"<view class="card"/><view class="card"/>"#,
+    )
+    .write("miniprogram/pages/other/other.js", "Page({})");
+
+    let (projects, report) = analyse(f.path());
+    let plan = migrate::plan(&projects, &report, None);
+    let unit = plan
+        .units
+        .iter()
+        .find(|unit| unit.path == "pages/index/index.wxml")
+        .expect("page unit");
+    let (project, rel) = migrate::find_view(&projects, &unit.path).expect("view");
+    let diagnostics = migrate::diagnostics_for(&plan, unit, &report);
+    let job = migrate::job(project, rel, &plan, unit, &diagnostics, None);
+
+    let finding = job
+        .findings
+        .iter()
+        .find(|finding| finding.rule == "skyline/unsupported-property")
+        .expect("float 应该被报出来");
+    assert_eq!(
+        finding.match_count, 1,
+        "另一个页面里的两个 .card 不能算进本单元"
+    );
+    assert!(
+        finding
+            .matches
+            .iter()
+            .all(|node| node.path == "pages/index/index.wxml"),
+        "命中节点必须只来自本单元文件：{:?}",
+        finding.matches
+    );
+}
+
+/// 被多个单元 `@import` 的文件：`shared: true` + 引用单元数，且作业单顶部有汇总。
+#[test]
+fn shared_style_findings_are_marked_for_separate_approval() {
+    let f = Fixture::new("shared-style");
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/"}"#,
+    )
+    .write(
+        "miniprogram/app.json",
+        r#"{"pages":["pages/index/index","pages/other/other"],"renderer":"skyline"}"#,
+    )
+    .write("miniprogram/pages/index/index.json", r#"{}"#)
+    .write("miniprogram/pages/index/index.wxml", r#"<view class="x"/>"#)
+    .write("miniprogram/pages/index/index.js", "Page({})")
+    .write(
+        "miniprogram/pages/index/index.wxss",
+        "@import \"../../styles/common.wxss\";\n",
+    )
+    .write("miniprogram/pages/other/other.json", r#"{}"#)
+    .write("miniprogram/pages/other/other.wxml", r#"<view class="x"/>"#)
+    .write("miniprogram/pages/other/other.js", "Page({})")
+    .write(
+        "miniprogram/pages/other/other.wxss",
+        "@import \"../../styles/common.wxss\";\n",
+    )
+    .write("miniprogram/styles/common.wxss", ".x { float: left; }\n");
+
+    let (projects, report) = analyse(f.path());
+    let plan = migrate::plan(&projects, &report, None);
+    for path in ["pages/index/index.wxml", "pages/other/other.wxml"] {
+        let unit = plan
+            .units
+            .iter()
+            .find(|unit| unit.path == path)
+            .expect("page unit");
+        let (project, rel) = migrate::find_view(&projects, &unit.path).expect("view");
+        let diagnostics = migrate::diagnostics_for(&plan, unit, &report);
+        let job = migrate::job(project, rel, &plan, unit, &diagnostics, None);
+
+        let finding = job
+            .findings
+            .iter()
+            .find(|finding| finding.path == "styles/common.wxss")
+            .expect("共享样式上的诊断");
+        assert!(finding.shared, "{path} 也要标记共享");
+        assert_eq!(finding.affected_units, 2, "被两个页面引用");
+        assert_eq!(
+            job.shared_findings.len(),
+            1,
+            "{path} 的共享汇总应列出 common.wxss"
+        );
+        assert_eq!(job.shared_findings[0].path, "styles/common.wxss");
+        assert_eq!(job.shared_findings[0].count, 1);
+    }
 }
 
 /// `@import` 引入的样式（含传递闭包）同样属于引入它的页面。
@@ -390,7 +542,7 @@ fn imported_style_diagnostics_belong_to_the_page() {
     assert_eq!(unit.diagnostics.total, 1, "plan 要把样式命中算进单元");
 
     let (project, rel) = migrate::find_view(&projects, &unit.path).expect("view");
-    let job = migrate::job(project, rel, unit, &diagnostics, None);
+    let job = migrate::job(project, rel, &plan, unit, &diagnostics, None);
     assert_eq!(job.findings.len(), 1, "作业单要带上样式上的诊断");
     assert_eq!(job.findings[0].rule, "skyline/unsupported-property");
     assert_eq!(job.findings[0].path, "styles/common.wxss");
@@ -453,7 +605,7 @@ fn job_for_page(root: &Path) -> migrate::Job {
         .expect("page unit");
     let (project, rel) = migrate::find_view(&projects, &unit.path).expect("view");
     let diagnostics = migrate::diagnostics_for(&plan, unit, &report);
-    migrate::job(project, rel, unit, &diagnostics, None)
+    migrate::job(project, rel, &plan, unit, &diagnostics, None)
 }
 
 /// 元素整体下移一行，诊断 id 不变（行列只用于展示）。

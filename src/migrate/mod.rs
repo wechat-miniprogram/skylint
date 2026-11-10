@@ -12,8 +12,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxss::WxssRule;
+use crate::input::wxss::{WxssDoc, WxssRule};
 use crate::inspect::{Facts, LayoutFacts, LoadedDoc, Renderer, UnitKind};
+use crate::matcher::{Dialect, Tree, Tri};
 use crate::project::{Project, Scope, UnitFiles};
 use crate::report::Report;
 use crate::rules::wxml::Reach;
@@ -119,6 +120,8 @@ pub struct Job {
     pub baseline: Option<BaselineRef>,
     pub unit: JobUnit,
     pub findings: Vec<Finding>,
+    /// 本作业单里必须单独审批的共享文件改动汇总：`shared: true` 的 finding 按文件计数。
+    pub shared_findings: Vec<SharedFinding>,
     pub acceptance: Vec<Acceptance>,
     pub workarounds: Vec<Workaround>,
     /// 重试时由 runner 追加；生成时为空。
@@ -160,6 +163,52 @@ pub struct Finding {
     pub facts: Option<FindingFacts>,
     pub preconditions: Vec<&'static str>,
     pub counterexamples: Vec<&'static str>,
+
+    // ---- 样式诊断的定位上下文（非样式诊断全部为 `null` / 空）。
+    /// 所在选择器原文；`@media` 等 at-rule 内的声明给的是**内层**选择器。
+    pub selector: Option<String>,
+    /// 声明属性名（小写）；选择器级诊断或非样式诊断为 `null`。
+    pub property: Option<String>,
+    /// 诊断所在规则块的全部声明，用于看到「改这条要顺手改哪些」。
+    pub declarations: Vec<Declaration>,
+    /// 本单元内该选择器命中的 WXML 节点，最多 5 条。
+    pub matches: Vec<MatchNode>,
+    /// 命中节点总数（`matches` 截断前）。
+    pub match_count: usize,
+
+    // ---- 共享文件标记。
+    /// 该文件被 ≥2 个单元引用：改它会影响其他单元的验收范围。
+    pub shared: bool,
+    /// 引用该文件的单元数；`shared` 为 `false` 时为 0。
+    pub affected_units: usize,
+}
+
+/// 共享文件汇总：这份作业单里有几条诊断落在同一个跨单元文件上。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedFinding {
+    pub path: String,
+    pub count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Declaration {
+    pub property: String,
+    pub value: String,
+    pub line: u32,
+    pub column: u32,
+}
+
+/// 选择器在本单元 WXML 里的一个命中节点。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchNode {
+    /// 命中的 WXML 文件（报告路径）。
+    pub path: String,
+    pub line: u32,
+    pub column: u32,
+    pub tag: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -527,6 +576,7 @@ fn kind_str(kind: &UnitKind) -> &'static str {
 pub fn job(
     project: &Project,
     rel_wxml: &str,
+    plan: &Plan,
     plan_unit: &PlanUnit,
     diagnostics: &[&Diagnostic],
     baseline: Option<BaselineRef>,
@@ -588,12 +638,26 @@ pub fn job(
         let rel = strip_prefix(project, path);
         let doc = rel.and_then(|rel| LoadedDoc::load(project, rel));
         for &diagnostic in group {
-            findings.push(finding(project, doc.as_ref(), diagnostic));
+            findings.push(finding(project, plan, plan_unit, doc.as_ref(), diagnostic));
         }
     }
     findings.sort_by(|a, b| {
         (a.span.line, a.span.column, &a.rule).cmp(&(b.span.line, b.span.column, &b.rule))
     });
+
+    let mut shared_counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for finding in &findings {
+        if finding.shared {
+            *shared_counts.entry(finding.path.as_str()).or_default() += 1;
+        }
+    }
+    let shared_findings = shared_counts
+        .into_iter()
+        .map(|(path, count)| SharedFinding {
+            path: path.to_string(),
+            count,
+        })
+        .collect();
 
     Job {
         schema_version: SCHEMA_VERSION,
@@ -601,6 +665,7 @@ pub fn job(
         baseline,
         unit,
         findings,
+        shared_findings,
         acceptance: vec![
             Acceptance {
                 id: "l0-static",
@@ -630,7 +695,13 @@ pub fn job(
     }
 }
 
-fn finding(project: &Project, doc: Option<&LoadedDoc>, diagnostic: &Diagnostic) -> Finding {
+fn finding(
+    project: &Project,
+    plan: &Plan,
+    unit: &PlanUnit,
+    doc: Option<&LoadedDoc>,
+    diagnostic: &Diagnostic,
+) -> Finding {
     let guidance = guidance_for(&diagnostic.rule);
     let span = Span {
         line: diagnostic.line,
@@ -659,6 +730,14 @@ fn finding(project: &Project, doc: Option<&LoadedDoc>, diagnostic: &Diagnostic) 
 
     // id 与 `identify()` 用同一份计算，避免作业单和门禁对不上。
     let (id, anchor) = identify_one(project, doc, diagnostic);
+    let style = style_view(project, unit, diagnostic);
+
+    let affected_units = plan
+        .units
+        .iter()
+        .filter(|other| other.kind != "shared" && owns(other, &diagnostic.path))
+        .count();
+    let shared = affected_units >= 2;
 
     Finding {
         id,
@@ -672,7 +751,141 @@ fn finding(project: &Project, doc: Option<&LoadedDoc>, diagnostic: &Diagnostic) 
         facts: resolved,
         preconditions: guidance.preconditions.to_vec(),
         counterexamples: guidance.counterexamples.to_vec(),
+        selector: style.selector,
+        property: style.property,
+        declarations: style.declarations,
+        matches: style.matches,
+        match_count: style.match_count,
+        shared,
+        affected_units: if shared { affected_units } else { 0 },
     }
+}
+
+/// 样式诊断的定位上下文。非样式诊断（`.js` / `.json` / WXML）或解析失败时为空。
+#[derive(Default)]
+struct StyleView {
+    selector: Option<String>,
+    property: Option<String>,
+    declarations: Vec<Declaration>,
+    matches: Vec<MatchNode>,
+    match_count: usize,
+}
+
+struct StyleContext<'a> {
+    doc: &'a WxssDoc,
+    rule: &'a WxssRule,
+    declaration: Option<&'a crate::input::wxss::WxssDeclaration>,
+    selector: Option<String>,
+}
+
+fn style_view(project: &Project, unit: &PlanUnit, diagnostic: &Diagnostic) -> StyleView {
+    let Some(context) = style_context(project, diagnostic) else {
+        return StyleView::default();
+    };
+    let declarations = context
+        .rule
+        .declarations
+        .iter()
+        .map(|declaration| {
+            let (line, column) = context.doc.position(declaration.offset);
+            Declaration {
+                property: declaration.name.to_ascii_lowercase(),
+                value: declaration.value.clone(),
+                line,
+                column,
+            }
+        })
+        .collect();
+    let (matches, match_count) = context
+        .selector
+        .as_deref()
+        .map(|selector| style_matches(project, unit, selector))
+        .unwrap_or_default();
+    StyleView {
+        selector: context.selector,
+        property: context
+            .declaration
+            .map(|declaration| declaration.name.to_ascii_lowercase()),
+        declarations,
+        matches,
+        match_count,
+    }
+}
+
+/// 诊断落在哪条规则上：声明命中优先，其次选择器自身；at-rule prelude 不返回。
+fn style_context<'a>(project: &'a Project, diagnostic: &Diagnostic) -> Option<StyleContext<'a>> {
+    let rel = strip_prefix(project, &diagnostic.path)?;
+    let doc = project
+        .styles
+        .iter()
+        .map(|sheet| &sheet.doc)
+        .find(|doc| doc.path() == rel)?;
+    let offset = doc.offset(diagnostic.line, diagnostic.column);
+
+    for rule in &doc.rules {
+        for declaration in &rule.declarations {
+            if declaration.offset <= offset && offset <= declaration.value_end() {
+                let selector = selector_text(rule);
+                return Some(StyleContext {
+                    doc,
+                    rule,
+                    declaration: Some(declaration),
+                    selector: (!selector.is_empty()).then_some(selector),
+                });
+            }
+        }
+    }
+
+    let mut best: Option<(&WxssRule, &crate::input::wxss::WxssSelector)> = None;
+    for rule in &doc.rules {
+        for selector in &rule.selectors {
+            if selector.offset <= offset && offset <= selector.offset + selector.text.len() {
+                best = Some(match best {
+                    Some((_, previous)) if previous.offset > selector.offset => (rule, previous),
+                    _ => (rule, selector),
+                });
+            }
+        }
+    }
+    let (rule, selector) = best?;
+    Some(StyleContext {
+        doc,
+        rule,
+        declaration: None,
+        selector: Some(selector.text.clone()),
+    })
+}
+
+/// 选择器在本单元 WXML 里的命中节点（只看 `unit.files`，不跨单元）。
+fn style_matches(project: &Project, unit: &PlanUnit, selector: &str) -> (Vec<MatchNode>, usize) {
+    let mut all = Vec::new();
+    for file in &unit.files {
+        if !file.ends_with(".wxml") {
+            continue;
+        }
+        let Some(rel) = strip_prefix(project, file) else {
+            continue;
+        };
+        let Some(loaded) = LoadedDoc::load(project, rel) else {
+            continue;
+        };
+        let tree = Tree::new(&loaded.doc);
+        for element in loaded.doc.elements() {
+            if tree.matches(element, selector, Dialect::WebView) != Tri::Yes {
+                continue;
+            }
+            let (line, column) = loaded.doc.position(element.start);
+            all.push(MatchNode {
+                path: file.clone(),
+                line,
+                column,
+                tag: element.tag.clone(),
+            });
+        }
+    }
+    let total = all.len();
+    all.truncate(5);
+    (all, total)
 }
 
 fn anchor_for(facts: &Facts<'_>, element: &crate::input::wxml::WxmlElement) -> Anchor {
