@@ -260,6 +260,132 @@ fn shared_unit_collects_diagnostics_outside_any_unit() {
     assert_eq!(page.diagnostics.total, 0);
 }
 
+/// `<include>` 引用的模板属于真正引用它的页面：模板上的诊断要进 plan 的
+/// `files` 与 job 的 `findings`，不能落在 `unit:shared`。
+#[test]
+fn included_template_diagnostics_belong_to_the_page() {
+    let f = Fixture::new("include-owner");
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/"}"#,
+    )
+    .write(
+        "miniprogram/app.json",
+        r#"{"pages":["pages/index/index","pages/other/other"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true,"defaultContentBox":true}}}"#,
+    )
+    .write("miniprogram/pages/index/index.json", r#"{}"#)
+    .write(
+        "miniprogram/pages/index/index.wxml",
+        r#"<include src="../../tpl/item"/>"#,
+    )
+    .write("miniprogram/pages/index/index.js", "Page({})")
+    .write("miniprogram/pages/other/other.json", r#"{}"#)
+    .write(
+        "miniprogram/pages/other/other.wxml",
+        r#"<include src="../../tpl/item"/>"#,
+    )
+    .write("miniprogram/pages/other/other.js", "Page({})")
+    .write(
+        "miniprogram/tpl/item.wxml",
+        r#"<view class="item">hello <view class="inner">x</view></view>"#,
+    );
+
+    let (projects, report) = analyse(f.path());
+    let plan = migrate::plan(&projects, &report, None);
+    let unit = plan
+        .units
+        .iter()
+        .find(|unit| unit.path == "pages/index/index.wxml")
+        .expect("page unit");
+    assert!(
+        unit.files.iter().any(|file| file == "tpl/item.wxml"),
+        "被 include 的模板要进单元 files：{:?}",
+        unit.files
+    );
+    let other = plan
+        .units
+        .iter()
+        .find(|unit| unit.path == "pages/other/other.wxml")
+        .expect("second page unit");
+    assert!(
+        other.files.iter().any(|file| file == "tpl/item.wxml"),
+        "同一模板被多个页面引用时同时属于它们"
+    );
+
+    let diagnostics = migrate::diagnostics_for(&plan, unit, &report);
+    let template: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.path == "tpl/item.wxml")
+        .collect();
+    assert_eq!(template.len(), 1, "模板上只有一条 no-inline-text");
+
+    let (project, rel) = migrate::find_view(&projects, &unit.path).expect("view");
+    let job = migrate::job(project, rel, unit, &diagnostics, None);
+    assert!(
+        job.findings
+            .iter()
+            .any(|finding| finding.rule == template[0].rule),
+        "作业单要带上模板上的诊断：{:?}",
+        job.findings.iter().map(|f| &f.rule).collect::<Vec<_>>()
+    );
+    assert!(
+        !plan
+            .units
+            .iter()
+            .filter(|unit| unit.kind == "shared")
+            .any(|unit| unit.diagnostics.by_rule.contains_key(&template[0].rule)),
+        "模板诊断不能落进 unit:shared"
+    );
+}
+
+/// `@import` 引入的样式（含传递闭包）同样属于引入它的页面。
+#[test]
+fn imported_style_diagnostics_belong_to_the_page() {
+    let f = Fixture::new("import-owner");
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/"}"#,
+    )
+    .write(
+        "miniprogram/app.json",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+    )
+    .write("miniprogram/pages/index/index.json", r#"{}"#)
+    .write("miniprogram/pages/index/index.wxml", r#"<view class="x"/>"#)
+    .write("miniprogram/pages/index/index.js", "Page({})")
+    .write(
+        "miniprogram/pages/index/index.wxss",
+        "@import \"../../styles/common.wxss\";\n",
+    )
+    .write("miniprogram/styles/common.wxss", ".x { float: left; }\n");
+
+    let (projects, report) = analyse(f.path());
+    let plan = migrate::plan(&projects, &report, None);
+    let unit = plan
+        .units
+        .iter()
+        .find(|unit| unit.path == "pages/index/index.wxml")
+        .expect("page unit");
+    assert!(
+        unit.files.iter().any(|file| file == "styles/common.wxss"),
+        "被 @import 的样式要进单元 files：{:?}",
+        unit.files
+    );
+
+    let diagnostics = migrate::diagnostics_for(&plan, unit, &report);
+    let style: Vec<_> = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.path == "styles/common.wxss")
+        .collect();
+    assert_eq!(style.len(), 1, "样式上只有一条 unsupported-property");
+    assert_eq!(unit.diagnostics.total, 1, "plan 要把样式命中算进单元");
+
+    let (project, rel) = migrate::find_view(&projects, &unit.path).expect("view");
+    let job = migrate::job(project, rel, unit, &diagnostics, None);
+    assert_eq!(job.findings.len(), 1, "作业单要带上样式上的诊断");
+    assert_eq!(job.findings[0].rule, "skyline/unsupported-property");
+}
+
 fn inline_text_fixture(name: &str, wxss: &str) -> Fixture {
     let f = Fixture::new(name);
     f.write(

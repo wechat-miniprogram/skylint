@@ -31,7 +31,9 @@ skylint migration <COMMAND>        # 迁移，Agent 调用
 
 ## 2. 单元
 
-一个单元 = 一份 WXML 视图（页面或组件）及其同名资源。
+一个单元 = 一份 WXML 视图（页面或组件）及其同名资源，外加它**实际引用**的
+模板与样式：`<import>` / `<include>` 的模板、`@import` 的样式（均含传递闭包）。
+同一文件被多个单元引用时同时属于多个单元（诊断在各自的 `job` 里各出现一次）。
 
 | kind | id | path |
 |---|---|---|
@@ -47,9 +49,9 @@ skylint migration <COMMAND>        # 迁移，Agent 调用
 runner 拿它去做 `git diff` / `checkout`。两者弄混，在「工程根不是 `miniprogramRoot`」的
 所有真实工程上都会静默失效（改动看不见、回滚不回滚、越界检查永远通过）。
 
-**`shared` 伪单元**承载所有不属于任何单元文件的诊断（`app.wxss`、共享的
-`weui.wxss`、`utils/*.js` 等）。它的改动会影响多个单元，因此必须单独审批，
-不允许塞进任何组件的 job。
+**`shared` 伪单元**承载所有不属于任何单元文件的诊断（`app.json` / `app.wxss`、
+`project.private.config.json`、`utils/*.js` 等全工程性文件）。它的改动会影响多个
+单元，因此必须单独审批，不允许塞进任何组件的 job。
 
 ### 2.1 第三方文件：`.skylint/config.json`
 
@@ -119,6 +121,10 @@ runner 拿它去做 `git diff` / `checkout`。两者弄混，在「工程根不�
 - `diagnostics` ← `Report` 按 `path` 归到单元
 - `batch` ← `Project::deps` 的依赖深度
 - `ruleFamilies` ← 规则 id 的静态分类（`structure` / `stacking` / `script` / `visual`）
+
+`files` 是诊断归属的唯一依据：除四件套外，还包含该单元 `@import` 的样式与
+`<import>` / `<include>` 的模板（含传递闭包）。因此诊断总数可能大于
+`summary.diagnostics`——同一文件被多个单元引用时，每个单元各算一份。
 
 同一份工程跑两次 `plan`，除 `generator.commit` 外字节一致（可提交、可 diff）。
 

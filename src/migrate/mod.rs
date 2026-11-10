@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::diag::{Diagnostic, Severity};
 use crate::inspect::{Facts, LayoutFacts, LoadedDoc, Renderer, UnitKind};
-use crate::project::Project;
+use crate::project::{Project, Scope, UnitFiles};
 use crate::report::Report;
 use crate::rules::wxml::Reach;
 
@@ -78,7 +78,8 @@ pub struct PlanUnit {
     /// 插件视图下又带 `pluginRoot/` 前缀——两种视图不一致。runner 要拿它去
     /// `git diff` / `checkout`，必须有一份不带歧义的路径，所以这里算好。
     pub fs_path: String,
-    /// 这个单元的全部文件（报告路径）：wxml / 样式 / 脚本 / json。
+    /// 这个单元的全部文件（报告路径）：wxml / 样式 / 脚本 / json，以及它实际
+    /// 引用（`<import>` / `<include>` / `@import`，含传递闭包）的模板与样式。
     ///
     /// 诊断归属按它判，而不是按「同名的某几个后缀」——样式源可以是 `.scss` /
     /// `.less`，枚举后缀会静默丢诊断（作业单里 findings 为空）。
@@ -245,7 +246,12 @@ pub fn plan(views: &[Project], report: &Report, baseline: Option<BaselineRef>) -
                     rel: wxml.to_string(),
                     kind: "page",
                     dep_key: page.route.clone(),
-                    files: unit_files(prefix, &page.files),
+                    files: unit_files(
+                        project,
+                        prefix,
+                        &Scope::Page(page.route.clone()),
+                        &page.files,
+                    ),
                 });
             }
         }
@@ -258,33 +264,36 @@ pub fn plan(views: &[Project], report: &Report, baseline: Option<BaselineRef>) -
                     rel: wxml.to_string(),
                     kind: "component",
                     dep_key: component.path.clone(),
-                    files: unit_files(prefix, &component.files),
+                    files: unit_files(
+                        project,
+                        prefix,
+                        &Scope::Component(component.path.clone()),
+                        &component.files,
+                    ),
                 });
             }
         }
     }
 
-    // 诊断归属：先按单元文件，剩下的进 shared。
-    let mut owner: BTreeMap<&str, usize> = BTreeMap::new();
+    // 诊断归属：先按单元文件，剩下的进 shared。同一文件被多个单元引用时
+    // 每个单元都算一份（作业单各拿一份），summary 仍按报告总数对账。
+    let mut owners: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     for (idx, seed) in seeds.iter().enumerate() {
         for file in &seed.files {
-            owner.insert(file.as_str(), idx);
+            owners.entry(file.as_str()).or_default().push(idx);
         }
     }
     let mut counts: Vec<DiagCounts> = vec![DiagCounts::default(); seeds.len()];
     let mut shared = DiagCounts::default();
     for diagnostic in &report.diagnostics {
-        let slot = match owner.get(diagnostic.path.as_str()) {
-            Some(&idx) => &mut counts[idx],
-            None => &mut shared,
-        };
-        slot.total += 1;
-        match diagnostic.severity {
-            Severity::Error => slot.error += 1,
-            Severity::Warning => slot.warning += 1,
-            Severity::Info => slot.info += 1,
+        match owners.get(diagnostic.path.as_str()) {
+            Some(idxs) => {
+                for &idx in idxs {
+                    count_diagnostic(&mut counts[idx], diagnostic);
+                }
+            }
+            None => count_diagnostic(&mut shared, diagnostic),
         }
-        *slot.by_rule.entry(diagnostic.rule.clone()).or_default() += 1;
     }
 
     let depths = dependency_depths(views, &seeds);
@@ -384,12 +393,44 @@ fn fs_path(project: &Project, rel: &str) -> String {
         .unwrap_or_else(|_| rel.to_string())
 }
 
-fn unit_files(prefix: &str, files: &crate::project::UnitFiles) -> Vec<String> {
-    [&files.wxml, &files.wxss, &files.js, &files.json]
+fn unit_files(project: &Project, prefix: &str, scope: &Scope, files: &UnitFiles) -> Vec<String> {
+    let mut out: Vec<String> = [&files.wxml, &files.wxss, &files.js, &files.json]
         .into_iter()
         .flatten()
         .map(|file| format!("{prefix}{file}"))
-        .collect()
+        .collect();
+
+    // 单元实际引用（含传递闭包）的样式与模板：它们不是四件套，但诊断必须
+    // 跟着作业单走，否则 agent 看不到这些文件上的坑。
+    let referenced: BTreeSet<String> = project
+        .styles
+        .iter()
+        .filter(|sheet| sheet.scopes.contains(scope))
+        .map(|sheet| format!("{prefix}{}", sheet.doc.path()))
+        .chain(
+            project
+                .template_scopes
+                .iter()
+                .filter(|(_, scopes)| scopes.contains(scope))
+                .map(|(path, _)| format!("{prefix}{path}")),
+        )
+        .collect();
+    for file in referenced {
+        if !out.contains(&file) {
+            out.push(file);
+        }
+    }
+    out
+}
+
+fn count_diagnostic(slot: &mut DiagCounts, diagnostic: &Diagnostic) {
+    slot.total += 1;
+    match diagnostic.severity {
+        Severity::Error => slot.error += 1,
+        Severity::Warning => slot.warning += 1,
+        Severity::Info => slot.info += 1,
+    }
+    *slot.by_rule.entry(diagnostic.rule.clone()).or_default() += 1;
 }
 
 /// 依赖深度：`0` = 不引用其他组件。环按 0 处理（组件图不该有环）。
@@ -857,7 +898,7 @@ pub fn diagnostics_for<'a>(
         .collect()
 }
 
-/// 诊断路径是否属于这个单元（同名资源 + 常见扩展名）。
+/// 诊断路径是否属于这个单元（四件套 + 实际引用的模板 / 样式）。
 fn owns(unit: &PlanUnit, path: &str) -> bool {
     unit.files.iter().any(|file| file == path)
 }

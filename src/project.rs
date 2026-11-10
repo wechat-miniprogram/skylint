@@ -176,9 +176,13 @@ pub struct Project {
     pub scripts: Vec<JsFile>,
     /// 被 `<import>` / `<include>` 引入的模板（项目相对，去重排序）。
     ///
-    /// 模板不属于任何单元：它的样式作用域不可知，但单文件结构规则（不支持组件、
-    /// 内联文本等）仍应检查它。
+    /// 模板没有自己的四件套，但单文件结构规则（不支持组件、内联文本等）仍应检查它。
     pub template_files: Vec<String>,
+    /// 模板文件 → 实际引用它的单元（`<import>` / `<include>` 传递闭包）。
+    ///
+    /// key 与 [`Self::template_files`] 同源；同一模板被多个单元引用时同时出现。
+    /// 诊断归属靠它把模板上的命中落到具体单元，而不是伪单元 `unit:shared`。
+    pub template_scopes: BTreeMap<String, Vec<Scope>>,
     /// WXML 路径 → 该文件作用域里能确定取值的绑定。
     ///
     /// 来源只有两处静态可证的东西：单元脚本的 `data` / `properties` 字面量（没有被
@@ -619,6 +623,7 @@ impl Project {
             styles: Vec::new(),
             scripts: Vec::new(),
             template_files: Vec::new(),
+            template_scopes: BTreeMap::new(),
             warnings: Vec::new(),
             closure: OnceCell::new(),
             block_cache: RefCell::new(HashMap::new()),
@@ -939,7 +944,8 @@ impl Loaded {
             &mut warnings,
         );
         let scripts = collect_scripts(fs, base, exts, &pages, &components);
-        let template_files = collect_template_files(fs, base, &pages, &components);
+        let (template_files, template_scopes) =
+            collect_template_files(fs, base, &pages, &components);
         let envs = collect_envs(
             fs,
             base,
@@ -999,6 +1005,7 @@ impl Loaded {
             styles,
             scripts,
             template_files,
+            template_scopes,
             warnings,
             closure: OnceCell::new(),
             block_cache: RefCell::new(HashMap::new()),
@@ -1679,44 +1686,73 @@ fn is_source_script(path: &str) -> bool {
 
 /// 模板闭包：从所有单元的 WXML 出发，沿 `<import>` / `<include>` 递归收集。
 ///
+/// 返回扁平文件清单（去重排序）与「模板 → 引用它的单元」。同一个模板被多个
+/// 单元引用时记录全部引入方；模板还可以再引用模板，闭包按 `(path, scope)` 去重。
 /// 只保留 `fs.exists` 校验通过的路径；`src` 由编译器剥掉了 `.wxml` 后缀，这里按
-/// 「无扩展名就补 `.wxml`」还原。模板可以再引用模板，闭包按 visited 去重。
+/// 「无扩展名就补 `.wxml`」还原。
 fn collect_template_files(
     fs: &LocalFs,
     miniprogram_root: &str,
     pages: &[PageUnit],
     components: &[ComponentUnit],
-) -> Vec<String> {
-    let mut queue: Vec<String> = pages
+) -> (Vec<String>, BTreeMap<String, Vec<Scope>>) {
+    let mut queue: Vec<(String, Scope)> = pages
         .iter()
-        .filter_map(|page| page.files.wxml.clone())
-        .chain(
-            components
-                .iter()
-                .filter_map(|component| component.files.wxml.clone()),
-        )
+        .filter_map(|page| {
+            page.files
+                .wxml
+                .clone()
+                .map(|p| (p, Scope::Page(page.route.clone())))
+        })
+        .chain(components.iter().filter_map(|component| {
+            component
+                .files
+                .wxml
+                .clone()
+                .map(|p| (p, Scope::Component(component.path.clone())))
+        }))
         .collect();
-    let mut seen: HashSet<String> = queue.iter().cloned().collect();
-    let mut out = Vec::new();
+    // 单元自己的 WXML 是闭包起点，不算「被引入的模板」；即使被别的单元引用，
+    // 它已经作为独立单元存在，不需要再标成 `fragment`。
+    let roots: BTreeSet<String> = queue.iter().map(|(path, _)| path.clone()).collect();
+    let mut scopes: BTreeMap<String, Vec<Scope>> = BTreeMap::new();
+    let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut out = BTreeSet::new();
 
-    while let Some(path) = queue.pop() {
-        let source = fs.read_file(miniprogram_root, &path).unwrap_or_default();
-        let Ok(doc) = wxml::parse(&path, &source, &Env::default()) else {
+    while let Some((path, scope)) = queue.pop() {
+        let seen = scopes.entry(path.clone()).or_default();
+        if seen.contains(&scope) {
             continue;
-        };
-        for src in doc.template_refs() {
-            let Some(target) = resolve_template_ref(fs, miniprogram_root, &path, src) else {
-                continue;
+        }
+        seen.push(scope.clone());
+
+        // 每个文件只解析一次；解析失败当作没有出边。
+        let targets = edges.entry(path.clone()).or_insert_with(|| {
+            let source = fs.read_file(miniprogram_root, &path).unwrap_or_default();
+            let Ok(doc) = wxml::parse(&path, &source, &Env::default()) else {
+                return Vec::new();
             };
-            if seen.insert(target.clone()) {
-                out.push(target.clone());
-                queue.push(target);
+            doc.template_refs()
+                .iter()
+                .filter_map(|src| resolve_template_ref(fs, miniprogram_root, &path, src))
+                .collect()
+        });
+        for target in targets {
+            if roots.contains(target) {
+                continue;
             }
+            out.insert(target.clone());
+            queue.push((target.clone(), scope.clone()));
         }
     }
 
-    out.sort();
-    out
+    // 单元自己的 WXML 只是闭包起点，不是「被引入的模板」。
+    scopes.retain(|path, _| out.contains(path));
+    for scopes in scopes.values_mut() {
+        scopes.sort();
+    }
+
+    (out.into_iter().collect(), scopes)
 }
 
 /// `<import src>` / `<include src>` 的值 → 项目相对路径（必须是真实存在的文件）。
