@@ -20,7 +20,6 @@
 //!   「对每个元素算全属性」的循环；
 //! - 返回的都是**拥有所有权的快照**，不把内部借用漏出去。
 
-use std::cell::OnceCell;
 use std::collections::HashSet;
 
 use serde::Serialize;
@@ -30,7 +29,6 @@ use crate::input::wxml::{WxmlDoc, WxmlElement};
 use crate::matcher::Tree;
 use crate::project::{JsFile, Project, Scope, StyleIsolation};
 use crate::rules::wxml::{self, Reach};
-use crate::wxml_graph::WxmlGraph;
 
 /// 一份已解析的 WXML：事实查询要在它上面建索引，所以由调用方持有、`Facts` 借用。
 pub struct LoadedDoc {
@@ -318,7 +316,6 @@ pub struct Facts<'a> {
     doc: &'a WxmlDoc,
     tree: Tree<'a>,
     elements: Vec<&'a WxmlElement>,
-    graph: OnceCell<WxmlGraph>,
     scope: Option<Scope>,
 }
 
@@ -330,7 +327,6 @@ impl<'a> Facts<'a> {
             doc,
             tree: Tree::new(doc),
             elements,
-            graph: OnceCell::new(),
             scope: project.scope_of(doc.path()).clone(),
         }
     }
@@ -360,7 +356,7 @@ impl<'a> Facts<'a> {
 
     /// 运行时（逻辑树）祖先，近 → 远。
     pub fn ancestors(&self, element: &WxmlElement) -> Ancestors {
-        let graph = self.graph.get_or_init(|| WxmlGraph::new(self.project));
+        let graph = self.project.graph();
         let chain = graph.ancestors(self.doc.path(), element);
         Ancestors {
             nodes: chain
@@ -393,7 +389,7 @@ impl<'a> Facts<'a> {
     ///
     /// `max_depth` 至少按 1 算；环（A 用 B、B 又用 A）不会无限展开。
     pub fn usages_recursive(&self, max_depth: u32) -> Vec<UsageView> {
-        let graph = self.graph.get_or_init(|| WxmlGraph::new(self.project));
+        let graph = self.project.graph();
         graph
             .component_usages_recursive(self.doc.path(), max_depth.max(1))
             .into_iter()
@@ -529,7 +525,7 @@ impl<'a> Facts<'a> {
 
     /// 这份文档在 Skyline 下的可达性。
     pub fn reach(&self) -> Reach {
-        let graph = self.graph.get_or_init(|| WxmlGraph::new(self.project));
+        let graph = self.project.graph();
         for page in &self.project.pages {
             let Some(wxml) = page.files.wxml.as_deref() else {
                 continue;
@@ -594,7 +590,7 @@ impl<'a> Facts<'a> {
             _ => Renderer::Unknown,
         };
 
-        let graph = self.graph.get_or_init(|| WxmlGraph::new(self.project));
+        let graph = self.project.graph();
         let (multiple_slots, virtual_host) = graph.component_options(path);
         let default_display_block = self.scope.clone().map_or_else(
             || self.project.app_display_block(),

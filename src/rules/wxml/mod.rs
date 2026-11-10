@@ -55,7 +55,6 @@ use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::matcher::{Dialect, Tree, Tri};
 use crate::project::{Project, Scope, StyleSheet};
-use crate::wxml_graph::WxmlGraph;
 
 /// 页面与组件的 WXML + 被 import / include 的模板，按路径去重。
 ///
@@ -120,7 +119,7 @@ pub(crate) struct ElementDoc {
 /// `usingComponents` 声明算：声明了但没人用的组件不该被算成 Skyline 可达。同一份
 /// 组件被 Skyline 页面与 WebView 页面同时引用时按 Skyline 处理（只要有一处能渲染到）。
 pub(crate) fn element_docs(project: &Project) -> Vec<ElementDoc> {
-    let graph = WxmlGraph::new(project);
+    let graph = project.graph();
 
     let mut reach: HashMap<&str, Reach> = HashMap::new();
     for page in &project.pages {

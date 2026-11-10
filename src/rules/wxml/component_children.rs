@@ -168,19 +168,10 @@ impl Rule for ComponentChildren {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let graph = crate::wxml_graph::WxmlGraph::new(project);
+        let graph = project.graph();
         visit(project, |doc, out| {
             walk_skyline(doc, |element, ancestors| {
-                structure::check_element(
-                    ID,
-                    doc,
-                    element,
-                    ancestors,
-                    &graph,
-                    ROWS,
-                    doc.path(),
-                    out,
-                );
+                structure::check_element(ID, doc, element, ancestors, graph, ROWS, doc.path(), out);
             });
         })
     }

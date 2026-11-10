@@ -53,8 +53,8 @@ impl Rule for FixedZIndexInversion {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let graph = WxmlGraph::new(project);
-        let layers = collect_layers(project, &graph);
+        let graph = project.graph();
+        let layers = collect_layers(project, graph);
         if layers.len() < 2 {
             return Vec::new();
         }

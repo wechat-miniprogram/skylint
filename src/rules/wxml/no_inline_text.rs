@@ -36,11 +36,11 @@ impl Rule for NoInlineText {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let graph = WxmlGraph::new(project);
+        let graph = project.graph();
         visit(project, |doc, out| {
             let tree = Tree::new(doc);
             walk_skyline(doc, |element, _ancestors| {
-                check_element(project, &graph, doc, &tree, element, out);
+                check_element(project, graph, doc, &tree, element, out);
             });
         })
     }

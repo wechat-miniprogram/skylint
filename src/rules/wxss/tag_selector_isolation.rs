@@ -21,7 +21,7 @@ use crate::{Diagnostic, Severity};
 
 use super::visit_rules;
 use crate::matcher::{FlatNode, FlatSelector, flat_selector};
-use crate::wxml_graph::{AncestorRef, WxmlGraph};
+use crate::wxml_graph::AncestorRef;
 
 pub const ID: &str = "skyline/tag-selector-isolation";
 
@@ -70,7 +70,6 @@ impl crate::rules::Rule for TagSelectorIsolation {
         let mut hits: BTreeMap<(String, usize), Hit> = BTreeMap::new();
         let mut docs: HashMap<&str, Option<Rc<WxmlDoc>>> = HashMap::new();
         // 只有带组合符的选择器才需要渲染树；纯标签 / 纯 id 的单 compound 用不到它。
-        let graph: std::cell::OnceCell<WxmlGraph> = std::cell::OnceCell::new();
 
         visit_rules(project, |sheet, rule, _out| {
             let doc = &sheet.doc;
@@ -140,7 +139,7 @@ impl crate::rules::Rule for TagSelectorIsolation {
                         continue;
                     }
                     let Some((unit, foreign_tag)) =
-                        find_foreign(project, &graph, &foreign, &flat, &mut docs)
+                        find_foreign(project, &foreign, &flat, &mut docs)
                     else {
                         continue;
                     };
@@ -193,7 +192,7 @@ impl crate::rules::Rule for TagSelectorIsolation {
 /// 不需要路径，直接匹配主体。
 fn find_foreign<'a>(
     project: &'a Project,
-    graph: &std::cell::OnceCell<WxmlGraph>,
+
     units: &[&'a str],
     selector: &FlatSelector,
     docs: &mut HashMap<&'a str, Option<Rc<WxmlDoc>>>,
@@ -229,7 +228,7 @@ fn find_foreign<'a>(
                 continue;
             }
             let matched = selector.is_simple() || {
-                let graph = graph.get_or_init(|| WxmlGraph::new(project));
+                let graph = project.graph();
                 graph.ancestor_paths(wxml_path, element).iter().any(|path| {
                     let ancestors: Vec<FlatNode> = path.iter().map(ancestor_node).collect();
                     selector.matches(&node, &ancestors)

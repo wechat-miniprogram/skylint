@@ -19,7 +19,7 @@ use std::collections::HashSet;
 use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, Target};
-use crate::wxml_graph::{FlatElement, WxmlGraph};
+use crate::wxml_graph::FlatElement;
 
 use super::{ElementDoc, Reach, element_docs, walk_skyline};
 
@@ -48,7 +48,7 @@ impl Rule for ScrollGestureConflict {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let graph = WxmlGraph::new(project);
+        let graph = project.graph();
         let mut out = Vec::new();
         let mut reported = HashSet::new();
         for ElementDoc { doc, reach } in element_docs(project) {

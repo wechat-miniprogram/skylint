@@ -22,6 +22,7 @@ use crate::input::js::JsDoc;
 use crate::input::wxml;
 use crate::input::wxml::WxmlDoc;
 use crate::input::wxss::{self, ParseError, WxssDoc};
+use crate::wxml_graph::WxmlGraph;
 use crate::{Diagnostic, Severity};
 
 mod fs;
@@ -191,6 +192,9 @@ pub struct Project {
     closure: OnceCell<Closure>,
     /// [`Self::renders_as_block`] 的结果。纯函数，元素级规则会对同一 scope 反复询问。
     block_cache: RefCell<HashMap<Scope, bool>>,
+    /// 渲染树（`<slot>` 投影 + 组件边界）。建一次要遍历全部文档，
+    /// 规则与 Facts 都会问它，绝不能每次重算。
+    graph: OnceCell<WxmlGraph>,
     /// 解析过的 WXML 文档（key 的第二项：是否用空环境解析）。
     ///
     /// 规则是「每个文件 × 每条规则」地扫，不缓存的话同一份文档会被 glass-easel
@@ -458,6 +462,11 @@ impl Project {
         doc
     }
 
+    /// 渲染树，首次查询时建一次。
+    pub(crate) fn graph(&self) -> &WxmlGraph {
+        self.graph.get_or_init(|| WxmlGraph::new(self))
+    }
+
     pub fn renders_as_block(&self, scope: &Scope) -> bool {
         if let Some(hit) = self.block_cache.borrow().get(scope) {
             return *hit;
@@ -613,6 +622,7 @@ impl Project {
             warnings: Vec::new(),
             closure: OnceCell::new(),
             block_cache: RefCell::new(HashMap::new()),
+            graph: OnceCell::new(),
             doc_cache: RefCell::new(HashMap::new()),
         };
 
@@ -992,6 +1002,7 @@ impl Loaded {
             warnings,
             closure: OnceCell::new(),
             block_cache: RefCell::new(HashMap::new()),
+            graph: OnceCell::new(),
             doc_cache: RefCell::new(HashMap::new()),
         }
     }
