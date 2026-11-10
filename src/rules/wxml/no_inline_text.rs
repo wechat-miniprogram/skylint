@@ -218,6 +218,22 @@ mod tests {
         assert_eq!(diagnostics[0].end_column, 12);
     }
 
+    /// 裸文本 + **单个** `<text>` 兄弟（movie `_detail.wxml` 的「客服电话」行）。
+    /// 只有 1 个文本级元素，`inline-run` 不报；但它是「文本与元素混排」，本规则必须报。
+    #[test]
+    fn bare_text_and_single_text_sibling_is_reported() {
+        let fixture = Fixture::wxml(
+            "single-text-sibling",
+            r#"<view class="memo"> 客服电话：<text class="phone">1010-5335</text> </view>"#,
+        );
+        fixture.write(
+            "pages/index/index.wxss",
+            ".memo { padding: 30rpx 0; text-align: center; }",
+        );
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    }
+
     #[test]
     fn interpolation_and_text_child_mixed() {
         let diagnostics = check(&project("interp", "<view>{{a}}<text>b</text></view>"));

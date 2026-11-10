@@ -92,6 +92,7 @@ impl Registry {
             Box::new(wxml::TextHardBreakEllipsis),
             Box::new(wxml::InlineRun),
             Box::new(wxss::NoPseudo),
+            Box::new(wxss::PseudoInlineLayout),
             Box::new(wxss::BoxSizing),
             Box::new(wxss::FlexDirection),
             Box::new(wxss::FixedLayer),
