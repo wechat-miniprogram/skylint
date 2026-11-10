@@ -188,9 +188,17 @@ runner 拿它去做 `git diff` / `checkout`。两者弄混，在「工程根不�
         "handlers": []
       },
       "preconditions": ["…"],
-      "counterexamples": ["…"]
+      "counterexamples": ["…"],
+      "selector": null,
+      "property": null,
+      "declarations": [],
+      "matches": [],
+      "matchCount": 0,
+      "shared": false,
+      "affectedUnits": 0
     }
   ],
+  "sharedFindings": [],
   "acceptance": [
     { "id": "l0-static", "kind": "command",
       "run": "skylint migration verify {root} --unit {unit} --baseline {baseline} --json",
@@ -218,6 +226,7 @@ runner 拿它去做 `git diff` / `checkout`。两者弄混，在「工程根不�
 还会把它当上下文塞进去。
 
 非 WXML 的诊断（`.wxss` / `.js`）没有元素，`anchor` 与 `facts` 为 `null`。
+样式诊断的定位信息见 §4.4。
 
 ### 4.2 `id` 算法
 
@@ -264,6 +273,68 @@ id = "{rule}|{path}|{line}:{column}"
 `{root}` / `{unit}` / `{unitPath}` / `{baseline}` / `{job}` 由 runner 替换。
 `expect` 必须是机读判据（`exitCode` / `jsonPath` + `equals` / `threshold`），
 不接受自然语言。
+
+### 4.4 样式诊断的定位上下文
+
+样式 finding（`.wxss` / `.scss` / `.less`）额外带五个字段，让 agent 不必自己 grep
+就能回答「改哪个选择器、同块还有哪些声明、本单元命中谁」：
+
+```json
+{
+  "id": "skyline/unsupported-property|styles/common.wxss|.mt-pull-left|float|#0",
+  "path": "styles/common.wxss",
+  "selector": ".mt-pull-left",
+  "property": "float",
+  "declarations": [
+    { "property": "display", "value": "block", "line": 16, "column": 3 },
+    { "property": "float", "value": "left", "line": 17, "column": 3 }
+  ],
+  "matches": [
+    { "path": "pages/order/order.wxml", "line": 42, "column": 5, "tag": "view" }
+  ],
+  "matchCount": 1
+}
+```
+
+- `selector` 是诊断所在规则的完整选择器原文（逗号分隔时按源码顺序用 `, ` 连接）。
+  诊断在 `@media` 等 at-rule 内时，这里给的是**内层选择器**，不是 `@media` 的 prelude。
+- `property` 是声明属性名（小写）；选择器级诊断（如 `dead-selector`）没有属性，为 `null`。
+- `declarations` 是**整条规则块**的声明，顺序与源码一致。改 `float` 往往要顺手给
+  父级加 `flex`，所以必须能看到同块的其他声明。
+- `matches` 只扫 **`unit.files` 里的 WXML / 模板**，不跨单元：别的页面即使也有同名
+  选择器，也不会出现在这里。最多 5 条，`matchCount` 是截断前的总数。匹配统一走
+  `src/matcher`，与规则层同一套选择器判定。
+- 拿不到时（`.js` / `.json` 诊断、样式解析失败、at-rule prelude）为 `null` / 空数组；
+  **不要**把这些空值读成「没有命中」。
+
+### 4.5 共享文件（`shared`）
+
+一个文件被 ≥2 个单元引用时（典型是 `styles/common.wxss` 被多个页面 `@import`），
+它上面的每条 finding 都带：
+
+```json
+{ "shared": true, "affectedUnits": 13 }
+```
+
+`job.sharedFindings` 再按文件汇总本作业单里的共享改动：
+
+```json
+"sharedFindings": [{ "path": "styles/common.wxss", "count": 8 }]
+```
+
+**`shared: true` 的 finding 不属于本单元的验收范围。** 本单元的 `l0-static`
+只覆盖当前单元；改共享文件会同时影响 `affectedUnits` 个页面，必须单独提交、
+单独过门禁：
+
+- 不属于任何单元的文件（`app.json` 等）：`skylint migration verify <root> --unit unit:shared --baseline …`；
+- 被多个单元引用的文件（如 `styles/common.wxss`）：不带 `--unit` 跑全工程 verify，
+  或对每个受影响单元分别跑。`--unit unit:shared` 只包含前一类文件，不包含被单元
+  引用的共享文件。
+
+agent 可以只在报告里说明需要改什么，**不改**共享文件；是否改由人审批。
+
+非共享文件为 `shared: false` / `affectedUnits: 0`（文件只被当前单元引用时也是
+`false`，因为它的改动不会溢出到别的单元）。
 
 ## 5. `facts`
 

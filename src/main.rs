@@ -648,7 +648,14 @@ fn build_job(
 ) -> Option<migrate::Job> {
     let (project, rel) = migrate::find_view(projects, &unit.path)?;
     let diagnostics = migrate::diagnostics_for(plan, unit, report);
-    Some(migrate::job(project, rel, unit, &diagnostics, baseline))
+    Some(migrate::job(
+        project,
+        rel,
+        plan,
+        unit,
+        &diagnostics,
+        baseline,
+    ))
 }
 
 fn ledger_path(root: &Path) -> PathBuf {
