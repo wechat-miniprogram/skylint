@@ -44,6 +44,7 @@
 //! 静态不可知，带组合符的选择器也不下结论。
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::input::wxml::WxmlDoc;
 use crate::matcher::{self, Dialect, Tree, Tri};
@@ -74,7 +75,7 @@ impl Rule for DeadSelector {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
+        let mut docs: HashMap<String, Option<Rc<WxmlDoc>>> = HashMap::new();
         visit_rules(project, |sheet, rule, out| {
             // `@keyframes` 里的 `from` / `to` / 百分比不是选择器，匹配不到节点是必然的。
             if rule
@@ -158,7 +159,7 @@ fn dead(
     project: &Project,
     sheet: &StyleSheet,
     selector: &str,
-    docs: &mut HashMap<String, Option<WxmlDoc>>,
+    docs: &mut HashMap<String, Option<Rc<WxmlDoc>>>,
 ) -> Option<usize> {
     if selector.is_empty() {
         return None;

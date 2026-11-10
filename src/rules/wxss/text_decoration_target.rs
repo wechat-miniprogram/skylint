@@ -49,7 +49,7 @@ impl crate::rules::Rule for TextDecorationTarget {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let mut docs: HashMap<String, Option<wxml::WxmlDoc>> = HashMap::new();
+        let mut docs: HashMap<String, Option<std::rc::Rc<wxml::WxmlDoc>>> = HashMap::new();
 
         visit_matching_rules(project, |sheet, rule, out| {
             let doc = &sheet.doc;

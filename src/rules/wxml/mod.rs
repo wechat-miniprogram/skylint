@@ -47,12 +47,12 @@ pub use webview_text_truncation::TextTruncation;
 pub use webview_worklet_binding::WorkletBinding;
 
 use std::collections::{HashMap, HashSet};
-use std::fs;
+use std::rc::Rc;
 
 use glass_easel_template_compiler::parse::Position;
 
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxml::{self, WxmlDoc, WxmlElement, WxmlNode};
+use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::matcher::{Dialect, Tree, Tri};
 use crate::project::{Project, Scope, StyleSheet};
 use crate::wxml_graph::WxmlGraph;
@@ -106,7 +106,7 @@ impl Reach {
 
 /// 一份 WXML 文档与它在 Skyline 下的可达性。
 pub(crate) struct ElementDoc {
-    pub doc: WxmlDoc,
+    pub doc: Rc<WxmlDoc>,
     pub reach: Reach,
 }
 
@@ -169,22 +169,15 @@ pub(crate) fn element_docs(project: &Project) -> Vec<ElementDoc> {
         .collect()
 }
 
-pub(crate) fn load_doc(project: &Project, path: &str) -> Option<WxmlDoc> {
-    let source = fs::read_to_string(project.abs(path)).ok()?;
-    let empty = crate::input::env::Env::default();
-    let mut doc = wxml::parse(path, &source, project.env(path).unwrap_or(&empty)).ok()?;
-    doc.fragment = project.template_files.iter().any(|file| file == path);
-    Some(doc)
+pub(crate) fn load_doc(project: &Project, path: &str) -> Option<Rc<WxmlDoc>> {
+    project.cached_doc(path, false)
 }
 
 /// 用空常量环境解析：保留所有 `wx:if` 分支，用于「只数引用、不看可达」的检查。
 ///
 /// 位置与折叠后的文档完全一致（折叠只丢分支，不移动元素）。
-pub(crate) fn load_doc_unfolded(project: &Project, path: &str) -> Option<WxmlDoc> {
-    let source = fs::read_to_string(project.abs(path)).ok()?;
-    let mut doc = wxml::parse(path, &source, &crate::input::env::Env::default()).ok()?;
-    doc.fragment = project.template_files.iter().any(|file| file == path);
-    Some(doc)
+pub(crate) fn load_doc_unfolded(project: &Project, path: &str) -> Option<Rc<WxmlDoc>> {
+    project.cached_doc(path, true)
 }
 
 /// 遍历全部待检查的 WXML 文件（页面/组件单元 + 被 import/include 的模板）。

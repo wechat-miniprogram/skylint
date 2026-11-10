@@ -10,14 +10,17 @@
 //!   并把全局 `usingComponents` 摊进页面，那会抹掉「用户没写」和「继承来的」这个区别
 //!   ——而这恰是迁移检查要判断的。
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::cell::{OnceCell, RefCell};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use serde_json::{Map, Value};
 
 use crate::input::env::{Env, Lit};
 use crate::input::js::JsDoc;
 use crate::input::wxml;
+use crate::input::wxml::WxmlDoc;
 use crate::input::wxss::{self, ParseError, WxssDoc};
 use crate::{Diagnostic, Severity};
 
@@ -39,7 +42,7 @@ pub struct UnitFiles {
 }
 
 /// 一个单元（页面 / 组件）在样式图里的身份。
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Scope {
     /// `app.wxss`：对全部页面与组件生效。
     Global,
@@ -183,6 +186,26 @@ pub struct Project {
     pub envs: BTreeMap<String, Env>,
     /// 建图过程中发现的非阻断问题（如页面声明了但 wxml 缺失）。
     pub warnings: Vec<Diagnostic>,
+    /// 页面 ⇄ 组件闭包。跨文件规则会逐元素问「这个页面用了哪些组件 / 这个组件被
+    /// 哪些页面用到」，现算一次要遍历全部单元（本项目上就退化成平方级），必须缓存。
+    closure: OnceCell<Closure>,
+    /// [`Self::renders_as_block`] 的结果。纯函数，元素级规则会对同一 scope 反复询问。
+    block_cache: RefCell<HashMap<Scope, bool>>,
+    /// 解析过的 WXML 文档（key 的第二项：是否用空环境解析）。
+    ///
+    /// 规则是「每个文件 × 每条规则」地扫，不缓存的话同一份文档会被 glass-easel
+    /// 编译器重复解析几十次——大工程上这是首要不耗时项。
+    doc_cache: DocCache,
+}
+
+/// 解析缓存：key 的第二项是「是否用空环境解析」。
+type DocCache = RefCell<HashMap<(String, bool), Option<Rc<WxmlDoc>>>>;
+
+/// 组件闭包的正反向表，首次查询时建一次。
+#[derive(Default)]
+struct Closure {
+    page_components: HashMap<String, Vec<String>>,
+    component_pages: HashMap<String, Vec<String>>,
 }
 
 impl Project {
@@ -250,15 +273,40 @@ impl Project {
 
     /// 某个页面（含 app 级声明）**传递**用到的组件。
     pub fn page_components(&self, route: &str) -> Vec<&str> {
-        self.reachable(&[route, "app.json"])
-            .into_iter()
-            .filter_map(|unit| {
-                self.components
-                    .iter()
-                    .find(|c| c.path == unit)
-                    .map(|c| c.path.as_str())
-            })
-            .collect()
+        self.closure()
+            .page_components
+            .get(route)
+            .map(|components| components.iter().map(String::as_str).collect())
+            .unwrap_or_default()
+    }
+
+    /// 页面 ⇄ 组件闭包，首次查询时建一次：O(页面数 × 闭包大小)。
+    fn closure(&self) -> &Closure {
+        self.closure.get_or_init(|| {
+            let mut closure = Closure::default();
+            for page in &self.pages {
+                let components: Vec<String> = self
+                    .reachable(&[page.route.as_str(), "app.json"])
+                    .into_iter()
+                    .filter(|unit| {
+                        self.components
+                            .iter()
+                            .any(|component| &component.path == unit)
+                    })
+                    .collect();
+                for component in &components {
+                    closure
+                        .component_pages
+                        .entry(component.clone())
+                        .or_default()
+                        .push(page.route.clone());
+                }
+                closure
+                    .page_components
+                    .insert(page.route.clone(), components);
+            }
+            closure
+        })
     }
 
     /// 传递用到某个组件的页面。
@@ -287,11 +335,11 @@ impl Project {
     }
 
     pub fn component_pages(&self, path: &str) -> Vec<&str> {
-        self.pages
-            .iter()
-            .filter(|page| self.page_components(&page.route).contains(&path))
-            .map(|page| page.route.as_str())
-            .collect()
+        self.closure()
+            .component_pages
+            .get(path)
+            .map(|pages| pages.iter().map(String::as_str).collect())
+            .unwrap_or_default()
     }
 
     /// 生效的 `setting.<key>`：`project.private.config.json` 覆盖
@@ -387,7 +435,39 @@ impl Project {
             .map(|component| Scope::Component(component.path.clone()))
     }
 
+    /// 解析并缓存一份 WXML 文档；`unfolded` 用空环境保留全部分支。
+    pub(crate) fn cached_doc(&self, path: &str, unfolded: bool) -> Option<Rc<WxmlDoc>> {
+        if let Some(hit) = self.doc_cache.borrow().get(&(path.to_string(), unfolded)) {
+            return hit.clone();
+        }
+        let doc = (|| {
+            let source = std::fs::read_to_string(self.abs(path)).ok()?;
+            let empty = Env::default();
+            let env = if unfolded {
+                &empty
+            } else {
+                self.env(path).unwrap_or(&empty)
+            };
+            let mut doc = wxml::parse(path, &source, env).ok()?;
+            doc.fragment = self.template_files.iter().any(|file| file == path);
+            Some(Rc::new(doc))
+        })();
+        self.doc_cache
+            .borrow_mut()
+            .insert((path.to_string(), unfolded), doc.clone());
+        doc
+    }
+
     pub fn renders_as_block(&self, scope: &Scope) -> bool {
+        if let Some(hit) = self.block_cache.borrow().get(scope) {
+            return *hit;
+        }
+        let value = self.compute_renders_as_block(scope);
+        self.block_cache.borrow_mut().insert(scope.clone(), value);
+        value
+    }
+
+    fn compute_renders_as_block(&self, scope: &Scope) -> bool {
         let app = self.app_display_block();
         match scope {
             // 全局样式表对所有页面生效：每一页的有效值都是 block 才成立。
@@ -531,6 +611,9 @@ impl Project {
             scripts: Vec::new(),
             template_files: Vec::new(),
             warnings: Vec::new(),
+            closure: OnceCell::new(),
+            block_cache: RefCell::new(HashMap::new()),
+            doc_cache: RefCell::new(HashMap::new()),
         };
 
         match ext {
@@ -907,6 +990,9 @@ impl Loaded {
             scripts,
             template_files,
             warnings,
+            closure: OnceCell::new(),
+            block_cache: RefCell::new(HashMap::new()),
+            doc_cache: RefCell::new(HashMap::new()),
         }
     }
 }

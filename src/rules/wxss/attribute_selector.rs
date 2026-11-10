@@ -23,6 +23,7 @@
 //! 属性从未被写过时，WebView 也不会命中，两端都是死样式。
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::input::wxml::WxmlDoc;
 use crate::matcher::{Dialect, Tree, Tri, subject};
@@ -56,7 +57,7 @@ impl Rule for AttributeSelector {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let mut docs: HashMap<&str, Option<WxmlDoc>> = HashMap::new();
+        let mut docs: HashMap<&str, Option<Rc<WxmlDoc>>> = HashMap::new();
         visit_matching_rules(project, |sheet, rule, out| {
             if !renders_in_skyline(project, sheet) {
                 return;
@@ -146,7 +147,7 @@ fn first_divergence<'a>(
     project: &'a Project,
     sheet: &StyleSheet,
     selector: &str,
-    docs: &mut HashMap<&'a str, Option<WxmlDoc>>,
+    docs: &mut HashMap<&'a str, Option<Rc<WxmlDoc>>>,
 ) -> Option<(Divergence, String, String)> {
     for unit in candidate_units(project, sheet) {
         let Some(doc) = docs

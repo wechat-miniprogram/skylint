@@ -10,6 +10,7 @@
 //! **别的单元**的节点。WebView 下这层 DOM 是扁平的、能命中；Skyline 下静默不再命中。
 
 use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 
 use serde_json::{Map, Value};
 
@@ -67,7 +68,7 @@ impl crate::rules::Rule for TagSelectorIsolation {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut hits: BTreeMap<(String, usize), Hit> = BTreeMap::new();
-        let mut docs: HashMap<&str, Option<WxmlDoc>> = HashMap::new();
+        let mut docs: HashMap<&str, Option<Rc<WxmlDoc>>> = HashMap::new();
         // 只有带组合符的选择器才需要渲染树；纯标签 / 纯 id 的单 compound 用不到它。
         let graph: std::cell::OnceCell<WxmlGraph> = std::cell::OnceCell::new();
 
@@ -195,7 +196,7 @@ fn find_foreign<'a>(
     graph: &std::cell::OnceCell<WxmlGraph>,
     units: &[&'a str],
     selector: &FlatSelector,
-    docs: &mut HashMap<&'a str, Option<WxmlDoc>>,
+    docs: &mut HashMap<&'a str, Option<Rc<WxmlDoc>>>,
 ) -> Option<(String, String)> {
     for unit in units {
         let Some(wxml_path) = project

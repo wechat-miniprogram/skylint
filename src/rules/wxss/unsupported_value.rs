@@ -8,6 +8,7 @@
 //! `.x{white-space:pre}`，最终是 `normal`）。
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::input::wxml::WxmlDoc;
 use crate::project::Project;
@@ -81,7 +82,7 @@ impl Rule for UnsupportedValue {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let table = table();
-        let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
+        let mut docs: HashMap<String, Option<Rc<WxmlDoc>>> = HashMap::new();
         visit_declarations(project, |sheet, rule, decl, out| {
             let doc = &sheet.doc;
             let name = decl.name.to_ascii_lowercase();

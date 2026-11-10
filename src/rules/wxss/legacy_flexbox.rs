@@ -23,6 +23,7 @@ use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use super::value_util::at_declaration;
 use super::visit_matching_rules;
@@ -67,7 +68,7 @@ impl Rule for LegacyFlexbox {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
+        let mut docs: HashMap<String, Option<Rc<WxmlDoc>>> = HashMap::new();
         visit_matching_rules(project, |sheet, rule, out| {
             let doc = &sheet.doc;
             // `.x.skyline { display: unset }` 这种渲染器分支已经把这块关掉了：

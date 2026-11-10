@@ -34,7 +34,7 @@ use crate::wxml_graph::WxmlGraph;
 
 /// 一份已解析的 WXML：事实查询要在它上面建索引，所以由调用方持有、`Facts` 借用。
 pub struct LoadedDoc {
-    pub doc: WxmlDoc,
+    pub doc: std::rc::Rc<WxmlDoc>,
 }
 
 impl LoadedDoc {

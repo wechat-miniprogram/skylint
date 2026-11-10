@@ -9,6 +9,7 @@ use super::visit_matching_rules;
 use crate::input::wxml::WxmlDoc;
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 pub struct UnsupportedProperty;
 
@@ -27,7 +28,7 @@ impl Rule for UnsupportedProperty {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let table = table();
-        let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
+        let mut docs: HashMap<String, Option<Rc<WxmlDoc>>> = HashMap::new();
         visit_matching_rules(project, |sheet, rule, out| {
             let doc = &sheet.doc;
             for decl in &rule.declarations {

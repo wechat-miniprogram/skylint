@@ -72,6 +72,7 @@ pub use value_degraded::ValueDegraded;
 pub use vendor_prefix::VendorPrefix;
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::Diagnostic;
 use crate::input::wxml::{WxmlDoc, WxmlElement};
@@ -115,7 +116,7 @@ pub(crate) fn overridden_in_renderer_branch(
     rule: &WxssRule,
     property: &str,
     target: Target,
-    docs: &mut HashMap<String, Option<WxmlDoc>>,
+    docs: &mut HashMap<String, Option<Rc<WxmlDoc>>>,
 ) -> bool {
     let branch = match target {
         Target::Skyline => "skyline",
@@ -167,7 +168,7 @@ pub(crate) fn overridden_in_renderer_branch(
 fn branch_classes(
     project: &Project,
     sheet: &StyleSheet,
-    docs: &mut HashMap<String, Option<WxmlDoc>>,
+    docs: &mut HashMap<String, Option<Rc<WxmlDoc>>>,
     branch: &str,
 ) -> Vec<String> {
     let other = if branch == "skyline" {
@@ -227,7 +228,7 @@ pub(crate) fn class_depends_on_renderer(
     project: &Project,
     sheet: &StyleSheet,
     selector: &str,
-    docs: &mut HashMap<String, Option<WxmlDoc>>,
+    docs: &mut HashMap<String, Option<Rc<WxmlDoc>>>,
 ) -> bool {
     let Some(subject) = last_compound(selector) else {
         return false;
@@ -285,7 +286,7 @@ pub(crate) fn same_node_renderer_class<'a>(
     project: &Project,
     sheet: &StyleSheet,
     selector: &'a str,
-    docs: &mut HashMap<String, Option<WxmlDoc>>,
+    docs: &mut HashMap<String, Option<Rc<WxmlDoc>>>,
 ) -> Option<(&'a str, &'a str)> {
     let (prefix, last) = split_last_compound(selector)?;
     let branch = last.strip_prefix('.')?;
@@ -357,7 +358,7 @@ pub(crate) fn any_selector_matches(
     project: &Project,
     sheet: &StyleSheet,
     selectors: &[WxssSelector],
-    docs: &mut HashMap<String, Option<WxmlDoc>>,
+    docs: &mut HashMap<String, Option<Rc<WxmlDoc>>>,
 ) -> Tri {
     let mut seen_doc = false;
     let mut unknown = false;
@@ -416,7 +417,7 @@ pub(crate) fn broken_selectors(
     project: &Project,
     sheet: &StyleSheet,
     selectors: &[WxssSelector],
-    docs: &mut HashMap<String, Option<WxmlDoc>>,
+    docs: &mut HashMap<String, Option<Rc<WxmlDoc>>>,
     can_host: impl Fn(&Tree, &WxmlElement) -> bool,
 ) -> Vec<String> {
     // (选择器, 作用域) → (是否静态命中, 命中里是否有能承载的节点)
@@ -467,7 +468,7 @@ pub(crate) fn all_matches_satisfy(
     project: &Project,
     sheet: &StyleSheet,
     selectors: &[WxssSelector],
-    docs: &mut HashMap<String, Option<WxmlDoc>>,
+    docs: &mut HashMap<String, Option<Rc<WxmlDoc>>>,
     predicate: impl Fn(&Tree, &WxmlElement) -> bool,
 ) -> bool {
     let mut matched = false;
@@ -504,7 +505,7 @@ pub(crate) fn truncation_by_max_lines(
     project: &Project,
     sheet: &StyleSheet,
     selectors: &[WxssSelector],
-    docs: &mut HashMap<String, Option<WxmlDoc>>,
+    docs: &mut HashMap<String, Option<Rc<WxmlDoc>>>,
     clamp: &str,
 ) -> bool {
     let Some(lines) = clamp.trim().parse::<u32>().ok() else {
@@ -571,7 +572,7 @@ fn visit_rules_inner(
     mut f: impl FnMut(&StyleSheet, &WxssRule, &mut Vec<Diagnostic>),
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
-    let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
+    let mut docs: HashMap<String, Option<Rc<WxmlDoc>>> = HashMap::new();
     for sheet in &project.styles {
         for rule in &sheet.doc.rules {
             if only_matching
@@ -591,7 +592,7 @@ pub(crate) fn visit_declarations(
     mut f: impl FnMut(&StyleSheet, &WxssRule, &WxssDeclaration, &mut Vec<Diagnostic>),
 ) -> Vec<Diagnostic> {
     let mut out = Vec::new();
-    let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
+    let mut docs: HashMap<String, Option<Rc<WxmlDoc>>> = HashMap::new();
     for sheet in &project.styles {
         for rule in &sheet.doc.rules {
             if any_selector_matches(project, sheet, &rule.selectors, &mut docs) == Tri::No {

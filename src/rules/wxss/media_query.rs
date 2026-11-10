@@ -10,6 +10,7 @@
 //! 唯一被识别的是 `prefers-color-scheme`，这类块跳过。
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::input::wxml::WxmlDoc;
 use crate::input::wxss::WxssSelector;
@@ -36,10 +37,10 @@ impl Rule for MediaQuery {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut out = Vec::new();
         let mut reported: HashSet<(String, usize)> = HashSet::new();
-        let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
+        let mut docs: HashMap<String, Option<Rc<WxmlDoc>>> = HashMap::new();
         for sheet in &project.styles {
             // 块内选择器在作用域里一个节点都命不中时，条件丢失不产生可见差异。
-            let matched = |at_offset: usize, docs: &mut HashMap<String, Option<WxmlDoc>>| {
+            let matched = |at_offset: usize, docs: &mut HashMap<String, Option<Rc<WxmlDoc>>>| {
                 let selectors: Vec<WxssSelector> = sheet
                     .doc
                     .rules

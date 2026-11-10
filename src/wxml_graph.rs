@@ -55,6 +55,10 @@ const MAX_NODES: usize = 512;
 /// 单条祖先路径的分叉上限：多使用点会乘出指数条路径，超过就截断（宁可漏报）。
 const MAX_PATHS: usize = 32;
 
+/// 单次路径枚举的节点预算。防的正是「分叉多到指数级、但条条都走不到叶子」，
+/// 那种情况下 `MAX_PATHS` 永远数不满，递归先爆了。
+const MAX_VISITS: usize = 4096;
+
 /// 单条祖先路径上的一节。
 #[derive(Clone)]
 pub(crate) enum AncestorRef<'a> {
@@ -241,7 +245,7 @@ impl WxmlGraph {
             let path = doc.path().to_string();
             let is_page = page_paths.contains(path.as_str());
             let is_fragment = fragment_paths.contains(path.as_str());
-            docs.push(DocTree::build(doc, is_page, is_fragment));
+            docs.push(DocTree::build(&doc, is_page, is_fragment));
         }
         // 组件标签与模板引用解析在文档建好之后：需要先知道每个文档的下标。
         for tree in &mut docs {
@@ -387,7 +391,10 @@ impl WxmlGraph {
             return Vec::new();
         };
         let mut out = Vec::new();
-        self.collect_paths(NodeId { doc, idx: start }, &mut Vec::new(), &mut out);
+        let start = NodeId { doc, idx: start };
+        let mut seen = HashSet::from([start]);
+        let mut budget = MAX_VISITS;
+        self.collect_paths(start, &mut Vec::new(), &mut out, &mut seen, &mut budget);
         out
     }
 
@@ -396,22 +403,34 @@ impl WxmlGraph {
         node: NodeId,
         prefix: &mut Vec<AncestorRef<'a>>,
         out: &mut Vec<Vec<AncestorRef<'a>>>,
+        seen: &mut HashSet<NodeId>,
+        budget: &mut usize,
     ) {
-        if out.len() >= MAX_PATHS {
+        if out.len() >= MAX_PATHS || *budget == 0 {
             return;
         }
+        *budget -= 1;
         match self.parents(node) {
             Parents::Nodes(nodes) if nodes.is_empty() => out.push(prefix.clone()),
             Parents::Nodes(nodes) => {
                 for parent in nodes {
-                    if out.len() >= MAX_PATHS || prefix.len() >= MAX_NODES {
+                    if out.len() >= MAX_PATHS || *budget == 0 {
+                        return;
+                    }
+                    // 组件可以引用自身（`<slot>` 回环），按路径去重防环。
+                    if !seen.insert(parent) {
+                        continue;
+                    }
+                    if prefix.len() >= MAX_NODES {
+                        seen.remove(&parent);
                         return;
                     }
                     prefix.push(AncestorRef::Element {
                         element: &self.docs[parent.doc].elements[parent.idx],
                     });
-                    self.collect_paths(parent, prefix, out);
+                    self.collect_paths(parent, prefix, out, seen, budget);
                     prefix.pop();
+                    seen.remove(&parent);
                 }
             }
             // 页面根在 WXML 里没有对应标签，但 WebView 的 DOM 根是 `<page>`，
@@ -763,11 +782,11 @@ impl WxmlGraph {
 }
 
 impl DocTree {
-    fn build(doc: WxmlDoc, is_page: bool, doc_is_fragment: bool) -> Self {
+    fn build(doc: &WxmlDoc, is_page: bool, doc_is_fragment: bool) -> Self {
         let path = doc.path().to_string();
         let mut elements = Vec::new();
         let mut by_start = HashMap::new();
-        flatten(&doc.nodes, None, &doc, &mut elements, &mut by_start);
+        flatten(&doc.nodes, None, doc, &mut elements, &mut by_start);
 
         let mut slots = Vec::new();
         for (idx, element) in elements.iter().enumerate() {

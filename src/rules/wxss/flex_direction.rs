@@ -8,6 +8,7 @@
 //! 的声明或选择器原文。
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::input::wxml::{WxmlDoc, WxmlElement};
 use crate::input::wxss::{WxssDoc, WxssRule, WxssSelector};
@@ -38,7 +39,7 @@ impl Rule for FlexDirection {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         // 元素级豁免要读 WXML，跨规则复用同一份缓存（按路径只解析一次）。
-        let mut docs: HashMap<String, Option<WxmlDoc>> = HashMap::new();
+        let mut docs: HashMap<String, Option<Rc<WxmlDoc>>> = HashMap::new();
         let per_block = visit_matching_rules(project, |sheet, rule, out| {
             // `defaultDisplayBlock: true` 时 Skyline 的 flex-direction 默认值就是 row，
             // 与 WebView 一致，这条警告不成立。
