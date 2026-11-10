@@ -166,6 +166,15 @@ fn job_keeps_findings_from_non_wxss_style_sources() {
     let diagnostics = migrate::diagnostics_for(&plan, unit, &report);
     assert_eq!(diagnostics.len(), 1, "job 也要拿到同一条");
     assert!(diagnostics[0].path.ends_with("index.scss"));
+
+    let (project, rel) = migrate::find_view(&projects, &unit.path).expect("view");
+    let job = migrate::job(project, rel, unit, &diagnostics, None);
+    assert_eq!(job.findings.len(), 1);
+    assert_eq!(
+        job.findings[0].path, "pages/index/index.scss",
+        "非 WXML 诊断也要带 path"
+    );
+    assert!(job.findings[0].anchor.is_none());
 }
 
 /// `.skylint/config.json` 的 `exclude` 把第三方样式排除掉，但要把排除本身记下来。
@@ -384,6 +393,17 @@ fn imported_style_diagnostics_belong_to_the_page() {
     let job = migrate::job(project, rel, unit, &diagnostics, None);
     assert_eq!(job.findings.len(), 1, "作业单要带上样式上的诊断");
     assert_eq!(job.findings[0].rule, "skyline/unsupported-property");
+    assert_eq!(job.findings[0].path, "styles/common.wxss");
+    assert_eq!(
+        job.unit.files, unit.files,
+        "job.unit.files 要与 plan 单元文件同源"
+    );
+    assert!(
+        job.unit
+            .files
+            .iter()
+            .any(|file| file == "styles/common.wxss")
+    );
 }
 
 fn inline_text_fixture(name: &str, wxss: &str) -> Fixture {
@@ -430,6 +450,7 @@ fn finding_id_survives_line_shift() {
         .find(|finding| finding.rule == "skyline/no-inline-text")
         .expect("no-inline-text");
     assert_eq!(finding.span.line, 1);
+    assert_eq!(finding.path, "pages/index/index.wxml");
     assert_eq!(
         finding.anchor.as_ref().map(|anchor| anchor.classes.clone()),
         Some(vec!["box".to_string()])
@@ -553,6 +574,28 @@ fn verify_reports_fixed_finding() {
     assert_eq!(result.fixed, 1);
     assert!(!result.blocks(), "修复不该拦门禁");
     assert_eq!(result.findings[0].kind, "fixed");
+    let message = result.findings[0]
+        .message
+        .as_deref()
+        .expect("fixed 要带上 message，才能看出修掉的是哪条");
+    assert!(message.contains("文本与元素混排"), "{message}");
+    assert!(
+        result.findings[0].help.is_some(),
+        "基线存了 help，就一并带出来"
+    );
+}
+
+/// `--json` 里不再输出恒为 `null` 的 `baseline.sha256`。
+#[test]
+fn verify_baseline_ref_has_no_sha256() {
+    let f = inline_text_fixture("verify-sha", ".box { display: block; }");
+    let baseline = baseline_of(f.path());
+    let result = verify_now(f.path(), &baseline);
+    let json = migrate::to_json(&result);
+    assert!(
+        !json.contains("\"sha256\""),
+        "baseline 摘要字段应当去掉而不是输出 null：{json}"
+    );
 }
 
 /// `--unit` 只比对这个单元，别的单元的变化不算进来。

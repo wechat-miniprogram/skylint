@@ -86,7 +86,7 @@ runner 拿它去做 `git diff` / `checkout`。两者弄混，在「工程根不�
 {
   "schemaVersion": 1,
   "generator": { "name": "skylint", "version": "0.3.0", "commit": null },
-  "baseline": { "file": null, "sha256": null, "diagnostics": 269 },
+  "baseline": { "file": null, "diagnostics": 269 },
   "units": [
     {
       "id": "unit:components/comment-dialog/comment-dialog",
@@ -134,10 +134,17 @@ runner 拿它去做 `git diff` / `checkout`。两者弄混，在「工程根不�
 {
   "schemaVersion": 1,
   "generator": { "name": "skylint", "version": "0.3.0", "commit": null },
-  "baseline": { "file": ".skylint/baseline.json", "sha256": "…", "diagnostics": 269 },
+  "baseline": { "file": ".skylint/baseline.json", "diagnostics": 269 },
   "unit": {
     "id": "unit:components/comment-dialog/comment-dialog",
     "path": "components/comment-dialog/comment-dialog.wxml",
+    "fsPath": "miniprogram/components/comment-dialog/comment-dialog.wxml",
+    "files": [
+      "components/comment-dialog/comment-dialog.wxml",
+      "components/comment-dialog/comment-dialog.scss",
+      "components/comment-dialog/comment-dialog.ts",
+      "components/comment-dialog/comment-dialog.json"
+    ],
     "kind": "component",
     "renderer": "skyline",
     "reach": "skyline",
@@ -148,7 +155,8 @@ runner 拿它去做 `git diff` / `checkout`。两者弄混，在「工程根不�
   },
   "findings": [
     {
-      "id": "sha256:1f3a…",
+      "id": "skyline/fixed-z-index-inversion|components/comment-dialog/comment-dialog.wxml|view.write-comment|#0",
+      "path": "components/comment-dialog/comment-dialog.wxml",
       "rule": "skyline/fixed-z-index-inversion",
       "severity": "warning",
       "message": "…",
@@ -201,6 +209,11 @@ runner 拿它去做 `git diff` / `checkout`。两者弄混，在「工程根不�
 `layout` 全量（10 个字段，便宜）。`cascade` 只含该规则声明关心的属性——
 声明在 `migrate::guidance`，默认空。没有声明的规则只拿 `layout`。
 
+**`layout` 里的 `display` / `position` 等是「声明值」**：来自级联里最近一条
+生效声明，`null` 表示没有任何声明（不是 `display: none`）。解析后的默认布局
+看 `blockRendered`（以及 `defaultDisplayBlock` / `defaultContentBox` 这些单元级
+开关），不要把 `display: null` 读成「不显示」。
+
 **不做**「内联全部级联」：短剧插件单个单元就能到几十 MB，agent 读不完，
 还会把它当上下文塞进去。
 
@@ -209,8 +222,10 @@ runner 拿它去做 `git diff` / `checkout`。两者弄混，在「工程根不�
 ### 4.2 `id` 算法
 
 ```
-id = "{rule}|{unit.path}|{tag}.{classes 按字典序}|#{occurrence}"
+id = "{rule}|{path}|{tag}.{classes 按字典序}|#{occurrence}"
 ```
+
+`path` 是诊断所在文档的路径（单元 WXML 或它引用的模板）。
 
 `occurrence` 是同文档内、同 `(tag, classes)` 元素中的序号。没有元素时退化为
 `{rule}|{path}|{line}:{column}`。
@@ -238,6 +253,12 @@ skylint migration facts <PROJECT> <UNIT_WXML> --element 87:3 --property z-index
 - 不带 `--element`：单元事实 + 元素索引（`span` / `tag` / `classes` / `id`）
 - 带 `--element`：展开该元素的 `layout` / `cascade` / `ancestors` / `handlers` / `usages`
 - 带 `--property`：只输出该属性的级联
+
+`--element` 的 `行:列` 只用于定位：按包含关系取**最深**元素。返回的 `span` 是
+那个元素自身的完整范围（可能从更前面的行开始），不是传入位置。
+
+元素索引/详情里的 `id` 是定位串 `element|<doc>|<tag>.<classes>|#<n>`，**不是**
+诊断 id——不要拿去和 `baseline` / `finding.id` 对账。
 
 字段名照抄 `inspect` 的公开类型（`LayoutFacts` / `CascadeView` / `AncestorView` /
 `HandlerView`），不重命名。
@@ -281,8 +302,6 @@ M1 已实现并验证：
 | 元素挪一行 id 不变 | `tests/migrate.rs::finding_id_survives_line_shift`（行号 1→2，id 不变） |
 | 级联只含声明属性 | `tests/migrate.rs::cascade_only_carries_declared_properties` |
 
-`baseline.sha256` 在 M1 恒为 `null`——摘要属于 `verify`（M2），这里不假装有。
-
 ## 9. 门禁（M2）
 
 ```
@@ -292,8 +311,9 @@ skylint migration verify <PATH> --baseline <FILE> [--unit <ID>] [--json]
 
 `--out` 默认是 `<PATH>/.skylint/baseline.json`（落在工程根下，不落在当前目录）。
 
-`baseline` 存的是**身份**（`id` / `unit` / `rule` / `severity` / `path` / `span`），
-不存 `message`：措辞随版本变，但问题没变。
+`baseline` 存的是**身份**（`id` / `unit` / `rule` / `severity` / `path` / `span`）。
+另外存一份 `message` / `help` 只用于 `verify` 的 `fixed` 条目展示——身份判定
+仍只看 `id`，措辞变化不影响结论。
 
 ### 9.1 判据
 

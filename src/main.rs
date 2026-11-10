@@ -242,7 +242,7 @@ struct FactsArgs {
     /// 单元 WXML（项目相对，可带插件前缀）
     #[arg(value_name = "WXML")]
     unit: String,
-    /// 元素位置 `行:列`（1-based，按包含关系取最深元素）
+    /// 元素位置 `行:列`（1-based，按包含关系取最深元素；输出 span 是该元素的范围）
     #[arg(long, value_name = "LINE:COL")]
     element: Option<String>,
     /// 只看某个属性（配合 `--element`）
@@ -802,8 +802,6 @@ fn analyse(path: &Path, ignore: &[String]) -> Result<(Vec<Project>, Report), Exi
 fn baseline_ref(path: Option<&Path>, diagnostics: usize) -> Option<migrate::BaselineRef> {
     path.map(|path| migrate::BaselineRef {
         file: Some(path.display().to_string()),
-        // 摘要留给 `verify`（M2）算，这里不假装有。
-        sha256: None,
         diagnostics,
     })
 }

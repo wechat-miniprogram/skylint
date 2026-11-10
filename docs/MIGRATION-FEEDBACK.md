@@ -16,6 +16,8 @@
 可优化：`baseline.json` 里没有 `sha256` 字段，但 `verify --json` 的
 `baseline.sha256` 恒为 `null`。要么算出来，要么别输出这个键。
 
+**已修**：`baseline` 引用里直接去掉了 `sha256` 键（不再输出恒 `null`）。
+
 ## plan — 可用（模板/样式归属缺口已修）
 
 输出结构完整（units / batches / summary），14 层拓扑序在真实工程上是对的，
@@ -56,9 +58,12 @@ agent 上一轮 spike 已证明够用。
 含糊点：
 
 1. `layout.display: null` 与 `blockRendered: true` 并列出现。`null` 的真实含义是
-   「没有声明」，不是「display 为 none」；agent 很容易读反。建议拆成
-   `declaredDisplay`（可能为 null）与 `resolvedDisplay`（总有值）。
+   「没有声明」，不是「display 为 none」；agent 很容易读反。
 2. `anchor.classes` 为空时 `id` 末尾出现 `view.|#2` 这样的空点，人读时像截断。
+
+**已修**：字段结构不动，`docs/MIGRATE.md` 已写明 `display` 等是声明值、null =
+未声明，解析后的布局看 `blockRendered`。另补了 `finding.path`（不用再从 id 里
+split 文件名）与 `job.unit.files`（与 `next.unit.files` 同源）。
 
 ## facts — 可用，两处小问题
 
@@ -71,6 +76,10 @@ agent 上一轮 spike 已证明够用。
 2. 传 `--element 1:1433` 返回的是**包含该位置的元素**的 span（1427 起），不是
    传入的位置；调用方若拿它做二次定位会偏移。文档没写这层语义。
 3. 同 job 的 `display: null` 问题。
+
+**已修**：`id` 改为 `element|<doc>|<tag>.<classes>|#<n>`，并在 `--help` 与文档
+说明它不是诊断 id；`--element` 返回 span 的语义也已写进 `--help` 和
+`docs/MIGRATE.md` §5。
 
 ## verify — 判定正确，文案已修
 
@@ -97,6 +106,9 @@ agent 上一轮 spike 已证明够用。
 启动）拦，编排顺序里 L2 不能省。
 
 可优化：`findings[]` 不带 `help`（job 里带），人看 JSON 时要回查规则文档。
+
+**已修**：`new` / `severity-changed` 直接从当前诊断带 `help`；`fixed` 从基线里
+带上 `message` / `help`（基线新增这两个展示字段，身份判定仍只看 `id`）。
 
 ## ledger / record / next — 可用
 

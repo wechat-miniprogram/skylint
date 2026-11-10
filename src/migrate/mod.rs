@@ -48,8 +48,6 @@ impl Default for Generator {
 #[serde(rename_all = "camelCase")]
 pub struct BaselineRef {
     pub file: Option<String>,
-    /// 基线内容摘要。M1 不计算，留给 `verify`（M2）填。
-    pub sha256: Option<String>,
     /// 基线里的诊断总数，方便和 `plan.summary` 对账。
     pub diagnostics: usize,
 }
@@ -133,6 +131,8 @@ pub struct JobUnit {
     pub path: String,
     /// 工程根相对的文件系统路径，见 [`PlanUnit::fs_path`]。
     pub fs_path: String,
+    /// 与 [`PlanUnit::files`] 同源：四件套 + 实际引用的模板 / 样式。
+    pub files: Vec<String>,
     pub kind: &'static str,
     pub renderer: &'static str,
     pub reach: &'static str,
@@ -147,6 +147,8 @@ pub struct JobUnit {
 pub struct Finding {
     /// 跨运行稳定标识，见 `docs/MIGRATE.md` §4.2。
     pub id: String,
+    /// 诊断所在文件（报告路径），与 `id` 里的路径同源。
+    pub path: String,
     pub rule: String,
     pub severity: Severity,
     pub message: String,
@@ -529,37 +531,46 @@ pub fn job(
     baseline: Option<BaselineRef>,
 ) -> Job {
     let loaded = LoadedDoc::load(project, rel_wxml);
-    let unit = match &loaded {
-        Some(doc) => {
-            let facts = doc.facts(project);
-            let unit = facts.unit();
-            JobUnit {
-                id: plan_unit.id.clone(),
-                path: plan_unit.path.clone(),
-                fs_path: plan_unit.fs_path.clone(),
-                kind: kind_str(&unit.kind),
-                renderer: renderer_str(unit.renderer),
-                reach: reach_str(unit.reach),
-                style_isolation: unit
-                    .style_isolation
-                    .map(|iso| format!("{iso:?}").to_lowercase()),
-                default_display_block: unit.default_display_block,
-                default_content_box: unit.default_content_box,
-                scroll_view_auto_size: unit.scroll_view_auto_size,
+    // 无论能否解析出事实，单元的身份与文件清单都来自 `PlanUnit`；
+    // 两分支只差 renderer / 布局事实，避免把同一份字段写两遍。
+    let (kind, renderer, reach, style_isolation, display_block, content_box, auto_size) =
+        match &loaded {
+            Some(doc) => {
+                let facts = doc.facts(project);
+                let unit = facts.unit();
+                (
+                    kind_str(&unit.kind),
+                    renderer_str(unit.renderer),
+                    reach_str(unit.reach),
+                    unit.style_isolation
+                        .map(|iso| format!("{iso:?}").to_lowercase()),
+                    unit.default_display_block,
+                    unit.default_content_box,
+                    unit.scroll_view_auto_size,
+                )
             }
-        }
-        None => JobUnit {
-            id: plan_unit.id.clone(),
-            path: plan_unit.path.clone(),
-            fs_path: plan_unit.fs_path.clone(),
-            kind: plan_unit.kind,
-            renderer: plan_unit.renderer,
-            reach: plan_unit.reach,
-            style_isolation: None,
-            default_display_block: false,
-            default_content_box: false,
-            scroll_view_auto_size: false,
-        },
+            None => (
+                plan_unit.kind,
+                plan_unit.renderer,
+                plan_unit.reach,
+                None,
+                false,
+                false,
+                false,
+            ),
+        };
+    let unit = JobUnit {
+        id: plan_unit.id.clone(),
+        path: plan_unit.path.clone(),
+        fs_path: plan_unit.fs_path.clone(),
+        files: plan_unit.files.clone(),
+        kind,
+        renderer,
+        reach,
+        style_isolation,
+        default_display_block: display_block,
+        default_content_box: content_box,
+        scroll_view_auto_size: auto_size,
     };
 
     // 每个文件只解析一次；诊断按文件分组。
@@ -650,6 +661,7 @@ fn finding(project: &Project, doc: Option<&LoadedDoc>, diagnostic: &Diagnostic) 
 
     Finding {
         id,
+        path: diagnostic.path.clone(),
         rule: diagnostic.rule.clone(),
         severity: diagnostic.severity,
         message: diagnostic.message.clone(),
@@ -768,18 +780,22 @@ pub struct FactsUnit {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ElementIndex {
+    /// 元素自身的范围（不是查询位置）。
     pub span: Span,
     pub tag: String,
     pub classes: Vec<String>,
+    /// 元素定位串（`element|<doc>|<tag>.<classes>|#<n>`），不是诊断 id。
     pub id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ElementDetail {
+    /// 包含 `--element` 查询位置的那个元素的完整范围，不是查询位置本身。
     pub span: Span,
     pub tag: String,
     pub classes: Vec<String>,
+    /// 元素定位串（`element|<doc>|<tag>.<classes>|#<n>`），不是诊断 id。
     pub id: String,
     pub layout: LayoutFacts,
     pub cascade: BTreeMap<String, Vec<crate::inspect::CascadeView>>,
@@ -807,7 +823,7 @@ pub fn facts_doc(project: &Project, rel_wxml: &str) -> Option<FactsDoc> {
                 },
                 tag: element.tag.clone(),
                 classes: anchor.classes.clone(),
-                id: anchor_id("<element>", facts.path(), &anchor),
+                id: anchor_id("element", facts.path(), &anchor),
             }
         })
         .collect();
@@ -864,7 +880,7 @@ pub fn element_detail(
         },
         tag: element.tag.clone(),
         classes: anchor.classes.clone(),
-        id: anchor_id("<element>", facts.path(), &anchor),
+        id: anchor_id("element", facts.path(), &anchor),
         layout: facts.layout(element),
         cascade,
         ancestors: facts.ancestors(element),
@@ -922,6 +938,8 @@ pub struct Identified {
     pub path: String,
     pub span: Span,
     pub message: String,
+    /// 只写进基线，给 `verify` 的 `fixed` 条目展示用；不参与身份判定。
+    pub help: Option<String>,
 }
 
 /// 给全部诊断算稳定 id。同一份代码重复调用结果一致；元素挪行不变。
@@ -964,6 +982,7 @@ pub fn identify(views: &[Project], plan: &Plan, report: &Report) -> Vec<Identifi
                 end_column: diagnostic.end_column,
             },
             message: diagnostic.message.clone(),
+            help: diagnostic.help.clone(),
         });
     }
     out
@@ -1028,6 +1047,11 @@ pub struct BaselineFinding {
     pub severity: Severity,
     pub path: String,
     pub span: Span,
+    /// 仅用于让 `verify` 的 `fixed` 条目能展示「修掉的是哪条」；身份仍只看 `id`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help: Option<String>,
 }
 
 pub fn baseline(identified: &[Identified]) -> Baseline {
@@ -1047,6 +1071,8 @@ pub fn baseline(identified: &[Identified]) -> Baseline {
             severity: finding.severity,
             path: finding.path.clone(),
             span: finding.span.clone(),
+            message: Some(finding.message.clone()),
+            help: finding.help.clone(),
         });
     }
     findings.sort_by(|a, b| a.id.cmp(&b.id));
@@ -1089,9 +1115,11 @@ pub struct DiffEntry {
     pub severity: Severity,
     pub path: String,
     pub span: Span,
-    /// 当前诊断的 message；`fixed` 没有。
+    /// 诊断说明：`new` / `severity-changed` 用当前诊断，`fixed` 用基线里存的。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub help: Option<String>,
 }
 
 pub fn verify(
@@ -1132,6 +1160,7 @@ pub fn verify(
                     path: finding.path.clone(),
                     span: finding.span.clone(),
                     message: Some(finding.message.clone()),
+                    help: finding.help.clone(),
                 });
             }
             Some(previous) if previous.severity != finding.severity => {
@@ -1144,6 +1173,7 @@ pub fn verify(
                     path: finding.path.clone(),
                     span: finding.span.clone(),
                     message: Some(finding.message.clone()),
+                    help: finding.help.clone(),
                 });
             }
             Some(_) => {}
@@ -1163,7 +1193,8 @@ pub fn verify(
             severity: previous.severity,
             path: previous.path.clone(),
             span: previous.span.clone(),
-            message: None,
+            message: previous.message.clone(),
+            help: previous.help.clone(),
         });
     }
 
@@ -1180,7 +1211,6 @@ pub fn verify(
         schema_version: SCHEMA_VERSION,
         baseline: BaselineRef {
             file: baseline_file,
-            sha256: None,
             diagnostics: baseline.summary.total,
         },
         unit: unit.map(str::to_string),
