@@ -1,5 +1,5 @@
 //! `skyline/component-framework`：Skyline 页面的 `componentFramework` 解析结果不是
-//! `glass-easel`，构建会直接失败。
+//! `glass-easel`，开发者工具会拒绝编译（`minidev build` 不校验这条）。
 //!
 //! 判据来自 minidev `compiler-graph/src/json/mutate.rs:496-540`
 //! （`is_glass_easel_component` / `check_component_framework`），解析顺序：
@@ -106,7 +106,9 @@ impl Rule for ComponentFramework {
                 Self::ID,
                 path,
                 at,
-                format!("页面 `{page_path}` 使用 Skyline 渲染，但{detail}，构建会直接失败"),
+                format!(
+                    "页面 `{page_path}` 使用 Skyline 渲染，但{detail}，开发者工具会拒绝编译（`minidev build` 不校验这条）"
+                ),
                 "写 `componentFramework: \"glass-easel\"`（页面 json 优先，其次所属分包的 subPackages[].componentFramework，最后 app.json）；Skyline 只有 glass-easel 一套节点树实现",
             );
         }
