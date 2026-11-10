@@ -130,3 +130,51 @@ split 文件名）与 `job.unit.files`（与 `next.unit.files` 同源）。
 没有到「不可用」的命令。原先唯一建议在批量迁移前处理的 **plan 的模板/样式归属
 缺口**（150 条诊断不排队）已修复：诊断集合不变，`unit:shared` 剩余 3 条真正
 全局的文件；其余记下来等迁移结束统一优化。
+
+---
+
+# 第二轮实测（批量迁移 movie 页面时）
+
+这一轮开始真正逐页迁移，暴露的问题分两类：skylint 的、和工具链的。
+
+## 已修
+
+1. **`job.findings[]` 没有 `path`**：只有 `id` 里带路径，agent 必须自己 split。
+   已给 finding 增加顶层 `path`（与 id 同源）。
+2. **`job.unit` 没有 `files`**：`next` 有、`job` 没有，两边结构不一致。已统一。
+3. **非 WXML 诊断 id 是 `rule|path|line:col`**：改共享样式（删两条规则、行号一平移）
+   `verify` 就报 `new 4 / fixed 9`，逐条核对全是同一批诊断位移。共享样式恰恰是
+   迁移的主要改动面，这条会让 L0 门禁不可用。已改为
+   `rule|path|selector|property|#occurrence`，并在实测中确认「顶部插空行 → new 0 /
+   fixed 0」。升级后必须重建基线（`baselineFormat: legacy` 会走宽松对齐并告警）。
+4. **`facts` 的元素 `id` 里带字面量 `<element>`**、`verify` 的 `baseline.sha256`
+   恒为 null。已分别改成 `element|...` 与删除该键。
+
+## 待修（已派工）
+
+- **样式类 finding 没有定位事实**：`anchor` / `facts` 为 null，agent 只知道
+  「某 wxss 第 N 行有 float」，不知道该选择器在本单元命中了哪些 WXML 节点、
+  规则块里还有什么声明。需要 `selector` / `property` / `declarations` / `matches`。
+- **共享文件的 finding 被静默塞进页面作业单**：`movie/styles/common.wxss` 的 8 条
+  同时归属 13 个页面，agent 改它会波及 13 页，而作业单验收只覆盖当前单元。
+  需要 `shared: true` + `affectedUnits`，并在文档里明确它不属于本单元验收范围。
+- **两条规则缺口**（实机截图发现，规则零命中）：
+  - `::before { content }` 参与行内排版：WebView 同行、Skyline 换行，修法是给容器
+    加 `display:flex`。`no-pseudo` 只管伪类。
+  - 裸文本 + `<text>` 兄弟在普通容器里换行：`no-inline-text` 把 `<text>` 当行内标签
+    豁免、`inline-run` 只数「≥2 个文本级元素」，中间这个组合漏掉。修法是把整行包进
+    一个 `<text>`。
+
+## 工具链（不是 skylint 的问题，但会拖慢迁移）
+
+1. **模拟器偶发崩溃**：`appservice webview exit with reason: crashed (exitCode 11)`。
+   同一页第一次 reLaunch 失败、第二次直接成功（`order/order` 实测），cinema 系列
+   也出现过同样现象。结论：截图环节必须**重试**；崩两次再判定为问题。崩溃后
+   `cli close` 不够，要整机 `quit` + `cli open` + `cli auto` 才能恢复自动化。
+2. **页面注册位置写错会让模拟器直接起不来**：把测试页加到 `app.json.pages` 而它
+   属于 `movie` 分包时，DevTools 报
+   `["pages"][16]: "..." 不应该在 ["subPackages"][2] 中`，且不给出正常页面。
+   切片脚本没有这个问题，是手工加页时的坑。
+3. **部分页面的基线截图本身是空白**（数据没进来），例如 `movie/pages/goods/buy`、
+   `movie/pages/order/order`。这类页面 L3 只能证明「没有变得更糟」，证明不了正确性；
+   要真正验收得给 route 参数或补 fixture。
