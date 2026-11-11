@@ -129,9 +129,13 @@ impl Rule for ImplicitColor {
 /// 页面的基色：`page { color: … }` / `:host { color: … }`。
 ///
 /// 页面根不在元素树里，`resolved_property` 看不到它；后写的声明生效。
+///
+/// 覆盖范围按 [`Project::covering_sheets`]：单元用自己那几张，`<include>` 片段用
+/// 引用它的单元的样式表。片段不属于任何单元，按单元作用域取不到东西，用它会把
+/// 片段里的元素全部当成「没有基色」跳过。
 fn page_color(project: &Project, tree: &Tree<'_>) -> Option<String> {
     project
-        .unit_sheets(tree.path())
+        .covering_sheets(tree.path())
         .iter()
         .map(|&index| &project.styles[index])
         .flat_map(|sheet| &sheet.doc.rules)
@@ -328,5 +332,29 @@ mod tests {
             ".card { color: #fff; border: 1px solid var(--line); }",
         );
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// `<include>` 片段按引用它的单元取基色：`page { color }` 写在页面样式里，
+    /// 片段元素继承的是同一份页面基色。改前片段按单元作用域取样式表（恒为空），
+    /// 这里会把「本该报」的省略颜色静默吞掉。
+    #[test]
+    fn include_fragment_takes_the_page_base_color() {
+        let fixture = Fixture::new("implicit-color-include");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", r#"<include src="./part"/>"#)
+            .write(
+                "pages/index/index.wxss",
+                "page { color: #fff; }\n.card { border: 1px solid; }",
+            )
+            .write("pages/index/part.wxml", r#"<view class="card"/>"#);
+        let diagnostics = ImplicitColor.check(&fixture.project());
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("border"));
     }
 }

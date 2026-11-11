@@ -84,13 +84,31 @@ use crate::project::{Project, Scope, StyleSheet};
 use crate::rules::Target;
 
 /// 这条声明的作用域里需要一起看的 WXML。
+///
+/// 除了单元自己的 WXML，还包括引用该单元的独立模板文档与 `<include>` 片段：它们
+/// 渲染在单元的作用域里，选择器对它们的命中同样是「这条声明有没有生效」的一面。
+/// 漏掉这半边，只命中模板内容的选择器会被当成「没人用」整块跳过。
 pub(crate) fn scope_wxml<'a>(project: &'a Project, scope: &Scope) -> Vec<&'a str> {
-    match scope {
+    let mut out: Vec<&'a str> = match scope {
         Scope::Global => project.global_wxml().collect(),
         // 样式图不会产生 Loose。
         Scope::Loose(_) => Vec::new(),
         _ => project.scope_wxml(scope).into_iter().collect(),
-    }
+    };
+    out.extend(
+        project
+            .template_files
+            .iter()
+            .filter(|path| match scope {
+                Scope::Global => true,
+                _ => project
+                    .template_scopes
+                    .get(*path)
+                    .is_some_and(|scopes| scopes.contains(scope)),
+            })
+            .map(String::as_str),
+    );
+    out
 }
 
 /// CSS 全局关键字是「恢复默认」，不是「用了不支持的值」：属性在 Skyline 下本来

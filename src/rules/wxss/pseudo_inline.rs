@@ -54,7 +54,7 @@ use crate::rules::{Rule, RuleMeta};
 
 use super::scope_wxml;
 use crate::rules::wxml::inline_run::is_inline_member;
-use crate::rules::wxml::{flex_container, load_doc, resolved_property};
+use crate::rules::wxml::{cascade_entries_with, is_flex_value, load_doc};
 
 pub const ID: &str = "skyline/pseudo-inline-layout";
 
@@ -214,13 +214,15 @@ fn is_candidate_host(
     if has_dynamic_style(element) {
         return false;
     }
-    // 显式 flex 时两端都按 flex item 排；grid 在 Skyline 下没有对应实现，另算。
-    if flex_container(project, tree, element) {
+    // 显式 flex 时两端都按 flex item 排；grid 在 Skyline 下没有对应实现；
+    // `display: none` 不生成盒子。模板里判不了时不能当成「没有 display」。
+    let (display, undecidable) = cascade_entries_with(project, tree, element, "display");
+    if undecidable {
         return false;
     }
-    resolved_property(project, tree, element, "display").is_none_or(|resolved| {
-        let value = resolved.value.trim().to_ascii_lowercase();
-        !matches!(value.as_str(), "grid" | "inline-grid" | "none")
+    !display.last().is_some_and(|entry| {
+        let value = entry.value.trim().to_ascii_lowercase();
+        is_flex_value(&value) || matches!(value.as_str(), "grid" | "inline-grid" | "none")
     })
 }
 
@@ -253,16 +255,11 @@ fn has_matching_host(
             else {
                 continue;
             };
-            // 模板定义体的真实祖先 / 作用域样式静态不可知，`display` 判定会失明：
-            // 与 `inline_run` 同口径跳过，宁可漏报。
-            if doc.fragment {
-                continue;
-            }
+            // 模板定义体 / `<include>` 片段的样式按引用它的单元求值（`cascade_entries`），
+            // 宿主自身的 `display` 与子节点的行内性都不依赖实例化处的祖先，照常判。
             let tree = Tree::new(doc);
             for element in doc.elements() {
-                if element.in_template()
-                    || tree.matches(element, host_selector, Dialect::Skyline) != Tri::Yes
-                {
+                if tree.matches(element, host_selector, Dialect::Skyline) != Tri::Yes {
                     continue;
                 }
                 if is_candidate_host(project, &tree, element)
@@ -464,5 +461,61 @@ mod tests {
         ));
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(diagnostics[0].message.contains("::after"));
+    }
+
+    /// 宿主在 `<import>` 进来的模板定义体里：模板渲染在页面作用域，样式按引用它的
+    /// 单元求值；宿主自己的 `display` / 子节点行内性都不依赖实例化处的祖先，能判。
+    #[test]
+    fn host_inside_an_imported_template_is_reported() {
+        let fixture = Fixture::new("pseudo-template");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<import src="/tpls/t.wxml"/><template is="t"/>"#,
+            )
+            .write(
+                "tpls/t.wxml",
+                r#"<template name="t"><view class="warn">文案</view></template>"#,
+            )
+            .write(
+                "pages/index/index.wxss",
+                r#".warn::before { content: "!"; }"#,
+            );
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    }
+
+    /// 模板里宿主的 `display` 判不了（`.outer` 在实例化处、属性条件超受限文法）：
+    /// 运行时是 flex 时伪元素与文本同行，不能当成「没有 display」报出来。
+    #[test]
+    fn undecidable_host_display_is_not_judged() {
+        let fixture = Fixture::new("pseudo-undecidable");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<import src="/tpls/t.wxml"/><view class="outer"><template is="t"/></view>"#,
+            )
+            .write(
+                "tpls/t.wxml",
+                r#"<template name="t"><view class="warn" data-x="1">文案</view></template>"#,
+            )
+            .write(
+                "pages/index/index.wxss",
+                ".outer .warn[data-x] { display: flex; }\n.warn::before { content: \"!\"; }",
+            );
+        let diagnostics = check(&fixture);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 }
