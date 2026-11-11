@@ -204,8 +204,6 @@ pub struct Project {
     /// 级联按 (元素, 属性) 反复问，而覆盖关系只取决于文档；每次重算就是几千次
     /// `scope_wxml`（线性扫页面 / 组件），模板文档纳入求值后成了主要开销。
     cover_cache: RefCell<HashMap<String, Rc<Vec<usize>>>>,
-    /// 文档路径 → 按单元作用域覆盖它的样式表下标（[`Self::unit_sheets`]）。
-    unit_cover_cache: RefCell<HashMap<String, Rc<Vec<usize>>>>,
     /// 解析过的 WXML 文档（key 的第二项：是否用空环境解析）。
     ///
     /// 规则是「每个文件 × 每条规则」地扫，不缓存的话同一份文档会被 glass-easel
@@ -459,28 +457,6 @@ impl Project {
         value
     }
 
-    /// 只按单元作用域覆盖 `path` 的样式表下标，按文档缓存。
-    ///
-    /// 与 [`Self::covering_sheets`] 的差别只在模板文档：这里给出的是「单元自己的样式
-    /// 表」，不含从引用方借来的作用域。
-    pub(crate) fn unit_sheets(&self, path: &str) -> Rc<Vec<usize>> {
-        if let Some(hit) = self.unit_cover_cache.borrow().get(path) {
-            return hit.clone();
-        }
-        let indices: Vec<usize> = self
-            .styles
-            .iter()
-            .enumerate()
-            .filter(|(_, sheet)| self.sheet_covers(sheet, path))
-            .map(|(index, _)| index)
-            .collect();
-        let value = Rc::new(indices);
-        self.unit_cover_cache
-            .borrow_mut()
-            .insert(path.to_string(), value.clone());
-        value
-    }
-
     pub fn scope_wxml(&self, scope: &Scope) -> Option<&str> {
         match scope {
             Scope::Global => None,
@@ -705,7 +681,6 @@ impl Project {
             block_cache: RefCell::new(HashMap::new()),
             graph: OnceCell::new(),
             cover_cache: RefCell::new(HashMap::new()),
-            unit_cover_cache: RefCell::new(HashMap::new()),
             doc_cache: RefCell::new(HashMap::new()),
         };
 
@@ -1089,7 +1064,6 @@ impl Loaded {
             block_cache: RefCell::new(HashMap::new()),
             graph: OnceCell::new(),
             cover_cache: RefCell::new(HashMap::new()),
-            unit_cover_cache: RefCell::new(HashMap::new()),
             doc_cache: RefCell::new(HashMap::new()),
         }
     }

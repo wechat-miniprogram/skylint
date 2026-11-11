@@ -441,4 +441,32 @@ mod tests {
         let project = fixture.project();
         assert_eq!(TextOverflowEllipsis.check(&project).len(), 1);
     }
+
+    /// 宿主在 `<import>` 进来的模板定义体里：模板渲染在页面作用域，声明照样落在
+    /// 一个非 `<text>` 的 `<view>` 上。可达性闸门若只看页面 WXML，整条声明会被跳过。
+    #[test]
+    fn host_inside_an_imported_template_is_reported() {
+        let fixture = Fixture::new("template-host");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<import src="/tpls/t.wxml"/><template is="t"/>"#,
+            )
+            .write(
+                "tpls/t.wxml",
+                r#"<template name="t"><view class="title">标题</view></template>"#,
+            )
+            .write(
+                "pages/index/index.wxss",
+                ".title { text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }",
+            );
+        let project = fixture.project();
+        assert_eq!(TextOverflowEllipsis.check(&project).len(), 1);
+    }
 }

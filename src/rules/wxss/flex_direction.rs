@@ -431,4 +431,28 @@ mod tests {
         );
         assert_eq!(messages(&FlexDirection, &project), Vec::<String>::new());
     }
+
+    /// 选择器只命中 `<import>` 进来的模板定义体：模板渲染在页面作用域里，
+    /// `display: flex` 同样会翻转，不能因为页面 WXML 里没有这个类就整块跳过。
+    #[test]
+    fn selector_matching_only_an_imported_template_is_reachable() {
+        let f = Fixture::new("flex-template-reach");
+        f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<import src="/tpls/t.wxml"/><template is="t"/>"#,
+            )
+            .write(
+                "tpls/t.wxml",
+                r#"<template name="t"><view class="price"/></template>"#,
+            )
+            .write("pages/index/index.wxss", ".price { display: flex; }");
+        let project = f.project();
+        assert_eq!(messages(&FlexDirection, &project).len(), 1);
+    }
 }

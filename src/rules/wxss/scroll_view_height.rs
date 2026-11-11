@@ -83,6 +83,24 @@ impl Rule for ScrollViewHeight {
     }
 }
 
+/// 高度结论用到的属性：任一条判不了，`definite_height` 就无从断言。
+const HEIGHT_INPUTS: &[&str] = &[
+    "min-height",
+    "height",
+    "aspect-ratio",
+    "width",
+    "position",
+    "top",
+    "bottom",
+    "flex",
+    "flex-grow",
+    "flex-basis",
+    "display",
+    "flex-direction",
+    "align-self",
+    "align-items",
+];
+
 /// 元素在 Skyline 下拿到的高度是否确定（= 不会塌成 0）。
 ///
 /// 判不了的情况（动态内联 `style`、递归过深）一律当确定，宁可漏报。
@@ -94,6 +112,16 @@ pub(crate) fn definite_height(
     depth: u8,
 ) -> bool {
     if depth > 16 || dynamic_inline_style(element) {
+        return true;
+    }
+    // 模板定义体 / `<include>` 片段的祖先在实例化处：属性本身仍按真实路径求值，
+    // 但选择器超出受限文法、或实例化路径枚举不出来时，级联只能告诉你「判不了」。
+    // 高度结论依赖下面这些属性，任一条判不了就不能断言「没有高度」。
+    if tree.ancestors_unknown(element)
+        && HEIGHT_INPUTS.iter().any(|property| {
+            crate::rules::wxml::cascade_entries_with(project, tree, element, property).1
+        })
+    {
         return true;
     }
     // 框架自己定尺寸的盒子：`swiper-item` 撑满 swiper，`nested-scroll-body` /
@@ -538,6 +566,28 @@ mod tests {
             ".list { height: 300px; max-height: 500px; }",
         );
         assert!(bounded.is_empty(), "{bounded:#?}");
+    }
+
+    /// 模板定义体里的 `scroll-view`：高度来自 `<template is>` 调用处的祖先选择器
+    /// （`.wrap .list`），而调用名是动态的、静态枚举不出实例化路径。判不了就不能
+    /// 当成「没写高度」报，否则运行时有高度也会被误报。
+    #[test]
+    fn undecidable_template_ancestor_is_not_reported() {
+        let fixture = Fixture::new("svh-dynamic-template");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write("app.json", SKYLINE_APP)
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                concat!(
+                    r#"<view class="wrap"><template is="{{which}}"/></view>"#,
+                    r#"<template name="row"><scroll-view class="list"/></template>"#,
+                ),
+            )
+            .write("pages/index/index.wxss", ".wrap .list { height: 100px; }");
+        let diagnostics = ScrollViewHeight.check(&fixture.project());
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     #[test]
