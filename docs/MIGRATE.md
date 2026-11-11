@@ -111,7 +111,14 @@ runner 拿它去做 `git diff` / `checkout`。两者弄混，在「工程根不�
     }
   ],
   "batches": [["unit:…"], ["unit:…"]],
-  "summary": { "units": 42, "withDiagnostics": 19, "diagnostics": 269 }
+  "summary": { "units": 42, "withDiagnostics": 19, "diagnostics": 269 },
+  "shared": {
+    "diagnostics": 8,
+    "files": [
+      { "path": "app.json", "count": 5 },
+      { "path": "project.private.config.json", "count": 3 }
+    ]
+  }
 }
 ```
 
@@ -125,6 +132,12 @@ runner 拿它去做 `git diff` / `checkout`。两者弄混，在「工程根不�
 `files` 是诊断归属的唯一依据：除四件套外，还包含该单元 `@import` 的样式与
 `<import>` / `<include>` 的模板（含传递闭包）。因此诊断总数可能大于
 `summary.diagnostics`——同一文件被多个单元引用时，每个单元各算一份。
+
+`shared` 是 `unit:shared` 的**文件明细**：无归属诊断按文件聚合，条数降序、同数按
+路径排序，`diagnostics` 与 `unit:shared` 的 `diagnostics.total` 相等。
+**它只含不属于任何单元的文件**（`app.json` / `project.private.config.json` 等）；
+被多个单元引用的文件（如 `styles/common.wxss`）不属于这里——它们在各单元
+`files` 里，诊断以 `shared: true` 出现在各自作业单（见 §4.5）。
 
 同一份工程跑两次 `plan`，除 `generator.commit` 外字节一致（可提交、可 diff）。
 
@@ -412,14 +425,21 @@ skylint migration verify <PATH> --baseline <FILE> [--unit <ID>] [--json]
 
 ### 9.1 判据
 
-| 情况 | 计入 | 拦门禁 |
-|---|---|---|
-| 当前有、基线没有，且 severity 是 error / warning | `new` | **是** |
-| 当前有、基线没有，且 severity 是 info | `newInfo` | 否 |
-| 基线有、当前没有 | `fixed` | 否 |
-| 同一 `id`，severity 变了 | `changed` | 否 |
+| 情况 | 计入 | `findings[].kind` | 拦门禁 |
+|---|---|---|---|
+| 当前有、基线没有，且 severity 是 error / warning | `new` | `new` | **是** |
+| 当前有、基线没有，且 severity 是 info | `newInfo` | `new-info` | 否 |
+| 基线有、当前没有 | `fixed` | `fixed` | 否 |
+| 同一 `id`，变严（info→warning/error、warning→error） | `changed` / `changedUp` | `severity-raised` | 否 |
+| 同一 `id`，变松（error→warning、warning/error→info） | `changed` / `changedDown` | `severity-lowered` | 否 |
+
+`changed == changedUp + changedDown`。`kind` 是逐条的权威判据：**`new` 只有一种
+含义——新增且拦门禁**；info 级新增一律是 `new-info`，调用方不能拿 `kind == "new"`
+当「有新诊断」用。判门禁请看 `new` 计数（或退出码），不要数 `findings`。
 
 退出码：`new > 0` → 1，否则 0。`job.acceptance` 的 `l0-static` 就是判 `$.new == 0`。
+调严的 `severity-raised` 不拦门禁（它不是 agent 这次改出来的），但会在人读输出里用
+`↑` 标出，`changedUp` 计数供人工/上层策略判断。
 
 ### 9.2 为什么按 id 不按行列
 
@@ -495,6 +515,24 @@ skylint migration next   <PATH> [--json] [--job-out FILE] [--baseline FILE]
 
 **`unit:shared` 不排队**。它承载共享样式（`app.wxss` / `weui.wxss`）的诊断，
 改一处会影响多个单元，必须单独审批。进度里单列 `shared` 条数。
+
+`ledger` 的文本输出把条数落到文件：
+
+```
+共享资源上还有 3 条诊断（`unit:shared`），不自动排队，需单独审批
+  文件：app.wxss（2 条）、project.private.config.json（1 条）
+  只含不属于任何单元的文件；被多个单元引用的文件（如 styles/common.wxss）按 `shared: true` 记在各单元作业单里，不在其中
+```
+
+文件多于 5 个时只列前 5 个，末尾追加 `等 N 个文件`。`--json` 在同一层新增
+`shared: { "diagnostics": 3, "files": [{ "path": "…", "count": 2 }] }`，台账原有
+字段（`schemaVersion` / `generator` / `units`）不变；`shared` 是派生数据，不写进
+`ledger.json`。
+
+**`unit:shared` ≠ 「被多个单元引用的文件」。** `plan` 只为「不属于任何单元」的诊断
+建 `unit:shared`；`styles/common.wxss` 这类文件属于引用它的每个单元（诊断在各自
+作业单里带 `shared: true`），不在 `unit:shared` 里，也不在 `plan.shared` / ledger 的
+文件清单里。它们要按 §4.5 的方式验收（全工程 verify，或逐个受影响单元 verify）。
 
 ### 10.4 runner 的一轮
 

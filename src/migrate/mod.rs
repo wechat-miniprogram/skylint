@@ -20,7 +20,9 @@ use crate::report::Report;
 use crate::rules::wxml::Reach;
 
 pub use guidance::{Guidance, family_of, guidance_for};
-pub use ledger::{Failure, Ledger, Next, Progress, Status, UnitState, next as next_unit};
+pub use ledger::{
+    Failure, Ledger, LedgerReport, Next, Progress, Status, UnitState, next as next_unit,
+};
 
 /// 产物格式版本。破坏性变更才 +1。
 pub const SCHEMA_VERSION: u32 = 1;
@@ -64,6 +66,48 @@ pub struct Plan {
     /// 按依赖深度分层，层内按路径排序。
     pub batches: Vec<Vec<String>>,
     pub summary: PlanSummary,
+    /// `unit:shared` 的文件明细（无归属诊断按文件聚合）。
+    pub shared: SharedFiles,
+}
+
+/// 无归属诊断（`unit:shared`）按文件聚合，条数降序、同数按路径。
+///
+/// 只含**不属于任何单元**的文件（`app.json` / `project.private.config.json` 等）；
+/// 被多个单元引用的文件（`styles/common.wxss`）不属于这里，它们在各自作业单里
+/// 以 `shared: true` 出现。
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedFiles {
+    pub diagnostics: usize,
+    pub files: Vec<SharedFile>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedFile {
+    pub path: String,
+    pub count: usize,
+}
+
+impl SharedFiles {
+    /// 一行文件明细：`app.wxss（2 条）、project.private.config.json（1 条）`。
+    /// 多于 5 个文件时只列前 5 个，末尾追加 `等 N 个文件`。
+    pub fn files_summary(&self) -> Option<String> {
+        if self.files.is_empty() {
+            return None;
+        }
+        const SHOWN: usize = 5;
+        let mut parts: Vec<String> = self
+            .files
+            .iter()
+            .take(SHOWN)
+            .map(|file| format!("{}（{} 条）", file.path, file.count))
+            .collect();
+        if self.files.len() > SHOWN {
+            parts.push(format!("等 {} 个文件", self.files.len()));
+        }
+        Some(parts.join("、"))
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -337,6 +381,7 @@ pub fn plan(views: &[Project], report: &Report, baseline: Option<BaselineRef>) -
     }
     let mut counts: Vec<DiagCounts> = vec![DiagCounts::default(); seeds.len()];
     let mut shared = DiagCounts::default();
+    let mut shared_files: BTreeMap<&str, usize> = BTreeMap::new();
     for diagnostic in &report.diagnostics {
         match owners.get(diagnostic.path.as_str()) {
             Some(idxs) => {
@@ -344,9 +389,20 @@ pub fn plan(views: &[Project], report: &Report, baseline: Option<BaselineRef>) -
                     count_diagnostic(&mut counts[idx], diagnostic);
                 }
             }
-            None => count_diagnostic(&mut shared, diagnostic),
+            None => {
+                count_diagnostic(&mut shared, diagnostic);
+                *shared_files.entry(diagnostic.path.as_str()).or_default() += 1;
+            }
         }
     }
+    let mut shared_files: Vec<SharedFile> = shared_files
+        .into_iter()
+        .map(|(path, count)| SharedFile {
+            path: path.to_string(),
+            count,
+        })
+        .collect();
+    shared_files.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.path.cmp(&b.path)));
 
     let depths = dependency_depths(views, &seeds);
 
@@ -378,6 +434,7 @@ pub fn plan(views: &[Project], report: &Report, baseline: Option<BaselineRef>) -
             diagnostics: counts[idx].clone(),
         });
     }
+    let shared_total = shared.total;
     if shared.total > 0 {
         units.push(PlanUnit {
             id: "unit:shared".to_string(),
@@ -413,6 +470,10 @@ pub fn plan(views: &[Project], report: &Report, baseline: Option<BaselineRef>) -
         },
         batches,
         units,
+        shared: SharedFiles {
+            diagnostics: shared_total,
+            files: shared_files,
+        },
     }
 }
 
@@ -1435,15 +1496,20 @@ pub struct VerifyReport {
     /// 新增的 info（不拦门禁）。
     pub new_info: usize,
     pub fixed: usize,
-    /// 同一 id、严重级变了（例如规则被调档）。
+    /// 同一 id、严重级变了（规则调档）。等于 `changed_up + changed_down`。
     pub changed: usize,
+    /// 其中变严的（info→warning/error、warning→error）。
+    pub changed_up: usize,
+    /// 其中变松的（error/warning→info、error→warning）。
+    pub changed_down: usize,
     pub findings: Vec<DiffEntry>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffEntry {
-    /// `new` / `fixed` / `severity-changed`
+    /// `new`：新增 error/warning，拦门禁；`new-info`：新增 info，不拦；
+    /// `fixed`；`severity-raised` / `severity-lowered`：严重级变严 / 变松（不拦门禁）。
     pub kind: &'static str,
     pub id: String,
     pub rule: String,
@@ -1526,6 +1592,8 @@ pub fn verify(
     let mut new = 0;
     let mut new_info = 0;
     let mut changed = 0;
+    let mut changed_up = 0;
+    let mut changed_down = 0;
     let mut seen: BTreeSet<&str> = BTreeSet::new();
 
     for (index, finding) in current.iter().enumerate() {
@@ -1547,12 +1615,18 @@ pub fn verify(
             });
         match matched {
             None => {
-                match finding.severity {
-                    Severity::Info => new_info += 1,
-                    _ => new += 1,
-                }
+                let kind = match finding.severity {
+                    Severity::Info => {
+                        new_info += 1;
+                        "new-info"
+                    }
+                    _ => {
+                        new += 1;
+                        "new"
+                    }
+                };
                 findings.push(DiffEntry {
-                    kind: "new",
+                    kind,
                     id: finding.id.clone(),
                     rule: finding.rule.clone(),
                     severity: finding.severity,
@@ -1565,8 +1639,16 @@ pub fn verify(
             Some(previous) if previous.severity != finding.severity => {
                 seen.insert(previous.id.as_str());
                 changed += 1;
+                // `Severity` 的排序是 Info < Warning < Error，变大即变严。
+                let kind = if finding.severity > previous.severity {
+                    changed_up += 1;
+                    "severity-raised"
+                } else {
+                    changed_down += 1;
+                    "severity-lowered"
+                };
                 findings.push(DiffEntry {
-                    kind: "severity-changed",
+                    kind,
                     id: finding.id.clone(),
                     rule: finding.rule.clone(),
                     severity: finding.severity,
@@ -1622,6 +1704,8 @@ pub fn verify(
         new_info,
         fixed,
         changed,
+        changed_up,
+        changed_down,
         findings,
     }
 }

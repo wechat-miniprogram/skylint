@@ -83,9 +83,9 @@ harness/
 |---|---|---|
 | `skylint migration next <root> --json` | 取下一个单元 | 0；`unit: null` 表示做完 |
 | `skylint migration job <root> --unit <id> --out <f>` | 生成作业单 | 0 / 1 找不到单元 / 2 环境错 |
-| `skylint migration verify <root> --baseline <f> --unit <id> --json` | L0 门禁 | 0 通过 / 1 有新增 / 2 环境错 |
+| `skylint migration verify <root> --baseline <f> --unit <id> --json` | L0 门禁 | 0 通过 / 1 有新增 error/warning（`new > 0`）/ 2 环境错 |
 | `skylint migration record <root> --unit <id> --status <s>` | 写台账 | 0 / 1 单元不在计划里 |
-| `skylint migration ledger <root> --json` | 读进度 | 0 |
+| `skylint migration ledger <root> --json` | 读进度 | 0（`--json` 额外给 `shared` 文件清单） |
 
 **退出码 2 与 1 必须分开**：1 是「代码改坏了」（该回滚重试），2 是「工具跑不起来」
 （该停下来看环境）。混在一起会让 agent 无限重试一个环境问题。
@@ -96,7 +96,7 @@ harness/
 |---|---|---|
 | agent 退出码非 0 / 超时 | `revert` + `record migrated` + 下一轮 | 是「这次没成」，不是异常 |
 | 改了单元目录之外的文件 | `revert` + `record migrated`（gate=scope） | 越界改动无法归因 |
-| L0 有新增诊断 | `revert` + `record migrated`（gate=l0-static） | **不能 throw**：throw 会让引擎重试，重试会换一次结果 |
+| L0 有新增 error/warning（`new > 0`） | `revert` + `record migrated`（gate=l0-static） | **不能 throw**：throw 会让引擎重试，重试会换一次结果。新增 info 是 `new-info`，不判失败 |
 | L1 构建失败 | 同上（gate=l1-build） | 同上 |
 | L4 拒收 | 同上（gate=l4-judge） | 拒收是**数据**，不是异常 |
 | L4 返回的不是合法 JSON | throw（引擎重试） | 这是「这一轮白跑了」，重试通常就好 |
@@ -149,7 +149,7 @@ v2 的做法：每个单元一个 `git worktree` + 台账分片，最后合并�
 |---|---|
 | L2 automator 冒烟 | 位置留了（`steps/agent.ts`），没实现 |
 | L3 截图对比 | 同上 |
-| `unit:shared`（共享样式） | 不排队，人工处理；第三方库先用 `.skylint/config.json` 的 `exclude` 排掉 |
+| `unit:shared`（无归属文件，如 `app.json`） | 不排队，人工处理；`ledger` 输出文件清单。第三方库先用 `.skylint/config.json` 的 `exclude` 排掉。被多个单元引用的文件（`styles/common.wxss`）**不在** `unit:shared` 里 |
 | 并行 | 见 §9 |
 | CI 集成 | 直接调 `skylint migration verify` 即可，不需要编排器 |
 
