@@ -199,6 +199,13 @@ pub struct Project {
     /// 渲染树（`<slot>` 投影 + 组件边界）。建一次要遍历全部文档，
     /// 规则与 Facts 都会问它，绝不能每次重算。
     graph: OnceCell<WxmlGraph>,
+    /// 文档路径 → 覆盖它的样式表下标（[`Self::covering_sheets`]）。
+    ///
+    /// 级联按 (元素, 属性) 反复问，而覆盖关系只取决于文档；每次重算就是几千次
+    /// `scope_wxml`（线性扫页面 / 组件），模板文档纳入求值后成了主要开销。
+    cover_cache: RefCell<HashMap<String, Rc<Vec<usize>>>>,
+    /// 文档路径 → 按单元作用域覆盖它的样式表下标（[`Self::unit_sheets`]）。
+    unit_cover_cache: RefCell<HashMap<String, Rc<Vec<usize>>>>,
     /// 解析过的 WXML 文档（key 的第二项：是否用空环境解析）。
     ///
     /// 规则是「每个文件 × 每条规则」地扫，不缓存的话同一份文档会被 glass-easel
@@ -405,6 +412,75 @@ impl Project {
 
     /// 某份样式的全部引入方对应的 WXML（按路径去重）。规则拿它做选择器匹配；
     /// 拿不到（页面被 opt-out、wxml 缺失、解析失败）就跳过该单元。
+    /// 这份样式表是否作用于 `path` 这份文档：**单元作用域**口径。
+    ///
+    /// `Global` 的样式表对所有文档生效；其余按 `scope` 对应的单元 WXML 判等。独立
+    /// 模板文件与 `<include>` 片段不是单元，这里恒为假（它们用 [`Self::covering_sheets`]）。
+    pub(crate) fn sheet_covers(&self, sheet: &StyleSheet, path: &str) -> bool {
+        sheet.scopes.iter().any(|scope| match scope {
+            Scope::Global => true,
+            _ => self.scope_wxml(scope) == Some(path),
+        })
+    }
+
+    /// 覆盖 `path` 这份文档的样式表下标，按文档缓存。
+    ///
+    /// 单元（页面 / 组件，含写在其内的内联 `<template>`）按 [`Self::sheet_covers`]；
+    /// 独立模板文件与 `<include>` 片段按实际 `<import>` / `<include>` 它的单元
+    /// （[`Self::template_scopes`]）与 `Global` 的并集；查不到就是空集（判不了）。
+    pub(crate) fn covering_sheets(&self, path: &str) -> Rc<Vec<usize>> {
+        if let Some(hit) = self.cover_cache.borrow().get(path) {
+            return hit.clone();
+        }
+        let is_unit = self.scope_of(path).is_some();
+        let template_scopes = self.template_scopes.get(path);
+        let indices: Vec<usize> = self
+            .styles
+            .iter()
+            .enumerate()
+            .filter(|(_, sheet)| {
+                if is_unit {
+                    return self.sheet_covers(sheet, path);
+                }
+                let Some(scopes) = template_scopes else {
+                    return false;
+                };
+                sheet
+                    .scopes
+                    .iter()
+                    .any(|scope| *scope == Scope::Global || scopes.contains(scope))
+            })
+            .map(|(index, _)| index)
+            .collect();
+        let value = Rc::new(indices);
+        self.cover_cache
+            .borrow_mut()
+            .insert(path.to_string(), value.clone());
+        value
+    }
+
+    /// 只按单元作用域覆盖 `path` 的样式表下标，按文档缓存。
+    ///
+    /// 与 [`Self::covering_sheets`] 的差别只在模板文档：这里给出的是「单元自己的样式
+    /// 表」，不含从引用方借来的作用域。
+    pub(crate) fn unit_sheets(&self, path: &str) -> Rc<Vec<usize>> {
+        if let Some(hit) = self.unit_cover_cache.borrow().get(path) {
+            return hit.clone();
+        }
+        let indices: Vec<usize> = self
+            .styles
+            .iter()
+            .enumerate()
+            .filter(|(_, sheet)| self.sheet_covers(sheet, path))
+            .map(|(index, _)| index)
+            .collect();
+        let value = Rc::new(indices);
+        self.unit_cover_cache
+            .borrow_mut()
+            .insert(path.to_string(), value.clone());
+        value
+    }
+
     pub fn scope_wxml(&self, scope: &Scope) -> Option<&str> {
         match scope {
             Scope::Global => None,
@@ -628,6 +704,8 @@ impl Project {
             closure: OnceCell::new(),
             block_cache: RefCell::new(HashMap::new()),
             graph: OnceCell::new(),
+            cover_cache: RefCell::new(HashMap::new()),
+            unit_cover_cache: RefCell::new(HashMap::new()),
             doc_cache: RefCell::new(HashMap::new()),
         };
 
@@ -1010,6 +1088,8 @@ impl Loaded {
             closure: OnceCell::new(),
             block_cache: RefCell::new(HashMap::new()),
             graph: OnceCell::new(),
+            cover_cache: RefCell::new(HashMap::new()),
+            unit_cover_cache: RefCell::new(HashMap::new()),
             doc_cache: RefCell::new(HashMap::new()),
         }
     }

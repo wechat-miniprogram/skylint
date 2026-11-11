@@ -178,7 +178,7 @@
 | 170 | 1E JS/worklet | 使用 worklet 时开发者工具需开启 ES5 编译 | skyline-skills/skills/skyline-worklet/references/core/worklet-overview.md:11 | 已实现 | `skyline/worklet-compile-setting`（判据更正：是 `setting.compileWorklet`，不是 `es6`） |
 | 171 | 1E JS/worklet | 小程序插件内不能使用 worklet.scrollViewContext.scrollTo | skyline-skills/skills/skyline-scroll-api/SKILL.md:110 | 已实现 | `skyline/worklet-api-scope`（compileType=plugin） |
 | 172 | 1C 组件契约 | 暂不支持的组件（web-view / movable-area / movable-view / editor / progress 等） | skyline-skills/skills/skyline-overview/references/introduction/component-support.md:54-61 | 已实现 | `skyline/unsupported-component` |
-| 173 | 1C 组件契约 | 内联文本只能放在 `<text>` 里，不能与元素混排 | skyline-skills/skills/skyline-components/references/media/text.md:5、component-support.md:111 | 已实现 | `skyline/no-inline-text`（只报「文本 + 元素混排」，纯文本节点不报）；模板里的并列 `<text>` 由 `skyline/text-run-block` 补 |
+| 173 | 1C 组件契约 | 内联文本只能放在 `<text>` 里，不能与元素混排 | skyline-skills/skills/skyline-components/references/media/text.md:5、component-support.md:111 | 已实现 | `skyline/no-inline-text`（只报「文本 + 元素混排」，纯文本节点不报）；模板里的并列 `<text>` 同样由 `skyline/inline-run` 覆盖（模板按引用它的单元求值样式） |
 | 174 | 1D 配置 | app.json 的 rendererOptions 需基础库 ≥ 2.31.1 | skyline-skills/skills/skyline-config/references/project-config.md:66 | 已实现 | `skyline/lib-version`（`rendererOptions` 存在时阈值取 2.31.1；页面级更高阈值覆盖它） |
 | 175 | 1D 配置 | convertRpxToVw 需基础库 ≥ 3.3.0 | skyline-skills/skills/skyline-config/references/project-config.md:68 | 已实现 | `skyline/lib-version`（rendererOptions 子树出现 convertRpxToVw 时阈值取 3.3.0） |
 
@@ -203,12 +203,13 @@
 - `skyline/pseudo-inline-layout`：`::before` / `::after` 在非文本宿主上是块级 / flex 盒
   （`shadow/pseudo_node.cc:47-52`），宿主里还有文本 / 文本级子节点时，WebView 下与
   文本同行、Skyline 下伪元素独占一行。知识库没有这条；判据来自引擎源码。
-- `skyline/text-run-block`：模板定义里并列的 `<text>` 在 Skyline 下是各自独立的块级盒
-  （`shadow/components/text_shadow_node.cc:149-158`、`css/css_properties/display.cc:43-50`）。
-  知识库只写了「内联文本必须用 `<text>`」，没写「同一段文本被拆成多个 `<text>` 兄弟」；
-  判据来自引擎源码。模板不是单元、`sheet_covers` 对它恒为假，所以这条规则按
-  `Project::template_scopes`（实际 `<import>` 它的单元）求样式，与 `skyline/inline-run`
-  按文档类型分工。
+- `skyline/inline-run`：并列的文本级元素在 WebView 下共享一个行内流、在 Skyline 下
+  各自是独立的块级盒（`shadow/components/text_shadow_node.cc:149-158`、
+  `css/css_properties/display.cc:43-50`）。知识库只写了「内联文本必须用 `<text>`」，
+  没写「同一段文本被拆成多个 `<text>` / `<image>` 兄弟」；判据来自引擎源码。模板文件与
+  `<include>` 片段不是单元、`sheet_covers` 对它们恒为假，所以级联求值按
+  `Project::template_scopes`（实际 `<import>` / `<include>` 它的单元）来——模板与普通
+  页面由同一条规则覆盖，不再按文档类型分工。
 - `skyline/no-pseudo`：Skyline 的选择器匹配只支持部分伪类，具体支持面随基础库版本变化
   （`changelog.md:205-207` 记录 `:not()`/`:only-child()`/`:empty()` 是后来加的），
   知识库没有一条「哪些伪类不支持」的清单；规则按引擎源码的匹配器实现，判定保守。

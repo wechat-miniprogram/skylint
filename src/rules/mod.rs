@@ -91,7 +91,6 @@ impl Registry {
             Box::new(wxml::HorizontalScrollEnableFlex),
             Box::new(wxml::TextHardBreakEllipsis),
             Box::new(wxml::InlineRun),
-            Box::new(wxml::TextRunBlock),
             Box::new(wxss::NoPseudo),
             Box::new(wxss::PseudoInlineLayout),
             Box::new(wxss::BoxSizing),

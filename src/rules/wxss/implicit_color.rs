@@ -23,7 +23,7 @@ use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{ElementDoc, element_docs, resolved_property, sheet_covers, walk_skyline};
+use crate::rules::wxml::{ElementDoc, element_docs, resolved_property, walk_skyline};
 use crate::rules::wxss::value_util::at_declaration;
 use crate::{Diagnostic, Severity};
 
@@ -131,9 +131,9 @@ impl Rule for ImplicitColor {
 /// 页面根不在元素树里，`resolved_property` 看不到它；后写的声明生效。
 fn page_color(project: &Project, tree: &Tree<'_>) -> Option<String> {
     project
-        .styles
+        .unit_sheets(tree.path())
         .iter()
-        .filter(|sheet| sheet_covers(sheet, project, tree.path()))
+        .map(|&index| &project.styles[index])
         .flat_map(|sheet| &sheet.doc.rules)
         .filter(|rule| {
             rule.selectors.iter().any(|selector| {

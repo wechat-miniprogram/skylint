@@ -160,6 +160,9 @@ pub struct Branch {
     pub renderer: RendererArm,
     /// 这一支的条件引用的数据字段（模板数据作用域规则需要知道条件吃了哪些键）。
     pub fields: Vec<String>,
+    /// 这一支的条件是「字段与字面量」的等值比较时的解析结果：同字段不同字面量
+    /// （或互补的 `!==`）的两个分支互斥。`wx:else` 与判不出来的条件为 `None`。
+    pub compare: Option<crate::input::expr::LitCompare>,
 }
 
 /// 一个条件分支在两种渲染器下的可达性。
@@ -587,7 +590,7 @@ fn element_nodes(
                 (false, true) => RendererArm::Webview,
                 (false, false) => RendererArm::Both,
             };
-            let inner = |arm: u32, guarded: bool, fields: Vec<String>| {
+            let inner = |arm: u32, guarded: bool, fields: Vec<String>, compare| {
                 let mut stack = branches.to_vec();
                 stack.push(Branch {
                     group,
@@ -595,6 +598,7 @@ fn element_nodes(
                     renderer_guarded: guarded,
                     renderer: arm_renderer(arm as usize),
                     fields,
+                    compare,
                 });
                 stack
             };
@@ -621,6 +625,7 @@ fn element_nodes(
                         arm as u32,
                         condition_mentions_renderer(condition),
                         condition_fields(condition),
+                        condition_compare(condition),
                     ),
                     template,
                     calls,
@@ -632,7 +637,7 @@ fn element_nodes(
                     source,
                     env,
                     next_group,
-                    &inner(arms.len() as u32, chain_guarded, Vec::new()),
+                    &inner(arms.len() as u32, chain_guarded, Vec::new(), None),
                     template,
                     calls,
                 ));
@@ -701,6 +706,14 @@ fn condition_fields(condition: &Value) -> Vec<String> {
     match condition {
         Value::Dynamic { expression, .. } => crate::input::expr::data_fields(expression),
         _ => Vec::new(),
+    }
+}
+
+/// 条件里的「字段与字面量」比较；判不出来就是 `None`（不参与互斥推导）。
+fn condition_compare(condition: &Value) -> Option<crate::input::expr::LitCompare> {
+    match condition {
+        Value::Dynamic { expression, .. } => crate::input::expr::literal_compare(expression),
+        _ => None,
     }
 }
 

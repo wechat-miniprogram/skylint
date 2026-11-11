@@ -418,6 +418,111 @@ pub fn object_keys(expression: &Expression) -> Option<Vec<String>> {
         .collect()
 }
 
+/// 字面量的类型。同一个「值」在不同类型下不相同（`1` / `'1'` / `true`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LitKind {
+    Str,
+    Num,
+    Bool,
+    /// `null` 与 `undefined`：宽松相等下两者互补，不能算不同。
+    Nullish,
+}
+
+/// 条件里的「字段与字面量」一对一比较：`X === 1` / `X == 'a'` / `X !== 1`。
+///
+/// 只认**裸数据字段路径**（`a`、`a.b`）与字面量比。函数调用、动态成员、`wx:for`
+/// 作用域的 `item` / `index` 一律不认——它们的取值静态判不了。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LitCompare {
+    /// 字段路径（`a.b`）。
+    pub field: String,
+    pub kind: LitKind,
+    /// 字面量的规范化写法（`str` / `true` / `1` / `nullish`）。
+    pub literal: String,
+    /// `===` / `!==`（而不是 `==` / `!=`）：宽松相等会跨类型相等，判互斥时必须区分。
+    pub strict: bool,
+    /// `!==` / `!=`（或 `!(X === 1)`）：与同字段同字面量的肯定式互补。
+    pub negated: bool,
+}
+
+impl LitCompare {
+    /// 两个比较是否互斥——即不会同时成立。
+    ///
+    /// `X === 1` 与 `X === 2` 互斥；`X === 1` 与 `X !== 1` 互补；`X !== 1` 与
+    /// `X !== 2` 不互斥（可以同时成立）；宽松相等跨类型时（`X == 1` 与 `X == '1'`）
+    /// 也看得见相等，不能当互斥。
+    pub fn excludes(&self, other: &Self) -> bool {
+        if self.field != other.field || self.strict != other.strict {
+            return false;
+        }
+        let same = self.kind == other.kind && self.literal == other.literal;
+        match (self.negated, other.negated) {
+            // 都是肯定式：字面量不同才互斥（宽松相等还要同类型才敢判）。
+            (false, false) => !same && (self.strict || self.kind == other.kind),
+            // 都是否定式：可以同时成立。
+            (true, true) => false,
+            // 一条肯定一条否定：同一个比较才互补。
+            _ => same,
+        }
+    }
+}
+
+/// 条件里的字面量比较；不是这个形状就返回 `None`。
+pub fn literal_compare(expression: &Expression) -> Option<LitCompare> {
+    let (left, right, negated, strict) = match expression {
+        Expression::EqFull { left, right, .. } => (left, right, false, true),
+        Expression::Eq { left, right, .. } => (left, right, false, false),
+        Expression::NeFull { left, right, .. } => (left, right, true, true),
+        Expression::Ne { left, right, .. } => (left, right, true, false),
+        // `!(X === 1)` 与 `X !== 1` 等价，翻一下否定位。
+        Expression::Reverse { value, .. } => {
+            let mut compare = literal_compare(value)?;
+            compare.negated = !compare.negated;
+            return Some(compare);
+        }
+        _ => return None,
+    };
+    let (field, kind, literal) = match (field_path(left), literal_value(right)) {
+        (Some(field), Some((kind, literal))) => (field, kind, literal),
+        _ => {
+            let (kind, literal) = literal_value(left)?;
+            (field_path(right)?, kind, literal)
+        }
+    };
+    Some(LitCompare {
+        field,
+        kind,
+        literal,
+        strict,
+        negated,
+    })
+}
+
+/// 裸数据字段路径：`a` / `a.b`。作用域引用（`wx:for` 的 `item`、wxs 模块）不算。
+fn field_path(expression: &Expression) -> Option<String> {
+    match expression {
+        Expression::DataField { name, .. } => Some(name.to_string()),
+        Expression::StaticMember {
+            obj, field_name, ..
+        } => Some(format!("{}.{}", field_path(obj)?, field_name)),
+        _ => None,
+    }
+}
+
+/// 字面量的规范化 `(类型, 值)`；不是字面量返回 `None`。
+fn literal_value(expression: &Expression) -> Option<(LitKind, String)> {
+    Some(match expression {
+        Expression::LitStr { value, .. } => (LitKind::Str, value.to_string()),
+        Expression::LitInt { value, .. } => (LitKind::Num, value.to_string()),
+        Expression::LitFloat { value, .. } => (LitKind::Num, value.to_string()),
+        Expression::LitBool { value, .. } => (LitKind::Bool, value.to_string()),
+        Expression::LitNull { .. } | Expression::LitUndefined { .. } => {
+            (LitKind::Nullish, "nullish".to_string())
+        }
+        _ => return None,
+    })
+}
+
 /// 遍历表达式树上的每个节点（含自身）。对象键、`wx:for` 作用域不参与遍历。
 fn walk(expression: &Expression, visit: &mut impl FnMut(&Expression)) {
     use Expression::*;

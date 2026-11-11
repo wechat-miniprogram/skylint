@@ -35,12 +35,15 @@
 //! 不可知的边（动态槽名、`dynamicSlots`、动态 `<template is>`、未渲染）就把 `open`
 //! 置位，调用方据此放弃判定（宁可漏报）。
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::rc::Rc;
 
 use crate::project::paths::{posix_dirname, posix_join};
 
 use crate::Project;
 use crate::input::wxml::{WxmlAttribute, WxmlDoc, WxmlElement, WxmlNode};
+use crate::matcher::{FlatNode, node_of};
 use crate::project::Scope;
 
 /// `<template is>` 调用写在文档顶层：没有所在元素。
@@ -66,6 +69,20 @@ pub(crate) enum AncestorRef<'a> {
     Element { element: &'a FlatElement },
     /// 页面根：WXML 里没有对应标签，但 WebView 的 DOM 根是 `<page>`。
     PageRoot,
+}
+
+impl AncestorRef<'_> {
+    /// 匹配用的扁平节点：跨边界的选择器匹配只看标签 / id / class。
+    pub(crate) fn node(&self) -> FlatNode {
+        match self {
+            Self::Element { element } => node_of(&element.tag, &element.attributes),
+            // WebView 的 DOM 根就是 `<page>`。
+            Self::PageRoot => FlatNode {
+                tag: "page".to_string(),
+                ..FlatNode::default()
+            },
+        }
+    }
 }
 
 /// 一次组件使用点（反链）：哪个文档用哪个标签引用了这份组件。
@@ -182,6 +199,12 @@ enum Parents {
     Unknown,
 }
 
+/// 元素的实例化祖先路径（已转成匹配用节点）与是否被路径上限截断。
+pub(crate) type AncestorNodePaths = (Vec<Vec<FlatNode>>, bool);
+
+/// (文档实例, 元素起点) → (选择器, 判定)：模板文档的判定缓存。
+pub(crate) type VerdictCache = HashMap<(usize, (u32, u32)), HashMap<String, Option<bool>>>;
+
 /// 全工程的 WXML 逻辑树。
 pub(crate) struct WxmlGraph {
     docs: Vec<DocTree>,
@@ -192,6 +215,16 @@ pub(crate) struct WxmlGraph {
     includes: HashMap<usize, Vec<(usize, Option<usize>)>>,
     /// 文档下标 → `<import>` 了它的文档。
     importers: HashMap<usize, Vec<usize>>,
+    /// 元素下标 → 实例化祖先路径（已转成匹配用节点）与是否截断。
+    ///
+    /// 元素级规则会对同一元素按属性反复问，而枚举一次要回溯整张图，必须缓存。
+    path_cache: RefCell<HashMap<(usize, usize), Rc<AncestorNodePaths>>>,
+    /// (文档实例, 元素起点) → (选择器, 是否命中)：模板文档的选择器判定。
+    ///
+    /// 判定只取决于 (元素, 选择器)，但级联是「按属性」走的：`implicit-color` 一个元素
+    /// 要问 9 个属性，同一条选择器就会被判 9 次。一轮 lint 里选择器集合是稳定的。
+    /// 键里的文档是**解析实例**（`WxmlDoc` 地址）：同一路径的折叠版与全分支版结构不同。
+    verdict_cache: RefCell<VerdictCache>,
 }
 
 impl WxmlGraph {
@@ -313,6 +346,8 @@ impl WxmlGraph {
             usages,
             includes,
             importers,
+            path_cache: RefCell::new(HashMap::new()),
+            verdict_cache: RefCell::new(HashMap::new()),
         }
     }
 
@@ -381,21 +416,98 @@ impl WxmlGraph {
         doc_path: &str,
         element: &WxmlElement,
     ) -> Vec<Vec<AncestorRef<'a>>> {
+        self.ancestor_paths_capped(doc_path, element).0
+    }
+
+    /// 同上，另外告诉你路径是否被 [`MAX_PATHS`] / [`MAX_VISITS`] 截断。
+    ///
+    /// 截断时「没有一条路径命中」不等于「哪条路径都不命中」，调用方要把后者当
+    /// 判不了处理。
+    pub(crate) fn ancestor_paths_capped<'a>(
+        &'a self,
+        doc_path: &str,
+        element: &WxmlElement,
+    ) -> (Vec<Vec<AncestorRef<'a>>>, bool) {
         let Some(&doc) = self.by_path.get(doc_path) else {
-            return Vec::new();
+            return (Vec::new(), false);
         };
         let Some(&start) = self.docs[doc]
             .by_start
             .get(&(element.tag_start.line, element.tag_start.utf16_col))
         else {
-            return Vec::new();
+            return (Vec::new(), false);
         };
         let mut out = Vec::new();
         let start = NodeId { doc, idx: start };
         let mut seen = HashSet::from([start]);
         let mut budget = MAX_VISITS;
         self.collect_paths(start, &mut Vec::new(), &mut out, &mut seen, &mut budget);
-        out
+        let truncated = budget == 0 || out.len() >= MAX_PATHS;
+        (out, truncated)
+    }
+
+    /// 模板文档里「这条选择器命中这个元素吗」的判定，按 (元素, 选择器) 缓存。
+    ///
+    /// 纯加速：结论只由 `compute` 决定，缓存键是文档实例 + 元素起点 + 选择器原文。
+    pub(crate) fn cached_verdict(
+        &self,
+        doc_id: usize,
+        element: &WxmlElement,
+        selector: &str,
+        compute: impl FnOnce() -> Option<bool>,
+    ) -> Option<bool> {
+        let key = (
+            doc_id,
+            (element.tag_start.line, element.tag_start.utf16_col),
+        );
+        if let Some(hit) = self
+            .verdict_cache
+            .borrow()
+            .get(&key)
+            .and_then(|per_element| per_element.get(selector))
+        {
+            return *hit;
+        }
+        let value = compute();
+        self.verdict_cache
+            .borrow_mut()
+            .entry(key)
+            .or_default()
+            .insert(selector.to_string(), value);
+        value
+    }
+
+    /// 元素的实例化祖先路径（已转成匹配用节点），按元素缓存。
+    ///
+    /// 返回 `(paths, truncated)`；`paths` 为空 = 这个元素一条实例化路径都走不通，
+    /// 依赖祖先的选择器无法判定。
+    pub(crate) fn ancestor_nodes(
+        &self,
+        doc_path: &str,
+        element: &WxmlElement,
+    ) -> Rc<AncestorNodePaths> {
+        let Some(&doc) = self.by_path.get(doc_path) else {
+            return Rc::new((Vec::new(), false));
+        };
+        let Some(&idx) = self.docs[doc]
+            .by_start
+            .get(&(element.tag_start.line, element.tag_start.utf16_col))
+        else {
+            return Rc::new((Vec::new(), false));
+        };
+        if let Some(hit) = self.path_cache.borrow().get(&(doc, idx)) {
+            return hit.clone();
+        }
+        let (paths, truncated) = self.ancestor_paths_capped(doc_path, element);
+        let nodes = paths
+            .iter()
+            .map(|path| path.iter().map(AncestorRef::node).collect())
+            .collect();
+        let value = Rc::new((nodes, truncated));
+        self.path_cache
+            .borrow_mut()
+            .insert((doc, idx), value.clone());
+        value
     }
 
     fn collect_paths<'a>(
