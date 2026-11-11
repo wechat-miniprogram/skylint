@@ -1504,7 +1504,7 @@ fn baseline_records_rule_set() {
     assert!(!rules.is_empty());
     assert!(rules.windows(2).all(|pair| pair[0] < pair[1]), "{rules:?}");
     assert!(
-        rules.iter().any(|id| id == "skyline/text-run-block"),
+        rules.iter().any(|id| id == "skyline/no-inline-text"),
         "规则 id 应来自当前 Registry"
     );
     assert_eq!(rules.len(), rules.iter().collect::<HashSet<_>>().len());
@@ -1536,13 +1536,13 @@ fn augment_appends_only_new_rule_findings() {
         old.clone(),
         identified_with(
             "new-1",
-            "skyline/text-run-block",
+            "skyline/pseudo-inline-layout",
             "pages/b/index.wxml",
             Severity::Warning,
         ),
         identified_with(
             "new-2",
-            "skyline/text-run-block",
+            "skyline/pseudo-inline-layout",
             "pages/b/index.wxml",
             Severity::Info,
         ),
@@ -1552,7 +1552,7 @@ fn augment_appends_only_new_rule_findings() {
     assert!(!report.degraded);
     assert_eq!(report.added, 2);
     assert_eq!(report.rules.len(), 1);
-    assert_eq!(report.rules[0].rule, "skyline/text-run-block");
+    assert_eq!(report.rules[0].rule, "skyline/pseudo-inline-layout");
     assert_eq!(report.rules[0].count, 2);
     assert_eq!(report.rules[0].file_count, 1);
     assert_eq!(report.rules[0].files, vec!["pages/b/index.wxml"]);
@@ -1577,7 +1577,7 @@ fn augment_appends_only_new_rule_findings() {
             .as_ref()
             .unwrap()
             .iter()
-            .any(|id| id == "skyline/text-run-block")
+            .any(|id| id == "skyline/pseudo-inline-layout")
     );
 }
 
@@ -1591,7 +1591,7 @@ fn augment_then_verify_is_clean() {
         old.clone(),
         identified_with(
             "new-error",
-            "skyline/text-run-block",
+            "skyline/pseudo-inline-layout",
             "pages/b/index.wxml",
             Severity::Error,
         ),
@@ -1626,7 +1626,7 @@ fn augment_legacy_baseline_uses_findings_rules_and_warns() {
         // 新规则：吸收。
         identified_with(
             "brand-new",
-            "skyline/text-run-block",
+            "skyline/pseudo-inline-layout",
             "pages/b/index.wxml",
             Severity::Warning,
         ),
@@ -1643,7 +1643,10 @@ fn augment_legacy_baseline_uses_findings_rules_and_warns() {
     assert!(report.degraded);
     assert_eq!(report.added, 2);
     let rules: Vec<&str> = report.rules.iter().map(|rule| rule.rule.as_str()).collect();
-    assert_eq!(rules, vec!["skyline/box-sizing", "skyline/text-run-block"]);
+    assert_eq!(
+        rules,
+        vec!["skyline/box-sizing", "skyline/pseudo-inline-layout"]
+    );
     assert!(
         baseline
             .findings
@@ -1662,7 +1665,7 @@ fn augment_report_lists_first_five_files() {
         .map(|index| {
             identified_with(
                 &format!("new-{index}"),
-                "skyline/text-run-block",
+                "skyline/pseudo-inline-layout",
                 &format!("pages/p{index}/index.wxml"),
                 Severity::Warning,
             )
@@ -1683,11 +1686,11 @@ fn unknown_rules_lists_only_rules_missing_from_baseline() {
     baseline.rules = Some(vec!["skyline/no-inline-text".to_string()]);
     let current = vec![
         "skyline/no-inline-text".to_string(),
-        "skyline/text-run-block".to_string(),
+        "skyline/pseudo-inline-layout".to_string(),
     ];
     assert_eq!(
         migrate::unknown_rules(&baseline, &current),
-        vec!["skyline/text-run-block"]
+        vec!["skyline/pseudo-inline-layout"]
     );
 
     baseline.rules = None;
