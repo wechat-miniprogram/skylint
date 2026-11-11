@@ -53,7 +53,13 @@
 | 同一个卡上加 `box-sizing: content-box` | 卡死 |
 | 用伪元素（`::before` + border 三角） | 不渲染（未见卡死，但也不出图） |
 | 旋转正方形（`transform: rotate(45deg)`） | 卡死 |
+| 正常流 `<image>` + 负外边距，包裹层再加 `position: relative; z-index: 1` | 卡死 |
 | 删除以上全部 | 正常 |
+
+补充（2026-11-11 第二次尝试）：把尖角做成 40×20 透明底 PNG、用正常流 `<image>` + `margin-top: -30rpx` 叠上去时，
+页面完整渲染但图片被轮播卡（`position: relative`）绘制在其上方而不可见；仅给包裹层加 `position: relative; z-index: 1`
+就又回到「`navigateTo` 不回调」。也就是说**触发条件不是绝对定位本身**，而是「在这张卡下方新增一个参与绘制/层叠的节点」。
+最终这版也回滚，尖角缺失保留。
 
 **当前规避**：这个 10px 装饰尖角直接去掉，页面其余部分与基线一致。
 
