@@ -22,6 +22,8 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, Target};
 use crate::{Diagnostic, Severity};
 
+use super::anchor;
+
 pub struct TabBarRenderer;
 
 impl Rule for TabBarRenderer {
@@ -63,6 +65,7 @@ impl Rule for TabBarRenderer {
             "webview/tabbar-renderer",
             &project.app_json_path,
             JsonPositions::new(&project.app_json_source).key("tabBar"),
+            anchor(&["tabBar", "renderer"], tab_bar.get("renderer")),
             format!(
                 "自定义 tabBar 钉死 `renderer: \"{pinned}\"`：退回 WebView 时 `WebviewAdapterTabBar.getInstance` 会抛 `Invalid tab-bar renderer`，tabBar 整体不可用"
             ),

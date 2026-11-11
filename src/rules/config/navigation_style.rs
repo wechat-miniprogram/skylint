@@ -19,6 +19,8 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, Target};
 use crate::{Diagnostic, Severity};
 
+use super::anchor;
+
 pub struct NavigationStyle;
 
 impl NavigationStyle {
@@ -67,6 +69,7 @@ impl Rule for NavigationStyle {
                     Self::ID,
                     &page_path,
                     JsonPositions::new(source).key("navigationStyle"),
+                    anchor(&["navigationStyle"], json.get("navigationStyle")),
                     format!(
                         "页面 `{page_path}` 使用 Skyline 渲染，但 navigationStyle 显式写成 `\"default\"`，开发者工具会拒绝编译（`minidev build` 不校验这条）"
                     ),
@@ -109,6 +112,7 @@ impl Rule for NavigationStyle {
                 Self::ID,
                 &page_path,
                 JsonPositions::new(source).key(key),
+                anchor(&[key], json.get(key)),
                 format!(
                     "页面 `{page_path}` 使用 Skyline 渲染，写了 `{key}`，但{reason}，开发者工具会拒绝编译（`minidev build` 不校验这条）"
                 ),

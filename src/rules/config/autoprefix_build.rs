@@ -79,7 +79,17 @@ impl Rule for AutoprefixBuild {
             )
             .help(
                 "确认 prod 产物里没有「值内前缀」和「前缀 at-rule」后再上线；临时规避是把 `postcss` 与 `minifyWXSS` 都设为 false（会一并失去 wxss 压缩），并用 `skyline/vendor-prefix` 复查产物",
-            ),
+            )
+            .json(crate::diag::JsonAnchor::new(
+                "/setting",
+                Some(
+                    enabled
+                        .iter()
+                        .map(|(key, _, _)| *key)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                ),
+            )),
         ]
     }
 }

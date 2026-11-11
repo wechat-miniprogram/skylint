@@ -31,7 +31,7 @@ pub use navigation_style::NavigationStyle;
 pub use renderer_options::RendererOptions;
 pub use webview_tabbar_renderer::TabBarRenderer;
 
-use crate::diag::{Diagnostic, Severity};
+use crate::diag::{Diagnostic, JsonAnchor, Severity};
 use crate::project::Project;
 
 /// 配置类规则的适用面：工程级配置只有一份，单文件视图没有工程可读；插件视图
@@ -46,16 +46,45 @@ pub(crate) fn applicable_project_level(project: &Project) -> bool {
     applicable(project) && !project.plugin_view
 }
 
+/// RFC 6901 指针：`~` → `~0`、`/` → `~1`，每段前加 `/`。
+pub(crate) fn pointer(segments: &[&str]) -> String {
+    let mut out = String::new();
+    for segment in segments {
+        out.push('/');
+        out.push_str(&segment.replace('~', "~0").replace('/', "~1"));
+    }
+    out
+}
+
+/// 在已有指针下追加一段（同样做 RFC 6901 转义）。
+pub(crate) fn child(pointer: &str, segment: &str) -> String {
+    format!(
+        "{pointer}/{}",
+        segment.replace('~', "~0").replace('/', "~1")
+    )
+}
+
+/// 结构锚点：指针 + 触发值的紧凑 JSON 文本（`None` 表示键缺失）。
+pub(crate) fn anchor(segments: &[&str], value: Option<&serde_json::Value>) -> JsonAnchor {
+    JsonAnchor::new(pointer(segments), value.map(serde_json::Value::to_string))
+}
+
 /// 配置类诊断：给出 `at` 就落在该位置，否则落在文件首字符。
 pub(crate) fn warn(
     out: &mut Vec<Diagnostic>,
     id: &'static str,
     path: &str,
     at: Option<(u32, u32)>,
+    anchor: JsonAnchor,
     message: String,
     help: &str,
 ) {
-    push(out, id, Severity::Warning, path, at, message, help);
+    let (line, column) = at.unwrap_or((1, 1));
+    out.push(
+        Diagnostic::new(id, Severity::Warning, message, path, line, column)
+            .help(help)
+            .json(anchor),
+    );
 }
 
 pub(crate) fn error(
@@ -63,21 +92,14 @@ pub(crate) fn error(
     id: &'static str,
     path: &str,
     at: Option<(u32, u32)>,
-    message: String,
-    help: &str,
-) {
-    push(out, id, Severity::Error, path, at, message, help);
-}
-
-fn push(
-    out: &mut Vec<Diagnostic>,
-    id: &'static str,
-    severity: Severity,
-    path: &str,
-    at: Option<(u32, u32)>,
+    anchor: JsonAnchor,
     message: String,
     help: &str,
 ) {
     let (line, column) = at.unwrap_or((1, 1));
-    out.push(Diagnostic::new(id, severity, message, path, line, column).help(help));
+    out.push(
+        Diagnostic::new(id, Severity::Error, message, path, line, column)
+            .help(help)
+            .json(anchor),
+    );
 }

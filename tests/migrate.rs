@@ -1132,3 +1132,170 @@ fn next_skips_units_waiting_for_acceptance() {
         Some(leaf.id.as_str())
     );
 }
+
+/// JSON 工程夹具：页面存在但内容为空，只让配置类规则产生诊断。
+fn json_fixture(name: &str, app: &str) -> Fixture {
+    let f = Fixture::new(name);
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/"}"#,
+    )
+    .write("miniprogram/app.json", app)
+    .write("miniprogram/pages/index/index.json", "{}")
+    .write("miniprogram/pages/index/index.wxml", "<view/>")
+    .write("miniprogram/pages/index/index.js", "Page({})")
+    .write("miniprogram/pages/index/index.wxss", "");
+    f
+}
+
+/// JSON 重排（多行 / 缩进变化）不改 id：身份是指针 + 值指纹。
+#[test]
+fn json_reformat_keeps_identity() {
+    let f = json_fixture(
+        "json-reformat",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":"yes","defaultContentBox":true}}}"#,
+    );
+    let baseline = baseline_of(f.path());
+    assert_eq!(baseline.id_format, migrate::IdFormat::StructuralV2);
+    assert!(
+        baseline
+            .findings
+            .iter()
+            .any(|finding| finding.path == "app.json"
+                && finding.rule == "skyline/renderer-options")
+    );
+
+    f.write(
+        "miniprogram/app.json",
+        r#"{
+  "pages": ["pages/index/index"],
+  "renderer": "skyline",
+  "rendererOptions": {
+    "skyline": {
+      "defaultDisplayBlock": "yes",
+      "defaultContentBox": true
+    }
+  }
+}"#,
+    );
+    let result = verify_now(f.path(), &baseline);
+    assert_eq!(result.new, 0, "重排不该产生新诊断：{:?}", result.findings);
+    assert_eq!(result.fixed, 0, "重排不该把旧诊断算成修复");
+    assert_eq!(result.baseline_format, "structural-v2");
+}
+
+/// 真加一个会触发诊断的配置项 → 只 new 1；已有条目不漂。
+#[test]
+fn json_added_config_key_is_one_new_finding() {
+    let f = json_fixture(
+        "json-add-key",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":"yes","defaultContentBox":true}}}"#,
+    );
+    let baseline = baseline_of(f.path());
+
+    f.write(
+        "miniprogram/app.json",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":"yes","defaultContentBox":true,"tagNameStyleIsolation":"bogus"}}}"#,
+    );
+    let result = verify_now(f.path(), &baseline);
+    assert_eq!(result.new, 1, "新增坏配置应只算一条：{:?}", result.findings);
+    assert_eq!(result.fixed, 0, "已有诊断不该被算成修复");
+}
+
+/// 删掉一个开关 → 对应 finding 是 new，不是 new+fixed 成对。
+#[test]
+fn json_removed_switch_is_not_a_pair() {
+    let f = json_fixture(
+        "json-remove-switch",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true}}}"#,
+    );
+    let baseline = baseline_of(f.path());
+    let content_box = baseline
+        .findings
+        .iter()
+        .find(|finding| finding.id.contains("defaultContentBox"))
+        .expect("baseline 里应只有 defaultContentBox 那条 info");
+
+    f.write(
+        "miniprogram/app.json",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{}}}"#,
+    );
+    let result = verify_now(f.path(), &baseline);
+    assert_eq!(result.new, 0, "只有新增 info：{:?}", result.findings);
+    assert_eq!(result.new_info, 1, "defaultDisplayBlock 应成为唯一新增");
+    assert_eq!(result.fixed, 0, "defaultContentBox 不该漂成修复");
+    assert!(
+        result
+            .findings
+            .iter()
+            .any(|entry| entry.kind == "new" && entry.id.contains("defaultDisplayBlock")),
+        "{:?}",
+        result.findings
+    );
+    // 旧那条 contentBox 仍是同一条（id 没变）。
+    let now = baseline_of(f.path());
+    assert!(
+        now.findings
+            .iter()
+            .any(|finding| finding.id == content_box.id),
+        "contentBox 的 id 不该随相邻键变化"
+    );
+}
+
+/// v1 基线（JSON id 仍是行列）仍可读：按 rule + 文件 + 顺序宽松对齐并告警。
+#[test]
+fn structural_baseline_with_positional_json_ids_still_matches() {
+    let f = json_fixture(
+        "json-v1-baseline",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":"yes","defaultContentBox":true}}}"#,
+    );
+    let mut baseline = baseline_of(f.path());
+    baseline.id_format = migrate::IdFormat::Structural;
+    for finding in &mut baseline.findings {
+        // 模拟 v1：WXML / 样式是结构 id，JSON 退回 rule|path|line:column。
+        if finding.path.ends_with(".json") {
+            finding.id = format!(
+                "{}|{}|{}:{}",
+                finding.rule, finding.path, finding.span.line, finding.span.column
+            );
+        }
+    }
+
+    f.write(
+        "miniprogram/app.json",
+        "{\n  \"pages\": [\"pages/index/index\"],\n  \"renderer\": \"skyline\",\n  \"rendererOptions\": {\"skyline\": {\"defaultDisplayBlock\": \"yes\", \"defaultContentBox\": true}}\n}",
+    );
+    let result = verify_now(f.path(), &baseline);
+    assert_eq!(result.baseline_format, "structural");
+    assert_eq!(result.new, 0, "v1 基线仍应宽松匹配：{:?}", result.findings);
+    assert_eq!(result.fixed, 0);
+}
+
+/// `Baseline::load` 能读 v2 / v1（`structural`）/ 无 `idFormat` 的旧基线。
+#[test]
+fn baseline_load_recognizes_old_formats() {
+    let f = json_fixture(
+        "baseline-load",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true,"defaultContentBox":true}}}"#,
+    );
+    let baseline = baseline_of(f.path());
+    let text = migrate::to_json(&baseline);
+
+    assert_eq!(
+        migrate::Baseline::load(&text).expect("v2").id_format,
+        migrate::IdFormat::StructuralV2
+    );
+
+    let v1 = text.replace("\"structural-v2\"", "\"structural\"");
+    assert_eq!(
+        migrate::Baseline::load(&v1).expect("v1").id_format,
+        migrate::IdFormat::Structural
+    );
+
+    let legacy = text.replace("  \"idFormat\": \"structural-v2\",\n", "");
+    assert!(!legacy.contains("idFormat"));
+    assert_eq!(
+        migrate::Baseline::load(&legacy).expect("legacy").id_format,
+        migrate::IdFormat::Legacy
+    );
+}

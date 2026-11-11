@@ -83,6 +83,10 @@ impl Rule for LibVersion {
             )
             .help(format!(
                 "低于该版本时这部分配置不生效（Skyline 渲染会退回 WebView），而 project.config.json / project.private.config.json 没有 schema 校验、构建也不会提示；真机运行 Skyline 还需要 3.0.2 以上。请把 libVersion 提到 {floor} 或更高"
+            ))
+            .json(crate::diag::JsonAnchor::new(
+                "/libVersion",
+                Some(raw.to_string()),
             )),
         ]
     }

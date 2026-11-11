@@ -15,12 +15,13 @@
 
 use serde_json::{Map, Value};
 
+use crate::diag::JsonAnchor;
 use crate::input::json::JsonPositions;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, Target};
 use crate::{Diagnostic, Severity};
 
-use super::warn;
+use super::{anchor, child, warn};
 
 pub struct RendererOptions;
 
@@ -151,6 +152,7 @@ fn check_file(
             RendererOptions::ID,
             path,
             positions.key("convertRpxToVw"),
+            anchor(&["convertRpxToVw"], json.get("convertRpxToVw")),
             format!(
                 "app.json 顶层的 convertRpxToVw 期望 boolean，实际是 {value}：运行时按真值判断，字符串或数字可能被误当成开启"
             ),
@@ -171,6 +173,7 @@ fn check_file(
                 RendererOptions::ID,
                 path,
                 positions.key("renderer"),
+                anchor(&["renderer"], json.get("renderer")),
                 format!("`renderer` 的取值 {value} 不会被识别，只认 \"skyline\" / \"webview\""),
                 "写成小写的精确值：\"skyline\" 或 \"webview\"",
             );
@@ -186,6 +189,7 @@ fn check_file(
             RendererOptions::ID,
             path,
             positions.key("rendererOptions"),
+            anchor(&["rendererOptions"], json.get("rendererOptions")),
             "rendererOptions 不是对象，整块配置不生效".to_string(),
             "rendererOptions 的每个配置项都是键值对，写成对象；开关放在 rendererOptions.skyline 下",
         );
@@ -193,7 +197,7 @@ fn check_file(
     };
 
     // convertRpxToVw 在 rendererOptions 任意层级都不会被读取。
-    check_convert_rpx_to_vw(path, &positions, options, out);
+    check_convert_rpx_to_vw(path, &positions, options, "/rendererOptions", out);
 
     match options.get("skyline") {
         None => {}
@@ -206,6 +210,7 @@ fn check_file(
             RendererOptions::ID,
             path,
             positions.key("skyline"),
+            anchor(&["rendererOptions", "skyline"], options.get("skyline")),
             "rendererOptions.skyline 不是对象，整块配置不生效".to_string(),
             "开关应写成 rendererOptions.skyline 下的键值对",
         ),
@@ -224,6 +229,7 @@ fn check_file(
                 RendererOptions::ID,
                 path,
                 positions.key(key),
+                anchor(&["rendererOptions", key], options.get(key)),
                 format!(
                     "页面级只读 rendererOptions.skyline.*，`{key}` 写在 rendererOptions 顶层不生效"
                 ),
@@ -237,6 +243,7 @@ fn check_file(
                 RendererOptions::ID,
                 path,
                 positions.key(key),
+                anchor(&["rendererOptions", key], options.get(key)),
                 format!(
                     "app 级 `{key}` 写在 rendererOptions 顶层不会生效，运行时只读 rendererOptions.skyline.{key}"
                 ),
@@ -251,6 +258,7 @@ fn check_file(
                 RendererOptions::ID,
                 path,
                 positions.key(key),
+                anchor(&["rendererOptions", key], options.get(key)),
                 format!(
                     "{path} 的 `rendererOptions.{key}` 没有读者：app 级只读 rendererOptions.defaultDisplayBlock 与 rendererOptions.skyline.*"
                 ),
@@ -265,21 +273,23 @@ fn check_convert_rpx_to_vw(
     path: &str,
     positions: &JsonPositions,
     options: &Map<String, Value>,
+    pointer: &str,
     out: &mut Vec<Diagnostic>,
 ) {
-    if options.contains_key("convertRpxToVw") {
+    if let Some(value) = options.get("convertRpxToVw") {
         warn(
             out,
             RendererOptions::ID,
             path,
             positions.key("convertRpxToVw"),
+            JsonAnchor::new(child(pointer, "convertRpxToVw"), Some(value.to_string())),
             "`convertRpxToVw` 写在 rendererOptions 里不会生效，运行时只读 app.json 顶层"
                 .to_string(),
             "把 convertRpxToVw 移到 app.json 顶层（与 pages 同级），不要放进 rendererOptions",
         );
     }
-    for child in options.values() {
-        walk_convert_rpx_to_vw(path, positions, child, out);
+    for (key, child_value) in options {
+        walk_convert_rpx_to_vw(path, positions, child_value, &child(pointer, key), out);
     }
 }
 
@@ -287,13 +297,15 @@ fn walk_convert_rpx_to_vw(
     path: &str,
     positions: &JsonPositions,
     value: &Value,
+    pointer: &str,
     out: &mut Vec<Diagnostic>,
 ) {
     match value {
-        Value::Object(map) => check_convert_rpx_to_vw(path, positions, map, out),
+        Value::Object(map) => check_convert_rpx_to_vw(path, positions, map, pointer, out),
         Value::Array(items) => {
-            for item in items {
-                walk_convert_rpx_to_vw(path, positions, item, out);
+            for (index, item) in items.iter().enumerate() {
+                let child_pointer = child(pointer, &index.to_string());
+                walk_convert_rpx_to_vw(path, positions, item, &child_pointer, out);
             }
         }
         _ => {}
@@ -333,6 +345,10 @@ fn check_version_pairs(
                 RendererOptions::ID,
                 path,
                 positions.key(end_key),
+                anchor(
+                    &["rendererOptions", "skyline", end_key],
+                    skyline.get(*end_key),
+                ),
                 format!(
                     "`{begin_key}: \"{begin}\"` 大于 `{end_key}: \"{end}\"`，版本区间为空，Skyline 在这个区间里不会启用"
                 ),
@@ -369,6 +385,7 @@ fn check_skyline(
                 RendererOptions::ID,
                 path,
                 positions.key(key),
+                anchor(&["rendererOptions", "skyline", key], Some(value)),
                 format!("rendererOptions.skyline 下的 `{key}` 不是已知配置项，运行时不会读取"),
                 "已知配置项见 skyline-config/references/app-config.md 的 rendererOptions 表；未知键多半是拼写错误或多层级",
             );
@@ -433,6 +450,7 @@ fn check_value(
         RendererOptions::ID,
         path,
         positions.key(key),
+        anchor(&["rendererOptions", "skyline", key], Some(value)),
         message,
         help,
     );
