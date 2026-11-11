@@ -96,7 +96,7 @@ harness/
 |---|---|---|
 | agent 退出码非 0 / 超时 | `revert` + `record migrated` + 下一轮 | 是「这次没成」，不是异常 |
 | 改了单元目录之外的文件 | `revert` + `record migrated`（gate=scope） | 越界改动无法归因 |
-| L0 有新增 error/warning（`new > 0`） | `revert` + `record migrated`（gate=l0-static） | **不能 throw**：throw 会让引擎重试，重试会换一次结果。新增 info 是 `new-info`，不判失败 |
+| L0 有新增 error/warning（`new > 0`） | `revert` + `record migrated`（gate=l0-static） | **不能 throw**：throw 会让引擎重试，重试会换一次结果。新增 info 的 `kind` 也是 `new`，但不计入 `new` 计数、不判失败 |
 | L1 构建失败 | 同上（gate=l1-build） | 同上 |
 | L4 拒收 | 同上（gate=l4-judge） | 拒收是**数据**，不是异常 |
 | L4 返回的不是合法 JSON | throw（引擎重试） | 这是「这一轮白跑了」，重试通常就好 |
