@@ -56,8 +56,9 @@ use glass_easel_template_compiler::parse::Position;
 
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
-use crate::matcher::{Dialect, Tree, Tri};
+use crate::matcher::{Dialect, FlatNode, Tree, Tri, node_of};
 use crate::project::{Project, Scope, StyleSheet};
+use crate::wxml_graph::AncestorNodePaths;
 
 /// 页面与组件的 WXML + 被 import / include 的模板，按路径去重。
 ///
@@ -236,21 +237,75 @@ pub(crate) fn walk_skyline(doc: &WxmlDoc, mut visit: impl FnMut(&WxmlElement, &[
     });
 }
 
-/// 元素自身在样式层里的全部 `display` 取值（含内联 `style`）。
+/// 祖先链静态不完整的元素（模板定义体 / `<include>` 片段）的求值上下文。
 ///
-/// 用 Skyline 方言求值：这里问的是「Skyline 下这个元素算出什么 display」，
-/// 所以属性选择器按引擎的口径当成恒真（见 [`crate::matcher::Dialect`]）。
-/// 同一元素命中多份互相矛盾的 `display` 时全部返回，由调用方决定怎么解释；
-/// 筛选与求值口径与 [`cascade_entries`] 完全相同（模板文件按引用它的单元求值）。
-pub(crate) fn display_values(
-    project: &Project,
-    tree: &Tree<'_>,
-    element: &WxmlElement,
-) -> Vec<String> {
-    cascade_entries(project, tree, element, "display")
-        .into_iter()
-        .map(|entry| entry.value)
-        .collect()
+/// 这些元素的真实祖先在别的文档里（`<template is>` 的调用处、引用模板的单元），
+/// 单文件匹配不到。改用 [`crate::wxml_graph::WxmlGraph::ancestor_nodes`] 给的**逐条**
+/// 实例化路径：只要任一条路径满足整条选择器就算命中。
+///
+/// 语义是「存在即成立」：诊断落在源码位置，表达不了「只在第 3 个使用点坏」；按
+/// 「没有一条命中」去报会在有命中的使用点上变成误报。
+struct TemplateMatch<'a> {
+    project: &'a Project,
+    subject: FlatNode,
+    /// `(逐条祖先路径, 是否截断)`：真有选择器需要时才枚举（枚举一次要回溯整张图）。
+    paths: std::cell::OnceCell<Rc<AncestorNodePaths>>,
+}
+
+impl<'a> TemplateMatch<'a> {
+    /// 普通单元文档返回 `None`（走严格匹配）。
+    fn new(project: &'a Project, tree: &Tree<'_>, element: &WxmlElement) -> Option<Self> {
+        if !tree.ancestors_unknown(element) {
+            return None;
+        }
+        Some(Self {
+            project,
+            subject: node_of(&element.tag, &element.attributes),
+            paths: std::cell::OnceCell::new(),
+        })
+    }
+
+    fn paths(&self, tree: &Tree<'_>, element: &WxmlElement) -> Rc<AncestorNodePaths> {
+        self.paths
+            .get_or_init(|| self.project.graph().ancestor_nodes(tree.path(), element))
+            .clone()
+    }
+
+    /// 这条选择器在这个元素上的判定：`Some(true)` 命中、`Some(false)` 不命中、
+    /// `None` 判不了。
+    fn verdict(&self, tree: &Tree<'_>, element: &WxmlElement, selector: &str) -> Option<bool> {
+        // 先做主体过滤：主体都命中不了就不用付匹配 / 路径枚举的代价。
+        let flat = tree.flat(selector);
+        let subject_could_match = match flat.as_ref() {
+            Some(flat) => flat.matches_subject(&self.subject),
+            None => tree.subject_matches(element, selector),
+        };
+        if !subject_could_match {
+            return Some(false);
+        }
+        // 单文件里能确定命中就不用看实例化路径：静态祖先必然是最真实路径上的一段。
+        if tree.matches(element, selector, Dialect::Skyline) == Tri::Yes {
+            return Some(true);
+        }
+        // 主体可能命中，但选择器落在受限文法之外（属性 / 伪类 / 兄弟组合符）：
+        // 说不好会命中哪条使用点。
+        let Some(flat) = flat.as_ref() else {
+            return None;
+        };
+        if flat.is_simple() {
+            return Some(true);
+        }
+        let paths = self.paths(tree, element);
+        let (paths, truncated) = &*paths;
+        if paths.iter().any(|path| flat.matches(&self.subject, path)) {
+            return Some(true);
+        }
+        if paths.is_empty() || *truncated {
+            // 一条实例化路径都没有，或路径被上限截掉了：断言不了「不命中」。
+            return None;
+        }
+        Some(false)
+    }
 }
 
 /// 一条参与级联的声明，带溯源信息。
@@ -293,41 +348,75 @@ pub(crate) struct Resolved<'a> {
 ///
 /// 样式作用域是唯一口径（[`document_covers`]）：单元按自己的作用域求值，独立模板
 /// 文件与 `<include>` 片段按引用它的单元求值。所有规则都走这里，不要再另写一份筛选。
+///
+/// 模板定义体 / 片段里祖先链不在本文件：按真实实例化路径匹配（[`TemplateMatch`]）。
 pub(crate) fn cascade_entries<'a>(
     project: &'a Project,
     tree: &Tree<'_>,
     element: &WxmlElement,
     property: &str,
 ) -> Vec<CascadeEntry<'a>> {
+    cascade_entries_with(project, tree, element, property).0
+}
+
+/// 同上，另外告诉你「有没有选择器判不了」。
+///
+/// 布尔位是「有些声明可能生效，但我们断言不了」：模板定义体 / 片段的祖先链靠实例化
+/// 路径求值，没有路径或选择器超出受限文法时只能放弃。调用方据此「判不了就不报」，
+/// 比当成「没写」安全。
+pub(crate) fn cascade_entries_with<'a>(
+    project: &'a Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    property: &str,
+) -> (Vec<CascadeEntry<'a>>, bool) {
     let mut entries = Vec::new();
     let mut order = 0;
+    let mut undecidable = false;
+    let template = TemplateMatch::new(project, tree, element);
 
     for sheet in project
         .styles
         .iter()
         .filter(|sheet| document_covers(sheet, project, tree.path()))
     {
-        for rule in &sheet.doc.rules {
-            // 一条规则可能有多个选择器，各自优先级不同：取命中里最高的那个。
-            let matched = rule
-                .selectors
-                .iter()
-                .filter(|selector| {
-                    tree.matches(element, selector.text.trim(), Dialect::Skyline) == Tri::Yes
-                })
-                .filter_map(|selector| {
-                    let text = selector.text.trim();
-                    tree.selector_specificity(text).map(|spec| (spec, text))
-                })
-                .max_by_key(|(spec, _)| *spec);
-            let Some((specificity, selector)) = matched else {
-                continue;
-            };
-            for declaration in rule
+        // 只走声明了这个属性的规则：级联是按属性查的，其余规则连选择器都不用匹配。
+        for rule in sheet.doc.rules_declaring(property) {
+            let declarations: Vec<&crate::input::wxss::WxssDeclaration> = rule
                 .declarations
                 .iter()
                 .filter(|decl| decl.name.eq_ignore_ascii_case(property))
-            {
+                .collect();
+            if declarations.is_empty() {
+                continue;
+            }
+            // 一条规则可能有多个选择器，各自优先级不同：取命中里最高的那个；
+            // 判不了时这条规则的可能性记在 `undecidable` 上。
+            let mut unknown = false;
+            let matched = rule
+                .selectors
+                .iter()
+                .filter_map(|selector| {
+                    let text = selector.text.trim();
+                    let hit = match &template {
+                        None => tree.matches(element, text, Dialect::Skyline) == Tri::Yes,
+                        Some(template) => match template.verdict(tree, element, text) {
+                            Some(hit) => hit,
+                            None => {
+                                unknown = true;
+                                false
+                            }
+                        },
+                    };
+                    hit.then(|| tree.selector_specificity(text).map(|spec| (spec, text)))
+                        .flatten()
+                })
+                .max_by_key(|(spec, _)| *spec);
+            undecidable |= unknown;
+            let Some((specificity, selector)) = matched else {
+                continue;
+            };
+            for declaration in declarations {
                 order += 1;
                 entries.push(CascadeEntry {
                     value: declaration.value.trim().to_string(),
@@ -365,7 +454,7 @@ pub(crate) fn cascade_entries<'a>(
 
     // 升序：importance → specificity → 出现顺序；末位即生效值。
     entries.sort_by_key(|entry| (entry.important, entry.specificity, entry.order));
-    entries
+    (entries, undecidable)
 }
 
 /// 元素命中的样式表声明，按级联顺序（内联 `style` 除外）。

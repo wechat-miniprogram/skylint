@@ -17,9 +17,10 @@
 //! 都按 flex item 排，无差异）；元素显式写了非 inline 的 `display` 时也不报
 //! （作者已经明确要块级）。
 //!
-//! 模板定义体与 `<include>` 片段同样适用：样式按引用它们的单元求值
-//! （[`super::cascade_entries`] 是唯一口径），所以模板里「两串 `<text>` 靠默认布局
-//! 并排」与普通页面是同一个现象，只报一次。
+//! 模板定义体与 `<include>` 片段同样适用：样式按引用它们的单元求值，祖先链按
+//! **真实实例化路径**匹配（[`super::cascade_entries`] 是唯一口径），所以模板里
+//! 「两串 `<text>` 靠默认布局并排」与普通页面是同一个现象，只报一次。判不了时
+//! （一条实例化路径都没有，或选择器超出受限文法）按「不知道」处理：不报。
 
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
@@ -29,7 +30,7 @@ use crate::rules::{Rule, RuleMeta};
 
 use super::branch::exclusive;
 use super::structure::attr_is_off;
-use super::{display_values, element_diagnostic, flex_container, visit, walk_skyline};
+use super::{cascade_entries_with, element_diagnostic, is_flex_value, visit, walk_skyline};
 
 pub const ID: &str = "skyline/inline-run";
 
@@ -53,8 +54,8 @@ impl Rule for InlineRun {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
             let tree = Tree::new(doc);
-            walk_skyline(doc, |element, _ancestors| {
-                check_element(project, doc, &tree, element, out);
+            walk_skyline(doc, |element, ancestors| {
+                check_element(project, doc, &tree, element, ancestors, out);
             });
         })
     }
@@ -65,6 +66,7 @@ fn check_element(
     doc: &WxmlDoc,
     tree: &Tree<'_>,
     element: &WxmlElement,
+    ancestors: &[&WxmlElement],
     out: &mut Vec<Diagnostic>,
 ) {
     // 文档既不是单元、也不在任何单元的模板闭包里：没有可求值的作用域，样式与
@@ -84,8 +86,34 @@ fn check_element(
     if element.tag == "scroll-view" && !attr_is_off(element, "scroll-x") {
         return;
     }
+    // 结构上凑不出两个文本级孩子就不可能成串：先不付样式求值的代价。
+    let candidates = element
+        .children
+        .iter()
+        .filter(|child| {
+            matches!(child, WxmlNode::Element(child) if INLINE_TAGS.contains(&child.tag.as_str()))
+        })
+        .count();
+    if candidates < 2 {
+        return;
+    }
+    // 看不见的容器里「同行还是分行」没有视觉差异：`display: none` 让整棵子树不渲染；
+    // `visibility: hidden` 且被移出视口时也一样（离屏预热容器）。
+    if is_invisible(project, tree, element, ancestors) {
+        return;
+    }
+    // 一次求值同时拿到「父级算出什么 display」与「有没有选择器判不了」。
+    let (display, undecidable) = cascade_entries_with(project, tree, element, "display");
+    // 模板体 / 片段里父级的 `display` 判不了时（没有实例化路径，或选择器超出
+    // 受限文法），无法断言「不是 flex」。
+    if undecidable {
+        return;
+    }
     // 父级是 flex 容器时（行向同行、列向同列）两种渲染器排法一致。
-    if flex_container(project, tree, element) {
+    if display
+        .last()
+        .is_some_and(|entry| is_flex_value(&entry.value))
+    {
         return;
     }
     // 父级的 class / style 跟着 `renderer` 变时，WebView 那一支可能已经写了
@@ -109,6 +137,79 @@ fn check_element(
     flush(doc, &mut run, &mut has_bare_text, out);
 }
 
+/// 这个元素在级联后看不见：自己或任一祖先 `display: none`，或 `visibility: hidden`
+/// 且看不出任何视觉差异（移出视口 / 1px 盒子）。
+///
+/// `visibility` 会继承，但子节点可以用 `visible` 覆盖，所以由近到远找第一个声明；
+/// 只隐藏而不离屏的节点不算——大量元素把 `visibility: hidden` 当动画的初始态
+/// （真机上被 JS / 关键帧改成 `visible`），那些位置的分行差异是真差异。
+pub(crate) fn is_invisible(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    ancestors: &[&WxmlElement],
+) -> bool {
+    let value = |node: &WxmlElement, property: &str| {
+        super::resolved_property(project, tree, node, property)
+            .map(|resolved| resolved.value.trim().to_ascii_lowercase())
+    };
+    let chain: Vec<&WxmlElement> = std::iter::once(element)
+        .chain(ancestors.iter().copied())
+        .collect();
+    // `display: none` 会剪掉整棵子树，任何一层都算。
+    if chain
+        .iter()
+        .any(|node| value(node, "display").as_deref() == Some("none"))
+    {
+        return true;
+    }
+    for node in chain {
+        match value(node, "visibility").as_deref() {
+            Some("hidden") => return is_offscreen(project, tree, node),
+            Some("visible") => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// 被隐藏的节点是否还看不出任何视觉差异：移出视口，或扁成 1px。
+///
+/// 只要占着屏幕上的位置（比如气泡用 `top: -24rpx` 住卡片上方弹），隐藏只是动画
+/// 的初始态，真假可见时分行差异是看得见的。
+fn is_offscreen(project: &Project, tree: &Tree<'_>, node: &WxmlElement) -> bool {
+    let value = |property: &str| {
+        super::resolved_property(project, tree, node, property)
+            .map(|resolved| resolved.value.trim().to_ascii_lowercase())
+    };
+    let length = |property: &str| value(property).as_deref().and_then(length_of);
+    // 离屏预热容器：`position: fixed; top: -9999px; left: -9999px`。
+    let positioned = matches!(
+        value("position").as_deref(),
+        Some("absolute") | Some("fixed")
+    );
+    let far_away = positioned
+        && ["top", "left"]
+            .iter()
+            .filter_map(|property| length(property))
+            .any(|offset| offset <= -OFFSCREEN_OFFSET);
+    // 1px 量级的盒子装不下可读内容（`width: 1px; height: 1px` + `overflow: hidden`）。
+    let flat =
+        matches!((length("width"), length("height")), (Some(w), Some(h)) if w <= 1.0 && h <= 1.0);
+    far_away || flat
+}
+
+/// 离屏需要的负偏移（px / rpx 同取，-9999px 那类写法远超它，`-24rpx` 这类定位远不足）。
+const OFFSCREEN_OFFSET: f64 = 500.0;
+
+/// `-9999px` / `24rpx` / `1` 这类长度里的数值；百分比与其他单位判不了。
+fn length_of(value: &str) -> Option<f64> {
+    let number = value.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+    (number.len() < value.len() || number == value)
+        .then(|| number.parse::<f64>().ok())
+        .flatten()
+}
+
 /// 文本级成员：标签在内，且靠**默认 layout** 参与行内流。
 ///
 /// 显式写 inline / inline-block 的不算：两种渲染器都会把它们排进行内行，
@@ -116,8 +217,12 @@ fn check_element(
 /// 绝对定位、占满整行、带纵向外边距的成员也不是行内内容：前两者两端都脱离
 /// 行内流，后者作者已经用纵向间距表达「各占一行」。
 pub(crate) fn is_inline_member(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
-    INLINE_TAGS.contains(&element.tag.as_str())
-        && display_values(project, tree, element).is_empty()
+    if !INLINE_TAGS.contains(&element.tag.as_str()) {
+        return false;
+    }
+    let (display, undecidable) = cascade_entries_with(project, tree, element, "display");
+    display.is_empty()
+        && !undecidable
         && !has_dynamic_style(element)
         && !renderer_conditioned(element)
         && !super::is_out_of_flow(project, tree, element)
@@ -446,6 +551,146 @@ mod tests {
         assert!(diagnostics.is_empty());
     }
 
+    /// 模板里「祖先在调用处」的选择器：`.outer` 写在页面里包住 `<template is>`，
+    /// 真实实例化路径是 `.outer > .inner`，`display: flex` 真的命中 ⇒ 不报。
+    #[test]
+    fn template_flex_on_usage_ancestor_is_not_reported() {
+        let fixture = template_with_style(
+            "<view class=\"inner\"><text>a</text><text>b</text></view>",
+            ".outer .inner { display: flex; align-items: center; }",
+        );
+        fixture.write(
+            "pages/index/index.wxml",
+            r#"<import src="/tpls/t.wxml"/><view class="outer"><template is="cinema"/></view>"#,
+        );
+        let diagnostics = check(&fixture);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 同一个模板被两个单元引用，只有其中一个带 `.outer`：存在即成立 ⇒ 不报。
+    #[test]
+    fn template_flex_on_one_of_two_units_is_not_reported() {
+        let fixture = template("<view class=\"inner\"><text>a</text><text>b</text></view>");
+        fixture
+            .write(
+                "pages/index/index.wxml",
+                r#"<import src="/tpls/t.wxml"/><view class="outer"><template is="cinema"/></view>"#,
+            )
+            .write("pages/other/other.json", "{}")
+            .write(
+                "pages/other/other.wxml",
+                r#"<import src="/tpls/t.wxml"/><template is="cinema"/>"#,
+            )
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index","pages/other/other"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.wxss", ".outer .inner { display: flex; }");
+        let diagnostics = check(&fixture);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// `.outer` 谁都没有：一条路径都不命中 ⇒ 照报（不是无条件豁免）。
+    #[test]
+    fn template_flex_missing_everywhere_is_reported() {
+        let fixture = template_with_style(
+            "<view class=\"inner\"><text>a</text><text>b</text></view>",
+            ".outer .inner { display: flex; align-items: center; }",
+        );
+        fixture.write(
+            "pages/index/index.wxml",
+            r#"<import src="/tpls/t.wxml"/><view class="wrap"><template is="cinema"/></view>"#,
+        );
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    }
+
+    /// 看不见的容器不报：祖先 `visibility: hidden` 且被移出视口，成员自己没写 visibility。
+    #[test]
+    fn offscreen_hidden_ancestor_is_not_reported() {
+        let diagnostics = check(&project(
+            "inline-run/invisible",
+            "<view style=\"position: absolute; top: -9999px; visibility: hidden\"><view class=\"inner\"><text>a</text><text>b</text></view></view>",
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// `visibility: hidden` 但没离屏（大量元素拿它当动画初始态）照报，不滤掉真差异。
+    #[test]
+    fn hidden_but_onscreen_container_is_reported() {
+        let fixture = project(
+            "inline-run/hidden-onscreen",
+            "<view class=\"bubble\"><text>a</text><text>b</text></view>",
+        );
+        fixture.write(
+            "pages/index/index.wxss",
+            ".bubble { visibility: hidden; position: absolute; left: 0; }",
+        );
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    }
+
+    /// 1px 的离屏预热容器（`width: 1px; height: 1px` + hidden）也算看不见。
+    #[test]
+    fn offscreen_one_pixel_container_is_not_reported() {
+        let diagnostics = check(&project(
+            "inline-run/preload",
+            "<view style=\"position: fixed; top: -9999px; left: -9999px; width: 1px; height: 1px; overflow: hidden; visibility: hidden\"><image src=\"a\"/><image src=\"b\"/></view>",
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 子节点用 `visibility: visible` 覆盖祖先的 hidden。
+    #[test]
+    fn visible_child_overrides_hidden_ancestor() {
+        let fixture = project(
+            "inline-run/visible-child",
+            "<view style=\"position: absolute; top: -9999px; visibility: hidden\"><view class=\"inner\"><text>a</text><text>b</text></view></view>",
+        );
+        fixture.write("pages/index/index.wxss", ".inner { visibility: visible; }");
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    }
+
+    /// 离屏预热容器：`display: none` 写在 host 自己身上时不报。
+    #[test]
+    fn display_none_host_is_not_reported() {
+        let diagnostics = check(&project(
+            "inline-run/display-none",
+            "<view class=\"inner\" style=\"display: none\"><text>a</text><text>b</text></view>",
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 同字段不同字面量的两个独立 `wx:if`：只有一个会渲染，不算并列。
+    #[test]
+    fn same_field_literal_branches_never_coexist() {
+        let source = concat!(
+            "<view class=\"masks\">",
+            "<image wx:if=\"{{mode === 0}}\"/>",
+            "<image wx:if=\"{{mode === 1}}\"/>",
+            "<image wx:if=\"{{mode === 2}}\"/>",
+            "</view>"
+        );
+        let diagnostics = check(&project("inline-run/mask-branches", source));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 模板被 import 了但从来没实例化（没有实例化路径）：判不了，不报。
+    #[test]
+    fn template_never_instantiated_is_skipped() {
+        let fixture = template("<view class=\"inner\"><text>a</text><text>b</text></view>");
+        // 只 import，不放 `<template is>`：模板体永远不会渲染。
+        fixture.write(
+            "pages/index/index.wxml",
+            r#"<import src="/tpls/t.wxml"/><view class="wrap"/>"#,
+        );
+        // 复合选择器 + 没有实例化路径 ⇒ 判不了（不是「算出 flex」）。
+        fixture.write("pages/index/index.wxss", ".outer .inner { display: flex; }");
+        let diagnostics = check(&fixture);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
     /// 既不是单元、也不在 `template_scopes` 里的文档整篇跳过：没有作用域可求值，
     /// 也不该退化成「没写样式」去推断。
     #[test]
@@ -460,7 +705,7 @@ mod tests {
         let tree = crate::matcher::Tree::new(&doc);
         let mut out = Vec::new();
         for element in doc.elements() {
-            super::check_element(&project, &doc, &tree, element, &mut out);
+            super::check_element(&project, &doc, &tree, element, &[], &mut out);
         }
         assert!(out.is_empty(), "{out:#?}");
     }

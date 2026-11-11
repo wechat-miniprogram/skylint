@@ -14,13 +14,13 @@ use std::rc::Rc;
 
 use serde_json::{Map, Value};
 
-use crate::input::wxml::{WxmlAttribute, WxmlDoc};
+use crate::input::wxml::WxmlDoc;
 use crate::project::{Project, Scope, StyleIsolation};
 use crate::rules::RuleMeta;
 use crate::{Diagnostic, Severity};
 
 use super::visit_rules;
-use crate::matcher::{FlatNode, FlatSelector, flat_selector};
+use crate::matcher::{FlatNode, FlatSelector, flat_selector, node_of};
 use crate::wxml_graph::AncestorRef;
 
 pub const ID: &str = "skyline/tag-selector-isolation";
@@ -230,7 +230,7 @@ fn find_foreign<'a>(
             let matched = selector.is_simple() || {
                 let graph = project.graph();
                 graph.ancestor_paths(wxml_path, element).iter().any(|path| {
-                    let ancestors: Vec<FlatNode> = path.iter().map(ancestor_node).collect();
+                    let ancestors: Vec<FlatNode> = path.iter().map(AncestorRef::node).collect();
                     selector.matches(&node, &ancestors)
                 })
             };
@@ -240,47 +240,6 @@ fn find_foreign<'a>(
         }
     }
     None
-}
-
-/// 扁平节点 → 匹配用的描述。动态 class 只取「任何取值下都出现」的词，
-/// 动态 id 当作未知（按不命中处理）——宁可漏报也不要凭空报一条。
-fn node_of(tag: &str, attributes: &[WxmlAttribute]) -> FlatNode {
-    let id = attributes
-        .iter()
-        .find(|attr| attr.name.eq_ignore_ascii_case("id"))
-        .filter(|attr| attr.is_static)
-        .and_then(|attr| attr.value.clone());
-    let classes = attributes
-        .iter()
-        .find(|attr| attr.name.eq_ignore_ascii_case("class"))
-        .map(|attr| match &attr.class_tokens {
-            Some(tokens) => tokens.definite.clone(),
-            None if attr.is_static => attr
-                .value
-                .as_deref()
-                .unwrap_or("")
-                .split_whitespace()
-                .map(str::to_string)
-                .collect(),
-            None => Vec::new(),
-        })
-        .unwrap_or_default();
-    FlatNode {
-        tag: tag.to_ascii_lowercase(),
-        id,
-        classes,
-    }
-}
-
-fn ancestor_node(ancestor: &AncestorRef<'_>) -> FlatNode {
-    match ancestor {
-        AncestorRef::Element { element } => node_of(&element.tag, &element.attributes),
-        // WebView 的 DOM 根就是 `<page>`。
-        AncestorRef::PageRoot => FlatNode {
-            tag: "page".to_string(),
-            ..FlatNode::default()
-        },
-    }
 }
 
 #[cfg(test)]

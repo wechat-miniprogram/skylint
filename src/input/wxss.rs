@@ -35,9 +35,41 @@ pub struct WxssDoc {
     pub rules: Vec<WxssRule>,
     /// `@import` 的目标路径，按源码顺序。
     pub imports: Vec<WxssImport>,
+    /// 小写属性名 → 声明了它的规则下标（懒建）。
+    ///
+    /// 级联是「按属性查」的：模板文档也要参与求值后，每个 (元素, 属性) 都要扫全部
+    /// 规则，不建索引就成了主要开销。输出与逐条过滤完全相同。
+    index: std::cell::OnceCell<std::collections::HashMap<String, Vec<usize>>>,
 }
 
 impl WxssDoc {
+    /// 声明了 `property` 的规则（源码顺序）。属性名不区分大小写。
+    ///
+    /// 调用方拿到的是「一定有这个属性的规则」，不必再逐条过滤声明。
+    pub fn rules_declaring(&self, property: &str) -> impl Iterator<Item = &WxssRule> {
+        let key = property.to_ascii_lowercase();
+        let index = self.index.get_or_init(|| {
+            let mut index: std::collections::HashMap<String, Vec<usize>> =
+                std::collections::HashMap::new();
+            for (position, rule) in self.rules.iter().enumerate() {
+                for declaration in &rule.declarations {
+                    let names = index
+                        .entry(declaration.name.to_ascii_lowercase())
+                        .or_default();
+                    if names.last() != Some(&position) {
+                        names.push(position);
+                    }
+                }
+            }
+            index
+        });
+        index
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .filter_map(|&position| self.rules.get(position))
+    }
+
     pub fn path(&self) -> &str {
         &self.path
     }
@@ -309,6 +341,7 @@ fn parse_document_with(path: &str, source: &str, display: &str) -> Result<WxssDo
         source: display.to_string(),
         rules: out.rules,
         imports: out.imports,
+        index: std::cell::OnceCell::new(),
     })
 }
 

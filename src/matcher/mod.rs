@@ -23,6 +23,7 @@ pub use imp::{Ident, SelImpl};
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use selectors::context::{
     MatchingContext, MatchingForInvalidation, MatchingMode, NeedsSelectorFlags, QuirksMode,
@@ -128,6 +129,36 @@ pub struct FlatNode {
     pub id: Option<String>,
     /// **任何取值下都会出现**的 class 词：动态 class 只取确定项，拿不准的词不进。
     pub classes: Vec<String>,
+}
+
+/// 元素 → [`FlatNode`]。动态 class 只取「任何取值下都出现」的词，动态 id 当作未知
+/// （按不命中处理）——宁可漏报也不要凭空报一条。
+pub fn node_of(tag: &str, attributes: &[crate::input::wxml::WxmlAttribute]) -> FlatNode {
+    let id = attributes
+        .iter()
+        .find(|attr| attr.name.eq_ignore_ascii_case("id"))
+        .filter(|attr| attr.is_static)
+        .and_then(|attr| attr.value.clone());
+    let classes = attributes
+        .iter()
+        .find(|attr| attr.name.eq_ignore_ascii_case("class"))
+        .map(|attr| match &attr.class_tokens {
+            Some(tokens) => tokens.definite.clone(),
+            None if attr.is_static => attr
+                .value
+                .as_deref()
+                .unwrap_or("")
+                .split_whitespace()
+                .map(str::to_string)
+                .collect(),
+            None => Vec::new(),
+        })
+        .unwrap_or_default();
+    FlatNode {
+        tag: tag.to_ascii_lowercase(),
+        id,
+        classes,
+    }
 }
 
 /// 受限选择器：compound 之间只有后代 / 子代组合符，compound 里只有标签 / id / class / `*`。
@@ -439,6 +470,9 @@ pub struct Tree<'a> {
     pos: Vec<usize>,
     by_ptr: HashMap<usize, usize>,
     parsed: RefCell<HashMap<String, Option<SelectorList<SelImpl>>>>,
+    /// 同一批选择器的 [`FlatSelector`] 解析结果（模板文档按实例化路径求值时
+    /// 每个元素都要问一次，不缓存就会把同一串解析上百万次）。
+    flat: RefCell<HashMap<String, Rc<Option<FlatSelector>>>>,
     /// 本次匹配过程中是否问到了「静态判不了」的属性（含祖先节点）。
     /// `has_class` 等只能返回 `bool`，不可判定的情况由这个标记带回来。
     unresolved: Cell<bool>,
@@ -455,6 +489,7 @@ impl<'a> Tree<'a> {
             pos: Vec::new(),
             by_ptr: HashMap::new(),
             parsed: RefCell::new(HashMap::new()),
+            flat: RefCell::new(HashMap::new()),
             unresolved: Cell::new(false),
         };
         collect(doc, &doc.nodes, None, &mut tree);
@@ -518,6 +553,71 @@ impl<'a> Tree<'a> {
             return Tri::No;
         };
         self.match_at(idx, selector, dialect)
+    }
+
+    /// 解析成 [`FlatSelector`]（带缓存）：模板文档按实例化路径求值时，同一串选择器
+    /// 会被每个元素问一次，不缓存就是上百万次重复解析。
+    pub fn flat(&self, selector: &str) -> Rc<Option<FlatSelector>> {
+        if let Some(hit) = self.flat.borrow().get(selector) {
+            return hit.clone();
+        }
+        let value = Rc::new(flat_selector(selector));
+        self.flat
+            .borrow_mut()
+            .insert(selector.to_string(), value.clone());
+        value
+    }
+
+    /// 选择器的主体 compound 的**标签 / id / class** 是否命中该元素。
+    ///
+    /// 忽略伪类、属性条件与位置（都依赖运行时），只用于「选择器落在受限文法之外
+    /// （[`flat_selector`] 返回 `None`）时判断它跟这个元素有没有关系」：标识部分都
+    /// 不命中就肯定不命中，命中了则判不了、按未知处理。
+    ///
+    /// 伪元素的选择器一律 `false`：声明落在生成的文本节点上，不作用到这个元素。
+    pub fn subject_matches(&self, element: &WxmlElement, selector: &str) -> bool {
+        let Some(list) = self.parse(selector) else {
+            return false;
+        };
+        let node = node_of(&element.tag, &element.attributes);
+        list.slice().iter().any(|one| {
+            for component in one.iter_raw_match_order() {
+                match component {
+                    Component::PseudoElement(_) => return false,
+                    // 伪元素前的占位组合符不是祖先边界。
+                    Component::Combinator(combinator) if combinator.is_pseudo_element() => {}
+                    Component::Combinator(_) => break,
+                    Component::LocalName(name) => {
+                        if !node.tag.eq_ignore_ascii_case(&name.name.0) {
+                            return false;
+                        }
+                    }
+                    Component::ID(id) => {
+                        if node.id.as_deref() != Some(id.0.as_str()) {
+                            return false;
+                        }
+                    }
+                    Component::Class(class) => {
+                        if !node.classes.iter().any(|seen| seen == &class.0) {
+                            return false;
+                        }
+                    }
+                    Component::NonTSPseudoClass(pseudo)
+                        if pseudo.name.eq_ignore_ascii_case("host") =>
+                    {
+                        // `:host` 指向组件宿节点，不是这个元素。
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
+            true
+        })
+    }
+
+    /// 这个元素的祖先链静态不完整：模板定义体与 `<include>` 片段的实例化处未知。
+    pub fn ancestors_unknown(&self, element: &WxmlElement) -> bool {
+        element.in_template() || self.doc.fragment
     }
 
     /// 整份文档范围内的求值：真实元素 + slot / `<template is>` 引出的静态未知占位。

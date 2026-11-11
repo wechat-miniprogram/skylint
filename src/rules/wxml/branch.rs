@@ -11,6 +11,9 @@ use crate::input::wxml::{Branch, WxmlElement, WxmlNode, WxmlText};
 ///
 /// 只要有一层 `wx:if` 把两者分到不同分支就不可能同时渲染；嵌套时靠分支栈逐层
 /// 比对，任一层互斥即互斥。
+///
+/// 除同一条 `wx:if` 链之外，还认「同字段不同字面量」的写法：`wx:if="{{x===1}}"`
+/// 与另一个兄弟 `wx:if="{{x===2}}"` 是两条独立的链，但 `x` 只能取一个值。
 pub(crate) fn exclusive(a: &WxmlElement, b: &WxmlElement) -> bool {
     exclusive_branches(&a.branches, &b.branches)
 }
@@ -18,7 +21,18 @@ pub(crate) fn exclusive(a: &WxmlElement, b: &WxmlElement) -> bool {
 /// 同上，但直接比分支栈——`WxmlText` 与 `WxmlElement` 都能用。
 pub(crate) fn exclusive_branches(left: &[Branch], right: &[Branch]) -> bool {
     left.iter()
-        .any(|a| right.iter().any(|b| a.group == b.group && a.arm != b.arm))
+        .any(|a| right.iter().any(|b| arms_exclusive(a, b)))
+}
+
+/// 两个分支为什么互斥：同一个 `wx:if` 链的不同分支，或同一字段的字面量比较互斥。
+fn arms_exclusive(a: &Branch, b: &Branch) -> bool {
+    if a.group == b.group {
+        return a.arm != b.arm;
+    }
+    match (&a.compare, &b.compare) {
+        (Some(left), Some(right)) => left.excludes(right),
+        _ => false,
+    }
 }
 
 pub(crate) fn element_children(element: &WxmlElement) -> impl Iterator<Item = &WxmlElement> {
@@ -156,5 +170,74 @@ mod tests {
                 .iter()
                 .any(|node| matches!(node, WxmlNode::Text(text) if text.is_meaningful()))
         );
+    }
+
+    /// 两条独立的 `wx:if`：同字段不同字面量 ⇒ 互斥。
+    #[test]
+    fn same_field_different_literal_is_exclusive() {
+        assert!(pair_after(
+            "<view><image wx:if=\"{{code === 1}}\"/><image wx:if=\"{{code === 2}}\"/></view>",
+            "image",
+        ));
+        assert!(pair_after(
+            "<view><image wx:if=\"{{code == 'a'}}\"/><image wx:if=\"{{code == 'b'}}\"/></view>",
+            "image",
+        ));
+    }
+
+    /// 字段不同就不能推互斥（两个值可以同时成立）。
+    #[test]
+    fn different_fields_are_not_exclusive() {
+        assert!(!pair_after(
+            "<view><image wx:if=\"{{a === 1}}\"/><image wx:if=\"{{b === 2}}\"/></view>",
+            "image",
+        ));
+    }
+
+    /// `===` 与 `!==` 对同一个字面量互补；两条否定式不互补。
+    #[test]
+    fn negation_complements_the_equality() {
+        assert!(pair_after(
+            "<view><image wx:if=\"{{code === 1}}\"/><image wx:if=\"{{code !== 1}}\"/></view>",
+            "image",
+        ));
+        assert!(!pair_after(
+            "<view><image wx:if=\"{{code !== 1}}\"/><image wx:if=\"{{code !== 2}}\"/></view>",
+            "image",
+        ));
+    }
+
+    /// 字面量相同、函数调用、宽松相等的跨类型比较都判不了互斥。
+    #[test]
+    fn undecidable_comparisons_are_not_exclusive() {
+        assert!(!pair_after(
+            "<view><image wx:if=\"{{code === 1}}\"/><image wx:if=\"{{code === 1}}\"/></view>",
+            "image",
+        ));
+        assert!(!pair_after(
+            "<view><image wx:if=\"{{f(code) === 1}}\"/><image wx:if=\"{{f(code) === 2}}\"/></view>",
+            "image",
+        ));
+        // 宽松相等下 `1` 与 `'1'` 可能同时成立，不能当互斥。
+        assert!(!pair_after(
+            "<view><image wx:if=\"{{code == 1}}\"/><image wx:if=\"{{code == '1'}}\"/></view>",
+            "image",
+        ));
+    }
+
+    /// 同一条 `wx:if` 链的互斥不变。
+    #[test]
+    fn if_else_chain_stays_exclusive() {
+        assert!(pair_after(
+            "<view><image wx:if=\"{{a}}\"/><image wx:else/></view>",
+            "image",
+        ));
+    }
+
+    fn pair_after(source: &str, tag: &str) -> bool {
+        let doc = fixture(source);
+        let elements: Vec<&WxmlElement> = doc.elements().filter(|one| one.tag == tag).collect();
+        assert_eq!(elements.len(), 2, "{source}");
+        super::exclusive(elements[0], elements[1])
     }
 }
