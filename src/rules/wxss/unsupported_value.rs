@@ -1,11 +1,23 @@
-//! 属性可用，但该**整值**在 Skyline 下不支持，声明会被静默忽略。
+//! 属性可用，但该**整值**在 Skyline 下不支持。引擎的处理分三种，文案必须与之一致：
 //!
-//! 例外不能按「忽略」写：`white-space: pre | pre-wrap | pre-line` 是被映射成 `normal`
-//! 并照常 Apply（`skyline/css/css_properties/white_space.cc:29-33`）；`text-align:
-//! justify-all | match-parent`、`vertical-align: text-top | text-bottom`、`display:
-//! grid | flow-root | inline-grid` 则返回 `CSSUnsetValue` 后走 `ApplyInitial`。两者都会
-//! 覆盖级联里更早的值，文案要能让人算出最终结果（`.x{white-space:nowrap}` 后面再写
-//! `.x{white-space:pre}`，最终是 `normal`）。
+//! - **映射后照常生效**：`white-space: pre | pre-wrap | pre-line` 被映射成 `normal`
+//!   （`skyline/css/css_properties/white_space.cc:29-33`）。
+//! - **按 unset 回落**：C++ 的 `ParseValue` 返回 `CSSUnsetValue` 后，`StyleResolver` 对
+//!   非继承属性调 `ApplyInitial`、对继承属性调 `ApplyInherit`
+//!   （`style/style_resolver.cc:454-464`）。这不是「忽略声明」：它在该条声明的位置生效，
+//!   覆盖级联里更早的值。
+//! - **声明被丢弃**：fp 解析失败（整条回滚），或 `ApplyValue` 的 `default: return` 不写
+//!   computed style；此时级联里更早的声明仍然生效。
+//!
+//! 前两种都会覆盖级联里更早的值，文案要能让人算出最终结果
+//! （`.x{white-space:nowrap}` 后面再写 `.x{white-space:pre}`，最终是 `normal`）。
+//!
+//! `position: sticky` 属于第二类，证据在 `skyline/css/css_properties/position.cc`：
+//! `ParseValue` 只映射 static/relative/absolute/fixed，`sticky` 落到 `default:` 后返回
+//! `CSSUnsetValue`（`:31-34`）；`ApplyInitial`（`:39-44`）把初值写成 **Relative**。
+//! 所以属性回落到 `position: relative`，不是退回上一条声明；若同时声明了
+//! `top`/`right`/`bottom`/`left`，元素会以原位置为基准偏移且不占位，直接盖住后面的内容
+//! （实测美团 `movie/pages/cinema` 的筛选条压住影院卡片首行）。
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -15,7 +27,7 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
-use super::dict_table::{normalize_value, table};
+use super::dict_table::{BORDER_STYLE_PROPERTIES, normalize_value, table};
 use super::value_util::at_declaration;
 use super::visit_declarations;
 
@@ -51,18 +63,50 @@ fn intrinsic_size_keyword(name: &str, value: &str) -> Option<&'static str> {
     })
 }
 
-/// 引擎返回 `CSSUnsetValue` 后按 `ApplyInitial` 回落的取值 → 初始值。
+/// 引擎返回 `CSSUnsetValue` 后按 `ApplyInitial` 回落的取值 → `(初始值, 额外后果)`。
 ///
-/// 与「fp 解析失败、声明被丢弃」不同：unset 会在该条声明的位置生效为初始值，
-/// 覆盖级联里更早的值，而不是退回上一条声明。
-fn initial_value(name: &str, value: &str) -> Option<&'static str> {
+/// 只用于非继承属性；继承属性走 [`inherited_value`]。与「fp 解析失败、声明被丢弃」
+/// 不同：unset 会在该条声明的位置生效为初始值，覆盖级联里更早的值。
+fn initial_value(name: &str, value: &str) -> Option<(&'static str, &'static str)> {
     Some(match (name, value) {
         // display.cc:43-50 的 ApplyInitial：默认 flex，开启默认块级布局时为 block。
-        ("display", "grid" | "flow-root" | "inline-grid") => "`display: flex`",
-        // text_align.cc:44-47：初始值是 start。
-        ("text-align", "justify-all" | "match-parent") => "`text-align: start`",
+        ("display", "grid" | "flow-root" | "inline-grid") => ("`display: flex`", ""),
+        // position.cc:39-44 的 ApplyInitial 硬编码 Relative（InitialValue 也是 kRelative，:84-86）。
+        // 相对偏移不占兄弟布局，所以带 top/left 时会压住后面的内容。
+        ("position", "sticky") => (
+            "`position: relative`",
+            "；若同时声明了 top/right/bottom/left，元素会以原位置为基准偏移且不占位，可能遮住后面的内容",
+        ),
+        // overflow.cc:9-11 的初始值是 visible；overflow_x.cc:33 / overflow_y.cc 同构，
+        // 解析失败后把 kOverflow 设成 unset，最终落到 Overflow::ApplyInitial。
+        ("overflow", "auto" | "scroll") => ("`overflow: visible`", ""),
+        ("overflow-x", "auto" | "scroll") => ("`overflow-x: visible`", ""),
+        ("overflow-y", "auto" | "scroll") => ("`overflow-y: visible`", ""),
         // vertical_align.cc:47-50：初始值是 baseline。
-        ("vertical-align", "text-top" | "text-bottom") => "`vertical-align: baseline`",
+        ("vertical-align", "text-top" | "text-bottom") => ("`vertical-align: baseline`", ""),
+        // border_property_utils.h:82-86 的 default 返回 CSSUnsetValue，
+        // 各边 ApplyInitial 是 none（border_top_style.cc:9-12）；该条边直接没有边框。
+        (name, "groove" | "ridge" | "inset" | "outset")
+            if BORDER_STYLE_PROPERTIES.contains(&name) =>
+        {
+            ("`none`", "；该条边不再有边框")
+        }
+        _ => return None,
+    })
+}
+
+/// 继承属性按 `ApplyInherit` 回落：回到父元素的取值，根节点才落到初始值。
+///
+/// `style_resolver.cc:456-464`：unset 且 `property.IsInherited()` 时走 inherit 分支，
+/// 只有没有父节点时才 `ApplyInitial`。
+fn inherited_value(name: &str, value: &str) -> Option<&'static str> {
+    Some(match (name, value) {
+        // visibility.cc:27-31 返回 CSSUnsetValue；初始值 visible（:35-38）。
+        ("visibility", "collapse") => "`visibility: visible`",
+        // font_weight.cc:37-41 返回 CSSUnsetValue；初始值 normal（:46-49）。
+        ("font-weight", "bolder" | "lighter") => "`font-weight: normal`",
+        // text_align.cc:35-39 返回 CSSUnsetValue；初始值 start（:44-47）。
+        ("text-align", "justify-all" | "match-parent") => "`text-align: start`",
         _ => return None,
     })
 }
@@ -76,7 +120,7 @@ impl Rule for UnsupportedValue {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Error,
-            description: "属性在 Skyline 下可用，但该值不支持，声明会被静默忽略",
+            description: "属性在 Skyline 下可用，但该值不支持：按 unset 回落到初始值或父元素的值，或整条声明被丢弃",
         }
     }
 
@@ -142,17 +186,22 @@ impl Rule for UnsupportedValue {
                     "换成明确长度；`auto` 只在父级是行向 flex（或元素脱离文档流）时等于内容宽。父级是列向 flex 时给元素写 `align-self: flex-start`，其余情况用 `display: inline-flex`",
                 )
             } else if let Some(advice) = table.value(&name, &value) {
-                // white-space 是映射成 normal 后照常 Apply；其余几类返回 CSSUnsetValue
-                // 后走 ApplyInitial。两者都会覆盖级联里更早的值，不能写成「声明被忽略」。
+                // white-space 是映射成 normal 后照常 Apply；其余取值返回 CSSUnsetValue，
+                // 由 StyleResolver 按继承性走 ApplyInitial / ApplyInherit。两者都会覆盖
+                // 级联里更早的值，不能写成「声明被忽略」。
                 let message = if name == "white-space"
                     && matches!(value.as_str(), "pre" | "pre-wrap" | "pre-line")
                 {
                     format!(
                         "`{name}: {raw}` 在 Skyline 下会被映射成 `normal` 并照常生效（不是忽略声明）：它会覆盖级联里更早的值，`.x{{white-space:nowrap}} .x{{white-space:{value}}}` 最终是 `normal`，不是 `nowrap`"
                     )
-                } else if let Some(initial) = initial_value(&name, &value) {
+                } else if let Some((initial, note)) = initial_value(&name, &value) {
                     format!(
-                        "`{name}: {raw}` 在 Skyline 下不被支持，引擎按 unset 处理并回落到初始值 {initial}：它会覆盖级联里更早的值，而不是退回上一条声明"
+                        "`{name}: {raw}` 在 Skyline 下不被支持，引擎按 unset 处理并回落到初始值 {initial}：它会覆盖级联里更早的值，而不是退回上一条声明{note}"
+                    )
+                } else if let Some(initial) = inherited_value(&name, &value) {
+                    format!(
+                        "`{name}: {raw}` 在 Skyline 下不被支持，引擎按 unset 处理：{name} 是继承属性，会回到父元素的取值（根节点上是 {initial}），而不是退回上一条声明"
                     )
                 } else {
                     format!("`{name}: {raw}` 这个取值在 Skyline 下不受支持，声明会被忽略")
@@ -363,9 +412,10 @@ mod tests {
     }
 
     /// `display` / `text-align` / `vertical-align` 的这几个值在 C++ 里返回
-    /// `CSSUnsetValue`，随后走 `ApplyInitial`——同样会覆盖级联里更早的值。
+    /// `CSSUnsetValue`：非继承属性走 `ApplyInitial`，继承属性（`text-align`）走
+    /// `ApplyInherit`——同样会覆盖级联里更早的值。
     #[test]
-    fn unset_values_fall_back_to_initial_value() {
+    fn unset_values_fall_back_to_initial_or_parent() {
         let (_f, project) = page(
             "value-unset-initial",
             r#"<view class="a"/><view class="b"/><view class="c"/>"#,
@@ -377,17 +427,130 @@ mod tests {
         );
         let diags = UnsupportedValue.check(&project);
         assert_eq!(diags.len(), 3, "{diags:?}");
-        assert!(diags.iter().all(|d| d.message.contains("回落到初始值")));
-        assert!(diags.iter().any(|d| d.message.contains("`display: flex`")));
+        assert!(diags[0].message.contains("回落到初始值 `display: flex`"));
         assert!(
-            diags
-                .iter()
-                .any(|d| d.message.contains("`text-align: start`"))
+            diags[1].message.contains("继承属性")
+                && diags[1].message.contains("`text-align: start`"),
+            "{}",
+            diags[1].message
         );
         assert!(
-            diags
-                .iter()
-                .any(|d| d.message.contains("`vertical-align: baseline`"))
+            diags[2]
+                .message
+                .contains("回落到初始值 `vertical-align: baseline`")
+        );
+        assert!(!diags.iter().any(|d| d.message.contains("声明会被忽略")));
+    }
+
+    /// `position: sticky` 不是「被忽略」：`position.cc:31-34` 返回 `CSSUnsetValue`，
+    /// `:39-44` 的 `ApplyInitial` 把初值写成 relative。带偏移时元素不占位，会压住内容。
+    #[test]
+    fn sticky_falls_back_to_relative_and_warns_about_offsets() {
+        let (_f, project) = page(
+            "value-sticky-relative",
+            r#"<view class="a"/>"#,
+            ".a { position: sticky; top: 88rpx; }",
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        let message = &diags[0].message;
+        assert!(
+            message.contains("回落到初始值 `position: relative`"),
+            "{message}"
+        );
+        assert!(
+            message.contains("偏移且不占位") && message.contains("遮住"),
+            "{message}"
+        );
+        assert!(!message.contains("声明会被忽略"), "{message}");
+        let help = diags[0].help.as_deref().unwrap_or_default();
+        assert!(
+            help.contains("sticky-section")
+                && help.contains("sticky-header")
+                && help.contains("<scroll-view type=\"custom\">")
+                && help.contains("第一个子元素")
+                && help.contains("relative/absolute/fixed"),
+            "{help}"
+        );
+    }
+
+    /// `overflow` 的 auto / scroll 落到 `Overflow::ApplyInitial`（visible），不是丢弃。
+    #[test]
+    fn overflow_values_fall_back_to_visible() {
+        let (_f, project) = page(
+            "value-overflow-visible",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/>"#,
+            r#"
+            .a { overflow: auto; }
+            .b { overflow: scroll; }
+            .c { overflow-x: auto; }
+            .d { overflow-y: scroll; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 4, "{diags:?}");
+        assert!(
+            diags[0].message.contains("`overflow: visible`")
+                && diags[1].message.contains("`overflow: visible`")
+                && diags[2].message.contains("`overflow-x: visible`")
+                && diags[3].message.contains("`overflow-y: visible`"),
+            "{diags:#?}"
+        );
+        assert!(!diags.iter().any(|d| d.message.contains("声明会被忽略")));
+    }
+
+    /// 继承属性按 unset 回落时走 `ApplyInherit`，回到父元素的值（根节点才是初始值）。
+    #[test]
+    fn inherited_values_return_to_parent_value() {
+        let (_f, project) = page(
+            "value-inherited-parent",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
+            r#"
+            .a { visibility: collapse; }
+            .b { font-weight: bolder; }
+            .c { text-align: justify-all; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 3, "{diags:?}");
+        assert!(diags.iter().all(|d| d.message.contains("继承属性")));
+        assert!(diags[0].message.contains("`visibility: visible`"));
+        assert!(diags[1].message.contains("`font-weight: normal`"));
+        assert!(diags[2].message.contains("`text-align: start`"));
+        assert!(!diags.iter().any(|d| d.message.contains("声明会被忽略")));
+    }
+
+    /// 只有真正不写 computed style 的取值才能写「被忽略」：
+    /// `groove/ridge/inset/outset` 走 unset → 该边初始值 none，`double` 是
+    /// `ApplyValue` 的 `default: return`（保留级联里更早的值），`contents` 在 fp 就解析失败。
+    #[test]
+    fn border_style_fallbacks_distinguish_none_and_ignored() {
+        let (_f, project) = page(
+            "value-border-style-fallback",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
+            r#"
+            .a { border-style: groove; }
+            .b { border-style: double; }
+            .c { display: contents; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 3, "{diags:?}");
+        assert!(
+            diags[0].message.contains("回落到初始值 `none`")
+                && diags[0].message.contains("该条边不再有边框"),
+            "{}",
+            diags[0].message
+        );
+        assert!(
+            diags[1].message.contains("声明会被忽略"),
+            "{}",
+            diags[1].message
+        );
+        assert!(
+            diags[2].message.contains("声明会被忽略"),
+            "{}",
+            diags[2].message
         );
     }
 
