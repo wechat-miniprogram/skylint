@@ -428,14 +428,17 @@ M1 已实现并验证：
 
 ```
 skylint migration baseline <PATH> [--out <FILE>]
+skylint migration baseline <PATH> --out <FILE> --augment
 skylint migration verify <PATH> --baseline <FILE> [--unit <ID>] [--json]
 ```
 
 `--out` 默认是 `<PATH>/.skylint/baseline.json`（落在工程根下，不落在当前目录）。
+`--augment` 必须显式给出，且 `--out` 要指向已存在的基线（见 §9.6）。
 
 `baseline` 存的是**身份**（`id` / `unit` / `rule` / `severity` / `path` / `span`），
 以及 id 格式标记 `idFormat`（新基线为 `"structural-v2"`；v1 为 `"structural"`，
-旧基线没有这个字段）。
+旧基线没有这个字段）。新基线还带 `rules`：冻结时工具具备的全部规则 id（字典序、
+去重）；旧基线没有这个字段，读作「未知」，不做推断。
 另外存一份 `message` / `help` 只用于 `verify` 的 `fixed` 条目展示——身份判定
 仍只看 `id`，措辞变化不影响结论。
 
@@ -497,6 +500,46 @@ v1 基线（`"structural"`）的 WXML / 样式已是结构 id，但 `.js` / `.js
 
 **升级到本版本后建议重建基线**（`skylint migration baseline <PATH>`）：新基线会
 写入 `idFormat: "structural-v2"`，JSON 配置诊断也获得逐条的稳定身份。
+
+### 9.6 规则集变化：`rules` 与 `--augment`
+
+基线是在某个时刻冻结的。冻结之后工具**新增规则**时，新规则在存量文件上的命中
+会被 `verify` 算成 `new`——它们不是这次迁移引入的，而是「冻结时这条规则还不存在」。
+这和 id 漂移不是一回事：id 稳定化解决「同一条诊断换位置」，`rules` 解决「工具能力变了，
+历史基线没有这类条目」。
+
+新基线的 `rules` 记录冻结时的规则集；`verify` 在它存在、且当前运行的规则集里有
+规则不在其中时，会在文本输出末尾提示「基线冻结时还没有 N 条规则（…），这些
+规则的命中可以用 baseline --augment 吸收」。只提示，不改计数、不改退出码。
+
+`baseline --out <FILE> --augment` 在已有基线上**增量吸收**新规则的诊断，而不是重算
+整份基线：
+
+- 读入 `--out` 指定的基线（必须已存在）；
+- 运行当前诊断，逐条判断 `rule` 是否属于「基线已知规则集」：
+  - 基线有 `rules` → 用该集合；
+  - 老基线没有 `rules` → 退化为「基线 findings 里出现过的规则」，并在 stderr 明确
+    警告：冻结时零命中、之后真回归的规则也会被一起吸收，需要人工确认；
+- 已知规则的诊断**一律不动**（不新增、不改 severity、不删）；
+- 未知规则（即冻结后新增的规则）的诊断追加进基线，按规则分组打印吸收条数与文件
+  （前 5 个 + 等 N 个）；
+- 把 `rules` 更新为当前规则集；`idFormat` 保持不变（augment 不升级 id 格式）；
+- 写回前用新基线跑一遍 `verify` 自检：`new` / `newInfo` 必须归零，且 `fixed` /
+  `changed` 必须与 augment 前一致（追加不能动老条目）。否则不写回并以失败退出。
+  `fixed` 非零通常意味着基线冻结后代码或已知规则已经变过——它不是 augment 造成的，
+  但说明这份基线对老规则已经陈旧，值得安排一次重建。
+
+**什么时候该 augment、什么时候该重建基线**：
+
+| 情形 | 做法 |
+|---|---|
+| 只升级了 skylint，工具新增了规则，迁移代码没动 | `baseline --out <FILE> --augment` |
+| 迁移过程中新增 / 修改了代码（无论是否用新规则） | **重建基线**，或按单元 `verify` 逐条确认后 `record` |
+| 规则被改名、调档，或老基线需要升级 id 格式 | 重建基线（`--augment` 不处理这些） |
+
+`--augment` 不是「让门禁变绿」的开关：它只吸收「基线不认识的新规则」的命中，
+当前代码上新出现的已知规则诊断仍然算 `new`。真正的回归不会被吸收。老基线的退化
+口径是唯一例外，所以遇到那行警告必须人看一眼。
 
 ## 10. 台账与排队（M3）
 
