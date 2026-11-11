@@ -29,7 +29,7 @@ use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
 use crate::rules::wxml::{
-    ElementDoc, Reach, element_diagnostic, element_docs, resolved_property, walk_skyline,
+    ElementDoc, Reach, element_diagnostic, element_docs, resolved_property_with, walk_skyline,
 };
 use crate::rules::wxss::natives::{NATIVES, Native, NativeKind};
 use crate::{Diagnostic, Severity};
@@ -87,11 +87,18 @@ impl Rule for NativePadding {
                 let Some(native) = NATIVES.iter().find(|native| native.tag == element.tag) else {
                     return;
                 };
-                let padded = Self::PROPERTIES.iter().any(|property| {
-                    resolved_property(project, &tree, element, property)
-                        .is_some_and(|resolved| nonzero_padding(&resolved.value))
-                });
-                if !padded {
+                let mut padded = false;
+                let mut undecidable = false;
+                for property in Self::PROPERTIES {
+                    let (resolved, unknown) =
+                        resolved_property_with(project, &tree, element, property);
+                    undecidable |= unknown;
+                    if resolved.is_some_and(|resolved| nonzero_padding(&resolved.value)) {
+                        padded = true;
+                    }
+                }
+                // 判不了的选择器可能改写结果：只要出现就不报（宁可漏报）。
+                if !padded || undecidable {
                     return;
                 }
                 out.push(
@@ -279,5 +286,51 @@ mod tests {
                 ".list { padding: 0 16px; height: 200px; }",
             );
         assert!(NativePadding.check(&fixture.project()).is_empty());
+    }
+
+    /// 片段里 `padding` 判不了（祖先未知 / 选择器超出受限文法）：不能当成没写。
+    #[test]
+    fn undecidable_fragment_padding_is_not_reported() {
+        let fixture = Fixture::new("native-pad-undecidable");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write("app.json", SKYLINE_APP)
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", r#"<include src="./part"/>"#)
+            .write(
+                "pages/index/part.wxml",
+                r#"<scroll-view class="list"><view/></scroll-view>"#,
+            )
+            .write(
+                "pages/index/index.wxss",
+                ".list { padding: 8px; height: 100px; }\n.ghost + .list { padding: 0; }",
+            );
+        let diagnostics = NativePadding.check(&fixture.project());
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// `<import>` 进来的模板定义体也在检查范围：定义体在 `<template is>` 调用处渲染。
+    #[test]
+    fn imported_template_body_is_reported() {
+        let fixture = Fixture::new("native-pad-imported-template");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write("app.json", SKYLINE_APP)
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<import src="../../templates/t.wxml"/><template is="card"/>"#,
+            )
+            .write(
+                "templates/t.wxml",
+                r#"<template name="card"><scroll-view class="list"><view/></scroll-view></template>"#,
+            )
+            .write(
+                "pages/index/index.wxss",
+                ".list { padding: 8px; height: 100px; }",
+            );
+        let diagnostics = NativePadding.check(&fixture.project());
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].path, "templates/t.wxml");
     }
 }

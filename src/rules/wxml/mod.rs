@@ -57,7 +57,7 @@ use glass_easel_template_compiler::parse::Position;
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::matcher::{Dialect, FlatNode, Tree, Tri, node_of};
-use crate::project::Project;
+use crate::project::{Project, Scope};
 use crate::wxml_graph::AncestorNodePaths;
 
 /// 页面与组件的 WXML + 被 import / include 的模板，按路径去重。
@@ -113,7 +113,7 @@ pub(crate) struct ElementDoc {
     pub reach: Reach,
 }
 
-/// 元素级规则能看到的文档：全部页面、组件与被引入的片段。
+/// 元素级规则能看到的文档：全部页面、组件，与被 `<include>` / `<import>` 引用的模板。
 ///
 /// 元素级规则曾经只走「页面 + 直接引用的组件」，于是只被 `renderer: "webview"` 页面引用的
 /// 组件永远进不了检查，而同一份文件的声明级规则照报——同一个组件一半报一半不报。
@@ -122,6 +122,10 @@ pub(crate) struct ElementDoc {
 /// 可达性按**渲染树**算（[`WxmlGraph::render_docs`] 沿真实标签用法展开），不是按
 /// `usingComponents` 声明算：声明了但没人用的组件不该被算成 Skyline 可达。同一份
 /// 组件被 Skyline 页面与 WebView 页面同时引用时按 Skyline 处理（只要有一处能渲染到）。
+///
+/// `<import>` 的模板定义体不进 `render_docs`（它只沿渲染树走），但定义体确实渲染在每个
+/// `<template is>` 调用处，所以按 [`Project::template_scopes`] 补进来；只收被某个能渲染到
+/// 的单元引用过的模板，死模板属于「未使用代码」，不在本工具范围。
 pub(crate) fn element_docs(project: &Project) -> Vec<ElementDoc> {
     let graph = project.graph();
 
@@ -141,6 +145,33 @@ pub(crate) fn element_docs(project: &Project) -> Vec<ElementDoc> {
             if page_reach == Reach::Skyline {
                 *entry = Reach::Skyline;
             }
+        }
+    }
+
+    // 模板文件没有自己的作用域：`<include>` 的整段内容已由 `render_docs` 带上，
+    // `<import>` 的定义体按引用它的单元取可达性。单元自己的 WXML 不在 `reach` 里
+    // （未被任何页面渲染到）就不补，避免把死组件引用的模板算成检查对象。
+    for (path, scopes) in &project.template_scopes {
+        let mut template_reach = None;
+        for scope in scopes {
+            let Some(unit) = unit_wxml(project, scope) else {
+                continue;
+            };
+            match reach.get(unit) {
+                Some(Reach::Skyline) => {
+                    template_reach = Some(Reach::Skyline);
+                    break;
+                }
+                Some(Reach::WebviewOnly) => template_reach = Some(Reach::WebviewOnly),
+                None => {}
+            }
+        }
+        let Some(template_reach) = template_reach else {
+            continue;
+        };
+        let entry = reach.entry(path.as_str()).or_insert(template_reach);
+        if template_reach == Reach::Skyline {
+            *entry = Reach::Skyline;
         }
     }
 
@@ -170,6 +201,24 @@ pub(crate) fn element_docs(project: &Project) -> Vec<ElementDoc> {
             Some(ElementDoc { doc, reach })
         })
         .collect()
+}
+
+/// 作用域对应的单元 WXML，**包含 opt-out 页面**：它们仍然会渲染（只是不迁 Skyline），
+/// 由 [`Reach`] 统一标注，不能在这里提前丢掉。
+fn unit_wxml<'a>(project: &'a Project, scope: &Scope) -> Option<&'a str> {
+    match scope {
+        Scope::Page(route) => project
+            .pages
+            .iter()
+            .find(|page| &page.route == route)
+            .and_then(|page| page.files.wxml.as_deref()),
+        Scope::Component(path) => project
+            .components
+            .iter()
+            .find(|unit| &unit.path == path)
+            .and_then(|unit| unit.files.wxml.as_deref()),
+        Scope::Global | Scope::Loose(_) => None,
+    }
 }
 
 pub(crate) fn load_doc(project: &Project, path: &str) -> Option<Rc<WxmlDoc>> {
@@ -492,18 +541,37 @@ pub(crate) fn matched_declarations<'a>(
 }
 
 /// 元素某个属性的有效取值。
+///
+/// 判不了时（模板定义体 / 片段的祖先未知、选择器超出受限文法）返回 `None`；需要区分
+/// 「确实没写」时用 [`resolved_property_with`]。
 pub(crate) fn resolved_property<'a>(
     project: &'a Project,
     tree: &Tree<'_>,
     element: &WxmlElement,
     property: &str,
 ) -> Option<Resolved<'a>> {
-    let winner = cascade_entries(project, tree, element, property).pop()?;
-    Some(Resolved {
-        value: winner.value,
-        sheet: winner.sheet,
-        declaration: winner.declaration,
-    })
+    resolved_property_with(project, tree, element, property).0
+}
+
+/// 同上，另外告诉你「有没有选择器判不了」。
+///
+/// 布尔位与 [`cascade_entries_with`] 同源：结论依赖这个属性时，判不了就不能报
+/// （宁可漏报）。
+pub(crate) fn resolved_property_with<'a>(
+    project: &'a Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    property: &str,
+) -> (Option<Resolved<'a>>, bool) {
+    let (mut entries, undecidable) = cascade_entries_with(project, tree, element, property);
+    (
+        entries.pop().map(|winner| Resolved {
+            value: winner.value,
+            sheet: winner.sheet,
+            declaration: winner.declaration,
+        }),
+        undecidable,
+    )
 }
 
 /// WebView 侧本来就会截断吗：多行靠 `-webkit-line-clamp`，单行靠
@@ -998,6 +1066,46 @@ mod tests {
         assert_eq!(reach["components/outer/outer.wxml"], Reach::Skyline);
         assert_eq!(reach["components/inner/inner.wxml"], Reach::Skyline);
         assert_eq!(reach["pages/web/index.wxml"], Reach::WebviewOnly);
+    }
+
+    /// `<import>` 的模板定义体不进 `render_docs`，但定义体确实在 `<template is>` 调用处
+    /// 渲染：元素级规则必须看到它，可达性跟着引用它的单元走。
+    #[test]
+    fn element_docs_follow_imported_template_reach() {
+        let fixture = Fixture::new("element-docs-import");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/sky/index","pages/web/index"]}"#,
+            )
+            .write("pages/sky/index.json", "{}")
+            .write(
+                "pages/sky/index.wxml",
+                r#"<import src="../../templates/sky.wxml"/><template is="a"/>"#,
+            )
+            .write("pages/web/index.json", r#"{"renderer":"webview"}"#)
+            .write(
+                "pages/web/index.wxml",
+                r#"<import src="../../templates/web.wxml"/><template is="b"/>"#,
+            )
+            .write(
+                "templates/sky.wxml",
+                r#"<template name="a"><view/></template>"#,
+            )
+            .write(
+                "templates/web.wxml",
+                r#"<template name="b"><view/></template>"#,
+            );
+
+        let project = fixture.project();
+        let reach: std::collections::HashMap<String, Reach> = element_docs(&project)
+            .into_iter()
+            .map(|doc| (doc.doc.path().to_string(), doc.reach))
+            .collect();
+
+        assert_eq!(reach["templates/sky.wxml"], Reach::Skyline);
+        assert_eq!(reach["templates/web.wxml"], Reach::WebviewOnly);
     }
 
     /// 引擎节点工厂注册的内置组件（shadow/node_factory.cc:329,331,342-343）

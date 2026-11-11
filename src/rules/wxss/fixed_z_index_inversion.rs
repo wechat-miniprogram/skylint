@@ -26,7 +26,7 @@ use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{ElementDoc, element_docs, resolved_property, walk_skyline};
+use crate::rules::wxml::{ElementDoc, element_docs, resolved_property_with, walk_skyline};
 use crate::wxml_graph::WxmlGraph;
 use crate::{Diagnostic, Severity};
 
@@ -60,11 +60,22 @@ impl Rule for FixedZIndexInversion {
         }
 
         // 页面 → 它渲染到的全部文档，同一渲染树内的 fixed 元素才互相竞争。
+        // `<import>` 进来的模板定义体不在 `render_docs` 里，但它在调用处渲染，
+        // 与引用它的单元同处一棵树。
+        let templates = template_reach(project);
         let trees: Vec<HashSet<&str>> = project
             .pages
             .iter()
             .filter_map(|page| page.files.wxml.as_deref())
-            .map(|path| graph.render_docs(path).into_iter().collect::<HashSet<_>>())
+            .map(|path| {
+                let mut docs: HashSet<&str> = graph.render_docs(path).into_iter().collect();
+                for (template, units) in &templates {
+                    if units.iter().any(|unit| docs.contains(*unit)) {
+                        docs.insert(*template);
+                    }
+                }
+                docs
+            })
             .collect();
 
         // 按「遮挡方」聚合：同一个遮罩压住多个上层时只报一条，避免同因噪声。
@@ -153,33 +164,81 @@ fn shares_tree(trees: &[HashSet<&str>], a: &str, b: &str) -> bool {
         .any(|docs| docs.contains(a) && docs.contains(b))
 }
 
+/// 模板定义文档 → 引用它的单元 WXML（`<include>` 已在 `render_docs` 里，这里不重）。
+fn template_reach(project: &Project) -> Vec<(&str, Vec<&str>)> {
+    project
+        .template_scopes
+        .iter()
+        .map(|(template, scopes)| {
+            let units = scopes
+                .iter()
+                .filter_map(|scope| match scope {
+                    crate::project::Scope::Page(route) => project
+                        .pages
+                        .iter()
+                        .find(|page| &page.route == route)
+                        .and_then(|page| page.files.wxml.as_deref()),
+                    crate::project::Scope::Component(path) => project
+                        .components
+                        .iter()
+                        .find(|unit| &unit.path == path)
+                        .and_then(|unit| unit.files.wxml.as_deref()),
+                    crate::project::Scope::Global | crate::project::Scope::Loose(_) => None,
+                })
+                .collect();
+            (template.as_str(), units)
+        })
+        .collect()
+}
+
 /// 收集所有 `position: fixed` 且有整数 `z-index` 的元素。
 fn collect_layers(project: &Project, graph: &WxmlGraph) -> Vec<Layer> {
     let mut out = Vec::new();
     for ElementDoc { doc, .. } in element_docs(project) {
         let tree = Tree::new(&doc);
         walk_skyline(&doc, |element, ancestors| {
-            let Some(position) = resolved_property(project, &tree, element, "position") else {
+            // 模板定义体 / 片段里选择器判不了：不能断言它是不是 fixed、z-index 是多少。
+            let (position, undecidable) =
+                resolved_property_with(project, &tree, element, "position");
+            if undecidable {
+                return;
+            }
+            let Some(position) = position else {
                 return;
             };
             if !clean_value(&position.value).eq_ignore_ascii_case("fixed") {
                 return;
             }
-            let Some(own) = integer(project, &tree, element, "z-index") else {
+            let (own, undecidable) = integer(project, &tree, element, "z-index");
+            if undecidable {
+                return;
+            }
+            let Some(own) = own else {
                 return;
             };
             // 最外层层叠上下文祖先：WebView 里它整层参与兄弟排序，内部 z-index 被关在里面。
-            let flat = ancestors
-                .iter()
-                .rev()
-                .find_map(|ancestor| {
-                    let position = resolved_property(project, &tree, ancestor, "position")?;
-                    if clean_value(&position.value).eq_ignore_ascii_case("static") {
-                        return None;
-                    }
-                    integer(project, &tree, ancestor, "z-index")
-                })
-                .unwrap_or(own);
+            let mut flat = own;
+            for ancestor in ancestors.iter().rev() {
+                let (position, undecidable) =
+                    resolved_property_with(project, &tree, ancestor, "position");
+                if undecidable {
+                    return;
+                }
+                let Some(position) = position else {
+                    continue;
+                };
+                if clean_value(&position.value).eq_ignore_ascii_case("static") {
+                    continue;
+                }
+                let (z, undecidable) = integer(project, &tree, ancestor, "z-index");
+                if undecidable {
+                    return;
+                }
+                if let Some(z) = z {
+                    flat = z;
+                    break;
+                }
+            }
             let (line, column) = doc.position(element.tag_start);
             out.push(Layer {
                 path: doc.path().to_string(),
@@ -200,9 +259,12 @@ fn integer(
     tree: &Tree<'_>,
     element: &crate::input::wxml::WxmlElement,
     property: &str,
-) -> Option<i64> {
-    let resolved = resolved_property(project, tree, element, property)?;
-    clean_value(&resolved.value).parse().ok()
+) -> (Option<i64>, bool) {
+    let (resolved, undecidable) = resolved_property_with(project, tree, element, property);
+    (
+        resolved.and_then(|resolved| clean_value(&resolved.value).parse().ok()),
+        undecidable,
+    )
 }
 
 /// 去掉 `!important` 与首尾空白。
@@ -335,6 +397,26 @@ mod tests {
             .write(
                 "pages/b/b.wxss",
                 ".wrap { position: relative; z-index: 0; }\n.panel { position: fixed; z-index: 5000; }",
+            );
+        let project = fixture.project();
+        assert!(FixedZIndexInversion.check(&project).is_empty());
+    }
+
+    /// 片段里 `fixed` 层的 `position` 判不了：不能按「确定的值」排顺序。
+    #[test]
+    fn undecidable_fragment_position_is_not_reported() {
+        let fixture = Fixture::wxml(
+            "zindex-undecidable",
+            r#"<include src="./part"/><view class="input"/>"#,
+        );
+        fixture
+            .write(
+                "pages/index/part.wxml",
+                r#"<view class="wrap"><view class="panel"/></view>"#,
+            )
+            .write(
+                "pages/index/index.wxss",
+                ".wrap { position: relative; z-index: 0; }\n.panel { position: fixed; z-index: 5000; }\n.input { position: fixed; z-index: 4000; }\n.ghost + .panel { position: static; }",
             );
         let project = fixture.project();
         assert!(FixedZIndexInversion.check(&project).is_empty());

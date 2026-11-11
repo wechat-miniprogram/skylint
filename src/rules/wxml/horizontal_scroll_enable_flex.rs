@@ -12,7 +12,8 @@ use crate::rules::{Rule, RuleMeta};
 use super::structure::find_attr;
 use crate::matcher::Tree;
 
-use super::{flex_container, span_diagnostic, visit, walk_skyline};
+use super::{span_diagnostic, visit, walk_skyline};
+use crate::rules::wxml::{cascade_entries_with, is_flex_value};
 
 pub const HORIZONTAL_FLEX_ID: &str = "skyline/horizontal-scroll-enable-flex";
 
@@ -34,8 +35,19 @@ impl Rule for HorizontalScrollEnableFlex {
                 if element.tag != "scroll-view"
                     || flag(element, "scroll-x") != Some(true)
                     || flag(element, "enable-flex") != Some(false)
-                    // 取级联胜出的那一个 `display`：`style="display:block"` 覆盖时不需要 enable-flex。
-                    || !flex_container(project, &tree, element)
+                {
+                    return;
+                }
+                // 取级联胜出的那一个 `display`：`style="display:block"` 覆盖时不需要 enable-flex。
+                // 模板定义体里选择器判不了时不能当「不是 flex」。
+                let (display, undecidable) =
+                    cascade_entries_with(project, &tree, element, "display");
+                if undecidable {
+                    return;
+                }
+                if !display
+                    .last()
+                    .is_some_and(|entry| is_flex_value(&entry.value))
                 {
                     return;
                 }
@@ -145,6 +157,30 @@ mod tests {
             "flex-dynamic",
             r#"<scroll-view type="list" scroll-x="{{x}}" style="display: flex;"><view/></scroll-view>"#,
         ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 片段里 `display` 判不了（祖先未知 / 选择器超出受限文法）：不能当成「不是 flex」。
+    #[test]
+    fn undecidable_fragment_display_is_not_reported() {
+        let fixture = Fixture::new("flex-undecidable");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", r#"<include src="./part"/>"#)
+            .write(
+                "pages/index/part.wxml",
+                r#"<scroll-view type="list" scroll-x class="tabs"><view/></scroll-view>"#,
+            )
+            .write(
+                "pages/index/index.wxss",
+                ".tabs { display: flex; }\n.ghost + .tabs { display: block; }",
+            );
+        let diagnostics = check_flex(&fixture);
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 }

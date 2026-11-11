@@ -23,7 +23,7 @@ use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{ElementDoc, element_docs, resolved_property, walk_skyline};
+use crate::rules::wxml::{ElementDoc, element_docs, resolved_property_with, walk_skyline};
 use crate::rules::wxss::value_util::at_declaration;
 use crate::{Diagnostic, Severity};
 
@@ -54,14 +54,20 @@ impl Rule for FixedLayer {
         for ElementDoc { doc, reach } in element_docs(project) {
             let tree = Tree::new(&doc);
             walk_skyline(&doc, |element, ancestors| {
-                let Some(position) = resolved_property(project, &tree, element, "position") else {
+                let (position, undecidable) =
+                    resolved_property_with(project, &tree, element, "position");
+                // 模板定义体 / 片段里选择器判不了：不能断言它不是 fixed。
+                if undecidable {
+                    return;
+                }
+                let Some(position) = position else {
                     return;
                 };
                 if !clean_value(&position.value).eq_ignore_ascii_case("fixed") {
                     return;
                 }
                 // 只有祖先形成包含块时，WebView 与 Skyline 的定位基准才不同。
-                if !has_containing_block(project, &tree, ancestors) {
+                if has_containing_block(project, &tree, ancestors) != Some(true) {
                     return;
                 }
 
@@ -114,42 +120,58 @@ impl Rule for FixedLayer {
 ///
 /// `z-index` 不算：它只影响绘制顺序，不构成 fixed 的包含块。页面级叠放顺序两端都是
 /// 文档序，也是为什么「fixed + 没有 z-index」本身不是缺陷。
-fn has_containing_block(project: &Project, tree: &Tree<'_>, ancestors: &[&WxmlElement]) -> bool {
-    let resolve = |element: &WxmlElement, property: &str| {
-        resolved_property(project, tree, element, property)
-            .map(|resolved| clean_value(&resolved.value).to_ascii_lowercase())
+///
+/// `Some(true)` = 有；`Some(false)` = 确定没有；`None` = 有祖先的属性判不了，
+/// 断不了「没有」（例：模板定义体的祖先选择器超出受限文法）。
+fn has_containing_block(
+    project: &Project,
+    tree: &Tree<'_>,
+    ancestors: &[&WxmlElement],
+) -> Option<bool> {
+    let mut unknown = false;
+    // CSS-wide 关键字把属性恢复成初始值：`transform: initial` 等于 `transform: none`，
+    // 不建立包含块（`unset` / `revert` / `revert-layer` 同理）。
+    let set = |value: Option<String>| {
+        value.is_some_and(|value| {
+            !value.is_empty()
+                && value != "none"
+                && value != "normal"
+                && !super::is_css_wide_keyword(&value)
+        })
     };
-    ancestors.iter().any(|ancestor| {
-        // CSS-wide 关键字把属性恢复成初始值：`transform: initial` 等于 `transform: none`，
-        // 不建立包含块（`unset` / `revert` / `revert-layer` 同理）。
-        let set = |property: &str| {
-            resolve(ancestor, property).is_some_and(|value| {
-                !value.is_empty()
-                    && value != "none"
-                    && value != "normal"
-                    && !super::is_css_wide_keyword(&value)
-            })
-        };
-        let animated = resolve(ancestor, "will-change").is_some_and(|value| {
+    let muted = |resolved: Option<crate::rules::wxml::Resolved<'_>>| {
+        resolved.map(|resolved| clean_value(&resolved.value).to_ascii_lowercase())
+    };
+    for ancestor in ancestors {
+        let mut forms = false;
+        for property in ["transform", "perspective", "filter", "backdrop-filter"] {
+            let (resolved, undecidable) = resolved_property_with(project, tree, ancestor, property);
+            unknown |= undecidable;
+            forms |= set(muted(resolved));
+        }
+        let (will_change, undecidable) =
+            resolved_property_with(project, tree, ancestor, "will-change");
+        unknown |= undecidable;
+        forms |= muted(will_change).is_some_and(|value| {
             // `will-change: initial` / `unset` 之类不启用任何触发条件。
             !super::is_css_wide_keyword(&value)
                 && ["transform", "perspective", "filter"]
                     .iter()
                     .any(|trigger| value.contains(trigger))
         });
+        let (contain, undecidable) = resolved_property_with(project, tree, ancestor, "contain");
+        unknown |= undecidable;
         // `contain` 只有 layout / paint 会建立 fixed 的包含块；`size` / `style` 不会。
-        let contain = resolve(ancestor, "contain").is_some_and(|value| {
+        forms |= muted(contain).is_some_and(|value| {
             ["layout", "paint", "strict", "content"]
                 .iter()
                 .any(|keyword| value.split_whitespace().any(|part| part == *keyword))
         });
-        set("transform")
-            || set("perspective")
-            || set("filter")
-            || set("backdrop-filter")
-            || contain
-            || animated
-    })
+        if forms {
+            return Some(true);
+        }
+    }
+    (!unknown).then_some(false)
 }
 
 /// 去掉取值末尾的 `!important`。
@@ -389,5 +411,23 @@ mod tests {
         let diagnostics = FixedLayer.check(&project);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert_eq!(diagnostics[0].path, "components/mask/mask.wxss");
+    }
+
+    /// 片段里 `position` 判不了（祖先未知 / 选择器超出受限文法）：不能当成没写。
+    #[test]
+    fn undecidable_fragment_position_is_not_reported() {
+        let fixture = Fixture::wxml("fixed-layer-undecidable", r#"<include src="./part"/>"#);
+        fixture
+            .write(
+                "pages/index/part.wxml",
+                r#"<view class="panel"><view class="bar"/></view>"#,
+            )
+            .write(
+                "pages/index/index.wxss",
+                ".panel { transform: translateZ(0); }\n.bar { position: fixed; }\n.ghost + .bar { position: static; }",
+            );
+        let project = fixture.project();
+        let diagnostics = FixedLayer.check(&project);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 }

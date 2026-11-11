@@ -69,6 +69,20 @@ impl crate::rules::Rule for TagSelectorIsolation {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut hits: BTreeMap<(String, usize), Hit> = BTreeMap::new();
         let mut docs: HashMap<&str, Option<Rc<WxmlDoc>>> = HashMap::new();
+        // 单元 → 它 `<import>` 进来的模板定义文档。模板体在 `<template is>` 调用处
+        // 渲染，里面的标签 / id 节点也会被别的作用域的标签选择器命中（WebView 下生效、
+        // Skyline 下不跨组件），只看单元自己的 WXML 会漏掉这一半。
+        let mut templates: HashMap<&str, Vec<&str>> = HashMap::new();
+        for (path, scopes) in &project.template_scopes {
+            for scope in scopes {
+                let unit = match scope {
+                    Scope::Page(route) => route.as_str(),
+                    Scope::Component(component) => component.as_str(),
+                    Scope::Global | Scope::Loose(_) => continue,
+                };
+                templates.entry(unit).or_default().push(path.as_str());
+            }
+        }
         // 只有带组合符的选择器才需要渲染树；纯标签 / 纯 id 的单 compound 用不到它。
 
         visit_rules(project, |sheet, rule, _out| {
@@ -139,7 +153,7 @@ impl crate::rules::Rule for TagSelectorIsolation {
                         continue;
                     }
                     let Some((unit, foreign_tag)) =
-                        find_foreign(project, &foreign, &flat, &mut docs)
+                        find_foreign(project, &foreign, &templates, &flat, &mut docs)
                     else {
                         continue;
                     };
@@ -194,6 +208,7 @@ fn find_foreign<'a>(
     project: &'a Project,
 
     units: &[&'a str],
+    templates: &HashMap<&'a str, Vec<&'a str>>,
     selector: &FlatSelector,
     docs: &mut HashMap<&'a str, Option<Rc<WxmlDoc>>>,
 ) -> Option<(String, String)> {
@@ -213,29 +228,35 @@ fn find_foreign<'a>(
         else {
             continue;
         };
-        let Some(doc) = docs
-            .entry(wxml_path)
-            .or_insert_with(|| super::super::wxml::load_doc(project, wxml_path))
-            .as_ref()
-        else {
-            // 该单元 WXML 解析失败只跳过它，不影响其它外部单元。
-            continue;
-        };
-        for element in doc.elements() {
-            // 「WebView 能不能命中」才是这条规则关心的方向。
-            let node = node_of(&element.tag, &element.attributes);
-            if !selector.matches_subject(&node) {
+        let mut paths = vec![wxml_path];
+        if let Some(found) = templates.get(unit) {
+            paths.extend(found.iter().copied());
+        }
+        for wxml_path in paths {
+            let Some(doc) = docs
+                .entry(wxml_path)
+                .or_insert_with(|| super::super::wxml::load_doc(project, wxml_path))
+                .as_ref()
+            else {
+                // 该单元 WXML 解析失败只跳过它，不影响其它外部单元。
                 continue;
-            }
-            let matched = selector.is_simple() || {
-                let graph = project.graph();
-                graph.ancestor_paths(wxml_path, element).iter().any(|path| {
-                    let ancestors: Vec<FlatNode> = path.iter().map(AncestorRef::node).collect();
-                    selector.matches(&node, &ancestors)
-                })
             };
-            if matched {
-                return Some((unit.to_string(), element.tag.clone()));
+            for element in doc.elements() {
+                // 「WebView 能不能命中」才是这条规则关心的方向。
+                let node = node_of(&element.tag, &element.attributes);
+                if !selector.matches_subject(&node) {
+                    continue;
+                }
+                let matched = selector.is_simple() || {
+                    let graph = project.graph();
+                    graph.ancestor_paths(wxml_path, element).iter().any(|path| {
+                        let ancestors: Vec<FlatNode> = path.iter().map(AncestorRef::node).collect();
+                        selector.matches(&node, &ancestors)
+                    })
+                };
+                if matched {
+                    return Some((unit.to_string(), element.tag.clone()));
+                }
             }
         }
     }
@@ -523,5 +544,27 @@ mod tests {
         let diagnostics = check(&fixture);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
         assert!(diagnostics[0].message.contains("#inner"));
+    }
+
+    /// 组件 `<import>` 的模板定义体也在组件作用域里渲染：页面样式里的标签选择器
+    /// 命中模板体里的 `<view>`，同样会在 Skyline 下失效。
+    #[test]
+    fn page_tag_selector_reaches_imported_template_body() {
+        let fixture = fixture("tag-template", "view { color: red; }");
+        fixture
+            .write(
+                "components/c/c.wxml",
+                r#"<import src="../../templates/card.wxml"/><template is="card"/>"#,
+            )
+            .write(
+                "templates/card.wxml",
+                r#"<template name="card"><view class="inner"/></template>"#,
+            );
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(
+            diagnostics[0].message.contains("components/c/c"),
+            "{diagnostics:?}"
+        );
     }
 }
