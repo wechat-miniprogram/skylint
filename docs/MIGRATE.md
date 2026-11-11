@@ -433,12 +433,10 @@ skylint migration verify <PATH> --baseline <FILE> [--unit <ID>] [--json]
 ```
 
 `--out` 默认是 `<PATH>/.skylint/baseline.json`（落在工程根下，不落在当前目录）。
-`--augment` 必须显式给出，且 `--out` 要指向已存在的基线（见 §9.6）。
+`--augment` 必须显式给出，且 `--out` 要指向已存在的基线（见 §9.5）。
 
 `baseline` 存的是**身份**（`id` / `unit` / `rule` / `severity` / `path` / `span`），
-以及 id 格式标记 `idFormat`（新基线为 `"structural-v2"`；v1 为 `"structural"`，
-旧基线没有这个字段）。新基线还带 `rules`：冻结时工具具备的全部规则 id（字典序、
-去重）；旧基线没有这个字段，读作「未知」，不做推断。
+以及 `rules`：冻结时工具具备的全部规则 id（字典序、去重）。
 另外存一份 `message` / `help` 只用于 `verify` 的 `fixed` 条目展示——身份判定
 仍只看 `id`，措辞变化不影响结论。
 
@@ -447,18 +445,22 @@ skylint migration verify <PATH> --baseline <FILE> [--unit <ID>] [--json]
 | 情况 | 计入 | `findings[].kind` | 拦门禁 |
 |---|---|---|---|
 | 当前有、基线没有，且 severity 是 error / warning | `new` | `new` | **是** |
-| 当前有、基线没有，且 severity 是 info | `newInfo` | `new-info` | 否 |
+| 当前有、基线没有，且 severity 是 info | `newInfo` | `new` | 否 |
 | 基线有、当前没有 | `fixed` | `fixed` | 否 |
-| 同一 `id`，变严（info→warning/error、warning→error） | `changed` / `changedUp` | `severity-raised` | 否 |
-| 同一 `id`，变松（error→warning、warning/error→info） | `changed` / `changedDown` | `severity-lowered` | 否 |
+| 同一 `id`，severity 变了 | `changed` / `changedUp` / `changedDown` | `changed` + `previousSeverity` | 否 |
 
-`changed == changedUp + changedDown`。`kind` 是逐条的权威判据：**`new` 只有一种
-含义——新增且拦门禁**；info 级新增一律是 `new-info`，调用方不能拿 `kind == "new"`
-当「有新诊断」用。判门禁请看 `new` 计数（或退出码），不要数 `findings`。
+`kind` 只有 `new` / `fixed` / `changed` 三种。info 级新增的 `kind` 也是 `new`——
+它和 error/warning 新增的区别在 `severity` 字段，拦不拦门禁看计数 `new`（只统计
+error/warning），不要数 `findings`。
+
+`changed` 条目的 `previousSeverity` 是基线里的级别，方向由 `severity` 与它比较
+得出：变严（info→warning/error、warning→error）计入 `changedUp`，变松
+（error→warning、warning/error→info）计入 `changedDown`，
+`changed == changedUp + changedDown`。
 
 退出码：`new > 0` → 1，否则 0。`job.acceptance` 的 `l0-static` 就是判 `$.new == 0`。
-调严的 `severity-raised` 不拦门禁（它不是 agent 这次改出来的），但会在人读输出里用
-`↑` 标出，`changedUp` 计数供人工/上层策略判断。
+调档不拦门禁（它不是 agent 这次改出来的），但会在人读输出里用 `↑` / `↓` 标出，
+`changedUp` / `changedDown` 计数供人工/上层策略判断。
 
 ### 9.2 为什么按 id 不按行列
 
@@ -486,44 +488,26 @@ JSON 配置诊断用 `jsonPointer` + 值指纹，重排 / 缩进 / 单行多行�
 - 元素被删掉时，它的旧诊断算 `fixed`（而不是「未知」）——这与「修好了」在数据上
   不可区分，需要人看一眼 diff。
 
-### 9.5 旧基线（`idFormat: "legacy"` / `"structural"`）
-
-旧版 `baseline.json` 没有 `idFormat` 字段，非 WXML id 是
-`rule|path|line:column`。`verify` 不会静默：`--json` 输出 `baselineFormat: "legacy"`，
-人读输出也会打一行警告。匹配时按 `(rule, path)` 分组、再按源码顺序对齐，所以
-插空行 / 整块挪动不会误报；代价是「删一条 + 加一条」这种同数量变化区分不出来，
-`fixed` 的逐条定位也只是近似。
-
-v1 基线（`"structural"`）的 WXML / 样式已是结构 id，但 `.js` / `.json` 仍是行列。
-`verify` 只对这部分启用同样的顺序对齐，并把 `baselineFormat` 报成
-`"structural"`；`new` / `fixed` 的统计不会因此退化。
-
-**升级到本版本后建议重建基线**（`skylint migration baseline <PATH>`）：新基线会
-写入 `idFormat: "structural-v2"`，JSON 配置诊断也获得逐条的稳定身份。
-
-### 9.6 规则集变化：`rules` 与 `--augment`
+### 9.5 规则集变化：`rules` 与 `--augment`
 
 基线是在某个时刻冻结的。冻结之后工具**新增规则**时，新规则在存量文件上的命中
 会被 `verify` 算成 `new`——它们不是这次迁移引入的，而是「冻结时这条规则还不存在」。
 这和 id 漂移不是一回事：id 稳定化解决「同一条诊断换位置」，`rules` 解决「工具能力变了，
 历史基线没有这类条目」。
 
-新基线的 `rules` 记录冻结时的规则集；`verify` 在它存在、且当前运行的规则集里有
-规则不在其中时，会在文本输出末尾提示「基线冻结时还没有 N 条规则（…），这些
-规则的命中可以用 baseline --augment 吸收」。只提示，不改计数、不改退出码。
+基线的 `rules` 记录冻结时的规则集；当前运行的规则集里有规则不在其中时，`verify`
+会在文本输出末尾提示「基线冻结时还没有 N 条规则（…），这些规则的命中可以用
+baseline --augment 吸收」。只提示，不改计数、不改退出码。
 
 `baseline --out <FILE> --augment` 在已有基线上**增量吸收**新规则的诊断，而不是重算
 整份基线：
 
 - 读入 `--out` 指定的基线（必须已存在）；
-- 运行当前诊断，逐条判断 `rule` 是否属于「基线已知规则集」：
-  - 基线有 `rules` → 用该集合；
-  - 老基线没有 `rules` → 退化为「基线 findings 里出现过的规则」，并在 stderr 明确
-    警告：冻结时零命中、之后真回归的规则也会被一起吸收，需要人工确认；
+- 用基线里的 `rules`（当前形态的基线必带）作为「基线已知规则集」；
 - 已知规则的诊断**一律不动**（不新增、不改 severity、不删）；
 - 未知规则（即冻结后新增的规则）的诊断追加进基线，按规则分组打印吸收条数与文件
   （前 5 个 + 等 N 个）；
-- 把 `rules` 更新为当前规则集；`idFormat` 保持不变（augment 不升级 id 格式）；
+- 把 `rules` 更新为当前规则集；
 - 写回前用新基线跑一遍 `verify` 自检：`new` / `newInfo` 必须归零，且 `fixed` /
   `changed` 必须与 augment 前一致（追加不能动老条目）。否则不写回并以失败退出。
   `fixed` 非零通常意味着基线冻结后代码或已知规则已经变过——它不是 augment 造成的，
@@ -535,11 +519,10 @@ v1 基线（`"structural"`）的 WXML / 样式已是结构 id，但 `.js` / `.js
 |---|---|
 | 只升级了 skylint，工具新增了规则，迁移代码没动 | `baseline --out <FILE> --augment` |
 | 迁移过程中新增 / 修改了代码（无论是否用新规则） | **重建基线**，或按单元 `verify` 逐条确认后 `record` |
-| 规则被改名、调档，或老基线需要升级 id 格式 | 重建基线（`--augment` 不处理这些） |
+| 规则被改名、调档 | 重建基线（`--augment` 不处理这些） |
 
 `--augment` 不是「让门禁变绿」的开关：它只吸收「基线不认识的新规则」的命中，
-当前代码上新出现的已知规则诊断仍然算 `new`。真正的回归不会被吸收。老基线的退化
-口径是唯一例外，所以遇到那行警告必须人看一眼。
+当前代码上新出现的已知规则诊断仍然算 `new`。真正的回归不会被吸收。
 
 ## 10. 台账与排队（M3）
 

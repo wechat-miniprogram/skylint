@@ -1294,7 +1294,6 @@ fn selector_text(rule: &WxssRule) -> String {
 /// 非 WXML 诊断的结构化身份：`rule|path|selector|property|#occurrence`。
 ///
 /// 定位不到选择器 / 属性时返回 `None`，由调用方退化成 `rule|path|line:column`。
-/// 旧格式基线仍可被 `verify` 兼容匹配，见 [`baseline_format`]。
 fn style_identity(project: &Project, diagnostic: &Diagnostic) -> Option<String> {
     let rel = strip_prefix(project, &diagnostic.path)?;
     let doc = project
@@ -1409,36 +1408,6 @@ fn stable_hash(text: &str) -> String {
     format!("{hash:016x}")
 }
 
-/// 非 WXML 的新格式 id 以 `|#<occurrence>` 结尾；旧格式是 `rule|path|line:column`。
-fn baseline_format(baseline: &Baseline) -> &'static str {
-    match baseline.id_format {
-        IdFormat::StructuralV2 => "structural-v2",
-        IdFormat::Structural => "structural",
-        IdFormat::Legacy => "legacy",
-    }
-}
-
-/// id 是否是旧的「行列」形态（`...|12:3`）。
-fn is_positional_id(id: &str) -> bool {
-    let Some((_, tail)) = id.rsplit_once('|') else {
-        return false;
-    };
-    let Some((line, column)) = tail.split_once(':') else {
-        return false;
-    };
-    !line.is_empty()
-        && line.chars().all(|c| c.is_ascii_digit())
-        && !column.is_empty()
-        && column.chars().all(|c| c.is_ascii_digit())
-}
-
-/// v1 基线里 `.js` / `.json` 的 id 仍是行列，v2 才结构化。
-fn is_script_or_json(path: &str) -> bool {
-    [".js", ".ts", ".mjs", ".cjs", ".json"]
-        .iter()
-        .any(|extension| path.ends_with(extension))
-}
-
 fn identify_one_fallback(diagnostic: &Diagnostic) -> (String, Option<Anchor>) {
     (
         format!(
@@ -1452,39 +1421,31 @@ fn identify_one_fallback(diagnostic: &Diagnostic) -> (String, Option<Anchor>) {
 // ---------------------------------------------------------------- baseline
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Baseline {
     pub schema_version: u32,
     pub generator: Generator,
-    /// id 格式标记。旧基线没有这个字段，反序列化为 `Legacy`。
-    #[serde(default)]
-    pub id_format: IdFormat,
-    /// 冻结时工具具备的全部规则 id（字典序、去重）。旧基线没有这个字段。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rules: Option<Vec<String>>,
+    /// 冻结时工具具备的全部规则 id（字典序、去重）。
+    pub rules: Vec<String>,
     pub summary: BaselineSummary,
     pub findings: Vec<BaselineFinding>,
 }
 
-/// 基线里的 id 格式。
-///
-/// - `Legacy`：没有 `idFormat` 字段的旧基线，非 WXML id 是 `rule|path|line:column`；
-/// - `Structural`：v1，WXML / 样式结构化，JSON / JS 仍退回行列；
-/// - `StructuralV2`：v2，JSON 也用 `jsonPointer|valueFingerprint` 定身份。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum IdFormat {
-    #[default]
-    Legacy,
-    Structural,
-    StructuralV2,
-}
-
 impl Baseline {
-    /// 读取基线文件内容。旧基线（没有 `idFormat` 字段，或 v1 的 `structural`）
-    /// 照样反序列化，见 [`IdFormat`]。
+    /// 读取基线文件内容。
+    ///
+    /// 只接受当前形态：缺字段、多出旧版字段（如 `idFormat`）或 `schemaVersion`
+    /// 不匹配都直接报错，不做任何宽松兼容。
     pub fn load(text: &str) -> Result<Self, String> {
-        from_json(text)
+        let baseline: Self = from_json(text)
+            .map_err(|err| format!("{err}（这份基线是用旧版 skylint 生成的，请重新生成）"))?;
+        if baseline.schema_version != SCHEMA_VERSION {
+            return Err(format!(
+                "schemaVersion 是 {}，当前版本是 {SCHEMA_VERSION}（这份基线是用旧版 skylint 生成的，请重新生成）",
+                baseline.schema_version
+            ));
+        }
+        Ok(baseline)
     }
 }
 
@@ -1540,8 +1501,7 @@ pub fn baseline(identified: &[Identified]) -> Baseline {
     Baseline {
         schema_version: SCHEMA_VERSION,
         generator: Generator::default(),
-        id_format: IdFormat::StructuralV2,
-        rules: Some(builtin_rule_ids()),
+        rules: builtin_rule_ids(),
         summary,
         findings,
     }
@@ -1561,12 +1521,9 @@ pub fn builtin_rule_ids() -> Vec<String> {
         .collect()
 }
 
-/// 当前规则集里基线未记录的规则；基线没有 `rules` 字段时返回空。
+/// 当前规则集里基线未记录的规则。
 pub fn unknown_rules(baseline: &Baseline, current: &[String]) -> Vec<String> {
-    let Some(known) = &baseline.rules else {
-        return Vec::new();
-    };
-    let known: BTreeSet<&str> = known.iter().map(String::as_str).collect();
+    let known: BTreeSet<&str> = baseline.rules.iter().map(String::as_str).collect();
     current
         .iter()
         .filter(|id| !known.contains(id.as_str()))
@@ -1581,8 +1538,6 @@ pub fn unknown_rules(baseline: &Baseline, current: &[String]) -> Vec<String> {
 #[serde(rename_all = "camelCase")]
 pub struct AugmentReport {
     pub schema_version: u32,
-    /// 基线没有 `rules` 字段，只能退化为「基线 findings 里出现过的规则」。
-    pub degraded: bool,
     /// 追加的条目总数。
     pub added: usize,
     /// 追加后基线总条数。
@@ -1604,19 +1559,9 @@ pub struct AugmentedRule {
 
 /// 把「基线冻结后才出现的规则」产生的诊断追加进基线。
 ///
-/// 已知规则集的诊断一律不动：不新增、不改 severity、不删除。旧基线没有 `rules`
-/// 时退化为 findings 里出现过的规则集合（`degraded: true`）。
-/// `id_format` 保持不变，只把 `rules` 升到当前规则集。
+/// 已知规则集的诊断一律不动：不新增、不改 severity、不删除。
 pub fn augment(baseline: &mut Baseline, current: &[Identified]) -> AugmentReport {
-    let degraded = baseline.rules.is_none();
-    let known: BTreeSet<String> = match baseline.rules.clone() {
-        Some(rules) => rules.into_iter().collect(),
-        None => baseline
-            .findings
-            .iter()
-            .map(|finding| finding.rule.clone())
-            .collect(),
-    };
+    let known: BTreeSet<String> = baseline.rules.iter().cloned().collect();
 
     let mut seen: BTreeSet<String> = baseline
         .findings
@@ -1656,7 +1601,7 @@ pub fn augment(baseline: &mut Baseline, current: &[Identified]) -> AugmentReport
         }
     }
     baseline.summary = summary;
-    baseline.rules = Some(builtin_rule_ids());
+    baseline.rules = builtin_rule_ids();
 
     let added: usize = added_by_rule.values().map(Vec::len).sum();
     let rules = added_by_rule
@@ -1674,7 +1619,6 @@ pub fn augment(baseline: &mut Baseline, current: &[Identified]) -> AugmentReport
 
     AugmentReport {
         schema_version: SCHEMA_VERSION,
-        degraded,
         added,
         total: baseline.summary.total,
         rules,
@@ -1692,9 +1636,6 @@ pub struct VerifyReport {
     pub unit: Option<String>,
     /// 基线与当前 skylint 版本不同：规则集可能变了，结果要人看一眼。
     pub version_mismatch: bool,
-    /// `structural-v2`（JSON 也结构稳定）、`structural`（v1：JSON/JS 仍含行列）
-    /// 或 `legacy`（旧的行列 id；按 rule+文件+顺序宽松匹配）。
-    pub baseline_format: &'static str,
     /// **新增的 error + warning**（门禁判据：`new == 0`）。
     pub new: usize,
     /// 新增的 info（不拦门禁）。
@@ -1712,15 +1653,18 @@ pub struct VerifyReport {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffEntry {
-    /// `new`：新增 error/warning，拦门禁；`new-info`：新增 info，不拦；
-    /// `fixed`；`severity-raised` / `severity-lowered`：严重级变严 / 变松（不拦门禁）。
+    /// `new`：新增（severity 为 info 时不拦门禁）；`fixed`：基线有、当前没有；
+    /// `changed`：同一 id 的 severity 变了（不拦门禁）。
     pub kind: &'static str,
     pub id: String,
     pub rule: String,
     pub severity: Severity,
+    /// `changed` 时为基线里的 severity；方向由它与 `severity` 比较得出。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_severity: Option<Severity>,
     pub path: String,
     pub span: Span,
-    /// 诊断说明：`new` / `severity-changed` 用当前诊断，`fixed` 用基线里存的。
+    /// 诊断说明：`new` / `changed` 用当前诊断，`fixed` 用基线里存的。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1733,80 +1677,12 @@ pub fn verify(
     unit: Option<&str>,
     baseline_file: Option<String>,
 ) -> VerifyReport {
-    let format = baseline_format(baseline);
-    let loose = format != "structural-v2";
-    let scoped: Vec<&BaselineFinding> = baseline
+    let baseline_by_id: BTreeMap<&str, &BaselineFinding> = baseline
         .findings
         .iter()
         .filter(|finding| unit.is_none_or(|wanted| finding.unit == wanted))
+        .map(|finding| (finding.id.as_str(), finding))
         .collect();
-    let baseline_by_id: BTreeMap<&str, &BaselineFinding> = scoped
-        .iter()
-        .map(|finding| (finding.id.as_str(), *finding))
-        .collect();
-
-    // 旧基线没有完整结构信息，只能按 `(rule, path)` 分组、再按源码顺序对齐：插入空行 /
-    // 整块挪动不会改变序号，所以不会误报。代价是「删一条 + 加一条」这种同数量
-    // 变化分不出来——文档要求升级后重建基线。
-    //
-    // v1 基线里 WXML / 样式已是结构 id，只有 `.js` / `.json` 仍是行列；只对这部分
-    // 启用序号对齐，避免把真正的样式变化误配到旧条目上。
-    let loose_baseline = |finding: &BaselineFinding| match format {
-        "legacy" => !finding.path.ends_with(".wxml"),
-        "structural" => !finding.path.ends_with(".wxml") && is_positional_id(&finding.id),
-        _ => false,
-    };
-    let loose_current = |finding: &Identified| match format {
-        "legacy" => !finding.path.ends_with(".wxml"),
-        "structural" => {
-            !finding.path.ends_with(".wxml")
-                && (is_script_or_json(&finding.path) || is_positional_id(&finding.id))
-        }
-        _ => false,
-    };
-
-    let legacy_by_key: BTreeMap<(&str, &str, usize), &BaselineFinding> = if loose {
-        let mut groups: BTreeMap<(&str, &str), Vec<&BaselineFinding>> = BTreeMap::new();
-        for finding in &scoped {
-            if loose_baseline(finding) {
-                groups
-                    .entry((finding.rule.as_str(), finding.path.as_str()))
-                    .or_default()
-                    .push(finding);
-            }
-        }
-        let mut map = BTreeMap::new();
-        for ((rule, path), mut group) in groups {
-            group.sort_by_key(|finding| (finding.span.line, finding.span.column));
-            for (occurrence, finding) in group.into_iter().enumerate() {
-                map.insert((rule, path, occurrence), finding);
-            }
-        }
-        map
-    } else {
-        BTreeMap::new()
-    };
-    let current_occurrence: BTreeMap<usize, usize> = if loose {
-        let mut groups: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
-        for (index, finding) in current.iter().enumerate() {
-            if unit.is_none_or(|wanted| finding.unit == wanted) && loose_current(finding) {
-                groups
-                    .entry((finding.rule.as_str(), finding.path.as_str()))
-                    .or_default()
-                    .push(index);
-            }
-        }
-        let mut map = BTreeMap::new();
-        for (_, mut indexes) in groups {
-            indexes.sort_by_key(|&index| (current[index].span.line, current[index].span.column));
-            for (occurrence, index) in indexes.into_iter().enumerate() {
-                map.insert(index, occurrence);
-            }
-        }
-        map
-    } else {
-        BTreeMap::new()
-    };
 
     let mut findings = Vec::new();
     let mut new = 0;
@@ -1816,40 +1692,23 @@ pub fn verify(
     let mut changed_down = 0;
     let mut seen: BTreeSet<&str> = BTreeSet::new();
 
-    for (index, finding) in current.iter().enumerate() {
+    for finding in current {
         if unit.is_some_and(|wanted| finding.unit != wanted) {
             continue;
         }
-        let matched = baseline_by_id
-            .get(finding.id.as_str())
-            .copied()
-            .or_else(|| {
-                (loose && loose_current(finding))
-                    .then(|| current_occurrence.get(&index))
-                    .flatten()
-                    .and_then(|occurrence| {
-                        legacy_by_key
-                            .get(&(finding.rule.as_str(), finding.path.as_str(), *occurrence))
-                            .copied()
-                    })
-            });
-        match matched {
+        match baseline_by_id.get(finding.id.as_str()).copied() {
             None => {
-                let kind = match finding.severity {
-                    Severity::Info => {
-                        new_info += 1;
-                        "new-info"
-                    }
-                    _ => {
-                        new += 1;
-                        "new"
-                    }
-                };
+                if finding.severity == Severity::Info {
+                    new_info += 1;
+                } else {
+                    new += 1;
+                }
                 findings.push(DiffEntry {
-                    kind,
+                    kind: "new",
                     id: finding.id.clone(),
                     rule: finding.rule.clone(),
                     severity: finding.severity,
+                    previous_severity: None,
                     path: finding.path.clone(),
                     span: finding.span.clone(),
                     message: Some(finding.message.clone()),
@@ -1860,18 +1719,17 @@ pub fn verify(
                 seen.insert(previous.id.as_str());
                 changed += 1;
                 // `Severity` 的排序是 Info < Warning < Error，变大即变严。
-                let kind = if finding.severity > previous.severity {
+                if finding.severity > previous.severity {
                     changed_up += 1;
-                    "severity-raised"
                 } else {
                     changed_down += 1;
-                    "severity-lowered"
-                };
+                }
                 findings.push(DiffEntry {
-                    kind,
+                    kind: "changed",
                     id: finding.id.clone(),
                     rule: finding.rule.clone(),
                     severity: finding.severity,
+                    previous_severity: Some(previous.severity),
                     path: finding.path.clone(),
                     span: finding.span.clone(),
                     message: Some(finding.message.clone()),
@@ -1895,6 +1753,7 @@ pub fn verify(
             id: previous.id.clone(),
             rule: previous.rule.clone(),
             severity: previous.severity,
+            previous_severity: None,
             path: previous.path.clone(),
             span: previous.span.clone(),
             message: previous.message.clone(),
@@ -1919,7 +1778,6 @@ pub fn verify(
         },
         unit: unit.map(str::to_string),
         version_mismatch: baseline.generator.version != Generator::default().version,
-        baseline_format: format,
         new,
         new_info,
         fixed,

@@ -33,7 +33,7 @@ export type NextUnit = {
 export type VerifyReport = {
   /** 新增 error/warning（拦门禁：`new > 0` 时退出码为 1） */
   new: number;
-  /** 新增 info（不拦门禁） */
+  /** 新增 info（不拦门禁；这些条目在 findings 里 kind 仍是 "new"） */
   newInfo: number;
   fixed: number;
   /** 严重级变化总数 = changedUp + changedDown（不拦门禁） */
@@ -42,15 +42,13 @@ export type VerifyReport = {
   changedDown: number;
   versionMismatch: boolean;
   findings: Array<{
-    kind:
-      | "new"
-      | "new-info"
-      | "fixed"
-      | "severity-raised"
-      | "severity-lowered";
+    /** new：新增（severity 为 info 时不拦门禁）；fixed：已修复；changed：同 id 调档 */
+    kind: "new" | "fixed" | "changed";
     id: string;
     rule: string;
     severity: string;
+    /** changed 时为基线里的 severity；方向由它与 severity 比较得出 */
+    previousSeverity?: string;
     path: string;
     span: { line: number; column: number };
     message?: string;

@@ -542,11 +542,6 @@ fn print_augment(
         report.added,
         report.total
     );
-    if report.degraded {
-        eprintln!(
-            "⚠ 基线没有 rules 字段，退化按「基线 findings 里出现过的规则」判断：冻结时零命中、之后真回归的规则也会被一并吸收，请人工确认"
-        );
-    }
     for rule in &report.rules {
         let files = rule.files.join("、");
         let more = if rule.file_count > rule.files.len() {
@@ -1092,15 +1087,6 @@ fn print_verify(report: &migrate::VerifyReport, unknown_rules: &[String]) {
     if report.version_mismatch {
         eprintln!("⚠ 基线与当前 skylint 版本不同：规则集可能变了，新增/修复的数量要人看一眼");
     }
-    match report.baseline_format {
-        "legacy" => eprintln!(
-            "⚠ 基线是旧格式（id 含行列），只能按 rule + 文件 + 顺序宽松匹配；请重建基线以获得结构稳定 id"
-        ),
-        "structural" => eprintln!(
-            "⚠ 基线是 v1 结构格式（JSON/JS id 仍含行列），这部分只能按 rule + 文件 + 顺序宽松匹配；请重建基线以获得 JSON 结构稳定 id"
-        ),
-        _ => {}
-    }
     println!(
         "新增 {} 条（error+warning），新增 info {} 条，修复 {} 条，调档 {} 条（变严 {} / 变松 {}）",
         report.new,
@@ -1115,11 +1101,14 @@ fn print_verify(report: &migrate::VerifyReport, unknown_rules: &[String]) {
     }
     for finding in &report.findings {
         let sign = match finding.kind {
-            "new" | "new-info" => "+",
+            "new" => "+",
             "fixed" => "-",
-            "severity-raised" => "↑",
-            "severity-lowered" => "↓",
-            _ => "~",
+            // `changed`：方向由当前 severity 与基线里的 previousSeverity 比较得出。
+            _ => match finding.previous_severity {
+                Some(previous) if finding.severity > previous => "↑",
+                Some(_) => "↓",
+                None => "~",
+            },
         };
         println!(
             "  {sign} [{}] {}  {}:{}:{}",

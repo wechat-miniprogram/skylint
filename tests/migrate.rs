@@ -869,39 +869,6 @@ fn duplicate_property_occurrence_keeps_the_other_finding() {
     assert_eq!(result.fixed, 1, "只应报删掉的那一条");
 }
 
-/// 旧基线（id 是 rule|path|line:column）要显式标记 legacy，并在插空行后不乱报。
-#[test]
-fn legacy_baseline_matches_across_line_shift() {
-    let f = style_fixture(
-        "wxss-legacy",
-        r#"<view class="x"/>"#,
-        ".x { float: left; }\n",
-    );
-    let mut baseline = baseline_of(f.path());
-    baseline.id_format = migrate::IdFormat::Legacy;
-    for finding in &mut baseline.findings {
-        if !finding.path.ends_with(".wxml") {
-            finding.id = format!(
-                "{}|{}|{}:{}",
-                finding.rule, finding.path, finding.span.line, finding.span.column
-            );
-        }
-    }
-
-    f.write(
-        "miniprogram/pages/index/index.wxss",
-        "\n\n\n\n\n.x { float: left; }\n",
-    );
-    let result = verify_now(f.path(), &baseline);
-    assert_eq!(result.baseline_format, "legacy");
-    assert_eq!(
-        result.new, 0,
-        "旧基线按 rule+文件+顺序对齐：{:?}",
-        result.findings
-    );
-    assert_eq!(result.fixed, 0);
-}
-
 /// `--unit` 只比对这个单元，别的单元的变化不算进来。
 #[test]
 fn verify_filters_by_unit() {
@@ -1156,7 +1123,6 @@ fn json_reformat_keeps_identity() {
         r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":"yes","defaultContentBox":true}}}"#,
     );
     let baseline = baseline_of(f.path());
-    assert_eq!(baseline.id_format, migrate::IdFormat::StructuralV2);
     assert!(
         baseline
             .findings
@@ -1181,7 +1147,6 @@ fn json_reformat_keeps_identity() {
     let result = verify_now(f.path(), &baseline);
     assert_eq!(result.new, 0, "重排不该产生新诊断：{:?}", result.findings);
     assert_eq!(result.fixed, 0, "重排不该把旧诊断算成修复");
-    assert_eq!(result.baseline_format, "structural-v2");
 }
 
 /// 真加一个会触发诊断的配置项 → 只 new 1；已有条目不漂。
@@ -1228,7 +1193,7 @@ fn json_removed_switch_is_not_a_pair() {
         result
             .findings
             .iter()
-            .any(|entry| entry.kind == "new-info" && entry.id.contains("defaultDisplayBlock")),
+            .any(|entry| entry.kind == "new" && entry.id.contains("defaultDisplayBlock")),
         "{:?}",
         result.findings
     );
@@ -1242,62 +1207,31 @@ fn json_removed_switch_is_not_a_pair() {
     );
 }
 
-/// v1 基线（JSON id 仍是行列）仍可读：按 rule + 文件 + 顺序宽松对齐并告警。
+/// `Baseline::load` 只接受当前形态：旧版字段、缺字段都直接报错。
 #[test]
-fn structural_baseline_with_positional_json_ids_still_matches() {
-    let f = json_fixture(
-        "json-v1-baseline",
-        r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":"yes","defaultContentBox":true}}}"#,
-    );
-    let mut baseline = baseline_of(f.path());
-    baseline.id_format = migrate::IdFormat::Structural;
-    for finding in &mut baseline.findings {
-        // 模拟 v1：WXML / 样式是结构 id，JSON 退回 rule|path|line:column。
-        if finding.path.ends_with(".json") {
-            finding.id = format!(
-                "{}|{}|{}:{}",
-                finding.rule, finding.path, finding.span.line, finding.span.column
-            );
-        }
-    }
-
-    f.write(
-        "miniprogram/app.json",
-        "{\n  \"pages\": [\"pages/index/index\"],\n  \"renderer\": \"skyline\",\n  \"rendererOptions\": {\"skyline\": {\"defaultDisplayBlock\": \"yes\", \"defaultContentBox\": true}}\n}",
-    );
-    let result = verify_now(f.path(), &baseline);
-    assert_eq!(result.baseline_format, "structural");
-    assert_eq!(result.new, 0, "v1 基线仍应宽松匹配：{:?}", result.findings);
-    assert_eq!(result.fixed, 0);
-}
-
-/// `Baseline::load` 能读 v2 / v1（`structural`）/ 无 `idFormat` 的旧基线。
-#[test]
-fn baseline_load_recognizes_old_formats() {
+fn baseline_load_rejects_old_formats() {
     let f = json_fixture(
         "baseline-load",
         r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true,"defaultContentBox":true}}}"#,
     );
     let baseline = baseline_of(f.path());
     let text = migrate::to_json(&baseline);
+    assert!(migrate::Baseline::load(&text).is_ok());
 
-    assert_eq!(
-        migrate::Baseline::load(&text).expect("v2").id_format,
-        migrate::IdFormat::StructuralV2
+    // 旧版：多出 idFormat 字段。
+    let with_id_format = text.replace(
+        "  \"rules\":",
+        "  \"idFormat\": \"structural-v2\",\n  \"rules\":",
     );
+    let error = migrate::Baseline::load(&with_id_format).expect_err("旧字段应被拒绝");
+    assert!(error.contains("请重新生成"), "{error}");
 
-    let v1 = text.replace("\"structural-v2\"", "\"structural\"");
-    assert_eq!(
-        migrate::Baseline::load(&v1).expect("v1").id_format,
-        migrate::IdFormat::Structural
-    );
-
-    let legacy = text.replace("  \"idFormat\": \"structural-v2\",\n", "");
-    assert!(!legacy.contains("idFormat"));
-    assert_eq!(
-        migrate::Baseline::load(&legacy).expect("legacy").id_format,
-        migrate::IdFormat::Legacy
-    );
+    // 更旧的：没有 rules 字段。
+    let mut without_rules: serde_json::Value = serde_json::from_str(&text).expect("合法 JSON");
+    without_rules.as_object_mut().unwrap().remove("rules");
+    let error = migrate::Baseline::load(&serde_json::to_string(&without_rules).unwrap())
+        .expect_err("缺字段应被拒绝");
+    assert!(error.contains("请重新生成"), "{error}");
 }
 
 // ---------------------------------------------------------------- 输出语义
@@ -1340,11 +1274,12 @@ fn verify_new_error_keeps_kind_new() {
     assert_eq!(report.new_info, 0);
     assert!(report.blocks());
     assert_eq!(report.findings[0].kind, "new");
+    assert_eq!(report.findings[0].previous_severity, None);
 }
 
-/// info 级新增不拦门禁，`kind` 必须与拦门禁的 `new` 分开。
+/// info 级新增不拦门禁；`kind` 仍是 `new`，区别在 severity。
 #[test]
-fn verify_info_new_finding_is_marked_new_info_and_does_not_block() {
+fn verify_info_new_finding_does_not_block() {
     let f = inline_text_fixture("verify-info-kind", ".box { display: block; }");
     let baseline = baseline_of(f.path());
 
@@ -1362,13 +1297,14 @@ fn verify_info_new_finding_is_marked_new_info_and_does_not_block() {
         .iter()
         .find(|entry| entry.rule == "skyline/text-hard-break-ellipsis")
         .expect("应有新增的 info 诊断");
-    assert_eq!(entry.kind, "new-info");
+    assert_eq!(entry.kind, "new");
     assert_eq!(entry.severity, Severity::Info);
+    assert_eq!(entry.previous_severity, None);
 }
 
-/// `changed` 不再把「变严」和「变松」混成一个值。
+/// `changed` 用 `previousSeverity` 表达方向，不再是两个 kind。
 #[test]
-fn verify_severity_change_distinguishes_raised_and_lowered() {
+fn verify_severity_change_carries_previous_severity() {
     let raised = migrate::verify(
         &migrate::baseline(&[identified("same", Severity::Info)]),
         &[identified("same", Severity::Error)],
@@ -1378,7 +1314,9 @@ fn verify_severity_change_distinguishes_raised_and_lowered() {
     assert_eq!(raised.changed, 1);
     assert_eq!(raised.changed_up, 1);
     assert_eq!(raised.changed_down, 0);
-    assert_eq!(raised.findings[0].kind, "severity-raised");
+    assert_eq!(raised.findings[0].kind, "changed");
+    assert_eq!(raised.findings[0].severity, Severity::Error);
+    assert_eq!(raised.findings[0].previous_severity, Some(Severity::Info));
 
     let lowered = migrate::verify(
         &migrate::baseline(&[identified("same", Severity::Error)]),
@@ -1389,7 +1327,9 @@ fn verify_severity_change_distinguishes_raised_and_lowered() {
     assert_eq!(lowered.changed, 1);
     assert_eq!(lowered.changed_up, 0);
     assert_eq!(lowered.changed_down, 1);
-    assert_eq!(lowered.findings[0].kind, "severity-lowered");
+    assert_eq!(lowered.findings[0].kind, "changed");
+    assert_eq!(lowered.findings[0].severity, Severity::Info);
+    assert_eq!(lowered.findings[0].previous_severity, Some(Severity::Error));
 }
 
 /// `plan.shared` 给出 `unit:shared` 的文件明细，条数与伪单元对得上。
@@ -1500,7 +1440,7 @@ fn ledger_json_adds_shared_without_changing_ledger_fields() {
 /// 新基线必须记录冻结时的规则集：字典序、去重、非空。
 #[test]
 fn baseline_records_rule_set() {
-    let rules = migrate::baseline(&[]).rules.expect("新基线必须写 rules");
+    let rules = migrate::baseline(&[]).rules;
     assert!(!rules.is_empty());
     assert!(rules.windows(2).all(|pair| pair[0] < pair[1]), "{rules:?}");
     assert!(
@@ -1511,24 +1451,12 @@ fn baseline_records_rule_set() {
     assert_eq!(rules, migrate::builtin_rule_ids());
 }
 
-/// 旧基线没有 `rules` 字段：读成 `None`，不猜、不推断。
-#[test]
-fn old_baseline_without_rules_loads_as_none() {
-    let mut baseline = migrate::baseline(&[identified("old", Severity::Warning)]);
-    baseline.rules = None;
-    let text = migrate::to_json(&baseline);
-    assert!(!text.contains("\"rules\""), "{text}");
-
-    let loaded = migrate::Baseline::load(&text).expect("旧基线");
-    assert_eq!(loaded.rules, None);
-}
-
 /// augment 只追加「新规则」的诊断；已有条目逐字段不变。
 #[test]
 fn augment_appends_only_new_rule_findings() {
     let old = identified("old", Severity::Warning);
     let mut baseline = migrate::baseline(std::slice::from_ref(&old));
-    baseline.rules = Some(vec!["skyline/no-inline-text".to_string()]);
+    baseline.rules = vec!["skyline/no-inline-text".to_string()];
     baseline.findings.retain(|finding| finding.id == old.id);
     let before = migrate::to_json(&baseline.findings[0]);
 
@@ -1549,7 +1477,6 @@ fn augment_appends_only_new_rule_findings() {
     ];
     let report = migrate::augment(&mut baseline, &current);
 
-    assert!(!report.degraded);
     assert_eq!(report.added, 2);
     assert_eq!(report.rules.len(), 1);
     assert_eq!(report.rules[0].rule, "skyline/pseudo-inline-layout");
@@ -1569,13 +1496,9 @@ fn augment_appends_only_new_rule_findings() {
     assert_eq!(baseline.summary.total, 3);
     assert_eq!(baseline.summary.warning, 2);
     assert_eq!(baseline.summary.info, 1);
-    // id 格式不因 augment 改变。
-    assert_eq!(baseline.id_format, migrate::IdFormat::StructuralV2);
     assert!(
         baseline
             .rules
-            .as_ref()
-            .unwrap()
             .iter()
             .any(|id| id == "skyline/pseudo-inline-layout")
     );
@@ -1586,7 +1509,7 @@ fn augment_appends_only_new_rule_findings() {
 fn augment_then_verify_is_clean() {
     let old = identified("old", Severity::Warning);
     let mut baseline = migrate::baseline(std::slice::from_ref(&old));
-    baseline.rules = Some(vec!["skyline/no-inline-text".to_string()]);
+    baseline.rules = vec!["skyline/no-inline-text".to_string()];
     let current = vec![
         old.clone(),
         identified_with(
@@ -1607,60 +1530,11 @@ fn augment_then_verify_is_clean() {
     assert!(!report.blocks());
 }
 
-/// 老基线（无 `rules`）退化为 findings 里出现过的规则，并标记 `degraded`：
-/// 冻结时零命中的规则会被一并吸收（这正是要警告的风险）。
-#[test]
-fn augment_legacy_baseline_uses_findings_rules_and_warns() {
-    let old = identified("old", Severity::Warning);
-    let mut baseline = migrate::baseline(std::slice::from_ref(&old));
-    baseline.rules = None;
-
-    let current = vec![
-        // 已知规则的真回归（新 id）：不吸收。
-        identified_with(
-            "regressed",
-            "skyline/no-inline-text",
-            "pages/index/index.wxml",
-            Severity::Warning,
-        ),
-        // 新规则：吸收。
-        identified_with(
-            "brand-new",
-            "skyline/pseudo-inline-layout",
-            "pages/b/index.wxml",
-            Severity::Warning,
-        ),
-        // 冻结时零命中、之后才出现的规则：退化口径也会吸收。
-        identified_with(
-            "zero-hit",
-            "skyline/box-sizing",
-            "pages/c/index.wxss",
-            Severity::Warning,
-        ),
-    ];
-    let report = migrate::augment(&mut baseline, &current);
-
-    assert!(report.degraded);
-    assert_eq!(report.added, 2);
-    let rules: Vec<&str> = report.rules.iter().map(|rule| rule.rule.as_str()).collect();
-    assert_eq!(
-        rules,
-        vec!["skyline/box-sizing", "skyline/pseudo-inline-layout"]
-    );
-    assert!(
-        baseline
-            .findings
-            .iter()
-            .all(|finding| finding.id != "regressed")
-    );
-    assert!(baseline.rules.is_some(), "augment 后补上规则集");
-}
-
 /// 吸收清单只列前 5 个文件，同时给出文件总数。
 #[test]
 fn augment_report_lists_first_five_files() {
     let mut baseline = migrate::baseline(&[identified("old", Severity::Warning)]);
-    baseline.rules = Some(vec!["skyline/no-inline-text".to_string()]);
+    baseline.rules = vec!["skyline/no-inline-text".to_string()];
     let current: Vec<_> = (0..7)
         .map(|index| {
             identified_with(
@@ -1679,11 +1553,11 @@ fn augment_report_lists_first_five_files() {
     assert_eq!(report.rules[0].files.len(), 5);
 }
 
-/// 只报告「当前规则集里基线没记录的规则」；基线没有 `rules` 时不提示。
+/// 只报告「当前规则集里基线没记录的规则」。
 #[test]
 fn unknown_rules_lists_only_rules_missing_from_baseline() {
     let mut baseline = migrate::baseline(&[]);
-    baseline.rules = Some(vec!["skyline/no-inline-text".to_string()]);
+    baseline.rules = vec!["skyline/no-inline-text".to_string()];
     let current = vec![
         "skyline/no-inline-text".to_string(),
         "skyline/pseudo-inline-layout".to_string(),
@@ -1692,9 +1566,6 @@ fn unknown_rules_lists_only_rules_missing_from_baseline() {
         migrate::unknown_rules(&baseline, &current),
         vec!["skyline/pseudo-inline-layout"]
     );
-
-    baseline.rules = None;
-    assert!(migrate::unknown_rules(&baseline, &current).is_empty());
 }
 
 /// `migration baseline`（不带 `--augment`）仍重算整份基线，并写入 `rules`。
@@ -1718,5 +1589,4 @@ fn baseline_command_without_augment_writes_fresh_baseline_with_rules() {
             .as_array()
             .is_some_and(|rules| !rules.is_empty())
     );
-    assert_eq!(value["idFormat"], "structural-v2");
 }

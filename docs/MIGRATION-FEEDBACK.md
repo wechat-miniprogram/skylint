@@ -146,7 +146,7 @@ split 文件名）与 `job.unit.files`（与 `next.unit.files` 同源）。
    `verify` 就报 `new 4 / fixed 9`，逐条核对全是同一批诊断位移。共享样式恰恰是
    迁移的主要改动面，这条会让 L0 门禁不可用。已改为
    `rule|path|selector|property|#occurrence`，并在实测中确认「顶部插空行 → new 0 /
-   fixed 0」。升级后必须重建基线（`baselineFormat: legacy` 会走宽松对齐并告警）。
+   fixed 0」。升级后必须重建基线（旧基线不再兼容，`Baseline::load` 直接报错）。
 4. **`facts` 的元素 `id` 里带字面量 `<element>`**、`verify` 的 `baseline.sha256`
    恒为 null。已分别改成 `element|...` 与删除该键。
 
