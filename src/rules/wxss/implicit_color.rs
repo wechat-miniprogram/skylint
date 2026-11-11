@@ -173,7 +173,16 @@ fn invisible(
         )
     };
     if name == "text-decoration" {
-        return Some(has("none"));
+        if has("none") {
+            return Some(true);
+        }
+        // 颜色写在了 longhand 里：简写只是没重复它。
+        let (resolved, undecidable) =
+            resolved_property_with(project, tree, element, "text-decoration-color");
+        if undecidable {
+            return None;
+        }
+        return Some(resolved.is_some());
     }
     if !name.starts_with("border") {
         return Some(false);
@@ -349,6 +358,17 @@ mod tests {
             "implicit-color-var",
             r#"<view class="card"/>"#,
             ".card { color: #fff; border: 1px solid var(--line); }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 颜色写在 longhand 里：简写只是没重复它，两端一致。
+    #[test]
+    fn text_decoration_color_longhand_is_not_reported() {
+        let diagnostics = check(
+            "implicit-color-decoration-longhand",
+            r#"<text class="price">a</text>"#,
+            ".price { color: #999; text-decoration: line-through; text-decoration-color: #999; }",
         );
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
