@@ -160,7 +160,7 @@ split 文件名）与 `job.unit.files`（与 `next.unit.files` 同源）。
   现在 finding 带 `shared: true` + `affectedUnits`，job 顶层有 `sharedFindings`。
   注意：被多单元引用的文件**不进** `unit:shared`（那里只收「无归属」诊断），
   所以要按全工程 `verify` 或逐受影响单元验证——文档 §4.5 已写明。
-- **伪元素参与的引内排版**：新增规则 `skyline/pseudo-inline-layout`（warning）。
+- **伪元素参与的行内排版**：新增规则 `skyline/pseudo-inline-layout`（warning）。
   判据经引擎核实：Skyline 只实现 `::before/::after`，`content` 只接受字符串字面量
   （`css/css_properties/content.cc:60-83`），非文本宿主的伪元素只支持 block/flex
   （`shadow/pseudo_node.cc:47-52`），所以宿主里只要有裸文本或默认参与行内流的
@@ -192,3 +192,50 @@ split 文件名）与 `job.unit.files`（与 `next.unit.files` 同源）。
 3. **部分页面的基线截图本身是空白**（数据没进来），例如 `movie/pages/goods/buy`、
    `movie/pages/order/order`。这类页面 L3 只能证明「没有变得更糟」，证明不了正确性；
    要真正验收得给 route 参数或补 fixture。
+
+---
+
+# 第三轮实测（movie 批次逐页翻 Skyline）
+
+## 两个只有真跑才暴露的引擎语义
+
+### 1. `position: sticky` 被降级成 relative + 偏移，会盖住内容
+
+`skyline/css/css_properties/position.cc:69-71` 的 `ParseValue` 只认
+static/relative/absolute/fixed，`sticky` 落到 `default:` 只 `Diag` 然后返回
+`CSSUnsetValue`；`ApplyInitial`（`:39-42`）把 position 初值设成 **Relative**。
+于是 `.select-sticky{position:sticky;top:{{selectBarFixedTop}}px}` 变成「相对定位
++ 向下偏移一个 bar 的高度」，相对偏移不占兄弟布局 → 筛选条正好压住列表首行。
+
+实测（`cinema/index`）：`.cinema-container` top=179.5，筛选条视觉占 189–208，
+卡片第一行的影院名与 `45元起` 整行被遮住。截图里看起来像「标题丢了」，其实是
+被盖住且不可见。
+
+全工程 94 个样式文件用了 `position: sticky`，所以这不是单页问题。Skyline 的替代
+是 `sticky-section` / `sticky-header` 组件，且**必须在 `<scroll-view type="custom">`
+里**；页面级滚动要整体搬进 scroll-view，`onReachBottom` → `bind:scrolltolower`、
+下拉刷新 → `refresher-enabled`。宁可整页改结构，也不要把 sticky 留着当静态块。
+
+### 2. `defaultDisplayBlock` 下 `<text>` 在非 text 父级里是块级
+
+工程开了 `rendererOptions.skyline.defaultDisplayBlock: true`，WebView 里行内的
+`<text>` 在 Skyline 中变成块级，于是 `.price` 里并排的三个 `<text>`
+（`45` / `元` / `起`）竖排成三行（实测 19.7×48）。修法是把这串 `<text>` 包进
+同一个 `<text>` 外层，而不是给它们加 `display:inline`（实测无效）。
+
+## 一处配置决策
+
+翻转 `order/order` 后新增了 `skyline/tag-selector-isolation`：`order.wxss` 的
+`text{display:block;line-height:1.5}` 命中了新加的 `nav-bar` 组件里的 `<text>`。
+根因是 WebView 下标签选择器无法加前缀（`allowIllegalSelector`），本来就会穿进
+组件；Skyline 默认按 scope 匹配不穿。已在 `app.json` 设
+`rendererOptions.skyline.tagNameStyleIsolation: "legacy"`，把标签选择器恢复成
+全局匹配（与 WebView 一致），全项目 23 条该类诊断随之消失。
+
+## 仍然存在的工具缺陷
+
+**JSON / JS 诊断的 id 还是 `rule|path|line:col`**。改一行 `app.json`（加一个
+`rendererOptions` 键）就让已有的 `skyline/default-layout-drift` 从「一进一出」
+变成 `new 1 / fixed 1`——和样式诊断修好之前一模一样的漂移。样式侧已经改成
+`rule|path|selector|property|#occ`，JSON 侧缺同样的稳定身份（可以按 JSON 指针
+路径 + 值指纹生成）。在修好之前，改 `app.json` 的批次要人工核对这 1 条。
