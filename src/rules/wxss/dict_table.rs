@@ -105,7 +105,7 @@ pub(crate) fn is_initial_value(name: &str, value: &str) -> bool {
 //   overflow.cc:20-37 应用 visible/hidden）。文档「不支持」的原文只对 auto/scroll 与「分轴独立设置」成立。
 
 /// border-*-style 系列共用同一套支持值。
-const BORDER_STYLE_PROPERTIES: &[&str] = &[
+pub(crate) const BORDER_STYLE_PROPERTIES: &[&str] = &[
     "border-style",
     "border-top-style",
     "border-right-style",
@@ -132,8 +132,8 @@ const UNSUPPORTED_VALUES: &[(&[&str], &str, &str)] = &[
     (
         &["position"],
         "sticky",
-        "改用 relative/absolute/fixed；吸顶使用 sticky-header/sticky-section 组件",
-    ), // layout.md「position」、SKILL.md MUST 示例
+        "吸顶改用 `sticky-section` + `sticky-header`，二者必须放在 `<scroll-view type=\"custom\">` 里，`sticky-header` 必须是 `sticky-section` 的第一个子元素，页面级滚动也要整体搬进这个 scroll-view；其余场景改用 relative/absolute/fixed",
+    ), // layout.md「position」、SKILL.md MUST 示例；position.cc:31-34 返回 CSSUnsetValue，:39-44 回落到 relative
     (
         &["overflow"],
         "auto",

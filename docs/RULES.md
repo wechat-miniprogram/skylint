@@ -36,7 +36,7 @@
 | `skyline/implicit-color` | info | skyline | 省略颜色时 Skyline 用黑色而不是元素自身的 color（受实验开关影响） |
 | `skyline/tag-selector-isolation` | warning | skyline | 标签 / id 选择器在 Skyline 下不跨组件匹配，WebView 上生效的样式会静默失效 |
 | `skyline/unsupported-property` | error | skyline | 声明了 Skyline 完全不支持的属性，该属性不会生效 |
-| `skyline/unsupported-value` | error | skyline | 属性在 Skyline 下可用，但该值不支持，声明会被静默忽略 |
+| `skyline/unsupported-value` | error | skyline | 属性在 Skyline 下可用，但该值不支持：按 unset 回落到初始值或父元素的值，或整条声明被丢弃 |
 | `skyline/value-degraded` | warning | skyline | 属性在 Skyline 下可用，但该值的表现与 WebView 不同（被降级 / 映射 / 无效果） |
 | `skyline/shorthand-partial` | warning | skyline | 简写属性在 Skyline 下部分生效：值里属于不受支持子属性的那一段被丢弃 |
 | `skyline/transition-animation-conflict` | warning | skyline | 同一元素上 transition 与 animation 动同一个属性，Skyline 下动画只会跑开头几帧 |
