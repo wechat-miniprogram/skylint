@@ -3,6 +3,9 @@
 //! 一条规则一个文件：逐元素的局部判定（内联文本、组件白名单、scroll-view type）
 //! 与父子结构约束（scroll-view 家族、enable-flex）各占一个文件。它们共用同一套
 //! 「页面 + 组件 WXML 遍历」与解析辅助。
+//!
+//! 样式求值对两种文档统一：单元（页面 / 组件）按自己的作用域求值，独立模板文件与
+//! `<include>` 片段按**引用它的单元**求值（[`cascade_entries`] 是唯一口径）。
 
 pub mod branch;
 #[cfg(test)]
@@ -20,7 +23,6 @@ pub mod share_element_key;
 pub(crate) mod structure;
 pub mod template_data_scope;
 pub mod text_hard_break_ellipsis;
-pub mod text_run_block;
 pub mod unsupported_component;
 pub mod webview_nested_scroll;
 pub mod webview_pinned_renderer;
@@ -40,7 +42,6 @@ pub use scroll_view_type::ScrollViewType;
 pub use share_element_key::ShareElementKey;
 pub use template_data_scope::TemplateDataScope;
 pub use text_hard_break_ellipsis::TextHardBreakEllipsis;
-pub use text_run_block::TextRunBlock;
 pub use unsupported_component::UnsupportedComponent;
 pub use webview_nested_scroll::NestedScroll;
 pub use webview_pinned_renderer::PinnedRenderer;
@@ -235,42 +236,21 @@ pub(crate) fn walk_skyline(doc: &WxmlDoc, mut visit: impl FnMut(&WxmlElement, &[
     });
 }
 
-/// 元素自身在样式层里的全部 `display` 取值（内联 `style` 在前）。
+/// 元素自身在样式层里的全部 `display` 取值（含内联 `style`）。
 ///
 /// 用 Skyline 方言求值：这里问的是「Skyline 下这个元素算出什么 display」，
 /// 所以属性选择器按引擎的口径当成恒真（见 [`crate::matcher::Dialect`]）。
-/// 同一元素命中多份互相矛盾的 `display` 时全部返回，由调用方决定怎么解释。
+/// 同一元素命中多份互相矛盾的 `display` 时全部返回，由调用方决定怎么解释；
+/// 筛选与求值口径与 [`cascade_entries`] 完全相同（模板文件按引用它的单元求值）。
 pub(crate) fn display_values(
     project: &Project,
     tree: &Tree<'_>,
     element: &WxmlElement,
 ) -> Vec<String> {
-    let mut out = Vec::new();
-    if let Some(value) =
-        structure::find_attr(element, "style").and_then(|attr| attr.value.as_deref())
-    {
-        out.extend(inline_displays(value));
-    }
-    out.extend(
-        project
-            .styles
-            .iter()
-            .filter(|sheet| sheet_covers(sheet, project, tree.path()))
-            .flat_map(|sheet| &sheet.doc.rules)
-            .filter(|rule| {
-                rule.selectors.iter().any(|selector| {
-                    tree.matches(element, selector.text.trim(), Dialect::Skyline) == Tri::Yes
-                })
-            })
-            .filter_map(|rule| {
-                rule.declarations
-                    .iter()
-                    .rev()
-                    .find(|decl| decl.name.eq_ignore_ascii_case("display"))
-                    .map(|decl| decl.value.trim().to_string())
-            }),
-    );
-    out
+    cascade_entries(project, tree, element, "display")
+        .into_iter()
+        .map(|entry| entry.value)
+        .collect()
 }
 
 /// 一条参与级联的声明，带溯源信息。
@@ -310,58 +290,23 @@ pub(crate) struct Resolved<'a> {
 /// 每条都带溯源：来自哪个样式表 / 哪条选择器 / 优先级 / 是否 `!important` /
 /// at-rule 上下文。需要「为什么这条被覆盖」时看它前一条；需要「这个值会不会变」
 /// 时看 `at_rules`。
+///
+/// 样式作用域是唯一口径（[`document_covers`]）：单元按自己的作用域求值，独立模板
+/// 文件与 `<include>` 片段按引用它的单元求值。所有规则都走这里，不要再另写一份筛选。
 pub(crate) fn cascade_entries<'a>(
     project: &'a Project,
     tree: &Tree<'_>,
     element: &WxmlElement,
     property: &str,
 ) -> Vec<CascadeEntry<'a>> {
-    cascade_entries_with(project, tree, element, property, |sheet| {
-        sheet_covers(sheet, project, tree.path())
-    })
-}
-
-/// 模板定义体里元素的级联声明。
-///
-/// 模板不是单元（[`Project::scope_of`] 为 `None`），[`sheet_covers`] 对它恒为假，
-/// 直接求值等于「没有任何样式」。[`Project::template_scopes`] 记着实际引用该模板的
-/// 单元，样式只可能从这些单元的作用域进来，所以按它们的并集过滤——这是模板里唯一
-/// 静态可判的样式口径。跨模板边界的外层选择器仍然匹配不到（实例化处的祖先未知），
-/// 依赖祖先的结论要按「可能漏报」处理。
-pub(crate) fn template_cascade_entries<'a>(
-    project: &'a Project,
-    tree: &Tree<'_>,
-    element: &WxmlElement,
-    property: &str,
-) -> Vec<CascadeEntry<'a>> {
-    // 模板体可以写在单元自己身上（页面 / 组件里内联 `<template name>`），那份文档
-    // 有正常作用域，按常规口径求值即可；只有独立的模板文件才没作用域。
-    let scopes = project.template_scopes.get(tree.path());
-    let unit_scoped = project.scope_of(tree.path()).is_some();
-    cascade_entries_with(project, tree, element, property, |sheet| {
-        if unit_scoped {
-            return sheet_covers(sheet, project, tree.path());
-        }
-        scopes.is_some_and(|scopes| {
-            sheet
-                .scopes
-                .iter()
-                .any(|scope| *scope == Scope::Global || scopes.contains(scope))
-        })
-    })
-}
-
-fn cascade_entries_with<'a>(
-    project: &'a Project,
-    tree: &Tree<'_>,
-    element: &WxmlElement,
-    property: &str,
-    covers: impl Fn(&StyleSheet) -> bool,
-) -> Vec<CascadeEntry<'a>> {
     let mut entries = Vec::new();
     let mut order = 0;
 
-    for sheet in project.styles.iter().filter(|sheet| covers(sheet)) {
+    for sheet in project
+        .styles
+        .iter()
+        .filter(|sheet| document_covers(sheet, project, tree.path()))
+    {
         for rule in &sheet.doc.rules {
             // 一条规则可能有多个选择器，各自优先级不同：取命中里最高的那个。
             let matched = rule
@@ -456,21 +401,6 @@ pub(crate) fn resolved_property<'a>(
     })
 }
 
-/// 元素某个属性的有效取值（模板定义体，样式按引用它的单元求值）。
-pub(crate) fn template_resolved_property<'a>(
-    project: &'a Project,
-    tree: &Tree<'_>,
-    element: &WxmlElement,
-    property: &str,
-) -> Option<Resolved<'a>> {
-    let winner = template_cascade_entries(project, tree, element, property).pop()?;
-    Some(Resolved {
-        value: winner.value,
-        sheet: winner.sheet,
-        declaration: winner.declaration,
-    })
-}
-
 /// WebView 侧本来就会截断吗：多行靠 `-webkit-line-clamp`，单行靠
 /// `white-space: nowrap` + `overflow: hidden` + `text-overflow: ellipsis`。
 ///
@@ -530,6 +460,20 @@ pub(crate) fn is_out_of_flow(project: &Project, tree: &Tree<'_>, element: &WxmlE
             "fixed" | "absolute"
         )
     })
+}
+
+/// 元素是否自己声明了纵向占位：固定宽度或纵向 margin。
+///
+/// 作者这么写就已经表达了「各占一行」，并列关系不是无意中形成的。`auto` / `0` /
+/// `none` 不算（那些不产生纵向块）。
+pub(crate) fn stacks_vertically(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
+    ["width", "margin-top", "margin-bottom"]
+        .iter()
+        .filter_map(|property| resolved_property(project, tree, element, property))
+        .any(|resolved| {
+            let value = resolved.value.trim();
+            !matches!(value, "0" | "0px" | "0rpx" | "auto" | "none")
+        })
 }
 
 /// 元素的 `width` 是否本来就由内容决定，`fit-content` 被丢弃也不改变渲染。
@@ -649,20 +593,34 @@ fn split_important(value: &str) -> (String, bool) {
     }
 }
 
-fn inline_displays(style: &str) -> impl Iterator<Item = String> + '_ {
-    style.split(';').filter_map(|declaration| {
-        let (name, value) = declaration.split_once(':')?;
-        name.trim()
-            .eq_ignore_ascii_case("display")
-            .then(|| split_important(value.trim()).0)
-    })
-}
-
 /// 这份样式表是否作用于 `path` 这份 WXML 所属的单元。
 pub(crate) fn sheet_covers(sheet: &StyleSheet, project: &Project, path: &str) -> bool {
     sheet.scopes.iter().any(|scope| match scope {
         Scope::Global => true,
         _ => project.scope_wxml(scope) == Some(path),
+    })
+}
+
+/// 这份样式表是否作用于 `path` 这份文档（级联作用域的唯一口径）。
+///
+/// 单元（页面 / 组件，含写在其内的内联 `<template>`）走 [`sheet_covers`]。独立模板
+/// 文件与 `<include>` 片段不是单元（[`Project::scope_of`] 为 `None`），`sheet_covers`
+/// 对它们恒为假，改用 [`Project::template_scopes`]（实际 `<import>` / `<include>` 它的
+/// 单元）的并集过滤：样式只可能从这些单元的作用域进来。这个路径不在 `template_scopes`
+/// 里时返回 `false`——判不了就当没写样式，不对无名文档做推断。
+///
+/// 跨模板边界的外层选择器仍然匹配不到（实例化处的祖先未知）：`.a .b` 里 `.a` 写在
+/// 模板外面时，`.b` 的声明会整条丢失。所以模板里「查不到 `display`」不等于渲染时没有
+/// 这个样式，只有主体自己就能命中的选择器（`.b` / `tag`）是可靠的。
+fn document_covers(sheet: &StyleSheet, project: &Project, path: &str) -> bool {
+    if project.scope_of(path).is_some() {
+        return sheet_covers(sheet, project, path);
+    }
+    project.template_scopes.get(path).is_some_and(|scopes| {
+        sheet
+            .scopes
+            .iter()
+            .any(|scope| *scope == Scope::Global || scopes.contains(scope))
     })
 }
 

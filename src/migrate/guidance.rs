@@ -219,7 +219,7 @@ pub fn guidance_for(rule: &str) -> &'static Guidance {
             counterexamples: &["不要删掉 `@-webkit-keyframes` 就完事——必须补一份同名无前缀关键帧"],
             family: "visual",
         },
-        "skyline/no-inline-text" | "skyline/inline-run" | "skyline/text-run-block" => &Guidance {
+        "skyline/no-inline-text" | "skyline/inline-run" => &Guidance {
             facts: &["display"],
             preconditions: &["文本与块级元素混排时行盒会被拆开"],
             counterexamples: &[
