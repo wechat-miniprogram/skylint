@@ -18,9 +18,9 @@ use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
 use crate::rules::Target;
-use crate::rules::wxml::{resolved_property, webview_truncates};
+use crate::rules::wxml::resolved_property;
 
-use super::{element_diagnostic, structure::find_attr, visit, walk};
+use super::{ancestry, element_diagnostic, structure::find_attr, visit, walk};
 
 pub const ID: &str = "webview/text-truncation";
 
@@ -40,27 +40,31 @@ impl Rule for TextTruncation {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            let tree = Tree::new(doc);
-            walk(doc, |element, ancestors| {
-                if !element.tag.eq_ignore_ascii_case("text") {
-                    return;
-                }
-                if element.skyline_only() {
-                    return;
-                }
-                // 只看真正起截断作用的写法：`overflow="visible"`、`max-lines="0"`
-                // 在两个渲染器下表现一致，报出来是噪音。
-                let attributes = truncating_attributes(project, &tree, element);
-                if attributes.is_empty() || webview_truncates(project, &tree, element, ancestors) {
-                    return;
-                }
-                let written = attributes
-                    .iter()
-                    .map(|name| format!("`{name}`"))
-                    .collect::<Vec<_>>()
-                    .join(" / ");
-                out.push(
+        ancestry::with_views(project, |views| {
+            visit(project, |doc, out| {
+                let tree = Tree::new(doc);
+                walk(doc, |element, ancestors| {
+                    if !element.tag.eq_ignore_ascii_case("text") {
+                        return;
+                    }
+                    if element.skyline_only() {
+                        return;
+                    }
+                    // 只看真正起截断作用的写法：`overflow="visible"`、`max-lines="0"`
+                    // 在两个渲染器下表现一致，报出来是噪音。
+                    let attributes = truncating_attributes(project, &tree, element);
+                    if attributes.is_empty()
+                        || ancestry::webview_truncates(views, &tree, element, ancestors)
+                            != Some(false)
+                    {
+                        return;
+                    }
+                    let written = attributes
+                        .iter()
+                        .map(|name| format!("`{name}`"))
+                        .collect::<Vec<_>>()
+                        .join(" / ");
+                    out.push(
                     element_diagnostic(
                         ID,
                         doc,
@@ -73,7 +77,8 @@ impl Rule for TextTruncation {
                         "保留属性给 Skyline，另加 WebView 分支：多行用 `display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: N; overflow: hidden`，单行用 `white-space: nowrap; overflow: hidden; text-overflow: ellipsis`",
                     ),
                 );
-            });
+                });
+            })
         })
     }
 }
@@ -246,5 +251,32 @@ mod tests {
             "<view><text wx:if=\"{{renderer === 'skyline'}}\" max-lines=\"2\">a</text></view>",
         ));
         assert!(diagnostics.is_empty());
+    }
+
+    /// 模板定义体的真实祖先在实例化处：`<view class="clamp">` 截断时不再误报。
+    #[test]
+    fn template_body_sees_instantiation_ancestor_clamp() {
+        let fixture = Fixture::new("webview/template-ancestor");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}""#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<import src="/tpls/t"/><view class="clamp"><template is="t"/></view>"#,
+            )
+            .write(
+                "pages/index/index.wxss",
+                ".clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }",
+            )
+            .write(
+                "tpls/t.wxml",
+                r#"<template name="t"><text max-lines="2">a</text></template>"#,
+            );
+        let diagnostics = check(&fixture);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 }

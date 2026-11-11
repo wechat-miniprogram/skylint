@@ -66,7 +66,10 @@ const MAX_VISITS: usize = 4096;
 #[derive(Clone)]
 pub(crate) enum AncestorRef<'a> {
     /// 渲染树里真实存在的元素（跨组件边界时来自别的文档）。
-    Element { element: &'a FlatElement },
+    Element {
+        node: NodeId,
+        element: &'a FlatElement,
+    },
     /// 页面根：WXML 里没有对应标签，但 WebView 的 DOM 根是 `<page>`。
     PageRoot,
 }
@@ -75,7 +78,7 @@ impl AncestorRef<'_> {
     /// 匹配用的扁平节点：跨边界的选择器匹配只看标签 / id / class。
     pub(crate) fn node(&self) -> FlatNode {
         match self {
-            Self::Element { element } => node_of(&element.tag, &element.attributes),
+            Self::Element { element, .. } => node_of(&element.tag, &element.attributes),
             // WebView 的 DOM 根就是 `<page>`。
             Self::PageRoot => FlatNode {
                 tag: "page".to_string(),
@@ -117,6 +120,9 @@ pub(crate) struct FlatElement {
     pub column: u32,
     pub end_line: u32,
     pub end_column: u32,
+    /// 标签名的原始起点（编译器 0 基坐标），身份可逆：用它能在 `WxmlDoc` 里查回
+    /// 同一个元素。`line/column` 是 1-based 显示坐标，两者不能混用。
+    pub raw_start: (u32, u32),
     /// `<slot name="x">` 的槽名，其余为 `None`。
     slot_name: Option<String>,
     /// 来自内联 `<template name="x">` 的定义体时的模板名。
@@ -202,8 +208,23 @@ enum Parents {
 /// 元素的实例化祖先路径（已转成匹配用节点）与是否被路径上限截断。
 pub(crate) type AncestorNodePaths = (Vec<Vec<FlatNode>>, bool);
 
-/// (文档实例, 元素起点) → (选择器, 判定)：模板文档的判定缓存。
-pub(crate) type VerdictCache = HashMap<(usize, (u32, u32)), HashMap<String, Option<bool>>>;
+/// 祖先路径上的一个节点身份：仍是某个元素，或页面根。
+///
+/// 与 [`AncestorRef`] 的区别只是不含借用：可以安全地放进 `RefCell` 缓存。
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(crate) enum AncestorId {
+    Node(NodeId),
+    PageRoot,
+}
+
+/// 元素的实例化祖先路径（节点身份）与是否被路径上限截断。
+pub(crate) type AncestorIdPaths = (Vec<Vec<AncestorId>>, bool);
+
+/// (文档实例, 元素起点, 是否 WebView 语义) → (选择器, 判定)：模板文档的判定缓存。
+///
+/// 选择器的判定与方言有关（Skyline 丢弃属性条件），键里必须带方言，否则同一元素
+/// 上的 WebView 与 Skyline 查询会互相污染。
+pub(crate) type VerdictCache = HashMap<(usize, (u32, u32), bool), HashMap<String, Option<bool>>>;
 
 /// 全工程的 WXML 逻辑树。
 pub(crate) struct WxmlGraph {
@@ -219,6 +240,11 @@ pub(crate) struct WxmlGraph {
     ///
     /// 元素级规则会对同一元素按属性反复问，而枚举一次要回溯整张图，必须缓存。
     path_cache: RefCell<HashMap<(usize, usize), Rc<AncestorNodePaths>>>,
+    /// 元素下标 → 实例化祖先路径（节点身份）与是否截断。
+    ///
+    /// 与 [`Self::path_cache`] 同键同预算：同一元素按选择器求值要 `FlatNode`，按样式
+    /// 求值要回到元素本身（[`AncestorId`]），两条路都不能重复回溯整张图。
+    id_path_cache: RefCell<HashMap<(usize, usize), Rc<AncestorIdPaths>>>,
     /// (文档实例, 元素起点) → (选择器, 是否命中)：模板文档的选择器判定。
     ///
     /// 判定只取决于 (元素, 选择器)，但级联是「按属性」走的：`implicit-color` 一个元素
@@ -347,6 +373,7 @@ impl WxmlGraph {
             includes,
             importers,
             path_cache: RefCell::new(HashMap::new()),
+            id_path_cache: RefCell::new(HashMap::new()),
             verdict_cache: RefCell::new(HashMap::new()),
         }
     }
@@ -354,6 +381,32 @@ impl WxmlGraph {
     /// 这份文档在不在图里（模板片段、`<import>` 文件不在）。
     pub fn contains(&self, doc_path: &str) -> bool {
         self.by_path.contains_key(doc_path)
+    }
+
+    /// 文档下标 → 路径。
+    pub(crate) fn doc_path(&self, doc: usize) -> &str {
+        self.docs.get(doc).map_or("", |tree| tree.path.as_str())
+    }
+
+    /// 图里的全部文档路径（顺序即 [`NodeId::doc`] 的下标）。
+    pub(crate) fn doc_paths(&self) -> impl Iterator<Item = &str> {
+        self.docs.iter().map(|tree| tree.path.as_str())
+    }
+
+    /// 节点 → 扁平元素。
+    pub(crate) fn flat(&self, node: NodeId) -> &FlatElement {
+        &self.docs[node.doc].elements[node.idx]
+    }
+
+    /// 这份文档的根在渲染树里有位置（页面根 / 被使用的组件 / 被引入的片段）。
+    ///
+    /// 没有任何实例化处的文档永远不会渲染，对它求值得到的祖先没有意义。
+    /// 留给下一轮的结构规则；本轮祖先身份由实例化路径保证。
+    #[allow(dead_code)]
+    pub(crate) fn root_placed(&self, doc: usize) -> bool {
+        self.docs
+            .get(doc)
+            .is_some_and(|_| !matches!(self.doc_top_parents(doc), Parents::Unknown))
     }
 
     /// 文档路径 + 元素 → 它的全部逻辑祖先（近 → 远）。
@@ -441,8 +494,16 @@ impl WxmlGraph {
         let start = NodeId { doc, idx: start };
         let mut seen = HashSet::from([start]);
         let mut budget = MAX_VISITS;
-        self.collect_paths(start, &mut Vec::new(), &mut out, &mut seen, &mut budget);
-        let truncated = budget == 0 || out.len() >= MAX_PATHS;
+        let mut dropped = false;
+        self.collect_paths(
+            start,
+            &mut Vec::new(),
+            &mut out,
+            &mut seen,
+            &mut budget,
+            &mut dropped,
+        );
+        let truncated = budget == 0 || out.len() >= MAX_PATHS || dropped;
         (out, truncated)
     }
 
@@ -453,12 +514,14 @@ impl WxmlGraph {
         &self,
         doc_id: usize,
         element: &WxmlElement,
+        webview: bool,
         selector: &str,
         compute: impl FnOnce() -> Option<bool>,
     ) -> Option<bool> {
         let key = (
             doc_id,
             (element.tag_start.line, element.tag_start.utf16_col),
+            webview,
         );
         if let Some(hit) = self
             .verdict_cache
@@ -498,13 +561,67 @@ impl WxmlGraph {
         if let Some(hit) = self.path_cache.borrow().get(&(doc, idx)) {
             return hit.clone();
         }
-        let (paths, truncated) = self.ancestor_paths_capped(doc_path, element);
-        let nodes = paths
+        let ids = self.ancestor_ids(doc_path, element);
+        let nodes = ids
+            .0
             .iter()
-            .map(|path| path.iter().map(AncestorRef::node).collect())
+            .map(|path| {
+                path.iter()
+                    .map(|hop| match hop {
+                        AncestorId::Node(node) => {
+                            let flat = self.flat(*node);
+                            node_of(&flat.tag, &flat.attributes)
+                        }
+                        AncestorId::PageRoot => FlatNode {
+                            tag: "page".to_string(),
+                            ..FlatNode::default()
+                        },
+                    })
+                    .collect()
+            })
             .collect();
-        let value = Rc::new((nodes, truncated));
+        let value = Rc::new((nodes, ids.1));
         self.path_cache
+            .borrow_mut()
+            .insert((doc, idx), value.clone());
+        value
+    }
+
+    /// 元素的实例化祖先路径（节点身份），按元素缓存。
+    ///
+    /// 与 [`Self::ancestor_nodes`] 同源，区别是保住每个祖先的 `(文档, 元素)` 身份：
+    /// 样式求值要回到祖先元素本身，才能用**它自己那份文档**的 `Tree` 与文档级作用域。
+    pub(crate) fn ancestor_ids(
+        &self,
+        doc_path: &str,
+        element: &WxmlElement,
+    ) -> Rc<AncestorIdPaths> {
+        let Some(&doc) = self.by_path.get(doc_path) else {
+            return Rc::new((Vec::new(), false));
+        };
+        let Some(&idx) = self.docs[doc]
+            .by_start
+            .get(&(element.tag_start.line, element.tag_start.utf16_col))
+        else {
+            return Rc::new((Vec::new(), false));
+        };
+        if let Some(hit) = self.id_path_cache.borrow().get(&(doc, idx)) {
+            return hit.clone();
+        }
+        let (paths, truncated) = self.ancestor_paths_capped(doc_path, element);
+        let ids = paths
+            .iter()
+            .map(|path| {
+                path.iter()
+                    .map(|hop| match hop {
+                        AncestorRef::Element { node, .. } => AncestorId::Node(*node),
+                        AncestorRef::PageRoot => AncestorId::PageRoot,
+                    })
+                    .collect()
+            })
+            .collect();
+        let value = Rc::new((ids, truncated));
+        self.id_path_cache
             .borrow_mut()
             .insert((doc, idx), value.clone());
         value
@@ -517,8 +634,11 @@ impl WxmlGraph {
         out: &mut Vec<Vec<AncestorRef<'a>>>,
         seen: &mut HashSet<NodeId>,
         budget: &mut usize,
+        dropped: &mut bool,
     ) {
         if out.len() >= MAX_PATHS || *budget == 0 {
+            // 预算用尽 / 路径数封顶：还有一些可能路径没被枚举。
+            *dropped = true;
             return;
         }
         *budget -= 1;
@@ -527,20 +647,24 @@ impl WxmlGraph {
             Parents::Nodes(nodes) => {
                 for parent in nodes {
                     if out.len() >= MAX_PATHS || *budget == 0 {
+                        *dropped = true;
                         return;
                     }
                     // 组件可以引用自身（`<slot>` 回环），按路径去重防环。
                     if !seen.insert(parent) {
+                        *dropped = true;
                         continue;
                     }
                     if prefix.len() >= MAX_NODES {
+                        *dropped = true;
                         seen.remove(&parent);
                         return;
                     }
                     prefix.push(AncestorRef::Element {
+                        node: parent,
                         element: &self.docs[parent.doc].elements[parent.idx],
                     });
-                    self.collect_paths(parent, prefix, out, seen, budget);
+                    self.collect_paths(parent, prefix, out, seen, budget, dropped);
                     prefix.pop();
                     seen.remove(&parent);
                 }
@@ -556,7 +680,8 @@ impl WxmlGraph {
                     out.push(prefix.clone());
                 }
             }
-            Parents::Unknown => {}
+            // 静态不可知的边：这条路径走不下去，不等于其它路径都断在这里。
+            Parents::Unknown => *dropped = true,
         }
     }
 
@@ -972,6 +1097,7 @@ fn flatten(
             column,
             end_line,
             end_column,
+            raw_start: (element.tag_start.line, element.tag_start.utf16_col),
             slot_name: element.slot_name.clone(),
             template: element.template.clone(),
             span,
@@ -1383,5 +1509,59 @@ mod tests {
                 .len()
                 < super::MAX_NODES
         );
+    }
+
+    /// 未被任何使用点实例化的组件根：路径枚举停在静态未知的边上，必须报 truncated。
+    ///
+    /// 修复前「丢弃了一条可能路径」不置 truncated，调用方会把「剩下的路径都不命中」
+    /// 当成确定不命中；这个用例钉住 dropped 并入 truncated。
+    #[test]
+    fn unplaced_component_root_is_truncated() {
+        let fixture = fixture("graph-unplaced", "<view/>", r#"<view class="target"/>"#);
+        let project = fixture.project();
+        let graph = WxmlGraph::new(&project);
+        let doc = load_doc(&project, "components/panel/panel.wxml").expect("doc");
+        let element = match &doc.nodes[0] {
+            crate::input::wxml::WxmlNode::Element(element) => element,
+            _ => panic!("root element"),
+        };
+        let paths = graph.ancestor_ids("components/panel/panel.wxml", element);
+        assert!(paths.0.is_empty());
+        assert!(paths.1, "丢弃的路径必须让 truncated 为真");
+    }
+
+    /// `raw_start` 必须能把图里的节点查回源文档里的同一个元素。
+    ///
+    /// `line/column` 是 1-based 显示坐标，`raw_start` 是编译器 0 基坐标，两者混用
+    /// 会静默指向文档里另一个元素——这条测试守住这个错位。
+    #[test]
+    fn flat_element_round_trips_to_its_source_element() {
+        let fixture = fixture(
+            "graph-roundtrip",
+            r#"<view class="a"><text class="b">x</text><view class="c"/></view>"#,
+            r#"<view class="host"><slot/></view>"#,
+        );
+        let project = fixture.project();
+        let graph = WxmlGraph::new(&project);
+        let mut seen = 0;
+        for doc in 0..graph.doc_paths().count() {
+            let path = graph.doc_path(doc).to_string();
+            let source = load_doc(&project, &path).expect("doc");
+            for idx in 0..graph.docs[doc].elements.len() {
+                let flat = graph.flat(super::NodeId { doc, idx });
+                let element = source
+                    .element_at(flat.raw_start)
+                    .unwrap_or_else(|| panic!("{path}: {}", flat.raw_start.0));
+                assert_eq!(element.tag, flat.tag, "{path} 标签不一致");
+                assert_eq!(
+                    (element.tag_start.line, element.tag_start.utf16_col),
+                    flat.raw_start,
+                    "{path}"
+                );
+                assert_eq!(source.position(element.tag_start), (flat.line, flat.column));
+                seen += 1;
+            }
+        }
+        assert!(seen > 0);
     }
 }

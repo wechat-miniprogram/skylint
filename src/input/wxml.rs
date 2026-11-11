@@ -354,6 +354,38 @@ impl WxmlDoc {
         (pos.line + 1, column_at(&self.source, pos))
     }
 
+    /// 按标签名的原始起点（编译器 0 基坐标）查回元素。
+    ///
+    /// 这是「祖先身份 → 元素」的唯一入口：图里只存 `(文档, 元素)` 下标与原始坐标，
+    /// 样式求值需要元素本身（及其解析期属性）时回到这里。按 `start..end` 区间递归
+    /// 剪枝，不会扫完整棵树。
+    pub fn element_at(&self, start: (u32, u32)) -> Option<&WxmlElement> {
+        fn find(nodes: &[WxmlNode], start: Position) -> Option<&WxmlElement> {
+            for node in nodes {
+                let WxmlNode::Element(element) = node else {
+                    continue;
+                };
+                if start < element.start || element.end < start {
+                    continue;
+                }
+                if element.tag_start == start {
+                    return Some(element);
+                }
+                if let Some(found) = find(&element.children, start) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        find(
+            &self.nodes,
+            Position {
+                line: start.0,
+                utf16_col: start.1,
+            },
+        )
+    }
+
     /// 本文件通过 `<import>` / `<include>` 引用的模板路径（原始 `src` 值，未解析）。
     ///
     /// 编译器在解析时已剥掉 `.wxml` 后缀，所以这里拿到的通常是不带后缀的路径。
