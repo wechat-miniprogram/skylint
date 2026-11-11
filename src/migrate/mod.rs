@@ -1459,6 +1459,9 @@ pub struct Baseline {
     /// id 格式标记。旧基线没有这个字段，反序列化为 `Legacy`。
     #[serde(default)]
     pub id_format: IdFormat,
+    /// 冻结时工具具备的全部规则 id（字典序、去重）。旧基线没有这个字段。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rules: Option<Vec<String>>,
     pub summary: BaselineSummary,
     pub findings: Vec<BaselineFinding>,
 }
@@ -1538,8 +1541,143 @@ pub fn baseline(identified: &[Identified]) -> Baseline {
         schema_version: SCHEMA_VERSION,
         generator: Generator::default(),
         id_format: IdFormat::StructuralV2,
+        rules: Some(builtin_rule_ids()),
         summary,
         findings,
+    }
+}
+
+/// 迁移命令实际运行的规则集（`Skyline` 方向），字典序、去重。
+///
+/// `baseline` 把它写进基线，回答「冻结这个基线时工具具备哪些规则」。
+pub fn builtin_rule_ids() -> Vec<String> {
+    crate::Registry::builtin()
+        .for_target(crate::rules::Target::Skyline)
+        .metas()
+        .into_iter()
+        .map(|meta| meta.id.to_string())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// 当前规则集里基线未记录的规则；基线没有 `rules` 字段时返回空。
+pub fn unknown_rules(baseline: &Baseline, current: &[String]) -> Vec<String> {
+    let Some(known) = &baseline.rules else {
+        return Vec::new();
+    };
+    let known: BTreeSet<&str> = known.iter().map(String::as_str).collect();
+    current
+        .iter()
+        .filter(|id| !known.contains(id.as_str()))
+        .cloned()
+        .collect()
+}
+
+// ---------------------------------------------------------------- augment
+
+/// `baseline --augment` 的吸收结果。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AugmentReport {
+    pub schema_version: u32,
+    /// 基线没有 `rules` 字段，只能退化为「基线 findings 里出现过的规则」。
+    pub degraded: bool,
+    /// 追加的条目总数。
+    pub added: usize,
+    /// 追加后基线总条数。
+    pub total: usize,
+    /// 按规则分组的吸收明细，规则 id 字典序。
+    pub rules: Vec<AugmentedRule>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AugmentedRule {
+    pub rule: String,
+    pub count: usize,
+    /// 涉及文件（字典序，最多 5 个）。
+    pub files: Vec<String>,
+    /// 涉及文件总数。
+    pub file_count: usize,
+}
+
+/// 把「基线冻结后才出现的规则」产生的诊断追加进基线。
+///
+/// 已知规则集的诊断一律不动：不新增、不改 severity、不删除。旧基线没有 `rules`
+/// 时退化为 findings 里出现过的规则集合（`degraded: true`）。
+/// `id_format` 保持不变，只把 `rules` 升到当前规则集。
+pub fn augment(baseline: &mut Baseline, current: &[Identified]) -> AugmentReport {
+    let degraded = baseline.rules.is_none();
+    let known: BTreeSet<String> = match baseline.rules.clone() {
+        Some(rules) => rules.into_iter().collect(),
+        None => baseline
+            .findings
+            .iter()
+            .map(|finding| finding.rule.clone())
+            .collect(),
+    };
+
+    let mut seen: BTreeSet<String> = baseline
+        .findings
+        .iter()
+        .map(|finding| finding.id.clone())
+        .collect();
+    let mut added_by_rule: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for finding in current {
+        if known.contains(&finding.rule) || !seen.insert(finding.id.clone()) {
+            continue;
+        }
+        added_by_rule
+            .entry(finding.rule.clone())
+            .or_default()
+            .push(finding.path.clone());
+        baseline.findings.push(BaselineFinding {
+            id: finding.id.clone(),
+            unit: finding.unit.clone(),
+            rule: finding.rule.clone(),
+            severity: finding.severity,
+            path: finding.path.clone(),
+            span: finding.span.clone(),
+            message: Some(finding.message.clone()),
+            help: finding.help.clone(),
+        });
+    }
+
+    // 既有排序口径：按 id；summary 必须跟着条目走。
+    baseline.findings.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut summary = BaselineSummary::default();
+    for finding in &baseline.findings {
+        summary.total += 1;
+        match finding.severity {
+            Severity::Error => summary.error += 1,
+            Severity::Warning => summary.warning += 1,
+            Severity::Info => summary.info += 1,
+        }
+    }
+    baseline.summary = summary;
+    baseline.rules = Some(builtin_rule_ids());
+
+    let added: usize = added_by_rule.values().map(Vec::len).sum();
+    let rules = added_by_rule
+        .into_iter()
+        .map(|(rule, paths)| {
+            let files: BTreeSet<&str> = paths.iter().map(String::as_str).collect();
+            AugmentedRule {
+                rule,
+                count: paths.len(),
+                file_count: files.len(),
+                files: files.iter().take(5).map(|path| path.to_string()).collect(),
+            }
+        })
+        .collect();
+
+    AugmentReport {
+        schema_version: SCHEMA_VERSION,
+        degraded,
+        added,
+        total: baseline.summary.total,
+        rules,
     }
 }
 

@@ -131,6 +131,9 @@ struct BaselineArgs {
     /// 输出 JSON（同时写到 `--out`）
     #[arg(long)]
     json: bool,
+    /// 在已有基线上增量吸收「冻结后新增规则」的诊断（`--out` 必须指向已存在的基线）
+    #[arg(long)]
+    augment: bool,
     /// 跳过的规则 id（可重复）
     #[arg(long = "ignore", value_name = "RULE")]
     ignore: Vec<String>,
@@ -445,6 +448,11 @@ fn run_baseline(args: BaselineArgs) -> ExitCode {
     };
     let plan = migrate::plan(&projects, &report, None);
     let identified = migrate::identify(&projects, &plan, &report);
+
+    if args.augment {
+        return run_augment(args, &identified);
+    }
+
     let baseline = migrate::baseline(&identified);
     let json = migrate::to_json(&baseline);
     // 默认落在工程根下，不落在当前目录——否则从别处调就会写错地方。
@@ -469,6 +477,89 @@ fn run_baseline(args: BaselineArgs) -> ExitCode {
         );
     }
     ExitCode::SUCCESS
+}
+
+/// 在已有基线上只吸收「新规则」的诊断，不重算整份基线。
+fn run_augment(args: BaselineArgs, identified: &[migrate::Identified]) -> ExitCode {
+    let Some(out) = args.out else {
+        eprintln!("skylint: --augment 需要 --out 指向已存在的基线文件");
+        return ExitCode::from(2);
+    };
+    let text = match std::fs::read_to_string(&out) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!("skylint: 读不到基线 {}: {err}", out.display());
+            return ExitCode::from(2);
+        }
+    };
+    let mut baseline = match migrate::Baseline::load(&text) {
+        Ok(baseline) => baseline,
+        Err(err) => {
+            eprintln!("skylint: 基线格式不对 {}: {err}", out.display());
+            return ExitCode::from(2);
+        }
+    };
+
+    // 写回前自检：追加逻辑正确时，拿新基线再跑一遍 verify，新增必须是零；
+    // fixed / changed 只能来自基线冻结后的代码/规则变化，augment 不能增加它们。
+    let before = migrate::verify(&baseline, identified, None, Some(out.display().to_string()));
+    let report = migrate::augment(&mut baseline, identified);
+    let check = migrate::verify(&baseline, identified, None, Some(out.display().to_string()));
+    if check.new != 0
+        || check.new_info != 0
+        || check.fixed != before.fixed
+        || check.changed != before.changed
+    {
+        eprintln!(
+            "skylint: augment 自检失败（new {} / newInfo {} / fixed {} → {} / changed {} → {}），未写回基线",
+            check.new, check.new_info, before.fixed, check.fixed, before.changed, check.changed
+        );
+        print_verify(&check, &[]);
+        return ExitCode::FAILURE;
+    }
+
+    let json = migrate::to_json(&baseline);
+    if let Err(err) = write_out(&out, &json) {
+        eprintln!("skylint: {err}");
+        return ExitCode::from(2);
+    }
+    print_augment(&out, &report, &before, &check);
+    if args.json {
+        println!("{json}");
+    }
+    ExitCode::SUCCESS
+}
+
+fn print_augment(
+    out: &Path,
+    report: &migrate::AugmentReport,
+    before: &migrate::VerifyReport,
+    check: &migrate::VerifyReport,
+) {
+    eprintln!(
+        "augment {}：吸收 {} 条，基线共 {} 条",
+        out.display(),
+        report.added,
+        report.total
+    );
+    if report.degraded {
+        eprintln!(
+            "⚠ 基线没有 rules 字段，退化按「基线 findings 里出现过的规则」判断：冻结时零命中、之后真回归的规则也会被一并吸收，请人工确认"
+        );
+    }
+    for rule in &report.rules {
+        let files = rule.files.join("、");
+        let more = if rule.file_count > rule.files.len() {
+            format!("，等 {} 个文件", rule.file_count)
+        } else {
+            String::new()
+        };
+        eprintln!("  {}  {} 条  {files}{more}", rule.rule, rule.count);
+    }
+    eprintln!(
+        "自检 verify：new {} / newInfo {} / fixed {}（augment 前 {}）/ changed {}（augment 前 {}）",
+        check.new, check.new_info, check.fixed, before.fixed, check.changed, before.changed
+    );
 }
 
 fn run_verify(args: VerifyArgs) -> ExitCode {
@@ -512,11 +603,12 @@ fn run_verify(args: VerifyArgs) -> ExitCode {
         unit.as_deref(),
         Some(args.baseline.display().to_string()),
     );
+    let unknown = migrate::unknown_rules(&baseline, &migrate::builtin_rule_ids());
 
     if args.json {
         println!("{}", migrate::to_json(&result));
     } else {
-        print_verify(&result);
+        print_verify(&result, &unknown);
     }
 
     if result.blocks() {
@@ -996,7 +1088,7 @@ fn print_element(detail: &migrate::ElementDetail) {
     }
 }
 
-fn print_verify(report: &migrate::VerifyReport) {
+fn print_verify(report: &migrate::VerifyReport, unknown_rules: &[String]) {
     if report.version_mismatch {
         eprintln!("⚠ 基线与当前 skylint 版本不同：规则集可能变了，新增/修复的数量要人看一眼");
     }
@@ -1036,5 +1128,37 @@ fn print_verify(report: &migrate::VerifyReport) {
         if let Some(message) = &finding.message {
             println!("     {message}");
         }
+    }
+    if !unknown_rules.is_empty() {
+        println!(
+            "基线冻结时还没有 {} 条规则（{}），这些规则的命中可以用 baseline --augment 吸收",
+            unknown_rules.len(),
+            unknown_rules.join("、")
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn baseline_args(extra: &[&str]) -> BaselineArgs {
+        let mut argv = vec!["skylint", "migration", "baseline", "."];
+        argv.extend_from_slice(extra);
+        match Cli::try_parse_from(argv).expect("参数应合法").command {
+            Some(Command::Migration(MigrationCommand::Baseline(args))) => args,
+            other => panic!("不是 baseline 命令：{other:?}"),
+        }
+    }
+
+    /// `--augment` 必须显式给出；不给时仍走整份重算。
+    #[test]
+    fn baseline_augment_is_opt_in() {
+        let plain = baseline_args(&["--out", "b.json"]);
+        assert!(!plain.augment);
+        assert_eq!(plain.out.as_deref(), Some(Path::new("b.json")));
+
+        let augment = baseline_args(&["--out", "b.json", "--augment"]);
+        assert!(augment.augment);
     }
 }

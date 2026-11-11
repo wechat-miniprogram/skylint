@@ -1303,12 +1303,21 @@ fn baseline_load_recognizes_old_formats() {
 // ---------------------------------------------------------------- 输出语义
 
 fn identified(id: &str, severity: Severity) -> migrate::Identified {
+    identified_with(
+        id,
+        "skyline/no-inline-text",
+        "pages/index/index.wxml",
+        severity,
+    )
+}
+
+fn identified_with(id: &str, rule: &str, path: &str, severity: Severity) -> migrate::Identified {
     migrate::Identified {
         id: id.to_string(),
         unit: "unit:pages/index/index".to_string(),
-        rule: "skyline/no-inline-text".to_string(),
+        rule: rule.to_string(),
         severity,
-        path: "pages/index/index.wxml".to_string(),
+        path: path.to_string(),
         span: migrate::Span {
             line: 1,
             column: 1,
@@ -1484,4 +1493,227 @@ fn ledger_json_adds_shared_without_changing_ledger_fields() {
         plan.shared.diagnostics
     );
     assert!(shared["files"].is_array());
+}
+
+// ---------------------------------------------------------------- 基线规则集与 augment
+
+/// 新基线必须记录冻结时的规则集：字典序、去重、非空。
+#[test]
+fn baseline_records_rule_set() {
+    let rules = migrate::baseline(&[]).rules.expect("新基线必须写 rules");
+    assert!(!rules.is_empty());
+    assert!(rules.windows(2).all(|pair| pair[0] < pair[1]), "{rules:?}");
+    assert!(
+        rules.iter().any(|id| id == "skyline/text-run-block"),
+        "规则 id 应来自当前 Registry"
+    );
+    assert_eq!(rules.len(), rules.iter().collect::<HashSet<_>>().len());
+    assert_eq!(rules, migrate::builtin_rule_ids());
+}
+
+/// 旧基线没有 `rules` 字段：读成 `None`，不猜、不推断。
+#[test]
+fn old_baseline_without_rules_loads_as_none() {
+    let mut baseline = migrate::baseline(&[identified("old", Severity::Warning)]);
+    baseline.rules = None;
+    let text = migrate::to_json(&baseline);
+    assert!(!text.contains("\"rules\""), "{text}");
+
+    let loaded = migrate::Baseline::load(&text).expect("旧基线");
+    assert_eq!(loaded.rules, None);
+}
+
+/// augment 只追加「新规则」的诊断；已有条目逐字段不变。
+#[test]
+fn augment_appends_only_new_rule_findings() {
+    let old = identified("old", Severity::Warning);
+    let mut baseline = migrate::baseline(std::slice::from_ref(&old));
+    baseline.rules = Some(vec!["skyline/no-inline-text".to_string()]);
+    baseline.findings.retain(|finding| finding.id == old.id);
+    let before = migrate::to_json(&baseline.findings[0]);
+
+    let current = vec![
+        old.clone(),
+        identified_with(
+            "new-1",
+            "skyline/text-run-block",
+            "pages/b/index.wxml",
+            Severity::Warning,
+        ),
+        identified_with(
+            "new-2",
+            "skyline/text-run-block",
+            "pages/b/index.wxml",
+            Severity::Info,
+        ),
+    ];
+    let report = migrate::augment(&mut baseline, &current);
+
+    assert!(!report.degraded);
+    assert_eq!(report.added, 2);
+    assert_eq!(report.rules.len(), 1);
+    assert_eq!(report.rules[0].rule, "skyline/text-run-block");
+    assert_eq!(report.rules[0].count, 2);
+    assert_eq!(report.rules[0].file_count, 1);
+    assert_eq!(report.rules[0].files, vec!["pages/b/index.wxml"]);
+
+    // 老条目一个字段都不动。
+    let kept = baseline
+        .findings
+        .iter()
+        .find(|finding| finding.id == "old")
+        .expect("老条目还在");
+    assert_eq!(migrate::to_json(kept), before);
+
+    assert_eq!(baseline.findings.len(), 3);
+    assert_eq!(baseline.summary.total, 3);
+    assert_eq!(baseline.summary.warning, 2);
+    assert_eq!(baseline.summary.info, 1);
+    // id 格式不因 augment 改变。
+    assert_eq!(baseline.id_format, migrate::IdFormat::StructuralV2);
+    assert!(
+        baseline
+            .rules
+            .as_ref()
+            .unwrap()
+            .iter()
+            .any(|id| id == "skyline/text-run-block")
+    );
+}
+
+/// augment 之后立刻 verify，四项计数必须全零。
+#[test]
+fn augment_then_verify_is_clean() {
+    let old = identified("old", Severity::Warning);
+    let mut baseline = migrate::baseline(std::slice::from_ref(&old));
+    baseline.rules = Some(vec!["skyline/no-inline-text".to_string()]);
+    let current = vec![
+        old.clone(),
+        identified_with(
+            "new-error",
+            "skyline/text-run-block",
+            "pages/b/index.wxml",
+            Severity::Error,
+        ),
+    ];
+
+    migrate::augment(&mut baseline, &current);
+    let report = migrate::verify(&baseline, &current, None, None);
+
+    assert_eq!(report.new, 0, "{:?}", report.findings);
+    assert_eq!(report.new_info, 0);
+    assert_eq!(report.fixed, 0);
+    assert_eq!(report.changed, 0);
+    assert!(!report.blocks());
+}
+
+/// 老基线（无 `rules`）退化为 findings 里出现过的规则，并标记 `degraded`：
+/// 冻结时零命中的规则会被一并吸收（这正是要警告的风险）。
+#[test]
+fn augment_legacy_baseline_uses_findings_rules_and_warns() {
+    let old = identified("old", Severity::Warning);
+    let mut baseline = migrate::baseline(std::slice::from_ref(&old));
+    baseline.rules = None;
+
+    let current = vec![
+        // 已知规则的真回归（新 id）：不吸收。
+        identified_with(
+            "regressed",
+            "skyline/no-inline-text",
+            "pages/index/index.wxml",
+            Severity::Warning,
+        ),
+        // 新规则：吸收。
+        identified_with(
+            "brand-new",
+            "skyline/text-run-block",
+            "pages/b/index.wxml",
+            Severity::Warning,
+        ),
+        // 冻结时零命中、之后才出现的规则：退化口径也会吸收。
+        identified_with(
+            "zero-hit",
+            "skyline/box-sizing",
+            "pages/c/index.wxss",
+            Severity::Warning,
+        ),
+    ];
+    let report = migrate::augment(&mut baseline, &current);
+
+    assert!(report.degraded);
+    assert_eq!(report.added, 2);
+    let rules: Vec<&str> = report.rules.iter().map(|rule| rule.rule.as_str()).collect();
+    assert_eq!(rules, vec!["skyline/box-sizing", "skyline/text-run-block"]);
+    assert!(
+        baseline
+            .findings
+            .iter()
+            .all(|finding| finding.id != "regressed")
+    );
+    assert!(baseline.rules.is_some(), "augment 后补上规则集");
+}
+
+/// 吸收清单只列前 5 个文件，同时给出文件总数。
+#[test]
+fn augment_report_lists_first_five_files() {
+    let mut baseline = migrate::baseline(&[identified("old", Severity::Warning)]);
+    baseline.rules = Some(vec!["skyline/no-inline-text".to_string()]);
+    let current: Vec<_> = (0..7)
+        .map(|index| {
+            identified_with(
+                &format!("new-{index}"),
+                "skyline/text-run-block",
+                &format!("pages/p{index}/index.wxml"),
+                Severity::Warning,
+            )
+        })
+        .collect();
+
+    let report = migrate::augment(&mut baseline, &current);
+
+    assert_eq!(report.rules[0].count, 7);
+    assert_eq!(report.rules[0].file_count, 7);
+    assert_eq!(report.rules[0].files.len(), 5);
+}
+
+/// 只报告「当前规则集里基线没记录的规则」；基线没有 `rules` 时不提示。
+#[test]
+fn unknown_rules_lists_only_rules_missing_from_baseline() {
+    let mut baseline = migrate::baseline(&[]);
+    baseline.rules = Some(vec!["skyline/no-inline-text".to_string()]);
+    let current = vec![
+        "skyline/no-inline-text".to_string(),
+        "skyline/text-run-block".to_string(),
+    ];
+    assert_eq!(
+        migrate::unknown_rules(&baseline, &current),
+        vec!["skyline/text-run-block"]
+    );
+
+    baseline.rules = None;
+    assert!(migrate::unknown_rules(&baseline, &current).is_empty());
+}
+
+/// `migration baseline`（不带 `--augment`）仍重算整份基线，并写入 `rules`。
+#[test]
+fn baseline_command_without_augment_writes_fresh_baseline_with_rules() {
+    let f = inline_text_fixture("baseline-cli", ".box { display: block; }");
+    let out = f.path().join(".skylint/baseline.json");
+    let status = std::process::Command::new(env!("CARGO_BIN_EXE_skylint"))
+        .args(["migration", "baseline"])
+        .arg(f.path())
+        .args(["--out"])
+        .arg(&out)
+        .status()
+        .expect("运行 skylint");
+    assert!(status.success());
+
+    let value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&out).expect("基线文件")).expect("合法 JSON");
+    assert!(
+        value["rules"]
+            .as_array()
+            .is_some_and(|rules| !rules.is_empty())
+    );
+    assert_eq!(value["idFormat"], "structural-v2");
 }
