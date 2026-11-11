@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Generator, Plan, PlanUnit, SCHEMA_VERSION};
+use super::{Generator, Plan, PlanUnit, SCHEMA_VERSION, SharedFiles};
 
 /// 单元状态。终态之后不再由 `next` 返回。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -54,6 +54,16 @@ pub struct Ledger {
     pub schema_version: u32,
     pub generator: Generator,
     pub units: BTreeMap<String, UnitState>,
+}
+
+/// `ledger --json` 的输出：台账本身 + `plan` 里的共享清单。
+///
+/// `shared` 是派生数据，不写进台账文件（台账只存状态）。
+#[derive(Debug, Serialize)]
+pub struct LedgerReport<'a> {
+    #[serde(flatten)]
+    pub ledger: &'a Ledger,
+    pub shared: &'a SharedFiles,
 }
 
 impl Default for Ledger {

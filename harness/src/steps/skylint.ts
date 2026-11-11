@@ -31,13 +31,23 @@ export type NextUnit = {
 };
 
 export type VerifyReport = {
+  /** 新增 error/warning（拦门禁：`new > 0` 时退出码为 1） */
   new: number;
+  /** 新增 info（不拦门禁） */
   newInfo: number;
   fixed: number;
+  /** 严重级变化总数 = changedUp + changedDown（不拦门禁） */
   changed: number;
+  changedUp: number;
+  changedDown: number;
   versionMismatch: boolean;
   findings: Array<{
-    kind: "new" | "fixed" | "severity-changed";
+    kind:
+      | "new"
+      | "new-info"
+      | "fixed"
+      | "severity-raised"
+      | "severity-lowered";
     id: string;
     rule: string;
     severity: string;

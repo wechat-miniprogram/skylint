@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use skylint::migrate;
 use skylint::rules::Target;
-use skylint::{Project, Registry, Report};
+use skylint::{Project, Registry, Report, Severity};
 
 struct Fixture {
     root: PathBuf,
@@ -1228,7 +1228,7 @@ fn json_removed_switch_is_not_a_pair() {
         result
             .findings
             .iter()
-            .any(|entry| entry.kind == "new" && entry.id.contains("defaultDisplayBlock")),
+            .any(|entry| entry.kind == "new-info" && entry.id.contains("defaultDisplayBlock")),
         "{:?}",
         result.findings
     );
@@ -1298,4 +1298,190 @@ fn baseline_load_recognizes_old_formats() {
         migrate::Baseline::load(&legacy).expect("legacy").id_format,
         migrate::IdFormat::Legacy
     );
+}
+
+// ---------------------------------------------------------------- 输出语义
+
+fn identified(id: &str, severity: Severity) -> migrate::Identified {
+    migrate::Identified {
+        id: id.to_string(),
+        unit: "unit:pages/index/index".to_string(),
+        rule: "skyline/no-inline-text".to_string(),
+        severity,
+        path: "pages/index/index.wxml".to_string(),
+        span: migrate::Span {
+            line: 1,
+            column: 1,
+            end_line: 1,
+            end_column: 2,
+        },
+        message: "m".to_string(),
+        help: None,
+    }
+}
+
+/// 新增 error 仍叫 `new`（拦门禁）。
+#[test]
+fn verify_new_error_keeps_kind_new() {
+    let baseline = migrate::baseline(&[]);
+    let current = vec![identified("error", Severity::Error)];
+    let report = migrate::verify(&baseline, &current, None, None);
+
+    assert_eq!(report.new, 1);
+    assert_eq!(report.new_info, 0);
+    assert!(report.blocks());
+    assert_eq!(report.findings[0].kind, "new");
+}
+
+/// info 级新增不拦门禁，`kind` 必须与拦门禁的 `new` 分开。
+#[test]
+fn verify_info_new_finding_is_marked_new_info_and_does_not_block() {
+    let f = inline_text_fixture("verify-info-kind", ".box { display: block; }");
+    let baseline = baseline_of(f.path());
+
+    f.write(
+        "miniprogram/pages/index/index.wxml",
+        "<view class=\"box\"><text overflow=\"ellipsis\" max-lines=\"2\">第一行\n第二行</text></view>",
+    );
+    let report = verify_now(f.path(), &baseline);
+
+    assert_eq!(report.new, 0, "info 不该计入 new：{:?}", report.findings);
+    assert_eq!(report.new_info, 1);
+    assert!(!report.blocks(), "info 级新增不能把门禁判死");
+    let entry = report
+        .findings
+        .iter()
+        .find(|entry| entry.rule == "skyline/text-hard-break-ellipsis")
+        .expect("应有新增的 info 诊断");
+    assert_eq!(entry.kind, "new-info");
+    assert_eq!(entry.severity, Severity::Info);
+}
+
+/// `changed` 不再把「变严」和「变松」混成一个值。
+#[test]
+fn verify_severity_change_distinguishes_raised_and_lowered() {
+    let raised = migrate::verify(
+        &migrate::baseline(&[identified("same", Severity::Info)]),
+        &[identified("same", Severity::Error)],
+        None,
+        None,
+    );
+    assert_eq!(raised.changed, 1);
+    assert_eq!(raised.changed_up, 1);
+    assert_eq!(raised.changed_down, 0);
+    assert_eq!(raised.findings[0].kind, "severity-raised");
+
+    let lowered = migrate::verify(
+        &migrate::baseline(&[identified("same", Severity::Error)]),
+        &[identified("same", Severity::Info)],
+        None,
+        None,
+    );
+    assert_eq!(lowered.changed, 1);
+    assert_eq!(lowered.changed_up, 0);
+    assert_eq!(lowered.changed_down, 1);
+    assert_eq!(lowered.findings[0].kind, "severity-lowered");
+}
+
+/// `plan.shared` 给出 `unit:shared` 的文件明细，条数与伪单元对得上。
+#[test]
+fn plan_shared_lists_files_with_counts() {
+    let f = Fixture::new("shared-files");
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/"}"#,
+    )
+    .write(
+        "miniprogram/app.json",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+    )
+    .write("miniprogram/app.wxss", ".x { float: left; }\n")
+    .write("miniprogram/pages/index/index.json", r#"{}"#)
+    .write("miniprogram/pages/index/index.wxml", "<view class=\"x\"/>")
+    .write("miniprogram/pages/index/index.js", "Page({})");
+
+    let (projects, report) = analyse(f.path());
+    let plan = migrate::plan(&projects, &report, None);
+    let shared = plan
+        .units
+        .iter()
+        .find(|unit| unit.kind == "shared")
+        .unwrap();
+
+    assert_eq!(plan.shared.diagnostics, shared.diagnostics.total);
+    assert_eq!(
+        plan.shared
+            .files
+            .iter()
+            .map(|file| file.count)
+            .sum::<usize>(),
+        plan.shared.diagnostics
+    );
+    assert!(plan.shared.files.iter().any(|file| file.path == "app.json"));
+    assert!(plan.shared.files.iter().any(|file| file.path == "app.wxss"));
+    assert!(
+        plan.shared
+            .files
+            .windows(2)
+            .all(|pair| pair[0].count >= pair[1].count),
+        "文件按条数降序：{:?}",
+        plan.shared.files
+    );
+}
+
+/// 文本明细只列前 5 个文件，其余折成「等 N 个文件」。
+#[test]
+fn shared_files_summary_truncates_after_five() {
+    let shared = migrate::SharedFiles {
+        diagnostics: 28,
+        files: (1..=7)
+            .map(|index| migrate::SharedFile {
+                path: format!("file{index}.json"),
+                count: 8 - index,
+            })
+            .collect(),
+    };
+
+    let summary = shared.files_summary().expect("有文件就要有明细");
+    for index in 1..=5 {
+        assert!(summary.contains(&format!("file{index}.json")), "{summary}");
+    }
+    assert!(!summary.contains("file6.json"), "只列前 5 个：{summary}");
+    assert!(summary.contains("等 7 个文件"), "{summary}");
+}
+
+/// `ledger --json` 保留台账原字段，只新增 `shared`。
+#[test]
+fn ledger_json_adds_shared_without_changing_ledger_fields() {
+    let f = Fixture::new("ledger-shared");
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/"}"#,
+    )
+    .write(
+        "miniprogram/app.json",
+        r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+    )
+    .write("miniprogram/pages/index/index.json", r#"{}"#)
+    .write("miniprogram/pages/index/index.wxml", "<view/>")
+    .write("miniprogram/pages/index/index.js", "Page({})");
+
+    let (projects, report) = analyse(f.path());
+    let plan = migrate::plan(&projects, &report, None);
+    let ledger = migrate::Ledger::default();
+    let json = migrate::to_json(&migrate::LedgerReport {
+        ledger: &ledger,
+        shared: &plan.shared,
+    });
+    let value: serde_json::Value = serde_json::from_str(&json).expect("合法 JSON");
+
+    assert!(value.get("schemaVersion").is_some());
+    assert!(value.get("generator").is_some());
+    assert!(value.get("units").is_some());
+    let shared = value.get("shared").expect("新增 shared 字段");
+    assert_eq!(
+        shared["diagnostics"].as_u64().unwrap() as usize,
+        plan.shared.diagnostics
+    );
+    assert!(shared["files"].is_array());
 }

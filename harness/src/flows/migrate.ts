@@ -96,7 +96,8 @@ export async function migrate(options: MigrateOptions): Promise<MigrateResult> {
         continue;
       }
 
-      // 3) L0 确定性门禁。新增 error/warning 即失败。
+      // 3) L0 确定性门禁。只看 `new`（新增 error/warning）：新增 info 是 `new-info`，
+      // 不拦门禁；`changedUp`（调严）只提示，不判失败。退出码已经是这个判据。
       const l0 = await verifyUnit({ root: options.root }, unit);
       if (!l0.passed) {
         lastReason = `新增 ${l0.report.new} 条（error+warning）`;

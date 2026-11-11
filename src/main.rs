@@ -551,7 +551,13 @@ fn run_ledger(args: LedgerArgs) -> ExitCode {
     }
 
     if args.json {
-        println!("{}", migrate::to_json(&ledger));
+        println!(
+            "{}",
+            migrate::to_json(&migrate::LedgerReport {
+                ledger: &ledger,
+                shared: &plan.shared,
+            })
+        );
     } else {
         print_ledger(&plan, &ledger);
     }
@@ -695,6 +701,12 @@ fn print_ledger(plan: &Plan, ledger: &migrate::Ledger) {
         println!(
             "共享资源上还有 {} 条诊断（`unit:shared`），不自动排队，需单独审批",
             progress.shared
+        );
+        if let Some(files) = plan.shared.files_summary() {
+            println!("  文件：{files}");
+        }
+        println!(
+            "  只含不属于任何单元的文件；被多个单元引用的文件（如 styles/common.wxss）按 `shared: true` 记在各单元作业单里，不在其中"
         );
     }
     for (index, batch) in plan.batches.iter().enumerate() {
@@ -998,16 +1010,23 @@ fn print_verify(report: &migrate::VerifyReport) {
         _ => {}
     }
     println!(
-        "新增 {} 条（error+warning），新增 info {} 条，修复 {} 条，调档 {} 条",
-        report.new, report.new_info, report.fixed, report.changed
+        "新增 {} 条（error+warning），新增 info {} 条，修复 {} 条，调档 {} 条（变严 {} / 变松 {}）",
+        report.new,
+        report.new_info,
+        report.fixed,
+        report.changed,
+        report.changed_up,
+        report.changed_down
     );
     if let Some(unit) = &report.unit {
         println!("只看：{unit}");
     }
     for finding in &report.findings {
         let sign = match finding.kind {
-            "new" => "+",
+            "new" | "new-info" => "+",
             "fixed" => "-",
+            "severity-raised" => "↑",
+            "severity-lowered" => "↓",
             _ => "~",
         };
         println!(

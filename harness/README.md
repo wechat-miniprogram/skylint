@@ -106,10 +106,12 @@ stdin 已经统一关掉（`sh -c '… < /dev/null'`）：`codex exec` 与 `open
 
 ## 已知边界
 
-- **`unit:shared` 不排队**：共享样式（`app.wxss` / `weui.wxss`）的诊断改一处影响
-  多个单元，必须人工单独处理。第三方库先用 `.skylint/config.json` 的 `exclude` 排掉
+- **`unit:shared` 不排队**：`app.json` / `app.wxss` / `project.private.config.json` 这类
+  **无归属**文件的诊断改一处影响多个单元，必须人工单独处理；`skylint migration ledger`
+  会把这些文件按条数列出来。第三方库先用 `.skylint/config.json` 的 `exclude` 排掉
   （businessview 上 98 → 8，见 `docs/MIGRATE.md` §2.1），剩下的手工改、用
-  `verify --unit unit:shared` 过门禁。
+  `verify --unit unit:shared` 过门禁。被多个单元引用的文件（如 `styles/common.wxss`）
+  **不属于** `unit:shared`：它们在各单元作业单里带 `shared: true`，要跑全工程 verify。
 - **越界检查是目录级的**：`unitDirOf(unit.path)` 之外的文件一律判失败，所以
   跨单元的重构要人工做。
 - **单元文件必须在 git 索引里**：在 `dist/` 这类被忽略的目录上跑，快照/回滚/
