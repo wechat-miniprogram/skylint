@@ -219,10 +219,13 @@ pub fn guidance_for(rule: &str) -> &'static Guidance {
             counterexamples: &["不要删掉 `@-webkit-keyframes` 就完事——必须补一份同名无前缀关键帧"],
             family: "visual",
         },
-        "skyline/no-inline-text" | "skyline/inline-run" => &Guidance {
+        "skyline/no-inline-text" | "skyline/inline-run" | "skyline/text-run-block" => &Guidance {
             facts: &["display"],
             preconditions: &["文本与块级元素混排时行盒会被拆开"],
-            counterexamples: &["不要把文本包进 view —— 行内与块级的分界会变"],
+            counterexamples: &[
+                "不要把文本包进 view —— 行内与块级的分界会变",
+                "不要把同一段文本拆成并列的 `<text>` —— Skyline 下它们是各自独立的块级盒子",
+            ],
             family: "visual",
         },
         "skyline/text-overflow-ellipsis" => &Guidance {

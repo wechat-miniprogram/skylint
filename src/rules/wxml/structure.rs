@@ -177,7 +177,7 @@ impl<'a> Ancestor<'a> {
 
 /// 属性是否被明确关掉：缺失，或静态假值（`false` / `0`）。
 /// 动态值（`{{...}}`，包括 `{{true}}`）无法区分，按「可能开启」处理。
-fn attr_is_off(element: &WxmlElement, name: &str) -> bool {
+pub(crate) fn attr_is_off(element: &WxmlElement, name: &str) -> bool {
     match find_attr(element, name) {
         None => true,
         Some(attr) if attr.is_static => attr

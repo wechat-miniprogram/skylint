@@ -20,6 +20,7 @@ pub mod share_element_key;
 pub(crate) mod structure;
 pub mod template_data_scope;
 pub mod text_hard_break_ellipsis;
+pub mod text_run_block;
 pub mod unsupported_component;
 pub mod webview_nested_scroll;
 pub mod webview_pinned_renderer;
@@ -39,6 +40,7 @@ pub use scroll_view_type::ScrollViewType;
 pub use share_element_key::ShareElementKey;
 pub use template_data_scope::TemplateDataScope;
 pub use text_hard_break_ellipsis::TextHardBreakEllipsis;
+pub use text_run_block::TextRunBlock;
 pub use unsupported_component::UnsupportedComponent;
 pub use webview_nested_scroll::NestedScroll;
 pub use webview_pinned_renderer::PinnedRenderer;
@@ -314,14 +316,52 @@ pub(crate) fn cascade_entries<'a>(
     element: &WxmlElement,
     property: &str,
 ) -> Vec<CascadeEntry<'a>> {
+    cascade_entries_with(project, tree, element, property, |sheet| {
+        sheet_covers(sheet, project, tree.path())
+    })
+}
+
+/// 模板定义体里元素的级联声明。
+///
+/// 模板不是单元（[`Project::scope_of`] 为 `None`），[`sheet_covers`] 对它恒为假，
+/// 直接求值等于「没有任何样式」。[`Project::template_scopes`] 记着实际引用该模板的
+/// 单元，样式只可能从这些单元的作用域进来，所以按它们的并集过滤——这是模板里唯一
+/// 静态可判的样式口径。跨模板边界的外层选择器仍然匹配不到（实例化处的祖先未知），
+/// 依赖祖先的结论要按「可能漏报」处理。
+pub(crate) fn template_cascade_entries<'a>(
+    project: &'a Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    property: &str,
+) -> Vec<CascadeEntry<'a>> {
+    // 模板体可以写在单元自己身上（页面 / 组件里内联 `<template name>`），那份文档
+    // 有正常作用域，按常规口径求值即可；只有独立的模板文件才没作用域。
+    let scopes = project.template_scopes.get(tree.path());
+    let unit_scoped = project.scope_of(tree.path()).is_some();
+    cascade_entries_with(project, tree, element, property, |sheet| {
+        if unit_scoped {
+            return sheet_covers(sheet, project, tree.path());
+        }
+        scopes.is_some_and(|scopes| {
+            sheet
+                .scopes
+                .iter()
+                .any(|scope| *scope == Scope::Global || scopes.contains(scope))
+        })
+    })
+}
+
+fn cascade_entries_with<'a>(
+    project: &'a Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    property: &str,
+    covers: impl Fn(&StyleSheet) -> bool,
+) -> Vec<CascadeEntry<'a>> {
     let mut entries = Vec::new();
     let mut order = 0;
 
-    for sheet in project
-        .styles
-        .iter()
-        .filter(|sheet| sheet_covers(sheet, project, tree.path()))
-    {
+    for sheet in project.styles.iter().filter(|sheet| covers(sheet)) {
         for rule in &sheet.doc.rules {
             // 一条规则可能有多个选择器，各自优先级不同：取命中里最高的那个。
             let matched = rule
@@ -409,6 +449,21 @@ pub(crate) fn resolved_property<'a>(
     property: &str,
 ) -> Option<Resolved<'a>> {
     let winner = cascade_entries(project, tree, element, property).pop()?;
+    Some(Resolved {
+        value: winner.value,
+        sheet: winner.sheet,
+        declaration: winner.declaration,
+    })
+}
+
+/// 元素某个属性的有效取值（模板定义体，样式按引用它的单元求值）。
+pub(crate) fn template_resolved_property<'a>(
+    project: &'a Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    property: &str,
+) -> Option<Resolved<'a>> {
+    let winner = template_cascade_entries(project, tree, element, property).pop()?;
     Some(Resolved {
         value: winner.value,
         sheet: winner.sheet,
