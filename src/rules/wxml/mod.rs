@@ -7,6 +7,7 @@
 //! 样式求值对两种文档统一：单元（页面 / 组件）按自己的作用域求值，独立模板文件与
 //! `<include>` 片段按**引用它的单元**求值（[`cascade_entries`] 是唯一口径）。
 
+pub(crate) mod ancestry;
 pub mod branch;
 #[cfg(test)]
 mod cascade_tests;
@@ -296,6 +297,8 @@ pub(crate) fn walk_skyline(doc: &WxmlDoc, mut visit: impl FnMut(&WxmlElement, &[
 /// 「没有一条命中」去报会在有命中的使用点上变成误报。
 struct TemplateMatch<'a> {
     project: &'a Project,
+    /// 选择器按哪种渲染器语义求值：Skyline 丢弃属性条件，结论会不同。
+    dialect: Dialect,
     subject: FlatNode,
     /// `(逐条祖先路径, 是否截断)`：真有选择器需要时才枚举（枚举一次要回溯整张图）。
     paths: std::cell::OnceCell<Rc<AncestorNodePaths>>,
@@ -303,12 +306,18 @@ struct TemplateMatch<'a> {
 
 impl<'a> TemplateMatch<'a> {
     /// 普通单元文档返回 `None`（走严格匹配）。
-    fn new(project: &'a Project, tree: &Tree<'_>, element: &WxmlElement) -> Option<Self> {
+    fn new(
+        project: &'a Project,
+        tree: &Tree<'_>,
+        element: &WxmlElement,
+        dialect: Dialect,
+    ) -> Option<Self> {
         if !tree.ancestors_unknown(element) {
             return None;
         }
         Some(Self {
             project,
+            dialect,
             subject: node_of(&element.tag, &element.attributes),
             paths: std::cell::OnceCell::new(),
         })
@@ -326,11 +335,13 @@ impl<'a> TemplateMatch<'a> {
     /// 结论只取决于 (元素, 选择器)，而级联按属性逐条来问，所以在图上按元素缓存
     /// （多属性规则否则会把同一条选择器重判十几次）。
     fn verdict(&self, tree: &Tree<'_>, element: &WxmlElement, selector: &str) -> Option<bool> {
-        self.project
-            .graph()
-            .cached_verdict(tree.doc_id(), element, selector, || {
-                self.compute_verdict(tree, element, selector)
-            })
+        self.project.graph().cached_verdict(
+            tree.doc_id(),
+            element,
+            self.dialect == Dialect::WebView,
+            selector,
+            || self.compute_verdict(tree, element, selector),
+        )
     }
 
     fn compute_verdict(
@@ -349,7 +360,7 @@ impl<'a> TemplateMatch<'a> {
             return Some(false);
         }
         // 单文件里能确定命中就不用看实例化路径：静态祖先必然是最真实路径上的一段。
-        if tree.matches(element, selector, Dialect::Skyline) == Tri::Yes {
+        if tree.matches(element, selector, self.dialect) == Tri::Yes {
             return Some(true);
         }
         // 主体可能命中，但选择器落在受限文法之外（属性 / 伪类 / 兄弟组合符）：
@@ -424,6 +435,20 @@ pub(crate) fn cascade_entries<'a>(
     cascade_entries_with(project, tree, element, property).0
 }
 
+/// [`cascade_entries`] 的方言变体：WebView 侧查询必须按 WebView 语义匹配选择器。
+///
+/// 本轮只有祖先样式求值（[`ancestry`]）会用到 WebView 侧；留给下一轮结构规则。
+#[allow(dead_code)]
+pub(crate) fn cascade_entries_with_dialect<'a>(
+    project: &'a Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    property: &str,
+    dialect: Dialect,
+) -> Vec<CascadeEntry<'a>> {
+    cascade_entries_with_dialect_impl(project, tree, element, property, dialect).0
+}
+
 /// 同上，另外告诉你「有没有选择器判不了」。
 ///
 /// 布尔位是「有些声明可能生效，但我们断言不了」：模板定义体 / 片段的祖先链靠实例化
@@ -435,10 +460,20 @@ pub(crate) fn cascade_entries_with<'a>(
     element: &WxmlElement,
     property: &str,
 ) -> (Vec<CascadeEntry<'a>>, bool) {
+    cascade_entries_with_dialect_impl(project, tree, element, property, Dialect::Skyline)
+}
+
+fn cascade_entries_with_dialect_impl<'a>(
+    project: &'a Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    property: &str,
+    dialect: Dialect,
+) -> (Vec<CascadeEntry<'a>>, bool) {
     let mut entries = Vec::new();
     let mut order = 0;
     let mut undecidable = false;
-    let template = TemplateMatch::new(project, tree, element);
+    let template = TemplateMatch::new(project, tree, element, dialect);
 
     for sheet in project
         .covering_sheets(tree.path())
@@ -464,7 +499,7 @@ pub(crate) fn cascade_entries_with<'a>(
                 .filter_map(|selector| {
                     let text = selector.text.trim();
                     let hit = match &template {
-                        None => tree.matches(element, text, Dialect::Skyline) == Tri::Yes,
+                        None => tree.matches(element, text, dialect) == Tri::Yes,
                         Some(template) => match template.verdict(tree, element, text) {
                             Some(hit) => hit,
                             None => {
@@ -553,6 +588,29 @@ pub(crate) fn resolved_property<'a>(
     resolved_property_with(project, tree, element, property).0
 }
 
+/// [`resolved_property`] 的方言变体。
+///
+/// 同一段选择器在 WebView 与 Skyline 下可匹配的范围不同：Skyline 丢弃属性条件，
+/// 「WebView 会不会截断」这类反向问题必须用 [`Dialect::WebView`]。
+pub(crate) fn resolved_property_with_dialect<'a>(
+    project: &'a Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    property: &str,
+    dialect: Dialect,
+) -> (Option<Resolved<'a>>, bool) {
+    let (mut entries, undecidable) =
+        cascade_entries_with_dialect_impl(project, tree, element, property, dialect);
+    (
+        entries.pop().map(|winner| Resolved {
+            value: winner.value,
+            sheet: winner.sheet,
+            declaration: winner.declaration,
+        }),
+        undecidable,
+    )
+}
+
 /// 同上，另外告诉你「有没有选择器判不了」。
 ///
 /// 布尔位与 [`cascade_entries_with`] 同源：结论依赖这个属性时，判不了就不能报
@@ -563,15 +621,7 @@ pub(crate) fn resolved_property_with<'a>(
     element: &WxmlElement,
     property: &str,
 ) -> (Option<Resolved<'a>>, bool) {
-    let (mut entries, undecidable) = cascade_entries_with(project, tree, element, property);
-    (
-        entries.pop().map(|winner| Resolved {
-            value: winner.value,
-            sheet: winner.sheet,
-            declaration: winner.declaration,
-        }),
-        undecidable,
-    )
+    resolved_property_with_dialect(project, tree, element, property, Dialect::Skyline)
 }
 
 /// WebView 侧本来就会截断吗：多行靠 `-webkit-line-clamp`，单行靠
@@ -725,22 +775,6 @@ fn single_line_ellipsis(project: &Project, tree: &Tree<'_>, element: &WxmlElemen
     is("white-space", "nowrap")
         && clips_overflow(project, tree, element)
         && is("text-overflow", "ellipsis")
-}
-
-/// 自身或祖先最近的 `-webkit-line-clamp` 行数（多行截断的行数来源）。
-pub(crate) fn clamp_lines(
-    project: &Project,
-    tree: &Tree<'_>,
-    element: &WxmlElement,
-    ancestors: &[&WxmlElement],
-) -> Option<u32> {
-    std::iter::once(element)
-        .chain(ancestors.iter().rev().copied())
-        .find_map(|candidate| {
-            resolved_property(project, tree, candidate, "-webkit-line-clamp")
-                .and_then(|resolved| resolved.value.trim().parse::<u32>().ok())
-                .filter(|lines| *lines > 0)
-        })
 }
 
 /// 内联 `style` 里某个属性的最后一个取值。

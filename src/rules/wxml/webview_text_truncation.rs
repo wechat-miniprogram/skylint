@@ -18,9 +18,9 @@ use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
 use crate::rules::Target;
-use crate::rules::wxml::{resolved_property, webview_truncates};
+use crate::rules::wxml::resolved_property;
 
-use super::{element_diagnostic, structure::find_attr, visit, walk};
+use super::{ancestry, element_diagnostic, structure::find_attr, visit, walk};
 
 pub const ID: &str = "webview/text-truncation";
 
@@ -40,27 +40,31 @@ impl Rule for TextTruncation {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            let tree = Tree::new(doc);
-            walk(doc, |element, ancestors| {
-                if !element.tag.eq_ignore_ascii_case("text") {
-                    return;
-                }
-                if element.skyline_only() {
-                    return;
-                }
-                // 只看真正起截断作用的写法：`overflow="visible"`、`max-lines="0"`
-                // 在两个渲染器下表现一致，报出来是噪音。
-                let attributes = truncating_attributes(project, &tree, element);
-                if attributes.is_empty() || webview_truncates(project, &tree, element, ancestors) {
-                    return;
-                }
-                let written = attributes
-                    .iter()
-                    .map(|name| format!("`{name}`"))
-                    .collect::<Vec<_>>()
-                    .join(" / ");
-                out.push(
+        ancestry::with_views(project, |views| {
+            visit(project, |doc, out| {
+                let tree = Tree::new(doc);
+                walk(doc, |element, ancestors| {
+                    if !element.tag.eq_ignore_ascii_case("text") {
+                        return;
+                    }
+                    if element.skyline_only() {
+                        return;
+                    }
+                    // 只看真正起截断作用的写法：`overflow="visible"`、`max-lines="0"`
+                    // 在两个渲染器下表现一致，报出来是噪音。
+                    let attributes = truncating_attributes(project, &tree, element);
+                    if attributes.is_empty()
+                        || ancestry::webview_truncates(views, &tree, element, ancestors)
+                            != Some(false)
+                    {
+                        return;
+                    }
+                    let written = attributes
+                        .iter()
+                        .map(|name| format!("`{name}`"))
+                        .collect::<Vec<_>>()
+                        .join(" / ");
+                    out.push(
                     element_diagnostic(
                         ID,
                         doc,
@@ -73,7 +77,8 @@ impl Rule for TextTruncation {
                         "保留属性给 Skyline，另加 WebView 分支：多行用 `display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: N; overflow: hidden`，单行用 `white-space: nowrap; overflow: hidden; text-overflow: ellipsis`",
                     ),
                 );
-            });
+                });
+            })
         })
     }
 }
@@ -246,5 +251,94 @@ mod tests {
             "<view><text wx:if=\"{{renderer === 'skyline'}}\" max-lines=\"2\">a</text></view>",
         ));
         assert!(diagnostics.is_empty());
+    }
+
+    /// 三层模板、每层两个使用点：实例化路径 8 条，祖先节点只有十几个。
+    ///
+    /// 逐条路径枚举会把同一个祖先在不同路径上重复访问，预算按路径的工作量计就会
+    /// 在更深、使用点更多的真实工程里耗尽，把「都确定不截断」误判成判不了而漏报。
+    /// 闭包按节点去重，代价与路径数无关。
+    #[test]
+    fn deep_template_chain_is_reported_without_truncation() {
+        let fixture = Fixture::new("webview/deep-template-chain");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<import src="/tpls/l1"/><view><view class="a"><template is="l1"/></view><view class="b"><template is="l1"/></view></view>"#,
+            )
+            .write("pages/index/index.js", "Page({});")
+            .write(
+                "tpls/l1.wxml",
+                r#"<import src="./l2"/><template name="l1"><view class="l1"><view class="a"><template is="l2"/></view><view class="b"><template is="l2"/></view></view></template>"#,
+            )
+            .write(
+                "tpls/l2.wxml",
+                r#"<import src="./leaf"/><template name="l2"><view class="l2"><view class="a"><template is="leaf"/></view><view class="b"><template is="leaf"/></view></view></template>"#,
+            )
+            .write(
+                "tpls/leaf.wxml",
+                r#"<template name="leaf"><text class="target" max-lines="2">x</text></template>"#,
+            );
+        let project = fixture.project();
+        let doc = crate::rules::wxml::load_doc(&project, "tpls/leaf.wxml").expect("doc");
+        let mut target = None;
+        crate::rules::wxml::walk(&doc, |element, _| {
+            if element
+                .attributes
+                .iter()
+                .any(|attr| attr.name == "class" && attr.value.as_deref() == Some("target"))
+            {
+                target = Some(element);
+            }
+        });
+        let target = target.expect("target element");
+        let graph = crate::wxml_graph::WxmlGraph::new(&project);
+        let (paths, paths_truncated) = &*graph.ancestor_ids("tpls/leaf.wxml", target);
+        assert_eq!(paths.len(), 8);
+        assert!(!paths_truncated);
+        let (closure, closure_truncated) = &*graph.ancestor_closure("tpls/leaf.wxml", target);
+        assert!(!closure_truncated, "{closure:?}");
+        assert!(
+            closure.len() <= 20,
+            "闭包应只有十几个节点，实际 {}",
+            closure.len()
+        );
+
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert!(diagnostics[0].message.contains("max-lines"));
+    }
+
+    /// 模板定义体的真实祖先在实例化处：`<view class="clamp">` 截断时不再误报。
+    #[test]
+    fn template_body_sees_instantiation_ancestor_clamp() {
+        let fixture = Fixture::new("webview/template-ancestor");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}""#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<import src="/tpls/t"/><view class="clamp"><template is="t"/></view>"#,
+            )
+            .write(
+                "pages/index/index.wxss",
+                ".clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }",
+            )
+            .write(
+                "tpls/t.wxml",
+                r#"<template name="t"><text max-lines="2">a</text></template>"#,
+            );
+        let diagnostics = check(&fixture);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
     }
 }

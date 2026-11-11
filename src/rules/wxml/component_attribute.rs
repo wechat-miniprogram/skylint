@@ -26,7 +26,7 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
 use super::structure::find_attr;
-use super::{span_diagnostic, visit, walk_skyline};
+use super::{ancestry, span_diagnostic, visit, walk_skyline};
 
 #[derive(Debug, Clone, Copy)]
 enum Constraint {
@@ -468,84 +468,93 @@ impl Rule for ComponentAttribute {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let table = table();
-        visit(project, |doc, out| {
-            let tree = Tree::new(doc);
-            walk_skyline(doc, |element, ancestors| {
-                for attr in &element.attributes {
-                    let name = attr.name.to_ascii_lowercase();
-                    let Some(entries) = table.lookup(&element.tag, &name) else {
-                        continue;
-                    };
-                    let Some((entry, value)) = judge_attribute(entries, attr) else {
-                        continue;
-                    };
-                    // `<image mode>` 的取值既不是 Skyline 的合法值、也不是 WebView 的裁剪模式时
-                    // （`mode="aspectFit|aspectFill|widthFix"` 这类管道串），两个渲染器都回退成
-                    // 拉伸填满：两端一致，不是迁移差异。
-                    if element.tag == "image"
-                        && name == "mode"
-                        && matches!(entry.constraint, Constraint::Enum(_))
-                    {
-                        continue;
+        ancestry::with_views(project, |views| {
+            visit(project, |doc, out| {
+                let tree = Tree::new(doc);
+                walk_skyline(doc, |element, ancestors| {
+                    for attr in &element.attributes {
+                        let name = attr.name.to_ascii_lowercase();
+                        let Some(entries) = table.lookup(&element.tag, &name) else {
+                            continue;
+                        };
+                        let Some((entry, value)) = judge_attribute(entries, attr) else {
+                            continue;
+                        };
+                        // `<image mode>` 的取值既不是 Skyline 的合法值、也不是 WebView 的裁剪模式时
+                        // （`mode="aspectFit|aspectFill|widthFix"` 这类管道串），两个渲染器都回退成
+                        // 拉伸填满：两端一致，不是迁移差异。
+                        if element.tag == "image"
+                            && name == "mode"
+                            && matches!(entry.constraint, Constraint::Enum(_))
+                        {
+                            continue;
+                        }
+                        out.push(
+                            span_diagnostic(
+                                Self::ID,
+                                doc,
+                                attr.start,
+                                attr.end,
+                                doc.path(),
+                                Severity::Warning,
+                                message(&element.tag, &name, value, &entry.constraint),
+                            )
+                            .help(help(entry)),
+                        );
                     }
-                    out.push(
-                        span_diagnostic(
-                            Self::ID,
-                            doc,
-                            attr.start,
-                            attr.end,
-                            doc.path(),
-                            Severity::Warning,
-                            message(&element.tag, &name, value, &entry.constraint),
-                        )
-                        .help(help(entry)),
-                    );
-                }
-                let Some(rules) = table.requires.get(element.tag.as_str()) else {
-                    return;
-                };
-                for rule in rules {
-                    let Some(attr) = find_attr(element, rule.trigger.attr()) else {
-                        continue;
+                    let Some(rules) = table.requires.get(element.tag.as_str()) else {
+                        return;
                     };
-                    let Some(value) = trigger_value(attr, &rule.trigger) else {
-                        continue;
-                    };
-                    let Verdict::Violated(current) = judge(element, &rule.requirement) else {
-                        continue;
-                    };
-                    // `<text overflow="ellipsis">` 缺 `max-lines`：WebView 的行内 `<text>`
-                    // 没 nowrap / clamp 时本来就换行不省略，两端一致。
-                    let needs_baseline = rule.trigger.attr() == "overflow"
-                        && matches!(rule.requirement, Requirement::Present("max-lines"));
-                    if needs_baseline
-                        && !super::webview_truncates(project, &tree, element, ancestors)
-                    {
-                        continue;
+                    for rule in rules {
+                        let Some(attr) = find_attr(element, rule.trigger.attr()) else {
+                            continue;
+                        };
+                        let Some(value) = trigger_value(attr, &rule.trigger) else {
+                            continue;
+                        };
+                        let Verdict::Violated(current) = judge(element, &rule.requirement) else {
+                            continue;
+                        };
+                        // `<text overflow="ellipsis">` 缺 `max-lines`：WebView 的行内 `<text>`
+                        // 没 nowrap / clamp 时本来就换行不省略，两端一致。
+                        let needs_baseline = rule.trigger.attr() == "overflow"
+                            && matches!(rule.requirement, Requirement::Present("max-lines"));
+                        if needs_baseline
+                            && ancestry::webview_truncates(views, &tree, element, ancestors)
+                                != Some(true)
+                        {
+                            continue;
+                        }
+                        // WebView 靠祖先的 `-webkit-line-clamp` 截几行，Skyline 就得补同样行数的
+                        // `max-lines`；行数写进消息，用户能直接照做。
+                        let lines = needs_baseline
+                            .then(|| ancestry::clamp_lines(views, &tree, element, ancestors))
+                            .flatten();
+                        out.push(
+                            span_diagnostic(
+                                Self::ID,
+                                doc,
+                                attr.start,
+                                attr.end,
+                                doc.path(),
+                                Severity::Warning,
+                                requires_message(
+                                    &element.tag,
+                                    rule,
+                                    &value,
+                                    current.as_deref(),
+                                    lines,
+                                ),
+                            )
+                            .help(
+                                rule.help
+                                    .unwrap_or("调整这两个属性的取值，避免组合被忽略")
+                                    .to_string(),
+                            ),
+                        );
                     }
-                    // WebView 靠祖先的 `-webkit-line-clamp` 截几行，Skyline 就得补同样行数的
-                    // `max-lines`；行数写进消息，用户能直接照做。
-                    let lines = needs_baseline
-                        .then(|| super::clamp_lines(project, &tree, element, ancestors))
-                        .flatten();
-                    out.push(
-                        span_diagnostic(
-                            Self::ID,
-                            doc,
-                            attr.start,
-                            attr.end,
-                            doc.path(),
-                            Severity::Warning,
-                            requires_message(&element.tag, rule, &value, current.as_deref(), lines),
-                        )
-                        .help(
-                            rule.help
-                                .unwrap_or("调整这两个属性的取值，避免组合被忽略")
-                                .to_string(),
-                        ),
-                    );
-                }
-            });
+                });
+            })
         })
     }
 }
@@ -887,6 +896,38 @@ mod tests {
             &ComponentAttribute,
         );
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 模板定义体的祖先在实例化处：`<view class="clamp">` 的 clamp 行数要算进来。
+    #[test]
+    fn template_body_uses_instantiation_ancestor_clamp_lines() {
+        let fixture = crate::rules::testutil::Fixture::new("attr-template-ancestor");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}""#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<import src="/tpls/t"/><view class="clamp"><template is="t"/></view>"#,
+            )
+            .write(
+                "pages/index/index.wxss",
+                ".clamp { -webkit-line-clamp: 2; }",
+            )
+            .write(
+                "tpls/t.wxml",
+                r#"<template name="t"><text overflow="ellipsis">a</text></template>"#,
+            );
+        let diagnostics = check_rule(&fixture, &ComponentAttribute);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0].message.contains("max-lines=\"2\""),
+            "{}",
+            diagnostics[0].message
+        );
     }
 
     #[test]
