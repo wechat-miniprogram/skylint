@@ -57,7 +57,7 @@ use glass_easel_template_compiler::parse::Position;
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::matcher::{Dialect, FlatNode, Tree, Tri, node_of};
-use crate::project::{Project, Scope, StyleSheet};
+use crate::project::Project;
 use crate::wxml_graph::AncestorNodePaths;
 
 /// 页面与组件的 WXML + 被 import / include 的模板，按路径去重。
@@ -273,7 +273,23 @@ impl<'a> TemplateMatch<'a> {
 
     /// 这条选择器在这个元素上的判定：`Some(true)` 命中、`Some(false)` 不命中、
     /// `None` 判不了。
+    ///
+    /// 结论只取决于 (元素, 选择器)，而级联按属性逐条来问，所以在图上按元素缓存
+    /// （多属性规则否则会把同一条选择器重判十几次）。
     fn verdict(&self, tree: &Tree<'_>, element: &WxmlElement, selector: &str) -> Option<bool> {
+        self.project
+            .graph()
+            .cached_verdict(tree.doc_id(), element, selector, || {
+                self.compute_verdict(tree, element, selector)
+            })
+    }
+
+    fn compute_verdict(
+        &self,
+        tree: &Tree<'_>,
+        element: &WxmlElement,
+        selector: &str,
+    ) -> Option<bool> {
         // 先做主体过滤：主体都命中不了就不用付匹配 / 路径枚举的代价。
         let flat = tree.flat(selector);
         let subject_could_match = match flat.as_ref() {
@@ -376,9 +392,9 @@ pub(crate) fn cascade_entries_with<'a>(
     let template = TemplateMatch::new(project, tree, element);
 
     for sheet in project
-        .styles
+        .covering_sheets(tree.path())
         .iter()
-        .filter(|sheet| document_covers(sheet, project, tree.path()))
+        .map(|&index| &project.styles[index])
     {
         // 只走声明了这个属性的规则：级联是按属性查的，其余规则连选择器都不用匹配。
         for rule in sheet.doc.rules_declaring(property) {
@@ -680,37 +696,6 @@ fn split_important(value: &str) -> (String, bool) {
         Some(index) => (value[..index].trim().to_string(), true),
         None => (value.trim().to_string(), false),
     }
-}
-
-/// 这份样式表是否作用于 `path` 这份 WXML 所属的单元。
-pub(crate) fn sheet_covers(sheet: &StyleSheet, project: &Project, path: &str) -> bool {
-    sheet.scopes.iter().any(|scope| match scope {
-        Scope::Global => true,
-        _ => project.scope_wxml(scope) == Some(path),
-    })
-}
-
-/// 这份样式表是否作用于 `path` 这份文档（级联作用域的唯一口径）。
-///
-/// 单元（页面 / 组件，含写在其内的内联 `<template>`）走 [`sheet_covers`]。独立模板
-/// 文件与 `<include>` 片段不是单元（[`Project::scope_of`] 为 `None`），`sheet_covers`
-/// 对它们恒为假，改用 [`Project::template_scopes`]（实际 `<import>` / `<include>` 它的
-/// 单元）的并集过滤：样式只可能从这些单元的作用域进来。这个路径不在 `template_scopes`
-/// 里时返回 `false`——判不了就当没写样式，不对无名文档做推断。
-///
-/// 跨模板边界的外层选择器仍然匹配不到（实例化处的祖先未知）：`.a .b` 里 `.a` 写在
-/// 模板外面时，`.b` 的声明会整条丢失。所以模板里「查不到 `display`」不等于渲染时没有
-/// 这个样式，只有主体自己就能命中的选择器（`.b` / `tag`）是可靠的。
-fn document_covers(sheet: &StyleSheet, project: &Project, path: &str) -> bool {
-    if project.scope_of(path).is_some() {
-        return sheet_covers(sheet, project, path);
-    }
-    project.template_scopes.get(path).is_some_and(|scopes| {
-        sheet
-            .scopes
-            .iter()
-            .any(|scope| *scope == Scope::Global || scopes.contains(scope))
-    })
 }
 
 /// `display: flex` / `inline-flex`：文本与元素在 WebView 与 Skyline 下都是 flex item。

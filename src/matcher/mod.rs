@@ -695,6 +695,14 @@ impl<'a> Tree<'a> {
         self.doc.path()
     }
 
+    /// 这份解析结果的稳定标识（`WxmlDoc` 地址）。
+    ///
+    /// 同一路径可能有两份文档（折叠 / 保留所有分支），缓存必须按**实例**区分。
+    /// 文档由 [`crate::project::Project`] 的缓存持有，整个 `Project` 生命周期内稳定。
+    pub(crate) fn doc_id(&self) -> usize {
+        self.doc as *const WxmlDoc as usize
+    }
+
     fn parse(&self, selector: &str) -> Option<SelectorList<SelImpl>> {
         if let Some(hit) = self.parsed.borrow().get(selector) {
             return hit.clone();
