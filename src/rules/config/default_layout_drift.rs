@@ -72,6 +72,7 @@ impl Rule for DefaultLayoutDrift {
                 "app.json",
                 line,
                 column,
+                "/rendererOptions/skyline/defaultDisplayBlock",
                 "app 级未开启 defaultDisplayBlock：Skyline 下 display 默认 flex、flex-direction 默认 column、align-items 默认 stretch，与 WebView 的 block 布局不同，子元素都按 flex item 计算（垂直外边距不再折叠，宽高与对齐语义都变）；此外 position 默认 relative（WebView 是 static），没有开关能对齐",
                 "在 app.json 的 rendererOptions.skyline 里开启 defaultDisplayBlock: true 可让这三项对齐 WebView",
             ));
@@ -81,6 +82,7 @@ impl Rule for DefaultLayoutDrift {
                 "app.json",
                 line,
                 column,
+                "/rendererOptions/skyline/defaultContentBox",
                 "app 级未开启 defaultContentBox：Skyline 下 box-sizing 默认 border-box（WebView 默认 content-box），显式声明 width 的元素实际内容盒会比 WebView 中小（少掉 padding 与 border）",
                 "开启 rendererOptions.skyline.defaultContentBox: true 对齐 WebView，或显式写 box-sizing: content-box",
             ));
@@ -93,6 +95,7 @@ fn info(
     path: &str,
     line: u32,
     column: u32,
+    pointer: &str,
     message: impl Into<String>,
     help: impl Into<String>,
 ) -> Diagnostic {
@@ -105,6 +108,8 @@ fn info(
         column,
     )
     .help(help)
+    // 开关缺失，没有可哈希的值；指针本身已能区分两条诊断。
+    .json(crate::diag::JsonAnchor::new(pointer, None))
 }
 
 #[cfg(test)]

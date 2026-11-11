@@ -256,14 +256,29 @@ at-rule："{rule}|{path}|@{at-rule 名} {prelude}|#{occurrence}"
 - 因此改样式上方代码、插空行、整块挪动都不会改变 id；只有选择器 / 属性本身变了
   才算新诊断。
 
-拿不到选择器 / 属性时（`.js` / `.json` 诊断、解析失败的样式、未建模的 at-rule，
-如带前缀 `@keyframes`）退回：
+**JSON 配置诊断**（结构稳定，按配置位置定位）：
+
+```
+id = "{rule}|{path}|{jsonPointer}|{valueFingerprint}"
+```
+
+- `jsonPointer` 是 RFC 6901 指针（`/rendererOptions/skyline/defaultContentBox`），
+  由产生诊断的配置规则随诊断携带；`~` / `/` 按标准转义。
+- `valueFingerprint` 是触发诊断的值（紧凑 JSON 文本）的 FNV-1a 64 指纹；
+  键缺失时用固定哨兵（例如 `defaultContentBox` 未开启）。
+- 因此插入/删除相邻键、缩进变化、单行与多行互转都不会改变 id；
+  真正加/删一个配置项才会变成新的 / 修复的诊断。
+- 两条诊断指向同一个指针时，用指针本身区分（例如
+  `defaultDisplayBlock` 与 `defaultContentBox` 各有一个指针），不靠 message 推断。
+
+拿不到结构信息时（`.js` 诊断、解析失败的 JSON、未建模的样式位置，如带前缀
+`@keyframes`）退回：
 
 ```
 id = "{rule}|{path}|{line}:{column}"
 ```
 
-**这类 id 仍会随行号漂移**，改 `.js` / `.json` 或那类样式后建议重建基线。
+**这类 id 仍会随行号漂移**，改 `.js` 或解析失败的 JSON 后建议重建基线。
 
 **祖先链不参与**：`Facts::ancestors` 对组件是**多个使用点的并集**（不是单条链），
 放进 id 会让「某个页面多引用了一次这个组件」把诊断变成新的。
@@ -406,7 +421,8 @@ skylint migration verify <PATH> --baseline <FILE> [--unit <ID>] [--json]
 `--out` 默认是 `<PATH>/.skylint/baseline.json`（落在工程根下，不落在当前目录）。
 
 `baseline` 存的是**身份**（`id` / `unit` / `rule` / `severity` / `path` / `span`），
-以及 id 格式标记 `idFormat`（新基线为 `"structural"`；旧基线没有这个字段）。
+以及 id 格式标记 `idFormat`（新基线为 `"structural-v2"`；v1 为 `"structural"`，
+旧基线没有这个字段）。
 另外存一份 `message` / `help` 只用于 `verify` 的 `fixed` 条目展示——身份判定
 仍只看 `id`，措辞变化不影响结论。
 
@@ -429,8 +445,10 @@ skylint migration verify <PATH> --baseline <FILE> [--unit <ID>] [--json]
 
 非 WXML 诊断（`.wxss`）用 §4.2 的结构身份（选择器 + 属性），在文件上方插空行、
 整块挪动同样不会误报；`tests/migrate.rs::wxss_line_shift_keeps_identity` 守着这条。
-只有拿不到结构的 `.js` / `.json` / 未建模 at-rule 才退回 `rule|path|line:column`，
-那类仍会随行号漂移。
+JSON 配置诊断用 `jsonPointer` + 值指纹，重排 / 缩进 / 单行多行互转也不会误报；
+`tests/migrate.rs::json_reformat_keeps_identity` 守着这条。
+只有拿不到结构的 `.js` 诊断、解析失败的 JSON、未建模 at-rule 才退回
+`rule|path|line:column`，那类仍会随行号漂移。
 
 ### 9.3 版本不一致
 
@@ -445,7 +463,7 @@ skylint migration verify <PATH> --baseline <FILE> [--unit <ID>] [--json]
 - 元素被删掉时，它的旧诊断算 `fixed`（而不是「未知」）——这与「修好了」在数据上
   不可区分，需要人看一眼 diff。
 
-### 9.5 旧基线（`idFormat: "legacy"`）
+### 9.5 旧基线（`idFormat: "legacy"` / `"structural"`）
 
 旧版 `baseline.json` 没有 `idFormat` 字段，非 WXML id 是
 `rule|path|line:column`。`verify` 不会静默：`--json` 输出 `baselineFormat: "legacy"`，
@@ -453,8 +471,12 @@ skylint migration verify <PATH> --baseline <FILE> [--unit <ID>] [--json]
 插空行 / 整块挪动不会误报；代价是「删一条 + 加一条」这种同数量变化区分不出来，
 `fixed` 的逐条定位也只是近似。
 
-**升级到本版本后必须重建基线**（`skylint migration baseline <PATH>`）：新基线会
-写入 `idFormat: "structural"`，才能获得逐条的稳定身份。
+v1 基线（`"structural"`）的 WXML / 样式已是结构 id，但 `.js` / `.json` 仍是行列。
+`verify` 只对这部分启用同样的顺序对齐，并把 `baselineFormat` 报成
+`"structural"`；`new` / `fixed` 的统计不会因此退化。
+
+**升级到本版本后建议重建基线**（`skylint migration baseline <PATH>`）：新基线会
+写入 `idFormat: "structural-v2"`，JSON 配置诊断也获得逐条的稳定身份。
 
 ## 10. 台账与排队（M3）
 

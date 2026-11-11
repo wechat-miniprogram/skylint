@@ -15,6 +15,7 @@
 
 use serde_json::Value;
 
+use crate::diag::JsonAnchor;
 use crate::input::json::JsonPositions;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, Target};
@@ -30,18 +31,37 @@ impl ComponentFramework {
 ///
 /// 值随来源一起携带：页面级只可能是字符串（非字符串会继续往下一层解析）。
 enum Source<'a> {
-    Page(&'a str),
-    SubPackage { root: &'a str, value: &'a str },
+    Page {
+        value: &'a str,
+        pointer: String,
+    },
+    SubPackage {
+        root: &'a str,
+        value: &'a str,
+        pointer: String,
+    },
     App(Option<&'a str>),
 }
 
 impl Source<'_> {
     fn value(&self) -> Option<&str> {
         match self {
-            Self::Page(value) => Some(value),
+            Self::Page { value, .. } => Some(value),
             Self::SubPackage { value, .. } => Some(value),
             Self::App(value) => *value,
         }
+    }
+
+    /// 诊断对应的配置位置（RFC 6901 指针）。
+    fn pointer(&self) -> &str {
+        match self {
+            Self::Page { pointer, .. } | Self::SubPackage { pointer, .. } => pointer,
+            Self::App(_) => "/componentFramework",
+        }
+    }
+
+    fn anchor(&self) -> JsonAnchor {
+        JsonAnchor::new(self.pointer(), self.value().map(str::to_string))
     }
 }
 
@@ -71,7 +91,7 @@ impl Rule for ComponentFramework {
 
             let page_path = format!("{}.json", page.route);
             let (path, at) = match &source {
-                Source::Page(_) => (
+                Source::Page { .. } => (
                     page_path.as_str(),
                     JsonPositions::new(
                         project
@@ -88,10 +108,10 @@ impl Rule for ComponentFramework {
             };
 
             let detail = match &source {
-                Source::Page(value) => {
+                Source::Page { value, .. } => {
                     format!("页面 json 写了 `componentFramework: \"{value}\"`")
                 }
-                Source::SubPackage { root, value } => {
+                Source::SubPackage { root, value, .. } => {
                     format!("分包 `{root}` 声明了 `componentFramework: \"{value}\"`")
                 }
                 Source::App(Some(value)) => {
@@ -106,6 +126,7 @@ impl Rule for ComponentFramework {
                 Self::ID,
                 path,
                 at,
+                source.anchor(),
                 format!(
                     "页面 `{page_path}` 使用 Skyline 渲染，但{detail}，开发者工具会拒绝编译（`minidev build` 不校验这条）"
                 ),
@@ -124,10 +145,17 @@ fn resolve<'a>(project: &'a Project, route: &str) -> Source<'a> {
         .and_then(|json| json.get("componentFramework"))
         .and_then(Value::as_str)
     {
-        return Source::Page(value);
+        return Source::Page {
+            value,
+            pointer: "/componentFramework".to_string(),
+        };
     }
-    if let Some((root, value)) = sub_package_declaration(project, route) {
-        return Source::SubPackage { root, value };
+    if let Some((root, value, pointer)) = sub_package_declaration(project, route) {
+        return Source::SubPackage {
+            root,
+            value,
+            pointer,
+        };
     }
     Source::App(
         project
@@ -141,21 +169,33 @@ fn resolve<'a>(project: &'a Project, route: &str) -> Source<'a> {
 ///
 /// minidev 对 `root` 只去前导 `/`（不处理后缀 `/`），`starts_with` 也不是路径边界
 /// 匹配——这里照抄，避免和构建行为分叉。
-fn sub_package_declaration<'a>(project: &'a Project, route: &str) -> Option<(&'a str, &'a str)> {
-    let mut declared: Vec<(&str, &str)> = ["subPackages", "subpackages"]
-        .iter()
-        .filter_map(|key| project.app_json.get(*key).and_then(Value::as_array))
-        .flatten()
-        .filter_map(|sub| {
-            let root = sub.get("root")?.as_str()?.trim_start_matches('/');
-            let value = sub.get("componentFramework")?.as_str()?;
-            Some((root, value))
-        })
-        .collect();
-    declared.sort_unstable_by_key(|(root, _)| *root);
+fn sub_package_declaration<'a>(
+    project: &'a Project,
+    route: &str,
+) -> Option<(&'a str, &'a str, String)> {
+    let mut declared: Vec<(&str, &str, String)> = Vec::new();
+    for key in ["subPackages", "subpackages"] {
+        let Some(subs) = project.app_json.get(key).and_then(Value::as_array) else {
+            continue;
+        };
+        for (index, sub) in subs.iter().enumerate() {
+            let Some(root) = sub.get("root").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(value) = sub.get("componentFramework").and_then(Value::as_str) else {
+                continue;
+            };
+            declared.push((
+                root.trim_start_matches('/'),
+                value,
+                format!("/{key}/{index}/componentFramework"),
+            ));
+        }
+    }
+    declared.sort_unstable_by_key(|(root, _, _)| *root);
     declared
         .into_iter()
-        .find(|(root, _)| !root.is_empty() && route.starts_with(root))
+        .find(|(root, _, _)| !root.is_empty() && route.starts_with(root))
 }
 
 #[cfg(test)]

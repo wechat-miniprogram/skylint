@@ -16,6 +16,8 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, Target};
 use crate::{Diagnostic, Severity};
 
+use super::anchor;
+
 pub struct LazyCodeLoading;
 
 impl Rule for LazyCodeLoading {
@@ -71,6 +73,10 @@ impl Rule for LazyCodeLoading {
                 Self::ID,
                 &project.app_json_path,
                 JsonPositions::new(&project.app_json_source).key("lazyCodeLoading"),
+                anchor(
+                    &["lazyCodeLoading"],
+                    project.app_json.get("lazyCodeLoading"),
+                ),
                 format!(
                     "{}显式使用 Skyline 渲染，但 app.json 的 lazyCodeLoading 不是 \"requiredComponents\"，开发者工具会拒绝编译（`minidev build` 不校验这条）",
                     page_list(&pages)
@@ -93,6 +99,13 @@ impl Rule for LazyCodeLoading {
                         .map_or("", String::as_str),
                 )
                 .key("renderer"),
+                anchor(
+                    &["renderer"],
+                    project
+                        .page_json
+                        .get(route)
+                        .and_then(|json| json.get("renderer")),
+                ),
                 format!(
                     "页面 `{route}.json` 显式声明 `renderer: \"skyline\"`，但 app.json 未设置 `lazyCodeLoading: \"requiredComponents\"`，开发者工具会拒绝编译（`minidev build` 不校验这条）"
                 ),

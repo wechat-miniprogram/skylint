@@ -18,7 +18,7 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 use crate::{Diagnostic, Severity};
 
-use super::warn;
+use super::{anchor, warn};
 
 pub struct ConfigIgnored;
 
@@ -60,11 +60,25 @@ fn check_app_scroll(project: &Project, out: &mut Vec<Diagnostic>) {
         return;
     }
     let path = project.app_json_path.as_str();
+    let segments: &[&str] = if in_window {
+        &["window", "disableScroll"]
+    } else {
+        &["disableScroll"]
+    };
+    let value = if in_window {
+        project
+            .app_json
+            .get("window")
+            .and_then(|window| window.get("disableScroll"))
+    } else {
+        project.app_json.get("disableScroll")
+    };
     warn(
         out,
         ConfigIgnored::ID,
         path,
         positions.key("disableScroll"),
+        anchor(segments, value),
         format!("{path} 里的 `disableScroll` 不生效，它只能写在页面 json"),
         "Skyline 页面默认不滚动（`check_renderer` 会把 skyline 页的 `disableScroll` 改成 true）；需要关滚动的页面，把 `disableScroll: true` 写在该页的 json 里",
     );
@@ -86,6 +100,7 @@ fn check_component_scroll(project: &Project, out: &mut Vec<Diagnostic>) {
             ConfigIgnored::ID,
             &format!("{path}.json"),
             JsonPositions::new(source).key("disableScroll"),
+            anchor(&["disableScroll"], json.get("disableScroll")),
             "`disableScroll` 是页面级配置，写在组件 json 里没有读者".to_string(),
             "把 disableScroll 写到需要关滚动的页面 json 里",
         );
@@ -122,6 +137,7 @@ fn check_project_setting(project: &Project, out: &mut Vec<Diagnostic>) {
             ConfigIgnored::ID,
             path,
             JsonPositions::new(source).key("skylineRenderEnable"),
+            anchor(&["setting", "skylineRenderEnable"], Some(value)),
             format!(
                 "`setting.skylineRenderEnable` 应为布尔值，当前是{}；开发者工具按真值判断，字符串 \"false\" 反而会开启",
                 type_name(value)

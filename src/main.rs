@@ -479,7 +479,7 @@ fn run_verify(args: VerifyArgs) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let baseline: migrate::Baseline = match migrate::from_json(&text) {
+    let baseline: migrate::Baseline = match migrate::Baseline::load(&text) {
         Ok(baseline) => baseline,
         Err(err) => {
             eprintln!("skylint: 基线格式不对 {}: {err}", args.baseline.display());
@@ -988,10 +988,14 @@ fn print_verify(report: &migrate::VerifyReport) {
     if report.version_mismatch {
         eprintln!("⚠ 基线与当前 skylint 版本不同：规则集可能变了，新增/修复的数量要人看一眼");
     }
-    if report.baseline_format == "legacy" {
-        eprintln!(
+    match report.baseline_format {
+        "legacy" => eprintln!(
             "⚠ 基线是旧格式（id 含行列），只能按 rule + 文件 + 顺序宽松匹配；请重建基线以获得结构稳定 id"
-        );
+        ),
+        "structural" => eprintln!(
+            "⚠ 基线是 v1 结构格式（JSON/JS id 仍含行列），这部分只能按 rule + 文件 + 顺序宽松匹配；请重建基线以获得 JSON 结构稳定 id"
+        ),
+        _ => {}
     }
     println!(
         "新增 {} 条（error+warning），新增 info {} 条，修复 {} 条，调档 {} 条",

@@ -1214,7 +1214,8 @@ fn identify_one(
     let id = match &anchor {
         Some(anchor) => anchor_id(&diagnostic.rule, &diagnostic.path, anchor),
         // 样式诊断按「选择器 + 声明属性」定身份；改上方代码不再让后面全部漂移。
-        None => style_identity(project, diagnostic)
+        None => json_identity(diagnostic)
+            .or_else(|| style_identity(project, diagnostic))
             .unwrap_or_else(|| identify_one_fallback(diagnostic).0),
     };
     (id, anchor)
@@ -1318,12 +1319,63 @@ fn style_identity(project: &Project, diagnostic: &Diagnostic) -> Option<String> 
     ))
 }
 
+/// JSON 诊断的结构化身份：`rule|path|jsonPointer|valueFingerprint`。
+///
+/// 指针与值都由产生诊断的规则随诊断携带（[`crate::diag::JsonAnchor`]）；拿不到时
+/// （解析失败的 JSON、`.js` 诊断）退回 `rule|path|line:column`。
+fn json_identity(diagnostic: &Diagnostic) -> Option<String> {
+    let anchor = diagnostic.json.as_ref()?;
+    let fingerprint = match &anchor.value {
+        Some(value) => stable_hash(&format!("v:{value}")),
+        None => stable_hash("absent"),
+    };
+    Some(format!(
+        "{}|{}|{}|{}",
+        diagnostic.rule, diagnostic.path, anchor.pointer, fingerprint
+    ))
+}
+
+/// FNV-1a 64，输出 16 位十六进制。
+///
+/// 指定了算法的哈希，跨进程、跨 Rust 版本都不变；`DefaultHasher` 的算法未承诺
+/// 稳定（且 `RandomState` 每次进程随机），不能用来算基线身份。
+fn stable_hash(text: &str) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
 /// 非 WXML 的新格式 id 以 `|#<occurrence>` 结尾；旧格式是 `rule|path|line:column`。
 fn baseline_format(baseline: &Baseline) -> &'static str {
     match baseline.id_format {
-        IdFormat::Structural => "current",
+        IdFormat::StructuralV2 => "structural-v2",
+        IdFormat::Structural => "structural",
         IdFormat::Legacy => "legacy",
     }
+}
+
+/// id 是否是旧的「行列」形态（`...|12:3`）。
+fn is_positional_id(id: &str) -> bool {
+    let Some((_, tail)) = id.rsplit_once('|') else {
+        return false;
+    };
+    let Some((line, column)) = tail.split_once(':') else {
+        return false;
+    };
+    !line.is_empty()
+        && line.chars().all(|c| c.is_ascii_digit())
+        && !column.is_empty()
+        && column.chars().all(|c| c.is_ascii_digit())
+}
+
+/// v1 基线里 `.js` / `.json` 的 id 仍是行列，v2 才结构化。
+fn is_script_or_json(path: &str) -> bool {
+    [".js", ".ts", ".mjs", ".cjs", ".json"]
+        .iter()
+        .any(|extension| path.ends_with(extension))
 }
 
 fn identify_one_fallback(diagnostic: &Diagnostic) -> (String, Option<Anchor>) {
@@ -1350,13 +1402,26 @@ pub struct Baseline {
     pub findings: Vec<BaselineFinding>,
 }
 
-/// 基线里的 id 格式。`Legacy` 是 `rule|path|line:column`（非 WXML）。
+/// 基线里的 id 格式。
+///
+/// - `Legacy`：没有 `idFormat` 字段的旧基线，非 WXML id 是 `rule|path|line:column`；
+/// - `Structural`：v1，WXML / 样式结构化，JSON / JS 仍退回行列；
+/// - `StructuralV2`：v2，JSON 也用 `jsonPointer|valueFingerprint` 定身份。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum IdFormat {
     #[default]
     Legacy,
     Structural,
+    StructuralV2,
+}
+
+impl Baseline {
+    /// 读取基线文件内容。旧基线（没有 `idFormat` 字段，或 v1 的 `structural`）
+    /// 照样反序列化，见 [`IdFormat`]。
+    pub fn load(text: &str) -> Result<Self, String> {
+        from_json(text)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1411,7 +1476,7 @@ pub fn baseline(identified: &[Identified]) -> Baseline {
     Baseline {
         schema_version: SCHEMA_VERSION,
         generator: Generator::default(),
-        id_format: IdFormat::Structural,
+        id_format: IdFormat::StructuralV2,
         summary,
         findings,
     }
@@ -1428,7 +1493,8 @@ pub struct VerifyReport {
     pub unit: Option<String>,
     /// 基线与当前 skylint 版本不同：规则集可能变了，结果要人看一眼。
     pub version_mismatch: bool,
-    /// `current`（结构稳定 id）或 `legacy`（旧的行列 id；按 rule+文件+顺序宽松匹配）。
+    /// `structural-v2`（JSON 也结构稳定）、`structural`（v1：JSON/JS 仍含行列）
+    /// 或 `legacy`（旧的行列 id；按 rule+文件+顺序宽松匹配）。
     pub baseline_format: &'static str,
     /// **新增的 error + warning**（门禁判据：`new == 0`）。
     pub new: usize,
@@ -1464,7 +1530,7 @@ pub fn verify(
     baseline_file: Option<String>,
 ) -> VerifyReport {
     let format = baseline_format(baseline);
-    let legacy = format == "legacy";
+    let loose = format != "structural-v2";
     let scoped: Vec<&BaselineFinding> = baseline
         .findings
         .iter()
@@ -1475,13 +1541,30 @@ pub fn verify(
         .map(|finding| (finding.id.as_str(), *finding))
         .collect();
 
-    // 旧基线没有结构信息，只能按 `(rule, path)` 分组、再按源码顺序对齐：插入空行 /
+    // 旧基线没有完整结构信息，只能按 `(rule, path)` 分组、再按源码顺序对齐：插入空行 /
     // 整块挪动不会改变序号，所以不会误报。代价是「删一条 + 加一条」这种同数量
     // 变化分不出来——文档要求升级后重建基线。
-    let legacy_by_key: BTreeMap<(&str, &str, usize), &BaselineFinding> = if legacy {
+    //
+    // v1 基线里 WXML / 样式已是结构 id，只有 `.js` / `.json` 仍是行列；只对这部分
+    // 启用序号对齐，避免把真正的样式变化误配到旧条目上。
+    let loose_baseline = |finding: &BaselineFinding| match format {
+        "legacy" => !finding.path.ends_with(".wxml"),
+        "structural" => !finding.path.ends_with(".wxml") && is_positional_id(&finding.id),
+        _ => false,
+    };
+    let loose_current = |finding: &Identified| match format {
+        "legacy" => !finding.path.ends_with(".wxml"),
+        "structural" => {
+            !finding.path.ends_with(".wxml")
+                && (is_script_or_json(&finding.path) || is_positional_id(&finding.id))
+        }
+        _ => false,
+    };
+
+    let legacy_by_key: BTreeMap<(&str, &str, usize), &BaselineFinding> = if loose {
         let mut groups: BTreeMap<(&str, &str), Vec<&BaselineFinding>> = BTreeMap::new();
         for finding in &scoped {
-            if !finding.path.ends_with(".wxml") {
+            if loose_baseline(finding) {
                 groups
                     .entry((finding.rule.as_str(), finding.path.as_str()))
                     .or_default()
@@ -1499,11 +1582,10 @@ pub fn verify(
     } else {
         BTreeMap::new()
     };
-    let current_occurrence: BTreeMap<usize, usize> = if legacy {
+    let current_occurrence: BTreeMap<usize, usize> = if loose {
         let mut groups: BTreeMap<(&str, &str), Vec<usize>> = BTreeMap::new();
         for (index, finding) in current.iter().enumerate() {
-            if unit.is_none_or(|wanted| finding.unit == wanted) && !finding.path.ends_with(".wxml")
-            {
+            if unit.is_none_or(|wanted| finding.unit == wanted) && loose_current(finding) {
                 groups
                     .entry((finding.rule.as_str(), finding.path.as_str()))
                     .or_default()
@@ -1536,7 +1618,7 @@ pub fn verify(
             .get(finding.id.as_str())
             .copied()
             .or_else(|| {
-                (legacy && !finding.path.ends_with(".wxml"))
+                (loose && loose_current(finding))
                     .then(|| current_occurrence.get(&index))
                     .flatten()
                     .and_then(|occurrence| {

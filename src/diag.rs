@@ -48,6 +48,28 @@ pub struct Diagnostic {
     /// 迁移建议。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub help: Option<String>,
+    /// JSON 配置项的结构定位。只用于 `migrate` 的稳定 id，**不出现在任何输出里**。
+    #[serde(skip)]
+    pub json: Option<JsonAnchor>,
+}
+
+/// 一条 JSON 诊断对应的配置位置。
+///
+/// `pointer` 是 RFC 6901 指针（`/rendererOptions/skyline/defaultContentBox`）；
+/// `value` 是触发诊断的值（键缺失时为 `None`），用于算值指纹。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JsonAnchor {
+    pub pointer: String,
+    pub value: Option<String>,
+}
+
+impl JsonAnchor {
+    pub fn new(pointer: impl Into<String>, value: Option<String>) -> Self {
+        Self {
+            pointer: pointer.into(),
+            value,
+        }
+    }
 }
 
 impl Diagnostic {
@@ -70,6 +92,7 @@ impl Diagnostic {
             end_line: line,
             end_column: column,
             help: None,
+            json: None,
         }
     }
 
@@ -81,6 +104,12 @@ impl Diagnostic {
 
     pub fn help(mut self, help: impl Into<String>) -> Self {
         self.help = Some(help.into());
+        self
+    }
+
+    /// 带上 JSON 结构定位。只有配置类规则需要；其他诊断保持 `line:column` 身份。
+    pub fn json(mut self, anchor: JsonAnchor) -> Self {
+        self.json = Some(anchor);
         self
     }
 }
