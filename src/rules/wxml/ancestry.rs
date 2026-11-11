@@ -23,13 +23,34 @@ use super::{load_doc, resolved_property_with_dialect};
 /// 逐条实例化路径的合成方式。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mode {
-    /// 证据型：任一条路径成立即成立（「WebView 会不会截断」）。
+    /// 证据型：祖先里任一处成立即成立（「WebView 会不会截断」）。
+    ///
+    /// 这是可达性问题，只在 [`Ancestors::Closure`] 上成立——按节点去重后不再随
+    /// 实例化路径数指数增长。
     Any,
     /// 违规型：所有路径一致才成立（「每个使用点都坏了」）。
     ///
-    /// 下一轮的 `implicit-color` / `fixed-layer` 会用到；本轮两条规则只走证据型。
+    /// 路径本身就是语义，只能走 [`Ancestors::Paths`]；下一轮的 `implicit-color` /
+    /// `fixed-layer` 会用到。
     #[allow(dead_code)]
     All,
+}
+
+/// 实例化祖先证据的形态。
+pub(crate) enum Ancestors<'a> {
+    /// 祖先节点闭包（已去重）：回答「有没有一个祖先成立」。
+    Closure {
+        nodes: &'a [AncestorId],
+        truncated: bool,
+    },
+    /// 逐条实例化路径（近 → 远）：回答「是不是每条路径都成立」。
+    ///
+    /// 只有 `Mode::All` 会构造它（下一轮）；本轮两条规则走闭包。
+    #[allow(dead_code)]
+    Paths {
+        paths: &'a [Vec<AncestorId>],
+        truncated: bool,
+    },
 }
 
 /// `(文档实例地址, 原始起点, 属性, 是否 WebView)` → `(取值, 是否判不了)`。
@@ -78,27 +99,46 @@ pub(crate) fn with_views<R>(project: &Project, f: impl FnOnce(&DocViews<'_>) -> 
     })
 }
 
-/// 按实例化路径合成一个结论。
+/// 按实例化证据合成一个结论。
 ///
-/// `claim` 对每条路径回答 `Some(true/false)`，判不了给 `None`。路径被预算截断、没有
-/// 任何路径、或任一条路径判不了，都只能返回 `None`——「部分路径不成立」既不能推出
-/// 成立也不能推出不成立。返回 `Option<bool>` 而不是 bool，是为了让调用方没有机会
+/// `claim` 对一组祖先回答 `Some(true/false)`，判不了给 `None`。证据被预算截断、没有
+/// 任何证据、或任一（可能成立的）组判不了，都只能返回 `None`——「部分不成立」既不能
+/// 推出成立也不能推出不成立。返回 `Option<bool>` 而不是 bool，是为了让调用方没有机会
 /// 把「判不了」当成「没这回事」。
+///
+/// `Mode::Any` 逐节点问闭包（每个节点当作单元素切片），`Mode::All` 逐条路径问——
+/// 后者不能去重：不同路径上的同一个节点，上下文与「最近祖先」都不同。
 pub(crate) fn aggregate(
-    paths: &[Vec<AncestorId>],
-    truncated: bool,
     mode: Mode,
+    ancestors: Ancestors<'_>,
     claim: impl Fn(&[AncestorId]) -> Option<bool>,
 ) -> Option<bool> {
-    if truncated || paths.is_empty() {
-        return None;
+    match (mode, ancestors) {
+        (Mode::Any, Ancestors::Closure { nodes, truncated }) => {
+            if truncated || nodes.is_empty() {
+                return None;
+            }
+            let mut unknown = false;
+            for node in nodes {
+                match claim(std::slice::from_ref(node)) {
+                    Some(true) => return Some(true),
+                    Some(false) => {}
+                    None => unknown = true,
+                }
+            }
+            (!unknown).then_some(false)
+        }
+        (Mode::All, Ancestors::Paths { paths, truncated }) => {
+            if truncated || paths.is_empty() {
+                return None;
+            }
+            let verdicts: Option<Vec<bool>> = paths.iter().map(|path| claim(path)).collect();
+            Some(verdicts?.iter().all(|hit| *hit))
+        }
+        // 形态与模式不匹配：闭包支撑不了「每条路径一致」，路径枚举不再用于证据型。
+        // 这是调用点写错了，按判不了处理。
+        _ => None,
     }
-    let verdicts: Option<Vec<bool>> = paths.iter().map(|path| claim(path)).collect();
-    let verdicts = verdicts?;
-    Some(match mode {
-        Mode::Any => verdicts.iter().any(|hit| *hit),
-        Mode::All => verdicts.iter().all(|hit| *hit),
-    })
 }
 
 /// 某个祖先元素上某个属性的有效取值。
@@ -167,11 +207,17 @@ pub(crate) fn webview_truncates(
     if !tree.ancestors_unknown(element) {
         return (!unknown).then_some(false);
     }
-    // 模板定义体 / 片段：真实祖先在实例化处，逐条路径看。
-    let paths = views.graph.ancestor_ids(tree.path(), element);
-    match aggregate(&paths.0, paths.1, Mode::Any, |path| {
-        any_hop_truncates(views, path)
-    }) {
+    // 模板定义体 / 片段：真实祖先在实例化处。问的是「祖先里有没有截断属性」——
+    // 可达性，走按节点去重的闭包，不随实例化路径数指数增长。
+    let closure = views.graph.ancestor_closure(tree.path(), element);
+    match aggregate(
+        Mode::Any,
+        Ancestors::Closure {
+            nodes: &closure.0,
+            truncated: closure.1,
+        },
+        |node| any_hop_truncates(views, node),
+    ) {
         Some(true) => Some(true),
         None => None,
         Some(false) if unknown => None,

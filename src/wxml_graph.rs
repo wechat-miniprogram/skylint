@@ -62,6 +62,14 @@ const MAX_PATHS: usize = 32;
 /// 那种情况下 `MAX_PATHS` 永远数不满，递归先爆了。
 const MAX_VISITS: usize = 4096;
 
+/// 单次祖先闭包遍历的节点预算。
+///
+/// 闭包按节点去重，每个祖先只访问一次，所以这里的预算就是「一个元素最多能看见
+/// 多少个不同的祖先节点」——与实例化路径数无关。实测最大闭包：novel 69 个节点
+/// （740 个元素，p99 = 66）、businessview 42 个（1296 个元素），4096 对最大的
+/// novel 留了约 59 倍余量。祖先节点数受组件层级约束，不是设计上会涨的量。
+const MAX_CLOSURE_VISITS: usize = 4096;
+
 /// 单条祖先路径上的一节。
 #[derive(Clone)]
 pub(crate) enum AncestorRef<'a> {
@@ -220,6 +228,9 @@ pub(crate) enum AncestorId {
 /// 元素的实例化祖先路径（节点身份）与是否被路径上限截断。
 pub(crate) type AncestorIdPaths = (Vec<Vec<AncestorId>>, bool);
 
+/// 元素的实例化祖先**闭包**（按节点去重，BFS 顺序）与是否被预算截断。
+pub(crate) type AncestorClosure = (Vec<AncestorId>, bool);
+
 /// (文档实例, 元素起点, 是否 WebView 语义) → (选择器, 判定)：模板文档的判定缓存。
 ///
 /// 选择器的判定与方言有关（Skyline 丢弃属性条件），键里必须带方言，否则同一元素
@@ -245,6 +256,11 @@ pub(crate) struct WxmlGraph {
     /// 与 [`Self::path_cache`] 同键同预算：同一元素按选择器求值要 `FlatNode`，按样式
     /// 求值要回到元素本身（[`AncestorId`]），两条路都不能重复回溯整张图。
     id_path_cache: RefCell<HashMap<(usize, usize), Rc<AncestorIdPaths>>>,
+    /// 元素下标 → 实例化祖先闭包（节点身份）与是否截断。
+    ///
+    /// 与上面两个缓存同键不同源：闭包按节点去重，回答「祖先里有没有」，元素级规则
+    /// 会反复问同一个元素，不缓存就要反复走一遍 BFS。
+    closure_cache: RefCell<HashMap<(usize, usize), Rc<AncestorClosure>>>,
     /// (文档实例, 元素起点) → (选择器, 是否命中)：模板文档的选择器判定。
     ///
     /// 判定只取决于 (元素, 选择器)，但级联是「按属性」走的：`implicit-color` 一个元素
@@ -374,6 +390,7 @@ impl WxmlGraph {
             importers,
             path_cache: RefCell::new(HashMap::new()),
             id_path_cache: RefCell::new(HashMap::new()),
+            closure_cache: RefCell::new(HashMap::new()),
             verdict_cache: RefCell::new(HashMap::new()),
         }
     }
@@ -622,6 +639,72 @@ impl WxmlGraph {
             .collect();
         let value = Rc::new((ids, truncated));
         self.id_path_cache
+            .borrow_mut()
+            .insert((doc, idx), value.clone());
+        value
+    }
+
+    /// 元素的实例化祖先**闭包**：沿父边 BFS，按节点去重。
+    ///
+    /// 回答的是可达性（「祖先里有没有某个节点」）：路径数随使用点组合爆炸，节点数
+    /// 不会，逐条路径枚举会把同一个祖先在不同路径上访问几十上百遍。闭包每个节点
+    /// 只访问一次，代价 O(节点数 × 平均出边)。
+    ///
+    /// 与 [`Self::ancestor_ids`] 的路径并集等价（未截断时）：父边的定义完全相同，只是
+    /// 去重范围从「每条路径内部」改成「整次遍历」。需要「每条路径都成立」的
+    /// `Mode::All` 仍然只能逐路径。
+    pub(crate) fn ancestor_closure(
+        &self,
+        doc_path: &str,
+        element: &WxmlElement,
+    ) -> Rc<AncestorClosure> {
+        let Some(&doc) = self.by_path.get(doc_path) else {
+            return Rc::new((Vec::new(), false));
+        };
+        let Some(&idx) = self.docs[doc]
+            .by_start
+            .get(&(element.tag_start.line, element.tag_start.utf16_col))
+        else {
+            return Rc::new((Vec::new(), false));
+        };
+        if let Some(hit) = self.closure_cache.borrow().get(&(doc, idx)) {
+            return hit.clone();
+        }
+
+        let start = NodeId { doc, idx };
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        let mut queue: VecDeque<NodeId> = VecDeque::new();
+        let mut page_root = false;
+        let mut truncated = false;
+        match self.parents(start) {
+            Parents::Nodes(nodes) => queue.extend(nodes),
+            // 页面顶层：DOM 根是 `<page>`（与 collect_paths 的判定同源）。
+            Parents::Top => page_root = self.docs[start.doc].is_page,
+            Parents::Unknown => truncated = true,
+        }
+        while let Some(node) = queue.pop_front() {
+            if !seen.insert(node) {
+                continue;
+            }
+            if out.len() >= MAX_CLOSURE_VISITS {
+                truncated = true;
+                break;
+            }
+            out.push(AncestorId::Node(node));
+            match self.parents(node) {
+                Parents::Nodes(nodes) => queue.extend(nodes),
+                Parents::Top => page_root |= self.docs[node.doc].is_page,
+                // 静态不可知的边：闭包在此断开，但其它分支仍然可达。
+                Parents::Unknown => truncated = true,
+            }
+        }
+        if page_root {
+            out.push(AncestorId::PageRoot);
+        }
+
+        let value = Rc::new((out, truncated));
+        self.closure_cache
             .borrow_mut()
             .insert((doc, idx), value.clone());
         value
@@ -1189,10 +1272,12 @@ fn resolve_ref(dir: &str, src: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::rules::testutil::Fixture;
-    use crate::rules::wxml::load_doc;
+    use std::collections::HashSet;
 
-    use super::WxmlGraph;
+    use crate::rules::testutil::Fixture;
+    use crate::rules::wxml::{load_doc, walk};
+
+    use super::{AncestorId, WxmlGraph};
 
     fn fixture(name: &str, page: &str, component: &str) -> Fixture {
         fixture_with(name, page, component, "Component({});")
@@ -1473,6 +1558,72 @@ mod tests {
             ]
         );
         assert!(!open);
+    }
+
+    /// 三层模板、每层两个使用点：8 条实例化路径，闭包只有十几个节点。
+    fn template_chain(name: &str) -> Fixture {
+        let fixture = Fixture::new(name);
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<import src="/tpls/l1"/><view><view class="a"><template is="l1"/></view><view class="b"><template is="l1"/></view></view>"#,
+            )
+            .write("pages/index/index.js", "Page({});")
+            .write(
+                "tpls/l1.wxml",
+                r#"<import src="./l2"/><template name="l1"><view class="l1"><view class="a"><template is="l2"/></view><view class="b"><template is="l2"/></view></view></template>"#,
+            )
+            .write(
+                "tpls/l2.wxml",
+                r#"<import src="./leaf"/><template name="l2"><view class="l2"><view class="a"><template is="leaf"/></view><view class="b"><template is="leaf"/></view></view></template>"#,
+            )
+            .write(
+                "tpls/leaf.wxml",
+                r#"<template name="leaf"><text class="target" max-lines="2">x</text></template>"#,
+            );
+        fixture
+    }
+
+    /// 闭包 BFS 与路径枚举的并集必须一致：前者只是把去重范围从「单条路径」
+    /// 扩大成「整次遍历」，父边的定义完全相同。
+    #[test]
+    fn closure_equals_the_union_of_all_paths() {
+        let fixture = template_chain("graph-closure-equivalence");
+        let project = fixture.project();
+        let doc = load_doc(&project, "tpls/leaf.wxml").expect("doc");
+        let mut target = None;
+        walk(&doc, |element, _| {
+            if element
+                .attributes
+                .iter()
+                .any(|attr| attr.name == "class" && attr.value.as_deref() == Some("target"))
+            {
+                target = Some(element);
+            }
+        });
+        let target = target.expect("target element");
+        let graph = WxmlGraph::new(&project);
+
+        let (paths, paths_truncated) = &*graph.ancestor_ids("tpls/leaf.wxml", target);
+        let (closure, closure_truncated) = &*graph.ancestor_closure("tpls/leaf.wxml", target);
+        assert!(!paths_truncated);
+        assert!(!closure_truncated);
+
+        let union: HashSet<AncestorId> = paths.iter().flatten().copied().collect();
+        let set: HashSet<AncestorId> = closure.iter().copied().collect();
+        assert_eq!(set, union);
+        assert_eq!(paths.len(), 8, "每层两个使用点，三层就是 8 条路径");
+        assert!(
+            union.len() <= 20,
+            "闭包应只有十几个节点，实际 {}",
+            union.len()
+        );
     }
 
     #[test]
