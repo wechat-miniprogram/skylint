@@ -23,7 +23,7 @@ use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{ElementDoc, element_docs, resolved_property, walk_skyline};
+use crate::rules::wxml::{ElementDoc, element_docs, resolved_property_with, walk_skyline};
 use crate::rules::wxss::value_util::at_declaration;
 use crate::{Diagnostic, Severity};
 
@@ -87,12 +87,18 @@ impl Rule for ImplicitColor {
         for ElementDoc { doc, reach } in element_docs(project) {
             let tree = Tree::new(&doc);
             walk_skyline(&doc, |element, ancestors| {
-                if effective_color(project, &tree, element, ancestors).is_none() {
+                // 颜色判不了就不能断言「有效 color 不是黑色」：不报。
+                let (color, undecidable) = effective_color(project, &tree, element, ancestors);
+                if undecidable || color.is_none() {
                     return;
                 }
                 for property in PROPERTIES {
-                    let Some(resolved) = resolved_property(project, &tree, element, property)
-                    else {
+                    let (resolved, undecidable) =
+                        resolved_property_with(project, &tree, element, property);
+                    if undecidable {
+                        continue;
+                    }
+                    let Some(resolved) = resolved else {
                         continue;
                     };
                     let (Some(sheet), Some(declaration)) = (resolved.sheet, resolved.declaration)
@@ -102,7 +108,7 @@ impl Rule for ImplicitColor {
                     if !lacks_color(declaration) {
                         continue;
                     }
-                    if invisible(project, &tree, element, declaration) {
+                    if invisible(project, &tree, element, declaration) != Some(false) {
                         continue;
                     }
                     if !reported.insert((sheet.doc.path().to_string(), declaration.offset)) {
@@ -152,12 +158,14 @@ fn page_color(project: &Project, tree: &Tree<'_>) -> Option<String> {
 }
 
 /// 声明本身不可见（宽度 0 / `none` / 颜色由 longhand 给出）：省略颜色不会产生可见差异。
+///
+/// `None` = longhand 判不了，不能断言「不可见」。
 fn invisible(
     project: &Project,
     tree: &Tree<'_>,
     element: &WxmlElement,
     declaration: &WxssDeclaration,
-) -> bool {
+) -> Option<bool> {
     let name = declaration.name.to_ascii_lowercase();
     let has = |word: &str| {
         declaration.tokens.iter().any(
@@ -165,10 +173,10 @@ fn invisible(
         )
     };
     if name == "text-decoration" {
-        return has("none");
+        return Some(has("none"));
     }
     if !name.starts_with("border") {
-        return false;
+        return Some(false);
     }
     // 宽度为 0 或边框样式为 none：没有可见边框。
     let zero = declaration.tokens.iter().any(|token| match token {
@@ -178,47 +186,58 @@ fn invisible(
         _ => false,
     });
     if zero || has("none") {
-        return true;
+        return Some(true);
     }
     // 颜色写在了 longhand 里：简写只是没重复它。
     let longhand = match name.as_str() {
         "border" => "border-color".to_string(),
         other => format!("{other}-color"),
     };
-    resolved_property(project, tree, element, &longhand).is_some()
+    let (resolved, undecidable) = resolved_property_with(project, tree, element, &longhand);
+    if undecidable {
+        return None;
+    }
+    Some(resolved.is_some())
 }
 
 /// 元素的有效 `color`：自身或最近祖先上的声明；黑色不算（那种情况两端都是黑色）。
 ///
 /// `color` 是继承属性，而 `resolved_property` 只看元素自身，所以这里手动向上找。
+/// 布尔位是「有选择器判不了」：这时返回的 `None` 不代表确定没有颜色。
 fn effective_color<'a>(
     project: &'a Project,
     tree: &Tree<'_>,
     element: &'a WxmlElement,
     ancestors: &[&'a WxmlElement],
-) -> Option<String> {
+) -> (Option<String>, bool) {
     // `inherit` / `currentColor` 等都解析成父级的值：继续往上找真正的颜色。
     let mut value = None;
     for candidate in std::iter::once(element).chain(ancestors.iter().rev().copied()) {
-        let Some(resolved) = resolved_property(project, tree, candidate, "color") else {
+        let (resolved, undecidable) = resolved_property_with(project, tree, candidate, "color");
+        if undecidable {
+            return (None, true);
+        }
+        let Some(resolved) = resolved else {
             continue;
         };
         let raw = resolved.value.trim().to_ascii_lowercase();
         match raw.as_str() {
             "inherit" | "unset" | "currentcolor" | "current-color" | "revert" => continue,
             // `initial` 是 CSS 的 `canvastext`（黑），与「没写」等效。
-            "initial" => return None,
+            "initial" => return (None, false),
             _ => {
                 value = Some(resolved.value);
                 break;
             }
         }
     }
-    let value = value.or_else(|| page_color(project, tree))?;
+    let Some(value) = value.or_else(|| page_color(project, tree)) else {
+        return (None, false);
+    };
     let value = value.trim().to_ascii_lowercase();
     // 变量与函数求解不了：运行时可能是黑色，也可能是任意色，按「判不了」跳过。
     if value.contains("var(") || value.contains("env(") || value.contains("{{") {
-        return None;
+        return (None, false);
     }
     let compact: String = value
         .chars()
@@ -227,7 +246,7 @@ fn effective_color<'a>(
     let black = matches!(compact.as_str(), "black" | "#000" | "#000000" | "#000000ff")
         || compact.starts_with("rgb(0,0,0")
         || compact.starts_with("rgba(0,0,0");
-    if black { None } else { Some(value) }
+    (if black { None } else { Some(value) }, false)
 }
 
 /// 声明是否「省略了颜色」：没有任何颜色、也没有显式 `currentColor`。
@@ -356,5 +375,26 @@ mod tests {
         let diagnostics = ImplicitColor.check(&fixture.project());
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(diagnostics[0].message.contains("border"));
+    }
+
+    /// 片段里 `color` 判不了（祖先未知 / 选择器超出受限文法）：不能当成「没写」。
+    #[test]
+    fn undecidable_fragment_color_is_not_reported() {
+        let fixture = Fixture::new("implicit-color-undecidable");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", r#"<include src="./part"/>"#)
+            .write("pages/index/part.wxml", r#"<view class="card"/>"#)
+            .write(
+                "pages/index/index.wxss",
+                ".card { color: #fff; border: 1px solid; }\n.ghost + .card { color: #000; }",
+            );
+        let diagnostics = ImplicitColor.check(&fixture.project());
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 }

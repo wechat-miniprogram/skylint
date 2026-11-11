@@ -15,7 +15,9 @@ use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{ElementDoc, Reach, element_diagnostic, element_docs, walk_skyline};
+use crate::rules::wxml::{
+    ElementDoc, Reach, element_diagnostic, element_docs, resolved_property_with, walk_skyline,
+};
 use crate::rules::wxss::natives::{NATIVES, Native, NativeKind};
 use crate::{Diagnostic, Severity};
 
@@ -102,15 +104,18 @@ impl Rule for NativeLayoutIgnored {
                 else {
                     return;
                 };
-                let declared: Vec<&str> = Self::PROPERTIES
-                    .iter()
-                    .copied()
-                    .filter(|property| {
-                        crate::rules::wxml::resolved_property(project, &tree, element, property)
-                            .is_some_and(|resolved| effective(property, &resolved.value))
-                    })
-                    .collect();
-                if declared.is_empty() {
+                let mut declared: Vec<&str> = Vec::new();
+                let mut undecidable = false;
+                for property in Self::PROPERTIES {
+                    let (resolved, unknown) =
+                        resolved_property_with(project, &tree, element, property);
+                    undecidable |= unknown;
+                    if resolved.is_some_and(|resolved| effective(property, &resolved.value)) {
+                        declared.push(property);
+                    }
+                }
+                // 判不了的选择器可能改写结果：只要出现就不报（宁可漏报）。
+                if declared.is_empty() || undecidable {
                     return;
                 }
                 out.push(
@@ -244,5 +249,26 @@ mod tests {
             .write("pages/index/index.wxss", r#".list { display: flex; }"#);
         let project = fixture.project();
         assert!(NativeLayoutIgnored.check(&project).is_empty());
+    }
+
+    /// 片段里 `display` 等属性判不了（祖先未知 / 选择器超出受限文法）：不能当成没写。
+    #[test]
+    fn undecidable_fragment_layout_is_not_reported() {
+        let fixture = Fixture::new("layout-undecidable");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write("app.json", SKYLINE_APP)
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", r#"<include src="./part"/>"#)
+            .write(
+                "pages/index/part.wxml",
+                r#"<list-view class="list"><view/></list-view>"#,
+            )
+            .write(
+                "pages/index/index.wxss",
+                ".list { display: flex; }\n.ghost + .list { display: block; }",
+            );
+        let diagnostics = NativeLayoutIgnored.check(&fixture.project());
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 }

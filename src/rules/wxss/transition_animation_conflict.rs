@@ -20,7 +20,7 @@ use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
 use crate::rules::wxml::{
-    ElementDoc, element_diagnostic, element_docs, resolved_property, walk_skyline,
+    ElementDoc, element_diagnostic, element_docs, resolved_property_with, walk_skyline,
 };
 use crate::{Diagnostic, Severity};
 
@@ -80,10 +80,14 @@ impl Rule for TransitionAnimationConflict {
         for ElementDoc { doc, reach } in element_docs(project) {
             let tree = Tree::new(&doc);
             walk_skyline(&doc, |element, _| {
-                let Some(transition) = transition_properties(project, &tree, element) else {
+                let (transition, transition_unknown) =
+                    transition_properties(project, &tree, element);
+                let (names, animation_unknown) = animation_names(project, &tree, element);
+                // 结论依赖的两个属性有一个判不了（模板里祖先未知 / 选择器超出受限文法）：不报。
+                if transition_unknown || animation_unknown {
                     return;
-                };
-                let Some(names) = animation_names(project, &tree, element) else {
+                }
+                let (Some(transition), Some(names)) = (transition, names) else {
                     return;
                 };
                 let mut hits: Vec<(&str, &str)> = Vec::new();
@@ -185,16 +189,27 @@ fn property_names(body: &str) -> Vec<String> {
 }
 
 /// 元素生效的 `transition` 里列出的属性名；没有 transition 或判不出来时返回 `None`。
+///
+/// 布尔位是「有选择器判不了」：这时 `None` 不代表确实没写。
 fn transition_properties(
     project: &Project,
     tree: &Tree<'_>,
     element: &crate::input::wxml::WxmlElement,
-) -> Option<Vec<String>> {
-    let longhand = resolved_property(project, tree, element, "transition-property");
+) -> (Option<Vec<String>>, bool) {
+    let (longhand, mut unknown) =
+        resolved_property_with(project, tree, element, "transition-property");
     let shorthand = longhand.is_none();
     let resolved = match longhand {
         Some(resolved) => resolved,
-        None => resolved_property(project, tree, element, "transition")?,
+        None => {
+            let (shorthand, undecidable) =
+                resolved_property_with(project, tree, element, "transition");
+            unknown |= undecidable;
+            match shorthand {
+                Some(resolved) => resolved,
+                None => return (None, unknown),
+            }
+        }
     };
     let declared = resolved
         .declaration
@@ -217,22 +232,32 @@ fn transition_properties(
                 .any(|token| matches!(token, ValueToken::Dimension { .. })),
             None => true,
         };
-        return (shorthand && has_time && !resolved.value.contains("none"))
-            .then(|| vec!["all".to_string()]);
+        let all = shorthand && has_time && !resolved.value.contains("none");
+        return (all.then(|| vec!["all".to_string()]), unknown);
     }
-    Some(properties)
+    (Some(properties), unknown)
 }
 
 /// 元素生效的 `animation` 引用的名字；没有 animation 或判不出来时返回 `None`。
+///
+/// 布尔位同 [`transition_properties`]。
 fn animation_names(
     project: &Project,
     tree: &Tree<'_>,
     element: &crate::input::wxml::WxmlElement,
-) -> Option<Vec<String>> {
-    let longhand = resolved_property(project, tree, element, "animation-name");
+) -> (Option<Vec<String>>, bool) {
+    let (longhand, mut unknown) = resolved_property_with(project, tree, element, "animation-name");
     let resolved = match longhand {
         Some(resolved) => resolved,
-        None => resolved_property(project, tree, element, "animation")?,
+        None => {
+            let (shorthand, undecidable) =
+                resolved_property_with(project, tree, element, "animation");
+            unknown |= undecidable;
+            match shorthand {
+                Some(resolved) => resolved,
+                None => return (None, unknown),
+            }
+        }
     };
     let declared = resolved
         .declaration
@@ -249,7 +274,7 @@ fn animation_names(
             lower != "none" && !ANIMATION_KEYWORDS.contains(&lower.as_str())
         })
         .collect();
-    (!names.is_empty()).then_some(names)
+    ((!names.is_empty()).then_some(names), unknown)
 }
 
 fn idents(tokens: &[ValueToken]) -> Vec<&str> {
@@ -361,6 +386,27 @@ mod tests {
             PANEL,
             ".panel { transition: transform 0.3s; }\n.slide-up { animation: from-js 0.3s; }",
         );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 片段里 `transition` / `animation` 判不了（祖先未知 / 选择器超出受限文法）：不报。
+    #[test]
+    fn undecidable_fragment_declaration_is_not_reported() {
+        let fixture = Fixture::new("anim-conflict-undecidable");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write("app.json", SKYLINE_APP)
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", r#"<include src="./part"/>"#)
+            .write("pages/index/part.wxml", r#"<view class="panel slide-up"/>"#)
+            .write(
+                "pages/index/index.wxss",
+                "@keyframes slide-up { to { transform: translate3d(0, 0, 0); } }\n\
+                 .panel { transition: transform 0.3s; }\n\
+                 .slide-up { animation: slide-up 0.3s; }\n\
+                 .ghost + .panel { transition: opacity 1s; }",
+            );
+        let diagnostics = TransitionAnimationConflict.check(&fixture.project());
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 }

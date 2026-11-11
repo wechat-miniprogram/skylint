@@ -14,14 +14,14 @@
 //!
 //! 所以判据很窄：只在本单元样式表里确实声明了这个类时才报。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::diag::{Diagnostic, Severity};
 use crate::matcher;
 use crate::project::{Project, Scope};
 use crate::rules::{Rule, RuleMeta, Target};
 
-use super::{span_diagnostic, visit, walk};
+use super::{load_doc, span_diagnostic, walk, wxml_files};
 
 pub const ID: &str = "skyline/root-scope-class";
 
@@ -45,92 +45,113 @@ impl Rule for RootScopeClass {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            let Some(scope) = project.scope_of(doc.path()) else {
-                return;
+        let mut out = Vec::new();
+        // 同一属性可能被多个引用它的单元各判一次，位置上去重。
+        let mut reported: BTreeSet<(String, u32, u32)> = BTreeSet::new();
+        for path in wxml_files(project) {
+            let Some(doc) = load_doc(project, path) else {
+                continue;
             };
-            // 页面节点上 `~x` / `^x` 登记到的就是页面自己的 scope（`class_list.ts:107`
-            // 的 `_$owner` 为空时 `rootScope = styleScope`），与不加前缀等价。
-            if matches!(scope, crate::project::Scope::Page(_)) {
-                return;
-            }
-            let local = local_classes(project, &scope);
-            if local.is_empty() {
-                return;
-            }
-            walk(doc, |element, _| {
-                for attribute in &element.attributes {
-                    if attribute.name != "class" {
-                        continue;
-                    }
-                    let mut matched: BTreeMap<String, (String, char)> = BTreeMap::new();
-                    for token in class_tokens(attribute) {
-                        let Some((prefix, name)) = scope_token(&token) else {
-                            continue;
-                        };
-                        let mut hits: Vec<(&String, &String)> = Vec::new();
-                        if let Some((class, sheet)) = local.get_key_value(name) {
-                            // 同一份样式表若也被页面（根作用域）引入，`~x`/`^x` 在那边就是普通类名，
-                            // 规则照样命中——原文案「不再命中」不成立。
-                            if declared_in_page_scope(project, name) {
-                                continue;
-                            }
-                            hits.push((class, sheet));
-                        } else if name.ends_with('-') || name.ends_with('_') {
-                            // 半截词：`~banner-{{i}}` 对上 `banner-0` 这一族。只认数字后缀，
-                            // 否则 `~novel-force-` 会连 `novel-force-container` 一起算进来。
-                            hits.extend(local.iter().filter(|(class, _)| {
-                                class.strip_prefix(name).is_some_and(|suffix| {
-                                    !suffix.is_empty()
-                                        && suffix.chars().all(|ch| ch.is_ascii_digit())
-                                })
-                            }));
-                        }
-                        for (class, sheet) in hits {
-                            matched
-                                .entry(class.clone())
-                                .or_insert((sheet.clone(), prefix));
-                        }
-                    }
-                    if matched.is_empty() {
-                        continue;
-                    }
-                    let names = matched
-                        .keys()
-                        .map(|name| format!("`.{name}`"))
-                        .collect::<Vec<_>>()
-                        .join("、");
-                    let scope_label = if matched.values().any(|(_, prefix)| *prefix == '~') {
-                        "根"
-                    } else {
-                        "父级"
-                    };
-                    let sheet = matched
-                        .values()
-                        .map(|(sheet, _)| sheet.as_str())
-                        .collect::<std::collections::BTreeSet<_>>()
-                        .into_iter()
-                        .collect::<Vec<_>>()
-                        .join("、");
-                    out.push(
-                        span_diagnostic(
-                            ID,
-                            doc,
-                            attribute.start,
-                            attribute.end,
-                            doc.path(),
-                            Severity::Warning,
-                            format!(
-                                "`class` 里的作用域前缀把 {names} 绑到了{scope_label}作用域，`{sheet}` 里同名的规则不再命中这些节点，组件自身的样式（背景色等）会失效"
-                            ),
-                        )
-                        .help(
-                            "要两端都生效，就把组件内那份样式复制到页面（或父级组件）的样式表里；只想在某个渲染器下生效时用 `.xxx.skyline` / `.xxx.webview` 分支，别用作用域前缀",
-                        ),
-                    );
+            // 单元按自己的作用域；独立模板文件 / `<include>` 片段没有自己的作用域，
+            // 按实际引用它的单元求值（模板体在 `<template is>` 调用处渲染，节点归属
+            // 调用方那一份 scope）。
+            let scopes = match project.scope_of(doc.path()) {
+                Some(scope) => vec![scope],
+                None => project
+                    .template_scopes
+                    .get(doc.path())
+                    .cloned()
+                    .unwrap_or_default(),
+            };
+            for scope in scopes {
+                // 页面节点上 `~x` / `^x` 登记到的就是页面自己的 scope（`class_list.ts:107`
+                // 的 `_$owner` 为空时 `rootScope = styleScope`），与不加前缀等价。
+                if matches!(scope, Scope::Page(_)) {
+                    continue;
                 }
-            });
-        })
+                let local = local_classes(project, &scope);
+                if local.is_empty() {
+                    continue;
+                }
+                walk(&doc, |element, _| {
+                    for attribute in &element.attributes {
+                        if attribute.name != "class" {
+                            continue;
+                        }
+                        let mut matched: BTreeMap<String, (String, char)> = BTreeMap::new();
+                        for token in class_tokens(attribute) {
+                            let Some((prefix, name)) = scope_token(&token) else {
+                                continue;
+                            };
+                            let mut hits: Vec<(&String, &String)> = Vec::new();
+                            if let Some((class, sheet)) = local.get_key_value(name) {
+                                // 同一份样式表若也被页面（根作用域）引入，`~x`/`^x` 在那边就是普通类名，
+                                // 规则照样命中——原文案「不再命中」不成立。
+                                if declared_in_page_scope(project, name) {
+                                    continue;
+                                }
+                                hits.push((class, sheet));
+                            } else if name.ends_with('-') || name.ends_with('_') {
+                                // 半截词：`~banner-{{i}}` 对上 `banner-0` 这一族。只认数字后缀，
+                                // 否则 `~novel-force-` 会连 `novel-force-container` 一起算进来。
+                                hits.extend(local.iter().filter(|(class, _)| {
+                                    class.strip_prefix(name).is_some_and(|suffix| {
+                                        !suffix.is_empty()
+                                            && suffix.chars().all(|ch| ch.is_ascii_digit())
+                                    })
+                                }));
+                            }
+                            for (class, sheet) in hits {
+                                matched
+                                    .entry(class.clone())
+                                    .or_insert((sheet.clone(), prefix));
+                            }
+                        }
+                        if matched.is_empty() {
+                            continue;
+                        }
+                        let (line, column) = doc.position(attribute.start);
+                        if !reported.insert((doc.path().to_string(), line, column)) {
+                            continue;
+                        }
+                        let names = matched
+                            .keys()
+                            .map(|name| format!("`.{name}`"))
+                            .collect::<Vec<_>>()
+                            .join("、");
+                        let scope_label = if matched.values().any(|(_, prefix)| *prefix == '~') {
+                            "根"
+                        } else {
+                            "父级"
+                        };
+                        let sheet = matched
+                            .values()
+                            .map(|(sheet, _)| sheet.as_str())
+                            .collect::<BTreeSet<_>>()
+                            .into_iter()
+                            .collect::<Vec<_>>()
+                            .join("、");
+                        out.push(
+                            span_diagnostic(
+                                ID,
+                                &doc,
+                                attribute.start,
+                                attribute.end,
+                                doc.path(),
+                                Severity::Warning,
+                                format!(
+                                    "`class` 里的作用域前缀把 {names} 绑到了{scope_label}作用域，`{sheet}` 里同名的规则不再命中这些节点，组件自身的样式（背景色等）会失效"
+                                ),
+                            )
+                            .help(
+                                "要两端都生效，就把组件内那份样式复制到页面（或父级组件）的样式表里；只想在某个渲染器下生效时用 `.xxx.skyline` / `.xxx.webview` 分支，别用作用域前缀",
+                            ),
+                        );
+                    }
+                });
+            }
+        }
+        out
     }
 }
 
@@ -301,5 +322,38 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    /// 组件 `<import>` 的模板定义体在组件作用域里渲染：模板体里的 `~banner`
+    /// 同样会让组件自己那份 `.banner` 规则失效。
+    #[test]
+    fn imported_template_scope_class_is_reported() {
+        let fixture = Fixture::new("root-scope-import");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"c":"/components/c/c"}}"#,
+            )
+            .write("pages/index/index.wxml", "<c/>")
+            .write("pages/index/index.js", "Page({})")
+            .write("components/c/c.json", r#"{"component":true}"#)
+            .write(
+                "components/c/c.wxml",
+                r#"<import src="../../templates/card.wxml"/><template is="card"/>"#,
+            )
+            .write("components/c/c.wxss", ".banner { background-color: #000; }")
+            .write("components/c/c.js", "Component({})")
+            .write(
+                "templates/card.wxml",
+                r#"<template name="card"><view class="cnt ~banner"/></template>"#,
+            );
+        let diags = RootScopeClass.check(&fixture.project());
+        assert_eq!(diags.len(), 1, "{diags:#?}");
+        assert_eq!(diags[0].path, "templates/card.wxml");
     }
 }
