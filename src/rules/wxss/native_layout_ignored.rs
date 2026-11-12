@@ -14,8 +14,8 @@
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{Reach, element_diagnostic, for_each_element, resolved_property_with};
-use crate::rules::wxss::natives::{NATIVES, Native, NativeKind};
+use crate::rules::wxml::{Reach, element_diagnostic, for_each_element};
+use crate::rules::wxss::natives::{self, NATIVES, Native, NativeKind};
 use crate::{Diagnostic, Severity};
 
 pub struct NativeLayoutIgnored;
@@ -101,17 +101,13 @@ impl Rule for NativeLayoutIgnored {
             else {
                 return;
             };
-            let mut declared: Vec<&str> = Vec::new();
-            let mut undecidable = false;
-            for property in Self::PROPERTIES {
-                let (resolved, unknown) = resolved_property_with(project, tree, element, property);
-                undecidable |= unknown;
-                if resolved.is_some_and(|resolved| effective(property, &resolved.value)) {
-                    declared.push(property);
-                }
-            }
             // 判不了的选择器可能改写结果：只要出现就不报（宁可漏报）。
-            if declared.is_empty() || undecidable {
+            let Some(declared) =
+                natives::declared(project, tree, element, &Self::PROPERTIES, effective)
+            else {
+                return;
+            };
+            if declared.is_empty() {
                 return;
             }
             out.push(

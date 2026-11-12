@@ -57,6 +57,89 @@ struct Hit {
     foreign_tag: String,
 }
 
+/// 单元 → 它 `<import>` 进来的模板定义文档。
+///
+/// 模板体在 `<template is>` 调用处渲染，里面的标签 / id 节点也会被别的作用域的
+/// 标签选择器命中（WebView 下生效、Skyline 下不跨组件），只看单元自己的 WXML 会
+/// 漏掉这一半。
+fn template_units(project: &Project) -> HashMap<&str, Vec<&str>> {
+    let mut templates: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (template, unit) in project.template_references() {
+        templates.entry(unit).or_default().push(template);
+    }
+    templates
+}
+
+/// 这份样式表的作用域会漏到哪些**外部**单元，以及是不是 legacy 模式。
+///
+/// `None`：全局规则表不分作用域，不受影响。
+fn foreign_units<'a>(project: &'a Project, scope: &Scope) -> Option<(Vec<&'a str>, bool)> {
+    let (foreign, legacy) = match scope {
+        Scope::Global | Scope::Loose(_) => return None,
+        Scope::Page(route) => (
+            project.page_components(route),
+            TagSelectorIsolation::legacy(project, Some(route)),
+        ),
+        Scope::Component(path) => {
+            // 组件样式漏到外部：用到它的页面，以及同一页面里的兄弟组件。
+            // WebView 能命中，Skyline 不跨作用域。
+            //
+            // `styleIsolation: shared` 是例外：它的规则拿到的是页面那一份
+            // scope（`space.ts:633-636`），页面节点按主 scope 查规则集时
+            // 就会命中（`selector_matcher.cc:456-460` 用的是节点主 scope），
+            // 与 WebView 一致，只剩兄弟组件还会失效。
+            let shared = project.style_isolation(path) == StyleIsolation::Shared;
+            let pages = if shared {
+                Vec::new()
+            } else {
+                project.component_pages(path)
+            };
+            let mut foreign = pages.clone();
+            for page in &pages {
+                for component in project.page_components(page) {
+                    if component != path.as_str() && !foreign.contains(&component) {
+                        foreign.push(component);
+                    }
+                }
+            }
+            (foreign, TagSelectorIsolation::legacy(project, None))
+        }
+    };
+    Some((foreign, legacy))
+}
+
+/// 命中记录 → 诊断（位置来自样式表声明偏移）。
+fn report(project: &Project, hits: BTreeMap<(String, usize), Hit>) -> Vec<Diagnostic> {
+    hits.into_iter()
+        .map(|((path, offset), hit)| {
+            let doc = project
+                .styles
+                .iter()
+                .map(|sheet| &sheet.doc)
+                .find(|doc| doc.path() == path)
+                .expect("hit 来自 project.styles");
+            let (line, column) = doc.position(offset);
+            let message = if hit.tag {
+                format!(
+                    "标签选择器 `{}` 命中了 `{}` 里的 `<{}>` 节点；Skyline 默认 `tagNameStyleIsolation: \"isolated\"`，标签选择器不跨组件匹配，这些样式会静默失效",
+                    hit.selector, hit.unit, hit.foreign_tag
+                )
+            } else {
+                format!(
+                    "id 选择器 `{}` 命中了 `{}` 里的 `<{}>` 节点；Skyline 下 id 选择器不跨组件匹配（`tagNameStyleIsolation: \"legacy\"` 也不放开），这些样式会静默失效",
+                    hit.selector, hit.unit, hit.foreign_tag
+                )
+            };
+            let help = if hit.tag {
+                "在 app.json 设 rendererOptions.skyline.tagNameStyleIsolation: \"legacy\"（把所有标签选择器恢复成全局匹配），或改用 class 选择器"
+            } else {
+                "改用 class 选择器（id 选择器跨组件在 Skyline 下没有配置开关）"
+            };
+            Diagnostic::new(ID, Severity::Warning, message, path, line, column).help(help)
+        })
+        .collect()
+}
+
 impl crate::rules::Rule for TagSelectorIsolation {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -69,21 +152,7 @@ impl crate::rules::Rule for TagSelectorIsolation {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut hits: BTreeMap<(String, usize), Hit> = BTreeMap::new();
         let mut docs: HashMap<&str, Option<Rc<WxmlDoc>>> = HashMap::new();
-        // 单元 → 它 `<import>` 进来的模板定义文档。模板体在 `<template is>` 调用处
-        // 渲染，里面的标签 / id 节点也会被别的作用域的标签选择器命中（WebView 下生效、
-        // Skyline 下不跨组件），只看单元自己的 WXML 会漏掉这一半。
-        let mut templates: HashMap<&str, Vec<&str>> = HashMap::new();
-        for (path, scopes) in &project.template_scopes {
-            for scope in scopes {
-                let unit = match scope {
-                    Scope::Page(route) => route.as_str(),
-                    Scope::Component(component) => component.as_str(),
-                    Scope::Global | Scope::Loose(_) => continue,
-                };
-                templates.entry(unit).or_default().push(path.as_str());
-            }
-        }
-        // 只有带组合符的选择器才需要渲染树；纯标签 / 纯 id 的单 compound 用不到它。
+        let templates = template_units(project);
 
         visit_rules(project, |sheet, rule, _out| {
             let doc = &sheet.doc;
@@ -99,39 +168,9 @@ impl crate::rules::Rule for TagSelectorIsolation {
                 })
                 .collect();
             for scope in &sheet.scopes {
-                let (foreign, legacy) = match scope {
-                    // app.wxss 走全局规则表，不分作用域，不受影响
-                    Scope::Global => continue,
-                    Scope::Page(route) => (
-                        project.page_components(route),
-                        Self::legacy(project, Some(route)),
-                    ),
-                    Scope::Component(path) => {
-                        // 组件样式漏到外部：用到它的页面，以及同一页面里的兄弟组件。
-                        // WebView 能命中，Skyline 不跨作用域。
-                        //
-                        // `styleIsolation: shared` 是例外：它的规则拿到的是页面那一份
-                        // scope（`space.ts:633-636`），页面节点按主 scope 查规则集时
-                        // 就会命中（`selector_matcher.cc:456-460` 用的是节点主 scope），
-                        // 与 WebView 一致，只剩兄弟组件还会失效。
-                        let shared = project.style_isolation(path) == StyleIsolation::Shared;
-                        let pages = if shared {
-                            Vec::new()
-                        } else {
-                            project.component_pages(path)
-                        };
-                        let mut foreign = pages.clone();
-                        for page in &pages {
-                            for component in project.page_components(page) {
-                                if component != path.as_str() && !foreign.contains(&component) {
-                                    foreign.push(component);
-                                }
-                            }
-                        }
-                        (foreign, Self::legacy(project, None))
-                    }
-                    // 样式图不会产生 Loose。
-                    Scope::Loose(_) => continue,
+                // app.wxss 走全局规则表，不分作用域，不受影响。
+                let Some((foreign, legacy)) = foreign_units(project, scope) else {
+                    continue;
                 };
                 let foreign: Vec<&str> = foreign
                     .into_iter()
@@ -157,45 +196,18 @@ impl crate::rules::Rule for TagSelectorIsolation {
                     else {
                         continue;
                     };
-                    let key = (doc.path().to_string(), selector.offset);
-                    hits.entry(key).or_insert(Hit {
-                        selector: selector.text.trim().to_string(),
-                        tag: is_tag,
-                        unit,
-                        foreign_tag,
-                    });
+                    hits.entry((doc.path().to_string(), selector.offset))
+                        .or_insert(Hit {
+                            selector: selector.text.trim().to_string(),
+                            tag: is_tag,
+                            unit,
+                            foreign_tag,
+                        });
                 }
             }
         });
 
-        hits.into_iter()
-            .map(|((path, offset), hit)| {
-                let doc = project
-                    .styles
-                    .iter()
-                    .map(|sheet| &sheet.doc)
-                    .find(|doc| doc.path() == path)
-                    .expect("hit 来自 project.styles");
-                let (line, column) = doc.position(offset);
-                let message = if hit.tag {
-                    format!(
-                        "标签选择器 `{}` 命中了 `{}` 里的 `<{}>` 节点；Skyline 默认 `tagNameStyleIsolation: \"isolated\"`，标签选择器不跨组件匹配，这些样式会静默失效",
-                        hit.selector, hit.unit, hit.foreign_tag
-                    )
-                } else {
-                    format!(
-                        "id 选择器 `{}` 命中了 `{}` 里的 `<{}>` 节点；Skyline 下 id 选择器不跨组件匹配（`tagNameStyleIsolation: \"legacy\"` 也不放开），这些样式会静默失效",
-                        hit.selector, hit.unit, hit.foreign_tag
-                    )
-                };
-                let help = if hit.tag {
-                    "在 app.json 设 rendererOptions.skyline.tagNameStyleIsolation: \"legacy\"（把所有标签选择器恢复成全局匹配），或改用 class 选择器"
-                } else {
-                    "改用 class 选择器（id 选择器跨组件在 Skyline 下没有配置开关）"
-                };
-                Diagnostic::new(ID, Severity::Warning, message, path, line, column).help(help)
-            })
-            .collect()
+        report(project, hits)
     }
 }
 

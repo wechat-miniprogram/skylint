@@ -271,6 +271,44 @@ impl Project {
         .find_map(|candidate| self.script(candidate))
     }
 
+    /// 单元 id（页面路由或组件路径）→ 它的 WXML 路径。
+    pub(crate) fn unit_wxml(&self, unit: &str) -> Option<&str> {
+        self.pages
+            .iter()
+            .find(|page| page.route == unit)
+            .and_then(|page| page.files.wxml.as_deref())
+            .or_else(|| {
+                self.components
+                    .iter()
+                    .find(|component| component.path == unit)
+                    .and_then(|component| component.files.wxml.as_deref())
+            })
+    }
+
+    /// [`Scope`] 所在单元的 WXML 路径，**包含**显式 opt-out 的页面。
+    ///
+    /// 与 [`Self::scope_wxml`] 的差别只有 opt-out 那一处：那个口径问「这份样式会不会被
+    /// Skyline 用到」，这个口径问「这份文档属于谁」——模板可达性要把 opt-out 页面引用的
+    /// 模板标成 WebviewOnly，而不是当成没人引用而丢掉。
+    pub(crate) fn scope_wxml_any(&self, scope: &Scope) -> Option<&str> {
+        match scope {
+            Scope::Page(route) => self.unit_wxml(route),
+            Scope::Component(path) => self.unit_wxml(path),
+            Scope::Global | Scope::Loose(_) => None,
+        }
+    }
+
+    /// `<import>` 进来的模板定义文档 → 引用它的单元 id。
+    pub(crate) fn template_references(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.template_scopes.iter().flat_map(|(template, scopes)| {
+            scopes.iter().filter_map(move |scope| match scope {
+                Scope::Page(route) => Some((template.as_str(), route.as_str())),
+                Scope::Component(path) => Some((template.as_str(), path.as_str())),
+                Scope::Global | Scope::Loose(_) => None,
+            })
+        })
+    }
+
     /// 这份 WXML 是否就是一个显式 `renderer: "webview"` 的页面。
     ///
     /// 这类页面是「不迁 Skyline」的明确决定，Skyline 方向对它们报限制是误报；

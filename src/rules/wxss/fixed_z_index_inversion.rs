@@ -171,19 +171,7 @@ fn template_reach(project: &Project) -> Vec<(&str, Vec<&str>)> {
         .map(|(template, scopes)| {
             let units = scopes
                 .iter()
-                .filter_map(|scope| match scope {
-                    crate::project::Scope::Page(route) => project
-                        .pages
-                        .iter()
-                        .find(|page| &page.route == route)
-                        .and_then(|page| page.files.wxml.as_deref()),
-                    crate::project::Scope::Component(path) => project
-                        .components
-                        .iter()
-                        .find(|unit| &unit.path == path)
-                        .and_then(|unit| unit.files.wxml.as_deref()),
-                    crate::project::Scope::Global | crate::project::Scope::Loose(_) => None,
-                })
+                .filter_map(|scope| project.scope_wxml_any(scope))
                 .collect();
             (template.as_str(), units)
         })

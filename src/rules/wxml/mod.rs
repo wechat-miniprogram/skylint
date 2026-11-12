@@ -70,7 +70,7 @@ use std::rc::Rc;
 use crate::diag::Diagnostic;
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::matcher::Tree;
-use crate::project::{Project, Scope};
+use crate::project::Project;
 use crate::rules::Target;
 use crate::wxml_graph::{SlotHost, WxmlGraph};
 
@@ -168,7 +168,7 @@ pub(crate) fn element_docs(project: &Project) -> Vec<ElementDoc> {
     for (path, scopes) in &project.template_scopes {
         let mut template_reach = None;
         for scope in scopes {
-            let Some(unit) = unit_wxml(project, scope) else {
+            let Some(unit) = project.scope_wxml_any(scope) else {
                 continue;
             };
             match reach.get(unit) {
@@ -219,22 +219,6 @@ pub(crate) fn element_docs(project: &Project) -> Vec<ElementDoc> {
 
 /// 作用域对应的单元 WXML，**包含 opt-out 页面**：它们仍然会渲染（只是不迁 Skyline），
 /// 由 [`Reach`] 统一标注，不能在这里提前丢掉。
-fn unit_wxml<'a>(project: &'a Project, scope: &Scope) -> Option<&'a str> {
-    match scope {
-        Scope::Page(route) => project
-            .pages
-            .iter()
-            .find(|page| &page.route == route)
-            .and_then(|page| page.files.wxml.as_deref()),
-        Scope::Component(path) => project
-            .components
-            .iter()
-            .find(|unit| &unit.path == path)
-            .and_then(|unit| unit.files.wxml.as_deref()),
-        Scope::Global | Scope::Loose(_) => None,
-    }
-}
-
 pub(crate) fn load_doc(project: &Project, path: &str) -> Option<Rc<WxmlDoc>> {
     project.cached_doc(path, false)
 }

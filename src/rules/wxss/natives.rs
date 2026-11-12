@@ -13,6 +13,10 @@
 //! 排除 `swiper-item`：它 `CreateConcreteWidget()` 返回空 → 走 `YGConnector`，子节点进它
 //! 自己的 yoga 树，CSS 正常生效（`shadow/components/swiper_item_shadow_node.cc:30-32`）。
 
+use crate::input::wxml::WxmlElement;
+use crate::matcher::Tree;
+use crate::project::Project;
+
 /// 组件自身还有多少 CSS 能用。
 pub(crate) enum NativeKind {
     /// 没有 CSS 盒（`InflateNaked` / `SetSkipStyleBuild`）。`background` 表示背景色是否
@@ -37,6 +41,31 @@ impl NativeKind {
     pub fn ignores_layout(&self) -> bool {
         matches!(self, Self::NoCssBox { .. })
     }
+}
+
+/// 这些属性里哪些写了「非初值」，且全部可判定。
+///
+/// `None`：有选择器判不了，可能改写结果——调用方一律当「没写」（宁可漏报）。
+/// `native-padding` 与 `native-layout-ignored` 的判定只差属性列表和「什么算写了」。
+pub(crate) fn declared<'a>(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    properties: &[&'a str],
+    effective: impl Fn(&str, &str) -> bool,
+) -> Option<Vec<&'a str>> {
+    let mut hit = Vec::new();
+    for property in properties {
+        let (resolved, undecidable) =
+            crate::rules::wxml::resolved_property_with(project, tree, element, property);
+        if undecidable {
+            return None;
+        }
+        if resolved.is_some_and(|resolved| effective(property, &resolved.value)) {
+            hit.push(*property);
+        }
+    }
+    Some(hit)
 }
 
 pub(crate) const NATIVES: &[Native] = &[

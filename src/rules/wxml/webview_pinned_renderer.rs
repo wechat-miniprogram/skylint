@@ -184,7 +184,7 @@ fn call_sites(
         if !deps.contains(&component.path) {
             continue;
         }
-        let Some(parent) = unit_wxml(project, unit) else {
+        let Some(parent) = project.unit_wxml(unit) else {
             continue;
         };
         let tags = declared_tags(project, unit, basename);
@@ -258,22 +258,6 @@ fn reached_from_skyline_page(project: &Project, wxml_path: &str) -> bool {
         }
     }
     false
-}
-
-/// `deps` 的 key（页面路由 / 组件路径）→ 它的 WXML 路径。
-fn unit_wxml<'a>(project: &'a Project, unit: &str) -> Option<&'a str> {
-    project
-        .pages
-        .iter()
-        .find(|page| page.route == unit)
-        .and_then(|page| page.files.wxml.as_deref())
-        .or_else(|| {
-            project
-                .components
-                .iter()
-                .find(|component| component.path == unit)
-                .and_then(|component| component.files.wxml.as_deref())
-        })
 }
 
 #[cfg(test)]

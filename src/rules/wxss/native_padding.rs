@@ -27,8 +27,8 @@
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{Reach, element_diagnostic, for_each_element, resolved_property_with};
-use crate::rules::wxss::natives::{NATIVES, Native, NativeKind};
+use crate::rules::wxml::{Reach, element_diagnostic, for_each_element};
+use crate::rules::wxss::natives::{self, NATIVES, Native, NativeKind};
 use crate::{Diagnostic, Severity};
 
 pub struct NativePadding;
@@ -84,17 +84,15 @@ impl Rule for NativePadding {
             let Some(native) = NATIVES.iter().find(|native| native.tag == element.tag) else {
                 return;
             };
-            let mut padded = false;
-            let mut undecidable = false;
-            for property in Self::PROPERTIES {
-                let (resolved, unknown) = resolved_property_with(project, tree, element, property);
-                undecidable |= unknown;
-                if resolved.is_some_and(|resolved| nonzero_padding(&resolved.value)) {
-                    padded = true;
-                }
-            }
             // 判不了的选择器可能改写结果：只要出现就不报（宁可漏报）。
-            if !padded || undecidable {
+            let Some(declared) =
+                natives::declared(project, tree, element, &Self::PROPERTIES, |_, value| {
+                    nonzero_padding(value)
+                })
+            else {
+                return;
+            };
+            if declared.is_empty() {
                 return;
             }
             out.push(
