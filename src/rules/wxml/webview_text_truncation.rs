@@ -21,7 +21,7 @@ use crate::rules::Target;
 use crate::rules::wxml::resolved_property;
 
 use super::ancestry;
-use super::{element_diagnostic, structure::find_attr, truncation, visit, walk_webview};
+use super::{element_diagnostic, for_each_element, structure::find_attr, truncation};
 
 pub const ID: &str = "webview/text-truncation";
 
@@ -41,31 +41,28 @@ impl Rule for TextTruncation {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
+        let mut out = Vec::new();
         ancestry::with_views(project, |views| {
-            visit(project, |doc, out| {
-                let tree = Tree::new(doc);
-                walk_webview(doc, |element, ancestors| {
-                    if !element.tag.eq_ignore_ascii_case("text") {
-                        return;
-                    }
-                    if element.skyline_only() {
-                        return;
-                    }
-                    // 只看真正起截断作用的写法：`overflow="visible"`、`max-lines="0"`
-                    // 在两个渲染器下表现一致，报出来是噪音。
-                    let attributes = truncating_attributes(project, &tree, element);
-                    if attributes.is_empty()
-                        || truncation::webview_truncates(views, &tree, element, ancestors)
-                            != Some(false)
-                    {
-                        return;
-                    }
-                    let written = attributes
-                        .iter()
-                        .map(|name| format!("`{name}`"))
-                        .collect::<Vec<_>>()
-                        .join(" / ");
-                    out.push(
+            for_each_element(project, self.target(), |site| {
+                let (doc, tree, element, ancestors) =
+                    (site.doc, site.tree, site.element, site.ancestors);
+                if !element.tag.eq_ignore_ascii_case("text") {
+                    return;
+                }
+                // 只看真正起截断作用的写法：`overflow="visible"`、`max-lines="0"`
+                // 在两个渲染器下表现一致，报出来是噪音。
+                let attributes = truncating_attributes(project, tree, element);
+                if attributes.is_empty()
+                    || truncation::webview_truncates(views, tree, element, ancestors) != Some(false)
+                {
+                    return;
+                }
+                let written = attributes
+                    .iter()
+                    .map(|name| format!("`{name}`"))
+                    .collect::<Vec<_>>()
+                    .join(" / ");
+                out.push(
                     element_diagnostic(
                         ID,
                         doc,
@@ -78,9 +75,9 @@ impl Rule for TextTruncation {
                         "保留属性给 Skyline，另加 WebView 分支：多行用 `display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: N; overflow: hidden`，单行用 `white-space: nowrap; overflow: hidden; text-overflow: ellipsis`",
                     ),
                 );
-                });
-            })
-        })
+            });
+        });
+        out
     }
 }
 

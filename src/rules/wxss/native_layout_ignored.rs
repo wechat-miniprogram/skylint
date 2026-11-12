@@ -11,13 +11,10 @@
 //!
 //! WebView 里这些组件的内部是普通 DOM，布局属性照常生效，属于渲染器差异。
 
-use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{
-    ElementDoc, Reach, element_diagnostic, element_docs, resolved_property_with, walk_skyline,
-};
+use crate::rules::wxml::{Reach, element_diagnostic, for_each_element, resolved_property_with};
 use crate::rules::wxss::natives::{NATIVES, Native, NativeKind};
 use crate::{Diagnostic, Severity};
 
@@ -92,45 +89,43 @@ impl Rule for NativeLayoutIgnored {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut out = Vec::new();
 
-        for ElementDoc { doc, reach } in element_docs(project) {
-            if reach != Reach::Skyline {
-                continue;
+        for_each_element(project, self.target(), |site| {
+            if site.reach != Reach::Skyline {
+                return;
             }
-            let tree = Tree::new(&doc);
-            walk_skyline(&doc, |element, _| {
-                let Some(native) = NATIVES
-                    .iter()
-                    .find(|native| native.tag == element.tag && native.kind.ignores_layout())
-                else {
-                    return;
-                };
-                let mut declared: Vec<&str> = Vec::new();
-                let mut undecidable = false;
-                for property in Self::PROPERTIES {
-                    let (resolved, unknown) =
-                        resolved_property_with(project, &tree, element, property);
-                    undecidable |= unknown;
-                    if resolved.is_some_and(|resolved| effective(property, &resolved.value)) {
-                        declared.push(property);
-                    }
+            let (doc, tree, element) = (site.doc, site.tree, site.element);
+            let reach = site.reach;
+            let Some(native) = NATIVES
+                .iter()
+                .find(|native| native.tag == element.tag && native.kind.ignores_layout())
+            else {
+                return;
+            };
+            let mut declared: Vec<&str> = Vec::new();
+            let mut undecidable = false;
+            for property in Self::PROPERTIES {
+                let (resolved, unknown) = resolved_property_with(project, tree, element, property);
+                undecidable |= unknown;
+                if resolved.is_some_and(|resolved| effective(property, &resolved.value)) {
+                    declared.push(property);
                 }
-                // 判不了的选择器可能改写结果：只要出现就不报（宁可漏报）。
-                if declared.is_empty() || undecidable {
-                    return;
-                }
-                out.push(
-                    element_diagnostic(
-                        Self::ID,
-                        &doc,
-                        element,
-                        doc.path(),
-                        Severity::Warning,
-                        Self::message(native, &declared),
-                    )
-                    .help(reach.help(Self::help(native))),
-                );
-            });
-        }
+            }
+            // 判不了的选择器可能改写结果：只要出现就不报（宁可漏报）。
+            if declared.is_empty() || undecidable {
+                return;
+            }
+            out.push(
+                element_diagnostic(
+                    Self::ID,
+                    doc,
+                    element,
+                    doc.path(),
+                    Severity::Warning,
+                    Self::message(native, &declared),
+                )
+                .help(reach.help(Self::help(native))),
+            );
+        });
         out
     }
 }

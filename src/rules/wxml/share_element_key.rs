@@ -17,12 +17,12 @@
 //! 只做文件内唯一性，跨文件重复留给运行期。
 
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxml::{Branch, WxmlDoc};
+use crate::input::wxml::Branch;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
 use super::structure::find_attr;
-use super::{element_diagnostic, visit, walk_skyline};
+use super::{element_diagnostic, for_each_element};
 
 pub const ID: &str = "skyline/share-element-key";
 
@@ -40,21 +40,24 @@ impl Rule for ShareElementKey {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, check_file)
-    }
-}
-
-fn check_file(doc: &WxmlDoc, out: &mut Vec<Diagnostic>) {
-    // 已出现的 (key, 分支栈)，按文档顺序；比较时跳过互斥分支。
-    // 模板定义体里的 `share-element` 只在实例化处出现，跨定义的重复不一定是错，跳过。
-    let mut seen: Vec<(String, Vec<Branch>)> = Vec::new();
-    walk_skyline(doc, |element, _ancestors| {
-        if element.tag != TAG {
-            return;
-        }
-        let key = match find_attr(element, "key") {
-            None => {
-                out.push(
+        let mut out = Vec::new();
+        // 已出现的 (key, 分支栈)，按文档顺序；比较时跳过互斥分支。
+        // 模板定义体里的 `share-element` 只在实例化处出现，跨定义的重复不一定是错，跳过。
+        let mut seen: Vec<(String, Vec<Branch>)> = Vec::new();
+        let mut current: Option<String> = None;
+        for_each_element(project, self.target(), |site| {
+            let (doc, element) = (site.doc, site.element);
+            // 同 key 跨文件重复不算错，换文档就重新累计。
+            if current.as_deref() != Some(doc.path()) {
+                seen.clear();
+                current = Some(doc.path().to_string());
+            }
+            if element.tag != TAG {
+                return;
+            }
+            let key = match find_attr(element, "key") {
+                None => {
+                    out.push(
                     element_diagnostic(
                         ID,
                         doc,
@@ -65,15 +68,15 @@ fn check_file(doc: &WxmlDoc, out: &mut Vec<Diagnostic>) {
                     )
                     .help("给每个 `<share-element>` 声明页面内唯一的 `key`，通常拼上数据 id"),
                 );
-                return;
-            }
-            Some(attr) if !attr.is_static => return,
-            Some(attr) => attr.value.as_deref().unwrap_or("").trim(),
-        };
-        // 空 key（`key=""` 或裸属性）等同于没写：引擎按 `tag.isNotEmpty` 决定是否
-        // 建立 hero 关系（`package/skyline/lib/widgets/hero.dart:400`），空串直接失效。
-        if key.is_empty() {
-            out.push(
+                    return;
+                }
+                Some(attr) if !attr.is_static => return,
+                Some(attr) => attr.value.as_deref().unwrap_or("").trim(),
+            };
+            // 空 key（`key=""` 或裸属性）等同于没写：引擎按 `tag.isNotEmpty` 决定是否
+            // 建立 hero 关系（`package/skyline/lib/widgets/hero.dart:400`），空串直接失效。
+            if key.is_empty() {
+                out.push(
                 element_diagnostic(
                     ID,
                     doc,
@@ -84,22 +87,22 @@ fn check_file(doc: &WxmlDoc, out: &mut Vec<Diagnostic>) {
                 )
                 .help("给每个 `<share-element>` 声明页面内唯一的 `key`，通常拼上数据 id"),
             );
-            return;
-        }
-        let duplicates = seen
-            .iter()
-            .filter(|(other_key, other_branches)| {
-                other_key.as_str() == key
-                    && !other_branches.iter().any(|left| {
-                        element
-                            .branches
-                            .iter()
-                            .any(|right| left.group == right.group && left.arm != right.arm)
-                    })
-            })
-            .count();
-        if duplicates > 0 {
-            out.push(
+                return;
+            }
+            let duplicates = seen
+                .iter()
+                .filter(|(other_key, other_branches)| {
+                    other_key.as_str() == key
+                        && !other_branches.iter().any(|left| {
+                            element
+                                .branches
+                                .iter()
+                                .any(|right| left.group == right.group && left.arm != right.arm)
+                        })
+                })
+                .count();
+            if duplicates > 0 {
+                out.push(
                 element_diagnostic(
                     ID,
                     doc,
@@ -112,13 +115,15 @@ fn check_file(doc: &WxmlDoc, out: &mut Vec<Diagnostic>) {
                 )
                 .help("每个 `<share-element>` 用页面内唯一的 `key`；列表里重复渲染时把数据 id 拼进 key"),
             );
-        }
-        // 模板定义体里的元素只在实例化处渲染，实例数量与相对位置静态不可知，
-        // 只判「缺 key / 空 key」这类与实例无关的问题，不参与重复判定。
-        if !element.in_template() {
-            seen.push((key.to_string(), element.branches.clone()));
-        }
-    });
+            }
+            // 模板定义体里的元素只在实例化处渲染，实例数量与相对位置静态不可知，
+            // 只判「缺 key / 空 key」这类与实例无关的问题，不参与重复判定。
+            if !element.in_template() {
+                seen.push((key.to_string(), element.branches.clone()));
+            }
+        });
+        out
+    }
 }
 
 #[cfg(test)]

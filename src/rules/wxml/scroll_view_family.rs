@@ -56,7 +56,7 @@ use crate::rules::{Rule, RuleMeta};
 
 use super::branch::element_children;
 use super::structure::{self, Condition, Constraint, Relation, Target};
-use super::{element_diagnostic, is_builtin, span_diagnostic, visit, walk_skyline};
+use super::{element_diagnostic, for_each_element, is_builtin, span_diagnostic};
 
 pub const ID: &str = "skyline/scroll-view-family";
 
@@ -227,30 +227,31 @@ impl Rule for ScrollViewFamily {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let graph = project.graph();
-        visit(project, |doc, out| {
-            walk_skyline(doc, |element, ancestors| {
-                structure::check_element(
-                    ID,
-                    doc,
-                    element,
-                    ancestors,
-                    graph,
-                    CONSTRAINTS,
-                    doc.path(),
-                    out,
-                );
+        let mut out = Vec::new();
+        for_each_element(project, self.target(), |site| {
+            let (doc, element, ancestors) = (site.doc, site.element, site.ancestors);
+            let graph = site.graph;
+            structure::check_element(
+                ID,
+                doc,
+                element,
+                ancestors,
+                graph,
+                CONSTRAINTS,
+                doc.path(),
+                &mut out,
+            );
 
-                // nested-scroll.md NEVER 1「不要在 nested-scroll-body 下面放 nested-scroll-header」。
-                if !element.in_template()
-                    && element.tag == "nested-scroll-header"
-                    && ancestors
-                        .iter()
-                        .rev()
-                        .take_while(|ancestor| is_builtin(&ancestor.tag))
-                        .any(|ancestor| ancestor.tag == "nested-scroll-body")
-                {
-                    out.push(
+            // nested-scroll.md NEVER 1「不要在 nested-scroll-body 下面放 nested-scroll-header」。
+            if !element.in_template()
+                && element.tag == "nested-scroll-header"
+                && ancestors
+                    .iter()
+                    .rev()
+                    .take_while(|ancestor| is_builtin(&ancestor.tag))
+                    .any(|ancestor| ancestor.tag == "nested-scroll-body")
+            {
+                out.push(
                         element_diagnostic(
                             ID,
                             doc,
@@ -261,67 +262,67 @@ impl Rule for ScrollViewFamily {
                         )
                         .help("把 `<nested-scroll-header>` 移到 `<nested-scroll-body>` 之前，与它平级"),
                     );
-                }
+            }
 
-                // `<scroll-view type="nested">` 的直接子节点只认 header / body：
-                // `skyline_scroll_view.dart:1750-1756` 只把 `nestedHeaderChildren` 与
-                // `nestedBody` 交给 `NestedScrollView`；`:1551-1557` 的
-                // `whereType<NestedScrollHeader>()` 与 `:1559-1562` 的
-                // `firstWhere((child) => child is NestedScrollBody)` 都只看这两类 widget，
-                // 其余元素与有内容的文本不会进入构建结果，等于整段丢弃。
-                if !element.in_template()
-                    && element.tag == "scroll-view"
-                    && matches!(
-                        structure::check_attr(element, "type", "nested"),
-                        structure::AttrCheck::Ok
-                    )
-                {
-                    let help = "把内容移进 `<nested-scroll-header>` 或 `<nested-scroll-body>`";
-                    let message = |subject: &str| {
-                        format!(
-                            "{subject}不会渲染：`<scroll-view type=\"nested\">` 只渲染 \
+            // `<scroll-view type="nested">` 的直接子节点只认 header / body：
+            // `skyline_scroll_view.dart:1750-1756` 只把 `nestedHeaderChildren` 与
+            // `nestedBody` 交给 `NestedScrollView`；`:1551-1557` 的
+            // `whereType<NestedScrollHeader>()` 与 `:1559-1562` 的
+            // `firstWhere((child) => child is NestedScrollBody)` 都只看这两类 widget，
+            // 其余元素与有内容的文本不会进入构建结果，等于整段丢弃。
+            if !element.in_template()
+                && element.tag == "scroll-view"
+                && matches!(
+                    structure::check_attr(element, "type", "nested"),
+                    structure::AttrCheck::Ok
+                )
+            {
+                let help = "把内容移进 `<nested-scroll-header>` 或 `<nested-scroll-body>`";
+                let message = |subject: &str| {
+                    format!(
+                        "{subject}不会渲染：`<scroll-view type=\"nested\">` 只渲染 \
                              `<nested-scroll-header>` 与 `<nested-scroll-body>` 两个直接子节点，其余会被整段丢弃"
+                    )
+                };
+                for child in element_children(element) {
+                    if child.is_slot
+                        || child.tag == "nested-scroll-header"
+                        || child.tag == "nested-scroll-body"
+                    {
+                        continue;
+                    }
+                    out.push(
+                        element_diagnostic(
+                            ID,
+                            doc,
+                            child,
+                            doc.path(),
+                            Severity::Error,
+                            message(&format!("`<{}>` ", child.tag)),
                         )
-                    };
-                    for child in element_children(element) {
-                        if child.is_slot
-                            || child.tag == "nested-scroll-header"
-                            || child.tag == "nested-scroll-body"
-                        {
-                            continue;
-                        }
-                        out.push(
-                            element_diagnostic(
-                                ID,
-                                doc,
-                                child,
-                                doc.path(),
-                                Severity::Error,
-                                message(&format!("`<{}>` ", child.tag)),
-                            )
-                            .help(help),
-                        );
-                    }
-                    for text in element.children.iter().filter_map(|node| match node {
-                        WxmlNode::Text(text) if text.is_meaningful() => Some(text),
-                        _ => None,
-                    }) {
-                        out.push(
-                            span_diagnostic(
-                                ID,
-                                doc,
-                                text.start,
-                                text.end,
-                                doc.path(),
-                                Severity::Error,
-                                message("这段文本"),
-                            )
-                            .help(help),
-                        );
-                    }
+                        .help(help),
+                    );
                 }
-            });
-        })
+                for text in element.children.iter().filter_map(|node| match node {
+                    WxmlNode::Text(text) if text.is_meaningful() => Some(text),
+                    _ => None,
+                }) {
+                    out.push(
+                        span_diagnostic(
+                            ID,
+                            doc,
+                            text.start,
+                            text.end,
+                            doc.path(),
+                            Severity::Error,
+                            message("这段文本"),
+                        )
+                        .help(help),
+                    );
+                }
+            }
+        });
+        out
     }
 }
 

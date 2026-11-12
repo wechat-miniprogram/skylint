@@ -49,6 +49,18 @@ impl Target {
         self == Target::Both || rule == Target::Both || rule == self
     }
 
+    /// 这个元素在 `target` 方向的运行时是否会出现。
+    ///
+    /// `wx:if="{{renderer === 'webview'}}"` 的分支在 Skyline 下不渲染，反过来同理；
+    /// 对它讲另一个方向的行为是必错的，所以由声明的方向统一决定，不留给规则自选。
+    pub(crate) fn renders(self, element: &crate::input::wxml::WxmlElement) -> bool {
+        match self {
+            Self::Skyline => !element.webview_only(),
+            Self::Webview => !element.skyline_only(),
+            Self::Both => true,
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Skyline => "skyline",

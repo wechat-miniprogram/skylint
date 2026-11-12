@@ -23,9 +23,7 @@ use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{
-    ElementDoc, element_docs, resolved_property_checked, resolved_property_with, walk_skyline,
-};
+use crate::rules::wxml::{for_each_element, resolved_property_checked, resolved_property_with};
 use crate::rules::wxss::value_util::at_declaration;
 use crate::{Diagnostic, Severity};
 
@@ -53,60 +51,56 @@ impl Rule for FixedLayer {
         // 同一个位置只报一次：样式表按声明偏移，内联 `style` 按元素起始位置。
         let mut reported: HashSet<(String, usize, usize)> = HashSet::new();
 
-        for ElementDoc { doc, reach } in element_docs(project) {
-            let tree = Tree::new(&doc);
-            walk_skyline(&doc, |element, ancestors| {
-                // 模板定义体 / 片段里选择器判不了：不能断言它不是 fixed。
-                let Some(position) = resolved_property_checked(project, &tree, element, "position")
-                else {
-                    return;
-                };
-                if !clean_value(&position.value).eq_ignore_ascii_case("fixed") {
-                    return;
-                }
-                // 只有祖先形成包含块时，WebView 与 Skyline 的定位基准才不同。
-                if has_containing_block(project, &tree, ancestors) != Some(true) {
-                    return;
-                }
+        for_each_element(project, self.target(), |site| {
+            let (doc, tree, element, ancestors) =
+                (site.doc, site.tree, site.element, site.ancestors);
+            let reach = site.reach;
+            // 模板定义体 / 片段里选择器判不了：不能断言它不是 fixed。
+            let Some(position) = resolved_property_checked(project, tree, element, "position")
+            else {
+                return;
+            };
+            if !clean_value(&position.value).eq_ignore_ascii_case("fixed") {
+                return;
+            }
+            // 只有祖先形成包含块时，WebView 与 Skyline 的定位基准才不同。
+            if has_containing_block(project, tree, ancestors) != Some(true) {
+                return;
+            }
 
-                let diagnostic = match position.sheet.zip(position.declaration) {
-                    Some((sheet, declaration)) => {
-                        if !reported.insert((sheet.doc.path().to_string(), declaration.offset, 0)) {
-                            return;
-                        }
-                        at_declaration(
-                            Self::ID,
-                            &sheet.doc,
-                            declaration,
-                            Severity::Warning,
-                            MESSAGE,
-                            reach.help(HELP),
-                        )
+            let diagnostic = match position.sheet.zip(position.declaration) {
+                Some((sheet, declaration)) => {
+                    if !reported.insert((sheet.doc.path().to_string(), declaration.offset, 0)) {
+                        return;
                     }
-                    // 内联 `style`：没有声明可落，报在元素开始标签上。
-                    None => {
-                        let (line, column) = doc.position(element.tag_start);
-                        if !reported.insert((
-                            doc.path().to_string(),
-                            line as usize,
-                            column as usize,
-                        )) {
-                            return;
-                        }
-                        Diagnostic::new(
-                            Self::ID,
-                            Severity::Warning,
-                            MESSAGE,
-                            doc.path(),
-                            line,
-                            column,
-                        )
-                        .help(reach.help(HELP))
+                    at_declaration(
+                        Self::ID,
+                        &sheet.doc,
+                        declaration,
+                        Severity::Warning,
+                        MESSAGE,
+                        reach.help(HELP),
+                    )
+                }
+                // 内联 `style`：没有声明可落，报在元素开始标签上。
+                None => {
+                    let (line, column) = doc.position(element.tag_start);
+                    if !reported.insert((doc.path().to_string(), line as usize, column as usize)) {
+                        return;
                     }
-                };
-                out.push(diagnostic);
-            });
-        }
+                    Diagnostic::new(
+                        Self::ID,
+                        Severity::Warning,
+                        MESSAGE,
+                        doc.path(),
+                        line,
+                        column,
+                    )
+                    .help(reach.help(HELP))
+                }
+            };
+            out.push(diagnostic);
+        });
         out
     }
 }

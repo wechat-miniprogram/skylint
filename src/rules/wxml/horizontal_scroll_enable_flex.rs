@@ -9,9 +9,8 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
 use super::structure::{find_attr, flag};
-use crate::matcher::Tree;
 
-use super::{span_diagnostic, visit, walk_skyline};
+use super::{for_each_element, span_diagnostic};
 use crate::rules::wxml::{cascade_entries_with, is_flex_value};
 
 pub const HORIZONTAL_FLEX_ID: &str = "skyline/horizontal-scroll-enable-flex";
@@ -28,30 +27,30 @@ impl Rule for HorizontalScrollEnableFlex {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            let tree = Tree::new(doc);
-            walk_skyline(doc, |element, _ancestors| {
-                if element.tag != "scroll-view"
-                    || flag(element, "scroll-x") != Some(true)
-                    || flag(element, "enable-flex") != Some(false)
-                {
-                    return;
-                }
-                // 取级联胜出的那一个 `display`：`style="display:block"` 覆盖时不需要 enable-flex。
-                // 模板定义体里选择器判不了时不能当「不是 flex」。
-                let Some(display) = cascade_entries_with(project, &tree, element, "display") else {
-                    return;
-                };
-                if !display
-                    .last()
-                    .is_some_and(|entry| is_flex_value(&entry.value))
-                {
-                    return;
-                }
-                let Some(attr) = find_attr(element, "scroll-x") else {
-                    return;
-                };
-                out.push(
+        let mut out = Vec::new();
+        for_each_element(project, self.target(), |site| {
+            let (doc, tree, element) = (site.doc, site.tree, site.element);
+            if element.tag != "scroll-view"
+                || flag(element, "scroll-x") != Some(true)
+                || flag(element, "enable-flex") != Some(false)
+            {
+                return;
+            }
+            // 取级联胜出的那一个 `display`：`style="display:block"` 覆盖时不需要 enable-flex。
+            // 模板定义体里选择器判不了时不能当「不是 flex」。
+            let Some(display) = cascade_entries_with(project, tree, element, "display") else {
+                return;
+            };
+            if !display
+                .last()
+                .is_some_and(|entry| is_flex_value(&entry.value))
+            {
+                return;
+            }
+            let Some(attr) = find_attr(element, "scroll-x") else {
+                return;
+            };
+            out.push(
                     span_diagnostic(
                         HORIZONTAL_FLEX_ID,
                         doc,
@@ -65,8 +64,8 @@ impl Rule for HorizontalScrollEnableFlex {
                         "添加 `enable-flex`，并给容器写 `style=\"display: flex; flex-direction: row;\"`",
                     ),
                 );
-            });
-        })
+        });
+        out
     }
 }
 

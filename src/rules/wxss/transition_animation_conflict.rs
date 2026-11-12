@@ -19,9 +19,7 @@ use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{
-    ElementDoc, element_diagnostic, element_docs, resolved_property_with, walk_skyline,
-};
+use crate::rules::wxml::{element_diagnostic, for_each_element, resolved_property_with};
 use crate::{Diagnostic, Severity};
 
 pub struct TransitionAnimationConflict;
@@ -77,51 +75,49 @@ impl Rule for TransitionAnimationConflict {
             return Vec::new();
         }
         let mut out = Vec::new();
-        for ElementDoc { doc, reach } in element_docs(project) {
-            let tree = Tree::new(&doc);
-            walk_skyline(&doc, |element, _| {
-                let (transition, transition_unknown) =
-                    transition_properties(project, &tree, element);
-                let (names, animation_unknown) = animation_names(project, &tree, element);
-                // 结论依赖的两个属性有一个判不了（模板里祖先未知 / 选择器超出受限文法）：不报。
-                if transition_unknown || animation_unknown {
-                    return;
-                }
-                let (Some(transition), Some(names)) = (transition, names) else {
-                    return;
+        for_each_element(project, self.target(), |site| {
+            let (doc, tree, element) = (site.doc, site.tree, site.element);
+            let reach = site.reach;
+            let (transition, transition_unknown) = transition_properties(project, tree, element);
+            let (names, animation_unknown) = animation_names(project, tree, element);
+            // 结论依赖的两个属性有一个判不了（模板里祖先未知 / 选择器超出受限文法）：不报。
+            if transition_unknown || animation_unknown {
+                return;
+            }
+            let (Some(transition), Some(names)) = (transition, names) else {
+                return;
+            };
+            let mut hits: Vec<(&str, &str)> = Vec::new();
+            for name in &names {
+                let Some(animated) = keyframes.get(name) else {
+                    continue;
                 };
-                let mut hits: Vec<(&str, &str)> = Vec::new();
-                for name in &names {
-                    let Some(animated) = keyframes.get(name) else {
-                        continue;
-                    };
-                    for property in animated {
-                        if transition
-                            .iter()
-                            .any(|item| item == "all" || item == property)
-                            && !hits.iter().any(|(p, n)| p == property && n == name)
-                        {
-                            hits.push((property.as_str(), name.as_str()));
-                        }
+                for property in animated {
+                    if transition
+                        .iter()
+                        .any(|item| item == "all" || item == property)
+                        && !hits.iter().any(|(p, n)| p == property && n == name)
+                    {
+                        hits.push((property.as_str(), name.as_str()));
                     }
                 }
-                if hits.is_empty() {
-                    return;
-                }
-                let (property, name) = hits[0];
-                out.push(
-                    element_diagnostic(
-                        Self::ID,
-                        &doc,
-                        element,
-                        doc.path(),
-                        Severity::Warning,
-                        Self::message(property, name),
-                    )
-                    .help(reach.help(Self::HELP)),
-                );
-            });
-        }
+            }
+            if hits.is_empty() {
+                return;
+            }
+            let (property, name) = hits[0];
+            out.push(
+                element_diagnostic(
+                    Self::ID,
+                    doc,
+                    element,
+                    doc.path(),
+                    Severity::Warning,
+                    Self::message(property, name),
+                )
+                .help(reach.help(Self::HELP)),
+            );
+        });
         out
     }
 }

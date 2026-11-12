@@ -21,7 +21,7 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, Target};
 use crate::wxml_graph::FlatElement;
 
-use super::{ElementDoc, Reach, element_docs, walk_skyline};
+use super::{Reach, for_each_element};
 
 pub const ID: &str = "skyline/scroll-gesture-conflict";
 
@@ -48,15 +48,15 @@ impl Rule for ScrollGestureConflict {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let graph = project.graph();
         let mut out = Vec::new();
         let mut reported = HashSet::new();
-        for ElementDoc { doc, reach } in element_docs(project) {
-            if reach != Reach::Skyline {
-                continue;
+        for_each_element(project, self.target(), |site| {
+            if site.reach != Reach::Skyline {
+                return;
             }
+            let (doc, element) = (site.doc, site.element);
             let path = doc.path().to_string();
-            walk_skyline(&doc, |element, _| {
+            {
                 if !is_vertical_scroll_view(element) {
                     return;
                 }
@@ -69,7 +69,7 @@ impl Rule for ScrollGestureConflict {
                 }
                 let (line, _) = doc.position(element.tag_start);
                 let scroll_view = format!("{path}:{line}");
-                let chain = graph.ancestors(&path, element).nodes;
+                let chain = site.graph.ancestors(&path, element).nodes;
                 // 调用方把拖拽开关做成动态绑定：里面有 scrollTop 门控，静态看不出来。
                 if chain.iter().any(|(_, ancestor)| is_gated(ancestor)) {
                     return;
@@ -98,8 +98,8 @@ impl Rule for ScrollGestureConflict {
                         .help(HELP),
                     );
                 }
-            });
-        }
+            };
+        });
         out
     }
 }

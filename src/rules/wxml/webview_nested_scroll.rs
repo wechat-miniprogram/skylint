@@ -12,7 +12,7 @@ use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, Target};
 
-use super::{element_diagnostic, structure::find_attr, visit, walk_webview};
+use super::{element_diagnostic, for_each_element, structure::find_attr};
 
 pub const ID: &str = "webview/nested-scroll";
 
@@ -35,19 +35,17 @@ impl Rule for NestedScroll {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            walk_webview(doc, |element, _| {
-                if element.skyline_only() {
-                    return;
-                }
-                let tag = element.tag.to_ascii_lowercase();
-                let nested_type = tag == "scroll-view"
-                    && find_attr(element, "type").and_then(|attr| attr.value.as_deref())
-                        == Some("nested");
-                if !nested_type && !TAGS.contains(&tag.as_str()) {
-                    return;
-                }
-                out.push(
+        let mut out = Vec::new();
+        for_each_element(project, self.target(), |site| {
+            let (doc, element) = (site.doc, site.element);
+            let tag = element.tag.to_ascii_lowercase();
+            let nested_type = tag == "scroll-view"
+                && find_attr(element, "type").and_then(|attr| attr.value.as_deref())
+                    == Some("nested");
+            if !nested_type && !TAGS.contains(&tag.as_str()) {
+                return;
+            }
+            out.push(
                     element_diagnostic(
                         ID,
                         doc,
@@ -60,8 +58,8 @@ impl Rule for NestedScroll {
                     )
                     .help("给整块加 `wx:if=\"{{renderer === 'skyline'}}\"`，WebView 分支用普通 `scroll-view` + 固定头部"),
                 );
-            });
-        })
+        });
+        out
     }
 }
 

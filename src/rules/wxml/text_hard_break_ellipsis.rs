@@ -15,7 +15,7 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
 use super::structure::find_attr;
-use super::{element_diagnostic, visit, walk_skyline};
+use super::{element_diagnostic, for_each_element};
 
 pub const ID: &str = "skyline/text-hard-break-ellipsis";
 
@@ -31,11 +31,12 @@ impl Rule for TextHardBreakEllipsis {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            walk_skyline(doc, |element, _ancestors| {
-                check_element(doc, element, out);
-            });
-        })
+        let mut out = Vec::new();
+        for_each_element(project, self.target(), |site| {
+            let (doc, element) = (site.doc, site.element);
+            check_element(doc, element, &mut out);
+        });
+        out
     }
 }
 

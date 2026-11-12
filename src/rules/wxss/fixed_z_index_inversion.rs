@@ -24,9 +24,8 @@ use std::collections::HashSet;
 
 use crate::matcher::Tree;
 use crate::project::Project;
-use crate::rules::Rule;
-use crate::rules::RuleMeta;
-use crate::rules::wxml::{ElementDoc, element_docs, resolved_property_with, walk_skyline};
+use crate::rules::wxml::{for_each_element, resolved_property_with};
+use crate::rules::{Rule, RuleMeta, Target};
 use crate::wxml_graph::WxmlGraph;
 use crate::{Diagnostic, Severity};
 
@@ -194,61 +193,58 @@ fn template_reach(project: &Project) -> Vec<(&str, Vec<&str>)> {
 /// 收集所有 `position: fixed` 且有整数 `z-index` 的元素。
 fn collect_layers(project: &Project, graph: &WxmlGraph) -> Vec<Layer> {
     let mut out = Vec::new();
-    for ElementDoc { doc, .. } in element_docs(project) {
-        let tree = Tree::new(&doc);
-        walk_skyline(&doc, |element, ancestors| {
-            // 模板定义体 / 片段里选择器判不了：不能断言它是不是 fixed、z-index 是多少。
+    for_each_element(project, Target::Skyline, |site| {
+        let (doc, tree, element, ancestors) = (site.doc, site.tree, site.element, site.ancestors);
+        // 模板定义体 / 片段里选择器判不了：不能断言它是不是 fixed、z-index 是多少。
+        let (position, undecidable) = resolved_property_with(project, tree, element, "position");
+        if undecidable {
+            return;
+        }
+        let Some(position) = position else {
+            return;
+        };
+        if !clean_value(&position.value).eq_ignore_ascii_case("fixed") {
+            return;
+        }
+        let (own, undecidable) = integer(project, tree, element, "z-index");
+        if undecidable {
+            return;
+        }
+        let Some(own) = own else {
+            return;
+        };
+        // 最外层层叠上下文祖先：WebView 里它整层参与兄弟排序，内部 z-index 被关在里面。
+        let mut flat = own;
+        for ancestor in ancestors.iter().rev() {
             let (position, undecidable) =
-                resolved_property_with(project, &tree, element, "position");
+                resolved_property_with(project, tree, ancestor, "position");
             if undecidable {
                 return;
             }
             let Some(position) = position else {
-                return;
+                continue;
             };
-            if !clean_value(&position.value).eq_ignore_ascii_case("fixed") {
-                return;
+            if clean_value(&position.value).eq_ignore_ascii_case("static") {
+                continue;
             }
-            let (own, undecidable) = integer(project, &tree, element, "z-index");
+            let (z, undecidable) = integer(project, tree, ancestor, "z-index");
             if undecidable {
                 return;
             }
-            let Some(own) = own else {
-                return;
-            };
-            // 最外层层叠上下文祖先：WebView 里它整层参与兄弟排序，内部 z-index 被关在里面。
-            let mut flat = own;
-            for ancestor in ancestors.iter().rev() {
-                let (position, undecidable) =
-                    resolved_property_with(project, &tree, ancestor, "position");
-                if undecidable {
-                    return;
-                }
-                let Some(position) = position else {
-                    continue;
-                };
-                if clean_value(&position.value).eq_ignore_ascii_case("static") {
-                    continue;
-                }
-                let (z, undecidable) = integer(project, &tree, ancestor, "z-index");
-                if undecidable {
-                    return;
-                }
-                if let Some(z) = z {
-                    flat = z;
-                    break;
-                }
+            if let Some(z) = z {
+                flat = z;
+                break;
             }
-            let (line, column) = doc.position(element.tag_start);
-            out.push(Layer {
-                path: doc.path().to_string(),
-                line,
-                column,
-                own,
-                flat,
-            });
+        }
+        let (line, column) = doc.position(element.tag_start);
+        out.push(Layer {
+            path: doc.path().to_string(),
+            line,
+            column,
+            own,
+            flat,
         });
-    }
+    });
     // `graph` 现阶段只用于确认文档在图里，避免把模板片段当成渲染树。
     out.retain(|layer| graph.contains(&layer.path));
     out

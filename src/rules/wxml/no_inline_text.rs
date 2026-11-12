@@ -14,7 +14,7 @@ use crate::matcher::Tree;
 use crate::wxml_graph::{SlotHost, WxmlGraph};
 
 use super::branch::exclusive_branches;
-use super::{flex_container, is_out_of_flow, span_diagnostic, visit, walk_skyline};
+use super::{flex_container, for_each_element, is_out_of_flow, span_diagnostic};
 
 pub const ID: &str = "skyline/no-inline-text";
 
@@ -36,13 +36,13 @@ impl Rule for NoInlineText {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        let graph = project.graph();
-        visit(project, |doc, out| {
-            let tree = Tree::new(doc);
-            walk_skyline(doc, |element, _ancestors| {
-                check_element(project, graph, doc, &tree, element, out);
-            });
-        })
+        let mut out = Vec::new();
+        for_each_element(project, self.target(), |site| {
+            let (doc, tree, element) = (site.doc, site.tree, site.element);
+            let graph = site.graph;
+            check_element(project, graph, doc, tree, element, &mut out);
+        });
+        out
     }
 }
 

@@ -27,7 +27,7 @@ use crate::rules::{Rule, RuleMeta};
 
 use super::ancestry;
 use super::structure::find_attr;
-use super::{span_diagnostic, truncation, visit, walk_skyline};
+use super::{for_each_element, span_diagnostic, truncation};
 
 #[derive(Debug, Clone, Copy)]
 enum Constraint {
@@ -463,66 +463,67 @@ impl Rule for ComponentAttribute {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let table = table();
+        let mut out = Vec::new();
         ancestry::with_views(project, |views| {
-            visit(project, |doc, out| {
-                let tree = Tree::new(doc);
-                walk_skyline(doc, |element, ancestors| {
-                    for attr in &element.attributes {
-                        let name = attr.name.to_ascii_lowercase();
-                        let Some(entries) = table.lookup(&element.tag, &name) else {
-                            continue;
-                        };
-                        let Some((entry, value)) = judge_attribute(entries, attr) else {
-                            continue;
-                        };
-                        out.push(
-                            span_diagnostic(
-                                Self::ID,
-                                doc,
-                                attr.start,
-                                attr.end,
-                                doc.path(),
-                                Severity::Warning,
-                                message(&element.tag, &name, value, &entry.constraint),
-                            )
-                            .help(help(entry)),
-                        );
-                    }
-                    let Some(rules) = table.requires.get(element.tag.as_str()) else {
-                        return;
+            for_each_element(project, self.target(), |site| {
+                let (doc, tree, element, ancestors) =
+                    (site.doc, site.tree, site.element, site.ancestors);
+                for attr in &element.attributes {
+                    let name = attr.name.to_ascii_lowercase();
+                    let Some(entries) = table.lookup(&element.tag, &name) else {
+                        continue;
                     };
-                    let context = Context {
-                        views,
-                        tree: &tree,
-                        ancestors,
+                    let Some((entry, value)) = judge_attribute(entries, attr) else {
+                        continue;
                     };
-                    for rule in rules {
-                        let Some(violation) = rule.violation(element, &context) else {
-                            continue;
-                        };
-                        let Some(attr) = find_attr(element, rule.trigger.attr()) else {
-                            continue;
-                        };
-                        out.push(
-                            span_diagnostic(
-                                Self::ID,
-                                doc,
-                                attr.start,
-                                attr.end,
-                                doc.path(),
-                                Severity::Warning,
-                                violation.message(&element.tag, rule),
-                            )
-                            .help(
-                                rule.help
-                                    .unwrap_or("调整这两个属性的取值，避免组合被忽略")
-                                    .to_string(),
-                            ),
-                        );
-                    }
-                });
-            })
-        })
+                    out.push(
+                        span_diagnostic(
+                            Self::ID,
+                            doc,
+                            attr.start,
+                            attr.end,
+                            doc.path(),
+                            Severity::Warning,
+                            message(&element.tag, &name, value, &entry.constraint),
+                        )
+                        .help(help(entry)),
+                    );
+                }
+                let Some(rules) = table.requires.get(element.tag.as_str()) else {
+                    return;
+                };
+                let context = Context {
+                    views,
+                    tree,
+                    ancestors,
+                };
+                for rule in rules {
+                    let Some(violation) = rule.violation(element, &context) else {
+                        continue;
+                    };
+                    let Some(attr) = find_attr(element, rule.trigger.attr()) else {
+                        continue;
+                    };
+                    out.push(
+                        span_diagnostic(
+                            Self::ID,
+                            doc,
+                            attr.start,
+                            attr.end,
+                            doc.path(),
+                            Severity::Warning,
+                            violation.message(&element.tag, rule),
+                        )
+                        .help(
+                            rule.help
+                                .unwrap_or("调整这两个属性的取值，避免组合被忽略")
+                                .to_string(),
+                        ),
+                    );
+                }
+            });
+        });
+        out
     }
 }
 

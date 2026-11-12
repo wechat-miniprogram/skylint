@@ -18,7 +18,7 @@ use crate::input::wxml::{WxmlElement, WxmlNode};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, Target};
 
-use super::{element_diagnostic, visit, walk_webview};
+use super::{element_diagnostic, for_each_element};
 
 pub const ID: &str = "webview/text-children";
 
@@ -38,31 +38,32 @@ impl Rule for TextChildren {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            walk_webview(doc, |element, _| {
-                if !element.tag.eq_ignore_ascii_case("text") || element.skyline_only() {
-                    return;
-                }
-                let dropped = dropped_children(element);
-                if dropped.is_empty() {
-                    return;
-                }
-                out.push(
-                    element_diagnostic(
-                        ID,
-                        doc,
-                        element,
-                        doc.path(),
-                        Severity::Error,
-                        format!(
-                            "`<text>` 里的 {} 在 WebView 下会被丢弃（只保留文本与嵌套 `<text>`），Skyline 下才会渲染",
-                            dropped.join("、")
-                        ),
-                    )
-                    .help("把元素挪到 `<text>` 外，按 `wx:if=\"{{renderer === 'skyline'}}\"` 分成两支：Skyline 保留文本包装，WebView 直接用元素"),
-                );
-            });
-        })
+        let mut out = Vec::new();
+        for_each_element(project, self.target(), |site| {
+            let (doc, element) = (site.doc, site.element);
+            if !element.tag.eq_ignore_ascii_case("text") {
+                return;
+            }
+            let dropped = dropped_children(element);
+            if dropped.is_empty() {
+                return;
+            }
+            out.push(
+                element_diagnostic(
+                    ID,
+                    doc,
+                    element,
+                    doc.path(),
+                    Severity::Error,
+                    format!(
+                        "`<text>` 里的 {} 在 WebView 下会被丢弃（只保留文本与嵌套 `<text>`），Skyline 下才会渲染",
+                        dropped.join("、")
+                    ),
+                )
+                .help("把元素挪到 `<text>` 外，按 `wx:if=\"{{renderer === 'skyline'}}\"` 分成两支：Skyline 保留文本包装，WebView 直接用元素"),
+            );
+        });
+        out
     }
 }
 

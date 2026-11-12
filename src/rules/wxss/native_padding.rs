@@ -24,13 +24,10 @@
 //! 排除 `swiper-item`：它 `CreateConcreteWidget()` 返回空 → 走 `YGConnector`，子节点进它
 //! 自己的 yoga 树，padding 正常生效（`shadow/components/swiper_item_shadow_node.cc:30-32`）。
 
-use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{
-    ElementDoc, Reach, element_diagnostic, element_docs, resolved_property_with, walk_skyline,
-};
+use crate::rules::wxml::{Reach, element_diagnostic, for_each_element, resolved_property_with};
 use crate::rules::wxss::natives::{NATIVES, Native, NativeKind};
 use crate::{Diagnostic, Severity};
 
@@ -78,46 +75,44 @@ impl Rule for NativePadding {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut out = Vec::new();
 
-        for ElementDoc { doc, reach } in element_docs(project) {
-            if reach != Reach::Skyline {
-                continue;
+        for_each_element(project, self.target(), |site| {
+            if site.reach != Reach::Skyline {
+                return;
             }
-            let tree = Tree::new(&doc);
-            walk_skyline(&doc, |element, _| {
-                let Some(native) = NATIVES.iter().find(|native| native.tag == element.tag) else {
-                    return;
-                };
-                let mut padded = false;
-                let mut undecidable = false;
-                for property in Self::PROPERTIES {
-                    let (resolved, unknown) =
-                        resolved_property_with(project, &tree, element, property);
-                    undecidable |= unknown;
-                    if resolved.is_some_and(|resolved| nonzero_padding(&resolved.value)) {
-                        padded = true;
-                    }
+            let (doc, tree, element) = (site.doc, site.tree, site.element);
+            let reach = site.reach;
+            let Some(native) = NATIVES.iter().find(|native| native.tag == element.tag) else {
+                return;
+            };
+            let mut padded = false;
+            let mut undecidable = false;
+            for property in Self::PROPERTIES {
+                let (resolved, unknown) = resolved_property_with(project, tree, element, property);
+                undecidable |= unknown;
+                if resolved.is_some_and(|resolved| nonzero_padding(&resolved.value)) {
+                    padded = true;
                 }
-                // 判不了的选择器可能改写结果：只要出现就不报（宁可漏报）。
-                if !padded || undecidable {
-                    return;
-                }
-                out.push(
-                    element_diagnostic(
-                        Self::ID,
-                        &doc,
-                        element,
-                        doc.path(),
-                        Severity::Warning,
-                        Self::message(native),
-                    )
-                    .help(reach.help(if native.padding_attr {
-                        PADDING_ATTR
-                    } else {
-                        INNER_VIEW
-                    })),
-                );
-            });
-        }
+            }
+            // 判不了的选择器可能改写结果：只要出现就不报（宁可漏报）。
+            if !padded || undecidable {
+                return;
+            }
+            out.push(
+                element_diagnostic(
+                    Self::ID,
+                    doc,
+                    element,
+                    doc.path(),
+                    Severity::Warning,
+                    Self::message(native),
+                )
+                .help(reach.help(if native.padding_attr {
+                    PADDING_ATTR
+                } else {
+                    INNER_VIEW
+                })),
+            );
+        });
         out
     }
 }

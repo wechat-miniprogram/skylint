@@ -271,6 +271,16 @@ impl Project {
         .find_map(|candidate| self.script(candidate))
     }
 
+    /// 这份 WXML 是否就是一个显式 `renderer: "webview"` 的页面。
+    ///
+    /// 这类页面是「不迁 Skyline」的明确决定，Skyline 方向对它们报限制是误报；
+    /// 反方向（WebView 降级）仍然要检查。
+    pub(crate) fn is_opted_out_page(&self, wxml_path: &str) -> bool {
+        self.pages
+            .iter()
+            .any(|page| page.opted_out && page.files.wxml.as_deref() == Some(wxml_path))
+    }
+
     /// 这份 WXML 所属单元声明的组件标签名（含 app 级）；模板文件没有归属，返回空。
     pub fn declared_components(&self, wxml_path: &str) -> BTreeSet<String> {
         self.declared_components

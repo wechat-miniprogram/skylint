@@ -15,7 +15,7 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
 use super::structure::find_attr;
-use super::{element_diagnostic, span_diagnostic, visit, walk_skyline};
+use super::{element_diagnostic, for_each_element, span_diagnostic};
 
 pub struct ScrollViewType;
 
@@ -36,29 +36,30 @@ impl Rule for ScrollViewType {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            walk_skyline(doc, |element, _ancestors| {
-                if element.tag != "scroll-view" {
-                    return;
-                }
-                let Some(attr) = find_attr(element, "type") else {
-                    out.push(no_lazy_rendering(doc, element, None));
-                    return;
-                };
-                // 动态值无法在静态阶段确定，跳过。
-                if !attr.is_static {
-                    return;
-                }
-                let value = attr.value.as_deref().unwrap_or("").trim();
-                match value {
-                    // 只有这三种走「按需渲染」的分支。
-                    "list" | "custom" | "nested" => {}
-                    // `type=""` 与不写 type 等价：内容全部渲染在兼容 wrapper 内。
-                    "" => out.push(no_lazy_rendering(doc, element, Some(attr))),
-                    other => out.push(falls_back_to_list(doc, attr, other)),
-                }
-            });
-        })
+        let mut out = Vec::new();
+        for_each_element(project, self.target(), |site| {
+            let (doc, element) = (site.doc, site.element);
+            if element.tag != "scroll-view" {
+                return;
+            }
+            let Some(attr) = find_attr(element, "type") else {
+                out.push(no_lazy_rendering(doc, element, None));
+                return;
+            };
+            // 动态值无法在静态阶段确定，跳过。
+            if !attr.is_static {
+                return;
+            }
+            let value = attr.value.as_deref().unwrap_or("").trim();
+            match value {
+                // 只有这三种走「按需渲染」的分支。
+                "list" | "custom" | "nested" => {}
+                // `type=""` 与不写 type 等价：内容全部渲染在兼容 wrapper 内。
+                "" => out.push(no_lazy_rendering(doc, element, Some(attr))),
+                other => out.push(falls_back_to_list(doc, attr, other)),
+            }
+        });
+        out
     }
 }
 

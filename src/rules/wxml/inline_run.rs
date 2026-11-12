@@ -31,7 +31,7 @@ use crate::rules::{Rule, RuleMeta};
 use super::branch::exclusive;
 use super::structure::attr_is_off;
 use super::{
-    cascade_entries_with, element_diagnostic, is_flex_value, resolved_property, visit, walk_skyline,
+    cascade_entries_with, element_diagnostic, for_each_element, is_flex_value, resolved_property,
 };
 
 pub const ID: &str = "skyline/inline-run";
@@ -54,12 +54,13 @@ impl Rule for InlineRun {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            let tree = Tree::new(doc);
-            walk_skyline(doc, |element, ancestors| {
-                check_element(project, doc, &tree, element, ancestors, out);
-            });
-        })
+        let mut out = Vec::new();
+        for_each_element(project, self.target(), |site| {
+            let (doc, tree, element, ancestors) =
+                (site.doc, site.tree, site.element, site.ancestors);
+            check_element(project, doc, tree, element, ancestors, &mut out);
+        });
+        out
     }
 }
 

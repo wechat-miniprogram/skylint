@@ -24,9 +24,7 @@ use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
 use crate::rules::wxml::structure::find_attr;
-use crate::rules::wxml::{
-    ElementDoc, Resolved, element_diagnostic, element_docs, resolved_property, walk_skyline,
-};
+use crate::rules::wxml::{Resolved, element_diagnostic, for_each_element, resolved_property};
 use crate::{Diagnostic, Severity};
 
 pub struct ScrollViewHeight;
@@ -54,31 +52,30 @@ impl Rule for ScrollViewHeight {
         }
         let mut out = Vec::new();
 
-        for ElementDoc { doc, reach } in element_docs(project) {
-            let tree = Tree::new(&doc);
+        for_each_element(project, self.target(), |site| {
+            let (doc, tree, element) = (site.doc, site.tree, site.element);
+            let reach = site.reach;
             let default_block = project.scope_of(doc.path()).map_or_else(
                 || project.app_display_block(),
                 |scope| project.renders_as_block(&scope),
             );
-            walk_skyline(&doc, |element, _| {
-                if element.tag != "scroll-view"
-                    || definite_height(project, &tree, element, default_block, 0)
-                {
-                    return;
-                }
-                out.push(
-                    element_diagnostic(
-                        Self::ID,
-                        &doc,
-                        element,
-                        doc.path(),
-                        Severity::Warning,
-                        Self::MESSAGE,
-                    )
-                    .help(reach.help(Self::HELP)),
-                );
-            });
-        }
+            if element.tag != "scroll-view"
+                || definite_height(project, tree, element, default_block, 0)
+            {
+                return;
+            }
+            out.push(
+                element_diagnostic(
+                    Self::ID,
+                    doc,
+                    element,
+                    doc.path(),
+                    Severity::Warning,
+                    Self::MESSAGE,
+                )
+                .help(reach.help(Self::HELP)),
+            );
+        });
         out
     }
 }

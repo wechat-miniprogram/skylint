@@ -23,7 +23,7 @@ use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{ElementDoc, element_docs, resolved_property_with, walk_skyline};
+use crate::rules::wxml::{for_each_element, resolved_property_with};
 use crate::rules::wxss::value_util::at_declaration;
 use crate::{Diagnostic, Severity};
 
@@ -84,50 +84,49 @@ impl Rule for ImplicitColor {
         let mut out = Vec::new();
         let mut reported: HashSet<(String, usize)> = HashSet::new();
 
-        for ElementDoc { doc, reach } in element_docs(project) {
-            let tree = Tree::new(&doc);
-            walk_skyline(&doc, |element, ancestors| {
-                // 颜色判不了就不能断言「有效 color 不是黑色」：不报。
-                let (color, undecidable) = effective_color(project, &tree, element, ancestors);
-                if undecidable || color.is_none() {
-                    return;
+        for_each_element(project, self.target(), |site| {
+            let (tree, element, ancestors) = (site.tree, site.element, site.ancestors);
+            let reach = site.reach;
+            // 颜色判不了就不能断言「有效 color 不是黑色」：不报。
+            let (color, undecidable) = effective_color(project, tree, element, ancestors);
+            if undecidable || color.is_none() {
+                return;
+            }
+            for property in PROPERTIES {
+                let (resolved, undecidable) =
+                    resolved_property_with(project, tree, element, property);
+                if undecidable {
+                    continue;
                 }
-                for property in PROPERTIES {
-                    let (resolved, undecidable) =
-                        resolved_property_with(project, &tree, element, property);
-                    if undecidable {
-                        continue;
-                    }
-                    let Some(resolved) = resolved else {
-                        continue;
-                    };
-                    let (Some(sheet), Some(declaration)) = (resolved.sheet, resolved.declaration)
-                    else {
-                        continue;
-                    };
-                    if !lacks_color(declaration) {
-                        continue;
-                    }
-                    if invisible(project, &tree, element, declaration) != Some(false) {
-                        continue;
-                    }
-                    if !reported.insert((sheet.doc.path().to_string(), declaration.offset)) {
-                        continue;
-                    }
-                    out.push(at_declaration(
-                        Self::ID,
-                        &sheet.doc,
-                        declaration,
-                        Severity::Info,
-                        format!(
-                            "`{}` 没写颜色：Skyline 下这里默认黑色，WebView 下取元素的 `color`",
-                            declaration.name
-                        ),
-                        reach.help("显式写出颜色（含 `currentColor`）即可两端一致"),
-                    ));
+                let Some(resolved) = resolved else {
+                    continue;
+                };
+                let (Some(sheet), Some(declaration)) = (resolved.sheet, resolved.declaration)
+                else {
+                    continue;
+                };
+                if !lacks_color(declaration) {
+                    continue;
                 }
-            });
-        }
+                if invisible(project, tree, element, declaration) != Some(false) {
+                    continue;
+                }
+                if !reported.insert((sheet.doc.path().to_string(), declaration.offset)) {
+                    continue;
+                }
+                out.push(at_declaration(
+                    Self::ID,
+                    &sheet.doc,
+                    declaration,
+                    Severity::Info,
+                    format!(
+                        "`{}` 没写颜色：Skyline 下这里默认黑色，WebView 下取元素的 `color`",
+                        declaration.name
+                    ),
+                    reach.help("显式写出颜色（含 `currentColor`）即可两端一致"),
+                ));
+            }
+        });
         out
     }
 }

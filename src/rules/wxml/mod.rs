@@ -69,7 +69,10 @@ use std::rc::Rc;
 
 use crate::diag::Diagnostic;
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
+use crate::matcher::Tree;
 use crate::project::{Project, Scope};
+use crate::rules::Target;
+use crate::wxml_graph::WxmlGraph;
 
 /// 页面与组件的 WXML + 被 import / include 的模板，按路径去重。
 ///
@@ -245,6 +248,9 @@ pub(crate) fn load_doc_unfolded(project: &Project, path: &str) -> Option<Rc<Wxml
 
 /// 遍历全部待检查的 WXML 文件（页面/组件单元 + 被 import/include 的模板）。
 /// 单个文件读失败或解析失败一律跳过，不终止扫描。
+///
+/// 只给「整文件」规则（字段引用、`renderer` 常量环境这类与元素无关的检查）用。
+/// 元素级规则一律走 [`for_each_element`]：可达性、renderer 分支、图访问都由它统一决定。
 pub(crate) fn visit(
     project: &Project,
     mut f: impl FnMut(&WxmlDoc, &mut Vec<Diagnostic>),
@@ -285,28 +291,48 @@ pub(crate) fn walk<'a>(
     recurse(&doc.nodes, &mut ancestors, &mut visit);
 }
 
-/// Skyline 方向的遍历：跳过只会在 WebView 下渲染的元素。
-///
-/// `wx:if="{{renderer === 'skyline'}}"` 的 `wx:else` 分支只在 WebView 下成立，
-/// 对它讲「Skyline 下会怎样」是误报。WebView 方向用 [`walk`]。
-pub(crate) fn walk_skyline(doc: &WxmlDoc, mut visit: impl FnMut(&WxmlElement, &[&WxmlElement])) {
-    walk(doc, |element, ancestors| {
-        if !element.webview_only() {
-            visit(element, ancestors);
-        }
-    });
+/// 元素级规则的遍历视图：文档、该文档的匹配视图、元素、本文件祖先链、可达性、图。
+pub(crate) struct ElementSite<'a, 't> {
+    pub doc: &'a WxmlDoc,
+    pub tree: &'t Tree<'a>,
+    pub element: &'a WxmlElement,
+    pub ancestors: &'a [&'a WxmlElement],
+    pub reach: Reach,
+    pub graph: &'a WxmlGraph,
 }
 
-/// WebView 方向的遍历：跳过只会在 Skyline 下渲染的元素。
+/// 元素级规则的唯一遍历入口。
 ///
-/// `wx:if="{{renderer === 'skyline'}}"` 的分支在 WebView 下不渲染，对它讲「WebView 下
-/// 会不会 …」是误报。Skyline 方向用 [`walk_skyline`]。
-pub(crate) fn walk_webview(doc: &WxmlDoc, mut visit: impl FnMut(&WxmlElement, &[&WxmlElement])) {
-    walk(doc, |element, ancestors| {
-        if !element.skyline_only() {
-            visit(element, ancestors);
+/// 三件事不再由规则自己选：
+/// - 文档集合固定为 [`element_docs`]（只含会被渲染到的文档，死代码不报）；
+/// - 跳过哪些元素由规则声明的 [`Target`] 决定（`Target::renders`）；
+/// - 图始终可用，slot 投影与模板实例化不用规则自己去建。
+pub(crate) fn for_each_element(
+    project: &Project,
+    target: Target,
+    mut f: impl FnMut(&ElementSite<'_, '_>),
+) {
+    let graph = project.graph();
+    for ElementDoc { doc, reach } in element_docs(project) {
+        // 显式 opt-out 的页面整页不迁 Skyline；WebView 方向仍要检查。
+        if target == Target::Skyline && project.is_opted_out_page(doc.path()) {
+            continue;
         }
-    });
+        let tree = Tree::new(&doc);
+        walk(&doc, |element, ancestors| {
+            if !target.renders(element) {
+                return;
+            }
+            f(&ElementSite {
+                doc: &doc,
+                tree: &tree,
+                element,
+                ancestors,
+                reach,
+                graph,
+            });
+        });
+    }
 }
 
 #[cfg(test)]

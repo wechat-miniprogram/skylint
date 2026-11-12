@@ -13,7 +13,7 @@ use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, Target};
 
-use super::{span_diagnostic, visit, walk_webview};
+use super::{for_each_element, span_diagnostic};
 
 pub const ID: &str = "webview/worklet-binding";
 
@@ -33,33 +33,31 @@ impl Rule for WorkletBinding {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            walk_webview(doc, |element, _| {
-                if element.skyline_only() {
-                    return;
+        let mut out = Vec::new();
+        for_each_element(project, self.target(), |site| {
+            let (doc, element) = (site.doc, site.element);
+            for attribute in &element.attributes {
+                if !attribute.name.starts_with("worklet:") {
+                    continue;
                 }
-                for attribute in &element.attributes {
-                    if !attribute.name.starts_with("worklet:") {
-                        continue;
-                    }
-                    out.push(
-                        span_diagnostic(
-                            ID,
-                            doc,
-                            attribute.start,
-                            attribute.end,
-                            doc.path(),
-                            Severity::Error,
-                            format!(
-                                "`{}` 在 WebView 下没有消费方，回调不会触发也不会报错",
-                                attribute.name
-                            ),
-                        )
-                        .help("同时挂普通 `bind:` 事件，或用 `wx:if=\"{{renderer === 'skyline'}}\"` 隔离 worklet 绑定"),
-                    );
-                }
-            });
-        })
+                out.push(
+                    span_diagnostic(
+                        ID,
+                        doc,
+                        attribute.start,
+                        attribute.end,
+                        doc.path(),
+                        Severity::Error,
+                        format!(
+                            "`{}` 在 WebView 下没有消费方，回调不会触发也不会报错",
+                            attribute.name
+                        ),
+                    )
+                    .help("同时挂普通 `bind:` 事件，或用 `wx:if=\"{{renderer === 'skyline'}}\"` 隔离 worklet 绑定"),
+                );
+            }
+        });
+        out
     }
 }
 

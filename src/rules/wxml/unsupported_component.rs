@@ -4,7 +4,7 @@ use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::{element_diagnostic, unsupported_replacement, visit, walk_skyline};
+use super::{element_diagnostic, for_each_element, unsupported_replacement};
 
 pub struct UnsupportedComponent;
 
@@ -22,30 +22,37 @@ impl Rule for UnsupportedComponent {
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        visit(project, |doc, out| {
-            let declared = project.declared_components(doc.path());
-            walk_skyline(doc, |element, _ancestors| {
-                let tag = element.tag.to_ascii_lowercase();
-                // `usingComponents` 里声明了同名标签时用的是自定义组件，不是同名内置组件。
-                if declared.contains(&tag) {
-                    return;
-                }
-                let Some(replacement) = unsupported_replacement(&tag) else {
-                    return;
-                };
-                out.push(
-                    element_diagnostic(
-                        Self::ID,
-                        doc,
-                        element,
-                        doc.path(),
-                        Severity::Error,
-                        format!("Skyline 不支持组件 `<{}>`", element.tag),
-                    )
-                    .help(replacement),
-                );
-            });
-        })
+        let mut out = Vec::new();
+        // `declared` 按文档缓存：同一份 `usingComponents` 不必每个元素重算。
+        let mut declared = std::collections::BTreeSet::new();
+        let mut current: Option<String> = None;
+        for_each_element(project, self.target(), |site| {
+            let (doc, element) = (site.doc, site.element);
+            if current.as_deref() != Some(doc.path()) {
+                declared = project.declared_components(doc.path());
+                current = Some(doc.path().to_string());
+            }
+            let tag = element.tag.to_ascii_lowercase();
+            // `usingComponents` 里声明了同名标签时用的是自定义组件，不是同名内置组件。
+            if declared.contains(&tag) {
+                return;
+            }
+            let Some(replacement) = unsupported_replacement(&tag) else {
+                return;
+            };
+            out.push(
+                element_diagnostic(
+                    Self::ID,
+                    doc,
+                    element,
+                    doc.path(),
+                    Severity::Error,
+                    format!("Skyline 不支持组件 `<{}>`", element.tag),
+                )
+                .help(replacement),
+            );
+        });
+        out
     }
 }
 
