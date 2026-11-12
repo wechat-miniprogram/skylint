@@ -796,26 +796,15 @@ impl<'a> Tree<'a> {
                     // 伪元素声明的承载者是生成的文本节点，不是宿主元素。
                     return Some(Tri::No);
                 }
-                Component::Class(name) => {
-                    if in_subject && self.class_unresolved(&name.0, element) {
+                Component::Class(_)
+                | Component::ID(_)
+                | Component::AttributeInNoNamespace { .. } => {
+                    if in_subject && self.subject_dynamic(component, element, dialect) {
                         dynamic = true;
                     }
                 }
-                Component::ID(_) => {
-                    if in_subject && self.has_dynamic(Some("id"), element) {
-                        dynamic = true;
-                    }
-                }
-                // `[foo]` 只看存在性，动态绑定同样确定存在，静态可判。
-                Component::AttributeInNoNamespaceExists { .. } => {}
-                Component::AttributeInNoNamespace { local_name, .. } => {
-                    if in_subject
-                        && dialect == Dialect::WebView
-                        && self.attr_condition_unresolved(local_name.0.as_str(), element)
-                    {
-                        dynamic = true;
-                    }
-                }
+                // `AttributeOther`（带运算子的属性选择器）只在主体上看动态条件：
+                // 组合符左边问的是别的元素，静态判不了也不该连累主体。
                 Component::AttributeOther(other) => {
                     if in_subject
                         && dialect == Dialect::WebView
@@ -835,27 +824,7 @@ impl<'a> Tree<'a> {
                     }
                     for inner in list.slice() {
                         for component in inner.iter_raw_match_order() {
-                            match component {
-                                Component::Class(name) => {
-                                    if self.class_unresolved(&name.0, element) {
-                                        dynamic = true;
-                                    }
-                                }
-                                Component::ID(_) => {
-                                    if self.has_dynamic(Some("id"), element) {
-                                        dynamic = true;
-                                    }
-                                }
-                                Component::AttributeInNoNamespaceExists { .. } => {}
-                                Component::AttributeInNoNamespace { local_name, .. } => {
-                                    dynamic |= dialect == Dialect::WebView
-                                        && self.attr_condition_unresolved(
-                                            local_name.0.as_str(),
-                                            element,
-                                        );
-                                }
-                                _ => {}
-                            }
+                            dynamic |= self.subject_dynamic(component, element, dialect);
                         }
                     }
                 }
@@ -917,6 +886,30 @@ impl<'a> Tree<'a> {
     }
 
     /// 兄弟区是否线性：含条件分支 / 循环 / 模板片段时序号不可静态确定。
+    /// 主体 compound 里的这一项是否依赖运行时值（可能被 `{{…}}` 改写）。
+    ///
+    /// 只有主体算动态：组合符左边问的是别的元素，拿主体的动态 class 一概而论会让
+    /// `.a .b` 里的 `.b` 带任意动态类时 `.a` 永远判成 Unknown。`:not()` / `:is()`
+    /// 里的内层同样走这里，两侧口径只此一份。
+    fn subject_dynamic(
+        &self,
+        component: &Component<SelImpl>,
+        element: &WxmlElement,
+        dialect: Dialect,
+    ) -> bool {
+        match component {
+            Component::Class(name) => self.class_unresolved(&name.0, element),
+            Component::ID(_) => self.has_dynamic(Some("id"), element),
+            // `[foo]` 只看存在性，动态绑定同样确定存在，静态可判。
+            Component::AttributeInNoNamespaceExists { .. } => false,
+            Component::AttributeInNoNamespace { local_name, .. } => {
+                dialect == Dialect::WebView
+                    && self.attr_condition_unresolved(local_name.0.as_str(), element)
+            }
+            _ => false,
+        }
+    }
+
     fn nonlinear_siblings(&self, idx: usize) -> bool {
         let element = self.element_at(idx);
         if element.in_template() || self.doc.fragment {
