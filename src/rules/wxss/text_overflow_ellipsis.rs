@@ -131,21 +131,10 @@ fn white_space_nowrap(project: &Project, tree: &Tree, element: &WxmlElement) -> 
 mod tests {
     use super::*;
     use crate::rules::Rule;
-    use crate::rules::testutil::wxss::Fixture;
+    use crate::rules::testutil::wxss::{self, Fixture};
 
     fn check(name: &str, wxml: &str, wxss: &str) -> Vec<Diagnostic> {
-        let fixture = Fixture::new(name);
-        fixture
-            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
-            .write(
-                "app.json",
-                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
-            )
-            .write("pages/index/index.json", "{}")
-            .write("pages/index/index.wxml", wxml)
-            .write("pages/index/index.wxss", wxss);
-        let project = fixture.project();
-        TextOverflowEllipsis.check(&project)
+        wxss::check(&TextOverflowEllipsis, name, wxml, wxss)
     }
 
     // ---- positive ----

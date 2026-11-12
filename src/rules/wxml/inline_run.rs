@@ -31,7 +31,8 @@ use crate::rules::{Rule, RuleMeta};
 use super::branch::exclusive;
 use super::structure::attr_is_off;
 use super::{
-    cascade_entries_with, element_diagnostic, for_each_element, is_flex_value, resolved_property,
+    ElementSite, cascade_entries_with, element_diagnostic, for_each_element, is_flex_value,
+    resolved_property,
 };
 
 pub const ID: &str = "skyline/inline-run";
@@ -56,22 +57,20 @@ impl Rule for InlineRun {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut out = Vec::new();
         for_each_element(project, self.target(), |site| {
-            let (doc, tree, element, ancestors) =
-                (site.doc, site.tree, site.element, site.ancestors);
-            check_element(project, doc, tree, element, ancestors, &mut out);
+            check_element(site, &mut out);
         });
         out
     }
 }
 
-fn check_element(
-    project: &Project,
-    doc: &WxmlDoc,
-    tree: &Tree<'_>,
-    element: &WxmlElement,
-    ancestors: &[&WxmlElement],
-    out: &mut Vec<Diagnostic>,
-) {
+fn check_element(site: &ElementSite<'_, '_>, out: &mut Vec<Diagnostic>) {
+    let (project, doc, tree, element, ancestors) = (
+        site.project,
+        site.doc,
+        site.tree,
+        site.element,
+        site.ancestors,
+    );
     // 文档既不是单元、也不在任何单元的模板闭包里：没有可求值的作用域，样式与
     // 实例化处的祖先都判不了，整篇跳过（不对无名文档做推断）。
     if project.scope_of(doc.path()).is_none() && !project.template_scopes.contains_key(doc.path()) {
@@ -681,13 +680,7 @@ mod tests {
             "tpls/stray.wxml",
             "<view><text>a</text><text>b</text></view>",
         );
-        let project = fixture.project();
-        let doc = crate::rules::wxml::load_doc(&project, "tpls/stray.wxml").unwrap();
-        let tree = crate::matcher::Tree::new(&doc);
-        let mut out = Vec::new();
-        for element in doc.elements() {
-            super::check_element(&project, &doc, &tree, element, &[], &mut out);
-        }
+        let out = check(&fixture);
         assert!(out.is_empty(), "{out:#?}");
     }
 }

@@ -134,22 +134,14 @@ fn nonzero_padding(value: &str) -> bool {
 mod tests {
     use crate::Diagnostic;
     use crate::rules::Rule;
-    use crate::rules::testutil::wxss::Fixture;
+    use crate::rules::testutil::wxss::{self, Fixture};
 
     use super::NativePadding;
 
     const SKYLINE_APP: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#;
 
     fn check(name: &str, wxml: &str, wxss: &str) -> Vec<Diagnostic> {
-        let fixture = Fixture::new(name);
-        fixture
-            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
-            .write("app.json", SKYLINE_APP)
-            .write("pages/index/index.json", "{}")
-            .write("pages/index/index.wxml", wxml)
-            .write("pages/index/index.wxss", wxss);
-        let project = fixture.project();
-        NativePadding.check(&project)
+        wxss::check(&NativePadding, name, wxml, wxss)
     }
 
     const SWIPER: &str = r#"<swiper class="slides"><swiper-item class="page"><view class="inner"/></swiper-item></swiper>"#;

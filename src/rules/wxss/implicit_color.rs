@@ -277,23 +277,12 @@ fn lacks_color(declaration: &WxssDeclaration) -> bool {
 mod tests {
     use crate::Diagnostic;
     use crate::rules::Rule;
-    use crate::rules::testutil::wxss::Fixture;
+    use crate::rules::testutil::wxss::{self, Fixture};
 
     use super::ImplicitColor;
 
     fn check(name: &str, wxml: &str, wxss: &str) -> Vec<Diagnostic> {
-        let fixture = Fixture::new(name);
-        fixture
-            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
-            .write(
-                "app.json",
-                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
-            )
-            .write("pages/index/index.json", "{}")
-            .write("pages/index/index.wxml", wxml)
-            .write("pages/index/index.wxss", wxss);
-        let project = fixture.project();
-        ImplicitColor.check(&project)
+        wxss::check(&ImplicitColor, name, wxml, wxss)
     }
 
     /// `color: inherit` 沿祖先链解析到黑色时，无颜色的 border 两端都是黑。

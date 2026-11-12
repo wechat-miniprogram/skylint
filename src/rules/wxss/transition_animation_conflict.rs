@@ -303,22 +303,14 @@ fn idents_of_value(value: &str) -> Vec<&str> {
 mod tests {
     use crate::Diagnostic;
     use crate::rules::Rule;
-    use crate::rules::testutil::wxss::Fixture;
+    use crate::rules::testutil::wxss::{self, Fixture};
 
     use super::TransitionAnimationConflict;
 
     const SKYLINE_APP: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#;
 
     fn check(name: &str, wxml: &str, wxss: &str) -> Vec<Diagnostic> {
-        let fixture = Fixture::new(name);
-        fixture
-            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
-            .write("app.json", SKYLINE_APP)
-            .write("pages/index/index.json", "{}")
-            .write("pages/index/index.wxml", wxml)
-            .write("pages/index/index.wxss", wxss);
-        let project = fixture.project();
-        TransitionAnimationConflict.check(&project)
+        wxss::check(&TransitionAnimationConflict, name, wxml, wxss)
     }
 
     const PANEL: &str = r#"<view class="panel slide-up"/>"#;

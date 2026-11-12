@@ -70,6 +70,28 @@ pub(crate) fn anchor(segments: &[&str], value: Option<&serde_json::Value>) -> Js
 }
 
 /// 配置类诊断：给出 `at` 就落在该位置，否则落在文件首字符。
+///
+/// 参数是诊断字段的直接投影（位置三项 + 内容两项 + 严重级），拆成结构体只会在
+/// 调用点再造一层面具；真正的入口是下面两个函数。
+#[allow(clippy::too_many_arguments)]
+fn emit(
+    out: &mut Vec<Diagnostic>,
+    id: &'static str,
+    path: &str,
+    at: Option<(u32, u32)>,
+    anchor: JsonAnchor,
+    message: String,
+    help: &str,
+    severity: Severity,
+) {
+    let (line, column) = at.unwrap_or((1, 1));
+    out.push(
+        Diagnostic::new(id, severity, message, path, line, column)
+            .help(help)
+            .json(anchor),
+    );
+}
+
 pub(crate) fn warn(
     out: &mut Vec<Diagnostic>,
     id: &'static str,
@@ -79,12 +101,7 @@ pub(crate) fn warn(
     message: String,
     help: &str,
 ) {
-    let (line, column) = at.unwrap_or((1, 1));
-    out.push(
-        Diagnostic::new(id, Severity::Warning, message, path, line, column)
-            .help(help)
-            .json(anchor),
-    );
+    emit(out, id, path, at, anchor, message, help, Severity::Warning);
 }
 
 pub(crate) fn error(
@@ -96,10 +113,5 @@ pub(crate) fn error(
     message: String,
     help: &str,
 ) {
-    let (line, column) = at.unwrap_or((1, 1));
-    out.push(
-        Diagnostic::new(id, Severity::Error, message, path, line, column)
-            .help(help)
-            .json(anchor),
-    );
+    emit(out, id, path, at, anchor, message, help, Severity::Error);
 }

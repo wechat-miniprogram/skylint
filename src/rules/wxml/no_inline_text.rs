@@ -37,7 +37,7 @@ impl Rule for NoInlineText {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut out = Vec::new();
         for_each_element(project, self.target(), |site| {
-            check_element(project, site, &mut out);
+            check_element(site, &mut out);
         });
         out
     }
@@ -45,8 +45,8 @@ impl Rule for NoInlineText {
 
 /// 只有「文本与元素混排」在 Skyline 下会静默错位：纯文本子节点仍按 inline 流渲染。
 /// 文本根组件内部允许文本与子节点混排，整棵子树豁免。
-fn check_element(project: &Project, site: &ElementSite<'_, '_>, out: &mut Vec<Diagnostic>) {
-    let (doc, tree, element) = (site.doc, site.tree, site.element);
+fn check_element(site: &ElementSite<'_, '_>, out: &mut Vec<Diagnostic>) {
+    let (project, doc, tree, element) = (site.project, site.doc, site.tree, site.element);
     if TEXT_TAGS.contains(&element.tag.as_str()) {
         return;
     }

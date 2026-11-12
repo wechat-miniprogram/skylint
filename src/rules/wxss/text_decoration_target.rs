@@ -124,20 +124,10 @@ fn has_text(element: &WxmlElement) -> bool {
 mod tests {
     use super::*;
     use crate::rules::Rule;
-    use crate::rules::testutil::wxss::Fixture;
+    use crate::rules::testutil::wxss::{self, Fixture};
 
     fn check(name: &str, wxml: &str, wxss: &str) -> Vec<Diagnostic> {
-        let fixture = Fixture::new(name);
-        fixture
-            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
-            .write(
-                "app.json",
-                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
-            )
-            .write("pages/index/index.json", "{}")
-            .write("pages/index/index.wxml", wxml)
-            .write("pages/index/index.wxss", wxss);
-        TextDecorationTarget.check(&fixture.project())
+        wxss::check(&TextDecorationTarget, name, wxml, wxss)
     }
 
     // ---- positive ----

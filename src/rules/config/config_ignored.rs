@@ -163,19 +163,12 @@ mod tests {
     use crate::Severity;
     use crate::project::Project;
     use crate::rules::Rule;
-    use crate::rules::testutil::Fixture;
+    use crate::rules::testutil::{Fixture, config};
 
     use super::ConfigIgnored;
 
     fn project(name: &str, app: &str, config: &str) -> (Fixture, Project) {
-        let fixture = Fixture::new(name);
-        fixture
-            .write("project.config.json", config)
-            .write("app.json", app)
-            .write("pages/index/index.json", "{}")
-            .write("pages/index/index.wxml", "<view/>");
-        let project = fixture.project();
-        (fixture, project)
+        config::project_with_config(name, config, app, "{}")
     }
 
     fn app_with_window(window: &str) -> String {

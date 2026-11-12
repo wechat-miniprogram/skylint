@@ -183,15 +183,12 @@ fn clean_value(value: &str) -> &str {
 mod tests {
     use crate::Diagnostic;
     use crate::rules::Rule;
-    use crate::rules::testutil::Fixture;
+    use crate::rules::testutil::wxss::{self, Fixture};
 
     use super::FixedLayer;
 
     fn check(name: &str, wxml: &str, wxss: &str) -> Vec<Diagnostic> {
-        let fixture = Fixture::wxml(name, wxml);
-        fixture.write("pages/index/index.wxss", wxss);
-        let project = fixture.project();
-        FixedLayer.check(&project)
+        wxss::check(&FixedLayer, name, wxml, wxss)
     }
 
     #[test]

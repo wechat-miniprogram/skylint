@@ -149,21 +149,14 @@ mod tests {
     use crate::Severity;
     use crate::project::Project;
     use crate::rules::Rule;
-    use crate::rules::testutil::Fixture;
+    use crate::rules::testutil::{Fixture, config};
 
     use super::LibVersion;
 
     const SKYLINE_APP: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#;
 
     fn project(name: &str, config: &str, app: &str, page: &str) -> (Fixture, Project) {
-        let fixture = Fixture::new(name);
-        fixture
-            .write("project.config.json", config)
-            .write("app.json", app)
-            .write("pages/index/index.json", page)
-            .write("pages/index/index.wxml", "<view/>");
-        let project = fixture.project();
-        (fixture, project)
+        config::project_with_config(name, config, app, page)
     }
 
     fn config(lib_version: &str) -> String {

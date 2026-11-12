@@ -122,20 +122,13 @@ fn setting_flag<'a>(
 mod tests {
     use super::AutoprefixBuild;
     use crate::rules::Rule;
-    use crate::rules::testutil::Fixture;
+    use crate::rules::testutil::{Fixture, config};
     use crate::{Project, Severity};
 
     const SKYLINE_APP: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#;
 
     fn project(name: &str, config: &str, app: &str) -> (Fixture, Project) {
-        let fixture = Fixture::new(name);
-        fixture
-            .write("project.config.json", config)
-            .write("app.json", app)
-            .write("pages/index/index.json", "{}")
-            .write("pages/index/index.wxml", "<view/>");
-        let project = fixture.project();
-        (fixture, project)
+        config::project_with_config(name, config, app, "{}")
     }
 
     #[test]

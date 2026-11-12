@@ -293,6 +293,7 @@ pub(crate) fn walk<'a>(
 
 /// 元素级规则的遍历视图：文档、该文档的匹配视图、元素、本文件祖先链、可达性、图。
 pub(crate) struct ElementSite<'a, 't> {
+    pub project: &'a Project,
     pub doc: &'a WxmlDoc,
     pub tree: &'t Tree<'a>,
     pub element: &'a WxmlElement,
@@ -335,6 +336,7 @@ pub(crate) fn for_each_element(
                 return;
             }
             f(&ElementSite {
+                project,
                 doc: &doc,
                 tree: &tree,
                 element,

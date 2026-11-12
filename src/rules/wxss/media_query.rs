@@ -124,24 +124,12 @@ fn is_theme_query(prelude: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::project::Project;
-    use crate::rules::Rule;
-    use crate::rules::testutil::wxss::Fixture;
+    use crate::rules::testutil::wxss;
 
     use super::MediaQuery;
 
     fn check(name: &str, wxml: &str, wxss: &str) -> Vec<crate::Diagnostic> {
-        let fixture = Fixture::new(name);
-        fixture
-            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
-            .write(
-                "app.json",
-                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
-            )
-            .write("pages/index/index.json", "{}")
-            .write("pages/index/index.wxml", wxml)
-            .write("pages/index/index.wxss", wxss);
-        MediaQuery.check(&Project::load(fixture.root()).unwrap())
+        wxss::check(&MediaQuery, name, wxml, wxss)
     }
 
     #[test]

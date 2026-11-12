@@ -128,19 +128,12 @@ mod tests {
     use crate::Severity;
     use crate::project::Project;
     use crate::rules::Rule;
-    use crate::rules::testutil::Fixture;
+    use crate::rules::testutil::{Fixture, config};
 
     use super::NavigationStyle;
 
     fn project(name: &str, app: &str, page: &str) -> (Fixture, Project) {
-        let fixture = Fixture::new(name);
-        fixture
-            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
-            .write("app.json", app)
-            .write("pages/index/index.json", page)
-            .write("pages/index/index.wxml", "<view/>");
-        let project = fixture.project();
-        (fixture, project)
+        config::project(name, app, page)
     }
 
     #[test]

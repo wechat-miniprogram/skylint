@@ -143,6 +143,17 @@ pub(crate) mod wxss {
 
     pub(crate) use super::{Fixture, messages};
 
+    /// 单页工程上跑一条规则（WXML + WXSS 都由用例给）。
+    pub(crate) fn check(
+        rule: &dyn crate::rules::Rule,
+        name: &str,
+        wxml: &str,
+        wxss: &str,
+    ) -> Vec<crate::Diagnostic> {
+        let fixture = Fixture::page(name, wxml, wxss);
+        super::check_rule(&fixture, rule)
+    }
+
     /// 带 WXML 的单页工程：渲染器分支类要验到节点上时用。
     pub(crate) fn page(name: &str, wxml: &str, wxss: &str) -> (Fixture, Project) {
         let fixture = Fixture::page(name, wxml, wxss);
@@ -168,6 +179,35 @@ pub(crate) mod wxss {
             .write("pages/index/index.wxss", wxss);
         let project = fixture.project();
         (fixture, project)
+    }
+}
+
+/// 配置类规则的默认工程：app / 页面 json / WXML 都由用例给。
+pub(crate) mod config {
+    use super::Project;
+
+    pub(crate) use super::Fixture;
+
+    /// `project.config.json` 用默认 `miniprogramRoot`。
+    pub(crate) fn project(name: &str, app: &str, page: &str) -> (Fixture, Project) {
+        project_with_config(name, r#"{"miniprogramRoot":""}"#, app, page)
+    }
+
+    /// 要验 `project.config.json` 本身时用这个。
+    pub(crate) fn project_with_config(
+        name: &str,
+        config: &str,
+        app: &str,
+        page: &str,
+    ) -> (Fixture, Project) {
+        let fixture = Fixture::new(name);
+        fixture
+            .write("project.config.json", config)
+            .write("app.json", app)
+            .write("pages/index/index.json", page)
+            .write("pages/index/index.wxml", "<view/>");
+        let loaded = fixture.project();
+        (fixture, loaded)
     }
 }
 
