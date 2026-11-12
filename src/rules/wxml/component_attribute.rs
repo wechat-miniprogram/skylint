@@ -114,11 +114,15 @@ enum Requirement {
     Equals(&'static str, &'static str),
     /// `attr=!(a|b)`：属性不得等于其中任一值。
     NotAny(&'static str, &'static [&'static str]),
-    /// `attr` 必须存在，但**只在 WebView 侧本来就会截断时**才要求：否则两端行为一致。
+    /// 规则自己的判据：返回 `Some(消息)` 表示违反，`None` 表示满足。
     ///
-    /// 行数优先取祖先的 `-webkit-line-clamp`，取不到按单行（1）。
-    PresentIfTruncated(&'static str),
+    /// 判定需要样式（祖先截断、行数）这类「本条数据表之外」的信息时用它，
+    /// 通用逻辑不因此长出专用分支。
+    Custom(CustomCheck),
 }
+
+/// 自定义要求的判定函数；放在数据表里，所以必须是 `fn` 指针。
+type CustomCheck = fn(&WxmlElement, &Context<'_, '_>) -> Option<String>;
 
 impl Trigger {
     fn attr(&self) -> &'static str {
@@ -410,7 +414,7 @@ const REQUIRES: &[Requires] = &[
     Requires {
         tag: "text",
         trigger: Trigger::Equals("overflow", "ellipsis"),
-        requirement: Requirement::PresentIfTruncated("max-lines"),
+        requirement: Requirement::Custom(max_lines_when_webview_truncates),
         help: Some("只要一行省略改用 `overflow=\"clip\"`；要限制行数就同时写 `max-lines`"),
     }, // text_shadow_node.h:102-103：max_lines=0 表示不施加行数约束，overflow 与 maxLines 是两个独立属性
 ];
@@ -621,10 +625,8 @@ enum Verdict {
 
 fn judge(element: &WxmlElement, requirement: &Requirement) -> Verdict {
     match requirement {
-        // 截断门控要先在 WebView 侧求值，统一由 [`Requires::violation`] 处理。
-        Requirement::PresentIfTruncated(_) => {
-            unreachable!("PresentIfTruncated 不走 judge")
-        }
+        // 自定义要求没有通用判据，统一由 [`Requires::violation`] 处理。
+        Requirement::Custom(_) => unreachable!("Custom 不走 judge"),
         Requirement::Equals(name, expected) => {
             let Some(attr) = find_attr(element, name) else {
                 // 缺失即走默认值，按「不存在」处理：要求 `=v` 不成立。
@@ -674,66 +676,44 @@ impl Requires {
     fn violation(&self, element: &WxmlElement, context: &Context<'_, '_>) -> Option<Violation> {
         let attr = find_attr(element, self.trigger.attr())?;
         let trigger = trigger_value(attr, &self.trigger)?;
-        let (current, lines) = match &self.requirement {
-            // `<text overflow="ellipsis">` 缺 `max-lines`：WebView 的行内 `<text>` 没
-            // nowrap / clamp 时本来就换行不省略，两端一致，不该要求补。
-            Requirement::PresentIfTruncated(name) => {
-                if truncation::webview_truncates(
-                    context.views,
-                    context.tree,
-                    element,
-                    context.ancestors,
-                ) != Some(true)
-                {
-                    return None;
-                }
-                if find_attr(element, name).is_some() {
-                    return None;
-                }
-                // WebView 靠祖先的 `-webkit-line-clamp` 截几行，Skyline 就得补同样行数的
-                // `max-lines`；行数写进消息，用户能直接照做。
-                (
-                    None,
-                    truncation::clamp_lines(
-                        context.views,
-                        context.tree,
-                        element,
-                        context.ancestors,
-                    ),
-                )
-            }
+        match &self.requirement {
+            Requirement::Custom(check) => check(element, context).map(Violation::Custom),
             requirement => match judge(element, requirement) {
-                Verdict::Violated(current) => (current, None),
-                Verdict::Ok => return None,
+                Verdict::Violated(current) => Some(Violation::Standard { trigger, current }),
+                Verdict::Ok => None,
             },
-        };
-        Some(Violation {
-            trigger,
-            current,
-            lines,
-        })
+        }
     }
 }
 
 /// 一个被违反的跨属性条件。
-struct Violation {
-    /// 触发属性用于展示的取值（无值属性为空串）。
-    trigger: String,
-    /// 要求属性当前的取值；`None` 表示没有该属性。
-    current: Option<String>,
-    /// WebView 侧实际截断的行数（只有 [`Requirement::PresentIfTruncated`] 会给）。
-    lines: Option<u32>,
+enum Violation {
+    /// 通用要求：文案由 [`Violation::message`] 按 `Requirement` 生成。
+    Standard {
+        /// 触发属性用于展示的取值（无值属性为空串）。
+        trigger: String,
+        /// 要求属性当前的取值；`None` 表示没有该属性。
+        current: Option<String>,
+    },
+    /// 自定义要求：整条文案由规则自己给。
+    Custom(String),
 }
 
 impl Violation {
     fn message(&self, tag: &str, rule: &Requires) -> String {
-        let trigger = match self.trigger.as_str() {
+        let Self::Standard { trigger, current } = self else {
+            let Self::Custom(text) = self else {
+                unreachable!()
+            };
+            return text.clone();
+        };
+        let trigger = match trigger.as_str() {
             "" => rule.trigger.attr().to_string(),
             value => format!("{}=\"{value}\"", rule.trigger.attr()),
         };
         match &rule.requirement {
             Requirement::Equals(name, expected) => {
-                let current = match &self.current {
+                let current = match current {
                     Some(value) => format!("{name}=\"{value}\""),
                     None => format!("未设置 {name}"),
                 };
@@ -742,21 +722,46 @@ impl Violation {
                     rule.trigger.attr()
                 )
             }
-            Requirement::PresentIfTruncated(name) => match self.lines {
-                Some(lines) => format!(
-                    "`<{tag} {trigger}>` 缺少 `{name}`：WebView 靠祖先的 `-webkit-line-clamp: {lines}` 截 {lines} 行，Skyline 下按属性截断，补 `{name}=\"{lines}\"`"
-                ),
-                None => format!(
-                    "`<{tag} {trigger}>` 缺少 `{name}`：WebView 靠单行省略（`nowrap` + `overflow`）截断，Skyline 下按属性截断，单行补 `{name}=\"1\"`"
-                ),
-            },
             Requirement::NotAny(name, _) => format!(
                 "`<{tag} {trigger}>` 的 `{}` 在 `{name}=\"{}\"` 时不生效，会被忽略",
                 rule.trigger.attr(),
-                self.current.as_deref().unwrap_or_default()
+                current.as_deref().unwrap_or_default()
             ),
+            Requirement::Custom(_) => unreachable!("Custom 的文案不走通用模板"),
         }
     }
+}
+
+/// `<text overflow="ellipsis">` 缺 `max-lines`：WebView 的行内 `<text>` 没 nowrap /
+/// clamp 时本来就换行不省略，两端一致，不该要求补。
+///
+/// 补的时候行数要对齐：WebView 靠祖先的 `-webkit-line-clamp` 截几行，Skyline 就得补
+/// 同样行数的 `max-lines`；取不到行数按单行处理。
+fn max_lines_when_webview_truncates(
+    element: &WxmlElement,
+    context: &Context<'_, '_>,
+) -> Option<String> {
+    if truncation::webview_truncates(context.views, context.tree, element, context.ancestors)
+        != Some(true)
+    {
+        return None;
+    }
+    if find_attr(element, "max-lines").is_some() {
+        return None;
+    }
+    let trigger = "overflow=\"ellipsis\"".to_string();
+    let Some(lines) =
+        truncation::clamp_lines(context.views, context.tree, element, context.ancestors)
+    else {
+        return Some(format!(
+            "`<{tag} {trigger}>` 缺少 `max-lines`：WebView 靠单行省略（`nowrap` + `overflow`）截断，Skyline 下按属性截断，单行补 `max-lines=\"1\"`",
+            tag = element.tag
+        ));
+    };
+    Some(format!(
+        "`<{tag} {trigger}>` 缺少 `max-lines`：WebView 靠祖先的 `-webkit-line-clamp: {lines}` 截 {lines} 行，Skyline 下按属性截断，补 `max-lines=\"{lines}\"`",
+        tag = element.tag
+    ))
 }
 
 fn message(tag: &str, attr: &str, value: Value<'_>, constraint: &Constraint) -> String {

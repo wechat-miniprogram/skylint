@@ -102,13 +102,11 @@ fn check_element(
     if is_invisible(project, tree, element, ancestors) {
         return;
     }
-    // 一次求值同时拿到「父级算出什么 display」与「有没有选择器判不了」。
-    let (display, undecidable) = cascade_entries_with(project, tree, element, "display");
     // 模板体 / 片段里父级的 `display` 判不了时（没有实例化路径，或选择器超出
-    // 受限文法），无法断言「不是 flex」。
-    if undecidable {
+    // 受限文法），无法断言「不是 flex」：`None` 直接跳过。
+    let Some(display) = cascade_entries_with(project, tree, element, "display") else {
         return;
-    }
+    };
     // 父级是 flex 容器时（行向同行、列向同列）两种渲染器排法一致。
     if display
         .last()
@@ -119,7 +117,7 @@ fn check_element(
     // 父级的 class / style 跟着 `renderer` 变时，WebView 那一支可能已经写了
     // `display: flex; flex-direction: column`（把两行文本排成上下）——那种写法在
     // Skyline 下靠默认值就成立，不是差异。我们只求得着 Skyline 一支，判不了另一支。
-    if renderer_conditioned(element) {
+    if varies_by_renderer(element) {
         return;
     }
     let mut run: Vec<&WxmlElement> = Vec::new();
@@ -137,77 +135,29 @@ fn check_element(
     flush(doc, &mut run, &mut has_bare_text, out);
 }
 
-/// 这个元素在级联后看不见：自己或任一祖先 `display: none`，或 `visibility: hidden`
-/// 且看不出任何视觉差异（移出视口 / 1px 盒子）。
+/// 这个元素在级联后确定不渲染：自己或任一祖先 `display: none`。
 ///
-/// `visibility` 会继承，但子节点可以用 `visible` 覆盖，所以由近到远找第一个声明；
-/// 只隐藏而不离屏的节点不算——大量元素把 `visibility: hidden` 当动画的初始态
-/// （真机上被 JS / 关键帧改成 `visible`），那些位置的分行差异是真差异。
+/// 只认这一种：`visibility: hidden` 常被当作动画初始态，运行时会变可见；离屏 / 1px
+/// 盒子也可能被脚本挪回来。这些情况下「判不了」就按会渲染处理——报出来让人确认，
+/// 比默默漏掉一个真差异好。
+///
+/// 链上任何节点带动态 `style` 时同样判不了：运行时的 `display` 可能覆盖静态声明。
 pub(crate) fn is_invisible(
     project: &Project,
     tree: &Tree<'_>,
     element: &WxmlElement,
     ancestors: &[&WxmlElement],
 ) -> bool {
-    let value = |node: &WxmlElement, property: &str| {
-        super::resolved_property(project, tree, node, property)
-            .map(|resolved| resolved.value.trim().to_ascii_lowercase())
-    };
     let chain: Vec<&WxmlElement> = std::iter::once(element)
         .chain(ancestors.iter().copied())
         .collect();
-    // `display: none` 会剪掉整棵子树，任何一层都算。
-    if chain
-        .iter()
-        .any(|node| value(node, "display").as_deref() == Some("none"))
-    {
-        return true;
+    if chain.iter().any(|node| has_dynamic_style(node)) {
+        return false;
     }
-    for node in chain {
-        match value(node, "visibility").as_deref() {
-            Some("hidden") => return is_offscreen(project, tree, node),
-            Some("visible") => return false,
-            _ => {}
-        }
-    }
-    false
-}
-
-/// 被隐藏的节点是否还看不出任何视觉差异：移出视口，或扁成 1px。
-///
-/// 只要占着屏幕上的位置（比如气泡用 `top: -24rpx` 住卡片上方弹），隐藏只是动画
-/// 的初始态，真假可见时分行差异是看得见的。
-fn is_offscreen(project: &Project, tree: &Tree<'_>, node: &WxmlElement) -> bool {
-    let value = |property: &str| {
-        super::resolved_property(project, tree, node, property)
-            .map(|resolved| resolved.value.trim().to_ascii_lowercase())
-    };
-    let length = |property: &str| value(property).as_deref().and_then(length_of);
-    // 离屏预热容器：`position: fixed; top: -9999px; left: -9999px`。
-    let positioned = matches!(
-        value("position").as_deref(),
-        Some("absolute") | Some("fixed")
-    );
-    let far_away = positioned
-        && ["top", "left"]
-            .iter()
-            .filter_map(|property| length(property))
-            .any(|offset| offset <= -OFFSCREEN_OFFSET);
-    // 1px 量级的盒子装不下可读内容（`width: 1px; height: 1px` + `overflow: hidden`）。
-    let flat =
-        matches!((length("width"), length("height")), (Some(w), Some(h)) if w <= 1.0 && h <= 1.0);
-    far_away || flat
-}
-
-/// 离屏需要的负偏移（px / rpx 同取，-9999px 那类写法远超它，`-24rpx` 这类定位远不足）。
-const OFFSCREEN_OFFSET: f64 = 500.0;
-
-/// `-9999px` / `24rpx` / `1` 这类长度里的数值；百分比与其他单位判不了。
-fn length_of(value: &str) -> Option<f64> {
-    let number = value.trim_end_matches(|c: char| c.is_ascii_alphabetic());
-    (number.len() < value.len() || number == value)
-        .then(|| number.parse::<f64>().ok())
-        .flatten()
+    chain.iter().any(|node| {
+        super::resolved_property(project, tree, node, "display")
+            .is_some_and(|resolved| resolved.value.trim().eq_ignore_ascii_case("none"))
+    })
 }
 
 /// 文本级成员：标签在内，且靠**默认 layout** 参与行内流。
@@ -220,17 +170,21 @@ pub(crate) fn is_inline_member(project: &Project, tree: &Tree<'_>, element: &Wxm
     if !INLINE_TAGS.contains(&element.tag.as_str()) {
         return false;
     }
-    let (display, undecidable) = cascade_entries_with(project, tree, element, "display");
+    let Some(display) = cascade_entries_with(project, tree, element, "display") else {
+        return false;
+    };
     display.is_empty()
-        && !undecidable
         && !has_dynamic_style(element)
-        && !renderer_conditioned(element)
+        && !varies_by_renderer(element)
         && !super::is_out_of_flow(project, tree, element)
         && !super::stacks_vertically(project, tree, element)
 }
 
 /// 元素的某个属性引用了 `renderer`：这个元素在两个渲染器下的样式可能不同。
-fn renderer_conditioned(element: &WxmlElement) -> bool {
+///
+/// 判据是「属性表达式里出现 `renderer` 这个数据字段」——包括 `item.renderer`
+/// 这类同名字段（宁可按受影响处理）。
+fn varies_by_renderer(element: &WxmlElement) -> bool {
     element
         .attributes
         .iter()
@@ -605,14 +559,24 @@ mod tests {
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     }
 
-    /// 看不见的容器不报：祖先 `visibility: hidden` 且被移出视口，成员自己没写 visibility。
+    /// `visibility: hidden` 可能是动画初始态，运行时会变可见：照报，让人确认。
     #[test]
-    fn offscreen_hidden_ancestor_is_not_reported() {
+    fn visibility_hidden_container_is_still_reported() {
         let diagnostics = check(&project(
-            "inline-run/invisible",
+            "inline-run/hidden",
             "<view style=\"position: absolute; top: -9999px; visibility: hidden\"><view class=\"inner\"><text>a</text><text>b</text></view></view>",
         ));
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    }
+
+    /// 祖先带动态 `style`：运行时的 `display` 可能变化，判不了就报。
+    #[test]
+    fn dynamic_ancestor_style_is_reported() {
+        let diagnostics = check(&project(
+            "inline-run/dynamic-style",
+            "<view style=\"display: {{hidden ? 'none' : 'block'}}\"><view class=\"inner\"><text>a</text><text>b</text></view></view>",
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     }
 
     /// `visibility: hidden` 但没离屏（大量元素拿它当动画初始态）照报，不滤掉真差异。
@@ -630,14 +594,14 @@ mod tests {
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     }
 
-    /// 1px 的离屏预热容器（`width: 1px; height: 1px` + hidden）也算看不见。
+    /// 1px 离屏预热容器也可能是脚本挪回来的：照报（只有 `display: none` 才跳过）。
     #[test]
-    fn offscreen_one_pixel_container_is_not_reported() {
+    fn offscreen_one_pixel_container_is_still_reported() {
         let diagnostics = check(&project(
             "inline-run/preload",
             "<view style=\"position: fixed; top: -9999px; left: -9999px; width: 1px; height: 1px; overflow: hidden; visibility: hidden\"><image src=\"a\"/><image src=\"b\"/></view>",
         ));
-        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
     }
 
     /// 子节点用 `visibility: visible` 覆盖祖先的 hidden。

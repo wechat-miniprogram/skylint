@@ -160,21 +160,22 @@ pub(crate) fn cascade_entries<'a>(
     element: &WxmlElement,
     property: &str,
 ) -> Vec<CascadeEntry<'a>> {
-    cascade_entries_with(project, tree, element, property).0
+    cascade_entries_with_dialect_impl(project, tree, element, property, Dialect::Skyline).0
 }
 
-/// 同上，另外告诉你「有没有选择器判不了」。
+/// 同上，但有选择器判不了时返回 `None`。
 ///
-/// 布尔位是「有些声明可能生效，但我们断言不了」：模板定义体 / 片段的祖先链靠实例化
-/// 路径求值，没有路径或选择器超出受限文法时只能放弃。调用方据此「判不了就不报」，
-/// 比当成「没写」安全。
+/// 「判不了」指模板定义体 / 片段的祖先链靠实例化路径求值，没有路径或选择器超出受限
+/// 文法。此时候选集不完整，不能当成「没写」——调用方一律跳过（判不了就不报）。
 pub(crate) fn cascade_entries_with<'a>(
     project: &'a Project,
     tree: &Tree<'_>,
     element: &WxmlElement,
     property: &str,
-) -> (Vec<CascadeEntry<'a>>, bool) {
-    cascade_entries_with_dialect_impl(project, tree, element, property, Dialect::Skyline)
+) -> Option<Vec<CascadeEntry<'a>>> {
+    let (entries, undecidable) =
+        cascade_entries_with_dialect_impl(project, tree, element, property, Dialect::Skyline);
+    (!undecidable).then_some(entries)
 }
 
 fn cascade_entries_with_dialect_impl<'a>(

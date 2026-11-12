@@ -216,10 +216,9 @@ fn is_candidate_host(
     }
     // 显式 flex 时两端都按 flex item 排；grid 在 Skyline 下没有对应实现；
     // `display: none` 不生成盒子。模板里判不了时不能当成「没有 display」。
-    let (display, undecidable) = cascade_entries_with(project, tree, element, "display");
-    if undecidable {
+    let Some(display) = cascade_entries_with(project, tree, element, "display") else {
         return false;
-    }
+    };
     !display.last().is_some_and(|entry| {
         let value = entry.value.trim().to_ascii_lowercase();
         is_flex_value(&value) || matches!(value.as_str(), "grid" | "inline-grid" | "none")

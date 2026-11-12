@@ -119,7 +119,7 @@ pub(crate) fn definite_height(
     // 高度结论依赖下面这些属性，任一条判不了就不能断言「没有高度」。
     if tree.ancestors_unknown(element)
         && HEIGHT_INPUTS.iter().any(|property| {
-            crate::rules::wxml::cascade_entries_with(project, tree, element, property).1
+            crate::rules::wxml::cascade_entries_with(project, tree, element, property).is_none()
         })
     {
         return true;

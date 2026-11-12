@@ -5,11 +5,10 @@
 //! （`wxapplib/src/wx-component/src/wx-scroll-view/`），不是「只要用了 `scroll-x` 就必须写」。
 
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxml::WxmlElement;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::structure::find_attr;
+use super::structure::{find_attr, flag};
 use crate::matcher::Tree;
 
 use super::{span_diagnostic, visit, walk_skyline};
@@ -40,11 +39,9 @@ impl Rule for HorizontalScrollEnableFlex {
                 }
                 // 取级联胜出的那一个 `display`：`style="display:block"` 覆盖时不需要 enable-flex。
                 // 模板定义体里选择器判不了时不能当「不是 flex」。
-                let (display, undecidable) =
-                    cascade_entries_with(project, &tree, element, "display");
-                if undecidable {
+                let Some(display) = cascade_entries_with(project, &tree, element, "display") else {
                     return;
-                }
+                };
                 if !display
                     .last()
                     .is_some_and(|entry| is_flex_value(&entry.value))
@@ -70,22 +67,6 @@ impl Rule for HorizontalScrollEnableFlex {
                 );
             });
         })
-    }
-}
-
-/// 三态布尔属性：`None` 表示动态绑定；属性缺省为 `Some(false)`。
-///
-/// WXML 里写 `scroll-x="false"` 是非空字符串，引擎按 [`GetLooseyBool`] 当**真**
-/// （`shadow/js_value.h:31-44`），所以只有空串算假。
-fn flag(element: &WxmlElement, name: &str) -> Option<bool> {
-    match find_attr(element, name) {
-        None => Some(false),
-        Some(attr) if !attr.is_static => None,
-        Some(attr) => Some(
-            attr.value
-                .as_deref()
-                .is_none_or(|value| !value.trim().is_empty()),
-        ),
     }
 }
 

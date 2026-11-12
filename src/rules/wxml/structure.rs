@@ -177,6 +177,10 @@ impl<'a> Ancestor<'a> {
 
 /// 属性是否被明确关掉：缺失，或静态假值（`false` / `0`）。
 /// 动态值（`{{...}}`，包括 `{{true}}`）无法区分，按「可能开启」处理。
+/// 组件侧声明的「关」：缺省或显式 `false` / `0` 算关。
+///
+/// 与 [`flag`] 是两套口径：`flag` 模拟引擎的 `GetLooseyBool`（非空字符串为真），
+/// 这里按组件自己读属性的方式处理。判断布局是否生效用 `flag`，判断组件开关用这个。
 pub(crate) fn attr_is_off(element: &WxmlElement, name: &str) -> bool {
     match find_attr(element, name) {
         None => true,
@@ -186,6 +190,22 @@ pub(crate) fn attr_is_off(element: &WxmlElement, name: &str) -> bool {
             .map(str::trim)
             .is_some_and(|value| value.eq_ignore_ascii_case("false") || value == "0"),
         Some(_) => false,
+    }
+}
+
+/// 三态布尔属性：`None` 表示动态绑定；属性缺省为 `Some(false)`。
+///
+/// WXML 里写 `scroll-x="false"` 是非空字符串，引擎按 `GetLooseyBool` 当**真**
+/// （`shadow/js_value.h:31-44`），所以只有空串算假。
+pub(crate) fn flag(element: &WxmlElement, name: &str) -> Option<bool> {
+    match find_attr(element, name) {
+        None => Some(false),
+        Some(attr) if !attr.is_static => None,
+        Some(attr) => Some(
+            attr.value
+                .as_deref()
+                .is_none_or(|value| !value.trim().is_empty()),
+        ),
     }
 }
 
