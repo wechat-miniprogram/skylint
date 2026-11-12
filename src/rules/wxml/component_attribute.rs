@@ -25,8 +25,9 @@ use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
+use super::ancestry;
 use super::structure::find_attr;
-use super::{ancestry, span_diagnostic, visit, walk_skyline};
+use super::{span_diagnostic, truncation, visit, walk_skyline};
 
 #[derive(Debug, Clone, Copy)]
 enum Constraint {
@@ -520,7 +521,7 @@ impl Rule for ComponentAttribute {
                         let needs_baseline = rule.trigger.attr() == "overflow"
                             && matches!(rule.requirement, Requirement::Present("max-lines"));
                         if needs_baseline
-                            && ancestry::webview_truncates(views, &tree, element, ancestors)
+                            && truncation::webview_truncates(views, &tree, element, ancestors)
                                 != Some(true)
                         {
                             continue;
@@ -528,7 +529,7 @@ impl Rule for ComponentAttribute {
                         // WebView 靠祖先的 `-webkit-line-clamp` 截几行，Skyline 就得补同样行数的
                         // `max-lines`；行数写进消息，用户能直接照做。
                         let lines = needs_baseline
-                            .then(|| ancestry::clamp_lines(views, &tree, element, ancestors))
+                            .then(|| truncation::clamp_lines(views, &tree, element, ancestors))
                             .flatten();
                         out.push(
                             span_diagnostic(

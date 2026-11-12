@@ -35,7 +35,7 @@ use selectors::parser::{Combinator, Component, Selector, SelectorList};
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 
 /// 选择器在哪个渲染器下求值。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Dialect {
     WebView,
     Skyline,

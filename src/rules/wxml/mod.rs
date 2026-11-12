@@ -24,6 +24,7 @@ pub mod share_element_key;
 pub(crate) mod structure;
 pub mod template_data_scope;
 pub mod text_hard_break_ellipsis;
+pub(crate) mod truncation;
 pub mod unsupported_component;
 pub mod webview_nested_scroll;
 pub mod webview_pinned_renderer;
@@ -49,6 +50,10 @@ pub use webview_pinned_renderer::PinnedRenderer;
 pub use webview_text_children::TextChildren;
 pub use webview_text_truncation::TextTruncation;
 pub use webview_worklet_binding::WorkletBinding;
+
+// 截断语义单独一个模块（[`truncation`]）：两条迁移规则与 `inspect` 的事实输出共用，
+// 规则模块不再各自复制一份。
+pub(crate) use truncation::{clips_overflow, max_lines};
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -624,57 +629,6 @@ pub(crate) fn resolved_property_with<'a>(
     resolved_property_with_dialect(project, tree, element, property, Dialect::Skyline)
 }
 
-/// WebView 侧本来就会截断吗：多行靠 `-webkit-line-clamp`，单行靠
-/// `white-space: nowrap` + `overflow: hidden` + `text-overflow: ellipsis`。
-///
-/// 自身与任一祖先都算：祖先被 clamp 时内层文本同样被裁掉。用于「WebView 能截断、
-/// Skyline 截不了」这类迁移差异的准入判断——WebView 也不截断时两端一致，不该报。
-pub(crate) fn webview_truncates(
-    project: &Project,
-    tree: &Tree<'_>,
-    element: &WxmlElement,
-    ancestors: &[&WxmlElement],
-) -> bool {
-    std::iter::once(element)
-        .chain(ancestors.iter().rev().copied())
-        .any(|candidate| {
-            let clamped = resolved_property(project, tree, candidate, "-webkit-line-clamp")
-                .is_some_and(|resolved| {
-                    resolved
-                        .value
-                        .trim()
-                        .parse::<u32>()
-                        .is_ok_and(|lines| lines > 0)
-                });
-            clamped || single_line_ellipsis(project, tree, candidate)
-        })
-}
-
-/// `<text max-lines>` 的行数。
-///
-/// 静态属性与「包着一个数字字面量的插值」（`max-lines="{{2}}"`）等价：引擎拿到的就是 2。
-pub(crate) fn max_lines(element: &WxmlElement) -> Option<u32> {
-    let attribute = element
-        .attributes
-        .iter()
-        .find(|attr| attr.name == "max-lines")?;
-    // 静态写法直接读原文；`max-lines="{{2}}"` 这类绑定没有原文，退到解析期算出的
-    // 候选值——只有一个候选且是整数才算得出（`{{a ? 2 : 3}}` 枚举出两个就不猜）。
-    let raw = match attribute.value.as_deref() {
-        Some(value) => value.trim().to_string(),
-        None => match attribute.candidates.as_deref() {
-            Some([only]) => only.trim().to_string(),
-            _ => return None,
-        },
-    };
-    raw.strip_prefix("{{")
-        .and_then(|rest| rest.strip_suffix("}}"))
-        .unwrap_or(&raw)
-        .trim()
-        .parse::<u32>()
-        .ok()
-}
-
 /// 元素是否脱离文档流（`position: absolute | fixed`）。
 pub(crate) fn is_out_of_flow(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
     resolved_property(project, tree, element, "position").is_some_and(|resolved| {
@@ -750,31 +704,6 @@ pub(crate) fn width_follows_content(
 pub(crate) fn flex_container(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
     resolved_property(project, tree, element, "display")
         .is_some_and(|resolved| is_flex_value(&resolved.value))
-}
-
-/// 元素自己是否在 WebView 里裁掉溢出内容（`text-overflow` 生效的前提）。
-///
-/// `visible` / 缺省时不裁，`hidden` / `clip` / `auto` / `scroll` 都会裁。
-pub(crate) fn clips_overflow(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
-    let clips = |property: &str| {
-        resolved_property(project, tree, element, property).is_some_and(|resolved| {
-            matches!(
-                resolved.value.trim().to_ascii_lowercase().as_str(),
-                "hidden" | "clip" | "auto" | "scroll"
-            )
-        })
-    };
-    clips("overflow") || clips("overflow-x") || clips("overflow-y")
-}
-
-fn single_line_ellipsis(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
-    let is = |property: &str, expected: &str| {
-        resolved_property(project, tree, element, property)
-            .is_some_and(|resolved| resolved.value.trim().eq_ignore_ascii_case(expected))
-    };
-    is("white-space", "nowrap")
-        && clips_overflow(project, tree, element)
-        && is("text-overflow", "ellipsis")
 }
 
 /// 内联 `style` 里某个属性的最后一个取值。

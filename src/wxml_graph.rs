@@ -237,31 +237,41 @@ pub(crate) type AncestorClosure = (Vec<AncestorId>, bool);
 /// 上的 WebView 与 Skyline 查询会互相污染。
 pub(crate) type VerdictCache = HashMap<(usize, (u32, u32), bool), HashMap<String, Option<bool>>>;
 
+/// 祖先相关的按元素缓存。
+///
+/// 三个视图共享同一个键 `(doc, idx)` 与同一套预算，只是回答不同的问题：匹配用节点、
+/// 样式求值要节点身份、证据型判定要闭包。元素级规则会按属性反复问同一个元素，
+/// 枚举一次要回溯整张图，三者都必须缓存。
+#[derive(Default)]
+struct AncestorCaches {
+    /// 实例化祖先路径，已转成匹配用节点（[`FlatNode`]）。
+    nodes: RefCell<HashMap<(usize, usize), Rc<AncestorNodePaths>>>,
+    /// 实例化祖先路径，保留节点身份（[`AncestorId`]）。
+    ids: RefCell<HashMap<(usize, usize), Rc<AncestorIdPaths>>>,
+    /// 实例化祖先闭包，按节点去重。
+    closure: RefCell<HashMap<(usize, usize), Rc<AncestorClosure>>>,
+}
+
 /// 全工程的 WXML 逻辑树。
+///
+/// 节点 = 元素，边 = 运行时父边（真实父节点、`<slot>` 投影、组件根的使用点、
+/// `<template is>` 调用点、`<include>` 引入位置）。上层规则只读这里的关系，不再自己
+/// 解析 WXML。
 pub(crate) struct WxmlGraph {
+    /// 全部参与渲染判定的文档（页面 / 组件 / 被引用的模板与片段）。
     docs: Vec<DocTree>,
+    /// 路径 → `docs` 下标（也是 [`NodeId::doc`]）。
     by_path: HashMap<String, usize>,
+    // —— 图边 ——
     /// 组件文档下标 → 用到它的位置。
     usages: HashMap<usize, Vec<NodeId>>,
     /// 片段文档下标 → 每个 `<include>` 的引入位置（`None` = 文档顶层）。
     includes: HashMap<usize, Vec<(usize, Option<usize>)>>,
     /// 文档下标 → `<import>` 了它的文档。
     importers: HashMap<usize, Vec<usize>>,
-    /// 元素下标 → 实例化祖先路径（已转成匹配用节点）与是否截断。
-    ///
-    /// 元素级规则会对同一元素按属性反复问，而枚举一次要回溯整张图，必须缓存。
-    path_cache: RefCell<HashMap<(usize, usize), Rc<AncestorNodePaths>>>,
-    /// 元素下标 → 实例化祖先路径（节点身份）与是否截断。
-    ///
-    /// 与 [`Self::path_cache`] 同键同预算：同一元素按选择器求值要 `FlatNode`，按样式
-    /// 求值要回到元素本身（[`AncestorId`]），两条路都不能重复回溯整张图。
-    id_path_cache: RefCell<HashMap<(usize, usize), Rc<AncestorIdPaths>>>,
-    /// 元素下标 → 实例化祖先闭包（节点身份）与是否截断。
-    ///
-    /// 与上面两个缓存同键不同源：闭包按节点去重，回答「祖先里有没有」，元素级规则
-    /// 会反复问同一个元素，不缓存就要反复走一遍 BFS。
-    closure_cache: RefCell<HashMap<(usize, usize), Rc<AncestorClosure>>>,
-    /// (文档实例, 元素起点) → (选择器, 是否命中)：模板文档的选择器判定。
+    // —— 缓存 ——
+    ancestor_caches: AncestorCaches,
+    /// (文档实例, 元素起点, 方言) → (选择器, 是否命中)：模板文档的选择器判定。
     ///
     /// 判定只取决于 (元素, 选择器)，但级联是「按属性」走的：`implicit-color` 一个元素
     /// 要问 9 个属性，同一条选择器就会被判 9 次。一轮 lint 里选择器集合是稳定的。
@@ -269,130 +279,191 @@ pub(crate) struct WxmlGraph {
     verdict_cache: RefCell<VerdictCache>,
 }
 
-impl WxmlGraph {
-    pub fn new(project: &Project) -> Self {
-        let page_paths: HashSet<&str> = project
+/// 进图的文档集合。
+///
+/// 三类来源：页面的 WXML、组件的 WXML、被 `<import>` / `<include>` 引用的模板与片段。
+/// 后者也要进图：`<import>` 的模板定义体可能被调用方实例化，`<include>` 的片段渲染在
+/// 每个引入位置——它们的元素同样参与祖先与样式判定。
+struct Sources {
+    docs: Vec<Rc<WxmlDoc>>,
+    /// 路径 → `docs` 下标（也是 [`NodeId::doc`]）。
+    index: HashMap<String, usize>,
+    /// 页面 WXML：渲染树的根，向上走到它就是 `<page>`。
+    pages: HashSet<String>,
+    /// 被引用的模板与片段：它们自己不是页面。
+    templates: HashSet<String>,
+}
+
+impl Sources {
+    fn collect(project: &Project) -> Self {
+        let pages: HashSet<String> = project
+            .pages
+            .iter()
+            .filter_map(|page| page.files.wxml.clone())
+            .collect();
+        let templates: HashSet<String> = project.template_files.iter().cloned().collect();
+
+        let mut docs = Vec::new();
+        let mut index = HashMap::new();
+        let paths = project
             .pages
             .iter()
             .filter_map(|page| page.files.wxml.as_deref())
-            .collect();
-        let options = component_options(project);
-
-        let mut docs = Vec::new();
-        let mut by_path = HashMap::new();
-        let mut sources = Vec::new();
-        let mut push = |path: &str| {
-            if by_path.contains_key(path) {
-                return;
+            .chain(
+                project
+                    .components
+                    .iter()
+                    .filter_map(|unit| unit.files.wxml.as_deref()),
+            )
+            .chain(project.template_files.iter().map(String::as_str));
+        for path in paths {
+            // 同一路径只进图一次：页面、组件、模板三处可能引用同一份 WXML。
+            if index.contains_key(path) {
+                continue;
             }
             let Some(doc) = crate::rules::wxml::load_doc(project, path) else {
-                return;
+                continue;
             };
-            by_path.insert(path.to_string(), sources.len());
-            sources.push(doc);
-        };
-        for page in &project.pages {
-            if let Some(path) = page.files.wxml.as_deref() {
-                push(path);
-            }
+            index.insert(path.to_string(), docs.len());
+            docs.push(doc);
         }
-        for component in &project.components {
-            if let Some(path) = component.files.wxml.as_deref() {
-                push(path);
-            }
-        }
-        // 被 `<import>` / `<include>` 引用的片段：它们也有元素，且 `<import>` 的模板
-        // 定义体可能被调用方使用，所以同样进图。
-        let fragment_paths: HashSet<&str> =
-            project.template_files.iter().map(String::as_str).collect();
-        for path in &project.template_files {
-            push(path);
-        }
-
-        // 组件路径（根相对、无扩展名）→ 组件 WXML 路径。
-        let component_wxml: HashMap<&str, &str> = project
-            .components
-            .iter()
-            .filter_map(|unit| Some((unit.path.as_str(), unit.files.wxml.as_deref()?)))
-            .collect();
-
-        for doc in sources {
-            let path = doc.path().to_string();
-            let is_page = page_paths.contains(path.as_str());
-            let is_fragment = fragment_paths.contains(path.as_str());
-            docs.push(DocTree::build(&doc, is_page, is_fragment));
-        }
-        // 组件标签与模板引用解析在文档建好之后：需要先知道每个文档的下标。
-        for tree in &mut docs {
-            if let Some(targets) = project.tag_targets.get(&tree.path) {
-                for (tag, route) in targets {
-                    if let Some(wxml) = component_wxml.get(route.as_str())
-                        && let Some(&idx) = by_path.get(*wxml)
-                    {
-                        tree.components.insert(tag.clone(), idx);
-                    }
-                }
-            }
-            tree.options = project
-                .components
-                .iter()
-                .find(|unit| unit.files.wxml.as_deref() == Some(tree.path.as_str()))
-                .and_then(|unit| options.get(&unit.path))
-                .copied()
-                .unwrap_or_default();
-        }
-
-        let mut usages: HashMap<usize, Vec<NodeId>> = HashMap::new();
-        for (doc, tree) in docs.iter().enumerate() {
-            for (idx, element) in tree.elements.iter().enumerate() {
-                let tag = element.tag.to_ascii_lowercase();
-                let Some(&component) = tree.components.get(&tag) else {
-                    continue;
-                };
-                usages
-                    .entry(component)
-                    .or_default()
-                    .push(NodeId { doc, idx });
-            }
-        }
-
-        // 片段的引入位置：`<include>` 元素本身不产生元素节点，用「它所在的元素」表示，
-        // 写在文档顶层时记 `None`（等价于该文档顶层）。
-        let mut includes: HashMap<usize, Vec<(usize, Option<usize>)>> = HashMap::new();
-        let mut importers: HashMap<usize, Vec<usize>> = HashMap::new();
-        for (doc, tree) in docs.iter().enumerate() {
-            let dir = posix_dirname(&tree.path);
-            for (src, pos) in &tree.doc_includes {
-                let Some(&target) = by_path.get(&resolve_ref(&dir, src)) else {
-                    continue;
-                };
-                let enclosing = tree
-                    .elements
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, element)| element.span.0 <= *pos && *pos <= element.span.1)
-                    .max_by_key(|(_, element)| element.span.0)
-                    .map(|(idx, _)| idx);
-                includes.entry(target).or_default().push((doc, enclosing));
-            }
-            for src in &tree.doc_imports {
-                if let Some(&target) = by_path.get(&resolve_ref(&dir, src)) {
-                    importers.entry(target).or_default().push(doc);
-                }
-            }
-        }
-
         Self {
             docs,
-            by_path,
+            index,
+            pages,
+            templates,
+        }
+    }
+
+    fn build(&self) -> Vec<DocTree> {
+        self.docs
+            .iter()
+            .map(|doc| {
+                DocTree::build(
+                    doc,
+                    self.pages.contains(doc.path()),
+                    self.templates.contains(doc.path()),
+                )
+            })
+            .collect()
+    }
+}
+
+/// 解析组件标签与组件模板 `options`，并统计「组件 → 使用点」。
+///
+/// 必须在文档建好之后：两边都要用到文档下标。
+fn link_components(
+    project: &Project,
+    docs: &mut [DocTree],
+    index: &HashMap<String, usize>,
+) -> HashMap<usize, Vec<NodeId>> {
+    let options = component_options(project);
+    // 组件路径（根相对、无扩展名）→ 组件 WXML 路径。
+    let component_wxml: HashMap<&str, &str> = project
+        .components
+        .iter()
+        .filter_map(|unit| Some((unit.path.as_str(), unit.files.wxml.as_deref()?)))
+        .collect();
+
+    for tree in docs.iter_mut() {
+        if let Some(targets) = project.tag_targets.get(&tree.path) {
+            for (tag, route) in targets {
+                if let Some(wxml) = component_wxml.get(route.as_str())
+                    && let Some(&idx) = index.get(*wxml)
+                {
+                    tree.components.insert(tag.clone(), idx);
+                }
+            }
+        }
+        tree.options = project
+            .components
+            .iter()
+            .find(|unit| unit.files.wxml.as_deref() == Some(tree.path.as_str()))
+            .and_then(|unit| options.get(&unit.path))
+            .copied()
+            .unwrap_or_default();
+    }
+
+    let mut usages: HashMap<usize, Vec<NodeId>> = HashMap::new();
+    for (doc, tree) in docs.iter().enumerate() {
+        for (idx, element) in tree.elements.iter().enumerate() {
+            let tag = element.tag.to_ascii_lowercase();
+            let Some(&component) = tree.components.get(&tag) else {
+                continue;
+            };
+            usages
+                .entry(component)
+                .or_default()
+                .push(NodeId { doc, idx });
+        }
+    }
+    usages
+}
+
+/// 解析 `<include>` / `<import>` 的引入位置。
+///
+/// `<include>` 元素本身不产生元素节点，用「它所在的元素」表示，写在文档顶层时记
+/// `None`（等价于该文档顶层）。
+#[allow(clippy::type_complexity)]
+fn link_includes(
+    docs: &[DocTree],
+    index: &HashMap<String, usize>,
+) -> (
+    HashMap<usize, Vec<(usize, Option<usize>)>>,
+    HashMap<usize, Vec<usize>>,
+) {
+    let mut includes: HashMap<usize, Vec<(usize, Option<usize>)>> = HashMap::new();
+    let mut importers: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (doc, tree) in docs.iter().enumerate() {
+        let dir = posix_dirname(&tree.path);
+        for (src, pos) in &tree.doc_includes {
+            let Some(&target) = index.get(&resolve_ref(&dir, src)) else {
+                continue;
+            };
+            let enclosing = tree
+                .elements
+                .iter()
+                .enumerate()
+                .filter(|(_, element)| element.span.0 <= *pos && *pos <= element.span.1)
+                .max_by_key(|(_, element)| element.span.0)
+                .map(|(idx, _)| idx);
+            includes.entry(target).or_default().push((doc, enclosing));
+        }
+        for src in &tree.doc_imports {
+            if let Some(&target) = index.get(&resolve_ref(&dir, src)) {
+                importers.entry(target).or_default().push(doc);
+            }
+        }
+    }
+    (includes, importers)
+}
+
+impl WxmlGraph {
+    pub fn new(project: &Project) -> Self {
+        let sources = Sources::collect(project);
+        let mut docs = sources.build();
+        let usages = link_components(project, &mut docs, &sources.index);
+        let (includes, importers) = link_includes(&docs, &sources.index);
+        Self {
+            docs,
+            by_path: sources.index,
             usages,
             includes,
             importers,
-            path_cache: RefCell::new(HashMap::new()),
-            id_path_cache: RefCell::new(HashMap::new()),
-            closure_cache: RefCell::new(HashMap::new()),
+            ancestor_caches: AncestorCaches::default(),
             verdict_cache: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// 文档路径 + 元素 → 图里的节点身份。
+    ///
+    /// `None`：文档不在图里，或这个元素来自另一份解析实例（折叠版 vs 全分支版）。
+    pub(crate) fn element_node(&self, doc_path: &str, element: &WxmlElement) -> Option<NodeId> {
+        let &doc = self.by_path.get(doc_path)?;
+        let &idx = self.docs[doc]
+            .by_start
+            .get(&(element.tag_start.line, element.tag_start.utf16_col))?;
+        Some(NodeId { doc, idx })
     }
 
     /// 这份文档在不在图里（模板片段、`<import>` 文件不在）。
@@ -430,20 +501,14 @@ impl WxmlGraph {
     ///
     /// 返回里带文档路径，跨组件边界的祖先来自别的文件，诊断和控制台输出都要能指过去。
     pub fn ancestors<'a>(&'a self, doc_path: &str, element: &WxmlElement) -> AncestorChain<'a> {
-        let Some(&doc) = self.by_path.get(doc_path) else {
-            return AncestorChain::default();
-        };
-        let Some(&start) = self.docs[doc]
-            .by_start
-            .get(&(element.tag_start.line, element.tag_start.utf16_col))
-        else {
+        let Some(start) = self.element_node(doc_path, element) else {
             return AncestorChain::default();
         };
 
         let mut out = Vec::new();
         let mut seen = HashSet::new();
         let mut queue: VecDeque<NodeId> = VecDeque::new();
-        match self.parents(NodeId { doc, idx: start }) {
+        match self.parents(start) {
             Parents::Nodes(nodes) => queue.extend(nodes),
             Parents::Top => {}
             Parents::Unknown => {
@@ -498,17 +563,10 @@ impl WxmlGraph {
         doc_path: &str,
         element: &WxmlElement,
     ) -> (Vec<Vec<AncestorRef<'a>>>, bool) {
-        let Some(&doc) = self.by_path.get(doc_path) else {
-            return (Vec::new(), false);
-        };
-        let Some(&start) = self.docs[doc]
-            .by_start
-            .get(&(element.tag_start.line, element.tag_start.utf16_col))
-        else {
+        let Some(start) = self.element_node(doc_path, element) else {
             return (Vec::new(), false);
         };
         let mut out = Vec::new();
-        let start = NodeId { doc, idx: start };
         let mut seen = HashSet::from([start]);
         let mut budget = MAX_VISITS;
         let mut dropped = false;
@@ -566,16 +624,15 @@ impl WxmlGraph {
         doc_path: &str,
         element: &WxmlElement,
     ) -> Rc<AncestorNodePaths> {
-        let Some(&doc) = self.by_path.get(doc_path) else {
+        let Some(node) = self.element_node(doc_path, element) else {
             return Rc::new((Vec::new(), false));
         };
-        let Some(&idx) = self.docs[doc]
-            .by_start
-            .get(&(element.tag_start.line, element.tag_start.utf16_col))
-        else {
-            return Rc::new((Vec::new(), false));
-        };
-        if let Some(hit) = self.path_cache.borrow().get(&(doc, idx)) {
+        if let Some(hit) = self
+            .ancestor_caches
+            .nodes
+            .borrow()
+            .get(&(node.doc, node.idx))
+        {
             return hit.clone();
         }
         let ids = self.ancestor_ids(doc_path, element);
@@ -598,9 +655,10 @@ impl WxmlGraph {
             })
             .collect();
         let value = Rc::new((nodes, ids.1));
-        self.path_cache
+        self.ancestor_caches
+            .nodes
             .borrow_mut()
-            .insert((doc, idx), value.clone());
+            .insert((node.doc, node.idx), value.clone());
         value
     }
 
@@ -613,16 +671,10 @@ impl WxmlGraph {
         doc_path: &str,
         element: &WxmlElement,
     ) -> Rc<AncestorIdPaths> {
-        let Some(&doc) = self.by_path.get(doc_path) else {
+        let Some(node) = self.element_node(doc_path, element) else {
             return Rc::new((Vec::new(), false));
         };
-        let Some(&idx) = self.docs[doc]
-            .by_start
-            .get(&(element.tag_start.line, element.tag_start.utf16_col))
-        else {
-            return Rc::new((Vec::new(), false));
-        };
-        if let Some(hit) = self.id_path_cache.borrow().get(&(doc, idx)) {
+        if let Some(hit) = self.ancestor_caches.ids.borrow().get(&(node.doc, node.idx)) {
             return hit.clone();
         }
         let (paths, truncated) = self.ancestor_paths_capped(doc_path, element);
@@ -638,9 +690,10 @@ impl WxmlGraph {
             })
             .collect();
         let value = Rc::new((ids, truncated));
-        self.id_path_cache
+        self.ancestor_caches
+            .ids
             .borrow_mut()
-            .insert((doc, idx), value.clone());
+            .insert((node.doc, node.idx), value.clone());
         value
     }
 
@@ -658,20 +711,18 @@ impl WxmlGraph {
         doc_path: &str,
         element: &WxmlElement,
     ) -> Rc<AncestorClosure> {
-        let Some(&doc) = self.by_path.get(doc_path) else {
+        let Some(start) = self.element_node(doc_path, element) else {
             return Rc::new((Vec::new(), false));
         };
-        let Some(&idx) = self.docs[doc]
-            .by_start
-            .get(&(element.tag_start.line, element.tag_start.utf16_col))
-        else {
-            return Rc::new((Vec::new(), false));
-        };
-        if let Some(hit) = self.closure_cache.borrow().get(&(doc, idx)) {
+        if let Some(hit) = self
+            .ancestor_caches
+            .closure
+            .borrow()
+            .get(&(start.doc, start.idx))
+        {
             return hit.clone();
         }
 
-        let start = NodeId { doc, idx };
         let mut out = Vec::new();
         let mut seen = HashSet::new();
         let mut queue: VecDeque<NodeId> = VecDeque::new();
@@ -704,9 +755,10 @@ impl WxmlGraph {
         }
 
         let value = Rc::new((out, truncated));
-        self.closure_cache
+        self.ancestor_caches
+            .closure
             .borrow_mut()
-            .insert((doc, idx), value.clone());
+            .insert((start.doc, start.idx), value.clone());
         value
     }
 

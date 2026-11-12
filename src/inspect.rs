@@ -502,12 +502,12 @@ impl<'a> Facts<'a> {
             ),
             white_space: value("white-space"),
             clips_overflow: wxml::clips_overflow(self.project, &self.tree, element),
-            webview_truncates: wxml::webview_truncates(
+            webview_truncates: wxml::truncation::webview_truncates_local(
                 self.project,
                 &self.tree,
                 element,
                 &ancestors,
-            ),
+            ) == Some(true),
         }
     }
 

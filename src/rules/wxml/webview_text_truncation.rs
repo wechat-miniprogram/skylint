@@ -20,7 +20,8 @@ use crate::rules::RuleMeta;
 use crate::rules::Target;
 use crate::rules::wxml::resolved_property;
 
-use super::{ancestry, element_diagnostic, structure::find_attr, visit, walk};
+use super::ancestry;
+use super::{element_diagnostic, structure::find_attr, truncation, visit, walk};
 
 pub const ID: &str = "webview/text-truncation";
 
@@ -54,7 +55,7 @@ impl Rule for TextTruncation {
                     // 在两个渲染器下表现一致，报出来是噪音。
                     let attributes = truncating_attributes(project, &tree, element);
                     if attributes.is_empty()
-                        || ancestry::webview_truncates(views, &tree, element, ancestors)
+                        || truncation::webview_truncates(views, &tree, element, ancestors)
                             != Some(false)
                     {
                         return;

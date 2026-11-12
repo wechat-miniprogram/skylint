@@ -5,22 +5,23 @@
 //! 会不会截断」这类问题，必须把祖先链换成 [`WxmlGraph::ancestor_ids`] 给的实例化
 //! 路径，并回到祖先**自己那份文档**求值——选择器的作用域、级联的样式表都跟着文档走。
 //!
-//! 两条规则（`webview/text-truncation`、`skyline/component-attribute`）只关心 WebView
-//! 语义：Skyline 丢弃属性条件，用它求祖先会给出错的取值，所以这一路的查询统一用
-//! [`Dialect::WebView`]。
+//! 本模块只负责「祖先是谁、它的某个属性值是多少」；截断语义在
+//! [`super::truncation`]。求值一律显式传方言：调用方要 WebView 语义就传
+//! [`Dialect::WebView`]，否则 Skyline 会丢弃属性条件、给出错的取值。
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::input::wxml::{WxmlDoc, WxmlElement};
+use crate::input::wxml::WxmlDoc;
 use crate::matcher::{Dialect, Tree};
 use crate::project::Project;
-use crate::wxml_graph::{AncestorId, WxmlGraph};
+use crate::wxml_graph::{AncestorId, NodeId, WxmlGraph};
 
-use super::{load_doc, resolved_property_with_dialect};
+use super::load_doc;
+use super::resolved_property_with_dialect;
 
-/// 逐条实例化路径的合成方式。
+/// 实例化证据的合成方式。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mode {
     /// 证据型：祖先里任一处成立即成立（「WebView 会不会截断」）。
@@ -53,8 +54,16 @@ pub(crate) enum Ancestors<'a> {
     },
 }
 
-/// `(文档实例地址, 原始起点, 属性, 是否 WebView)` → `(取值, 是否判不了)`。
-type ResolvedValues = HashMap<(usize, (u32, u32), String, bool), Option<(String, bool)>>;
+/// 祖先属性求值的缓存键。
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ResolvedKey {
+    /// `Rc<WxmlDoc>` 的地址：同一路径的折叠版与全分支版结构不同，不能按路径区分。
+    doc: usize,
+    /// 元素的原始起点（编译器 0 基坐标）。
+    start: (u32, u32),
+    property: String,
+    dialect: Dialect,
+}
 
 /// 所有文档的匹配视图。
 ///
@@ -68,12 +77,11 @@ pub(crate) struct DocViews<'a> {
     trees: &'a [Tree<'a>],
     /// 文档路径 → `docs` / `trees` 下标（与图里的 `NodeId::doc` 无关）。
     by_path: HashMap<&'a str, usize>,
-    /// `(文档实例地址, 原始起点, 属性, 是否 WebView)` → `(取值, 是否判不了)`。
+    /// 祖先属性的级联结果。
     ///
     /// 同一祖先元素会被不同规则、不同属性反复问；级联一次要匹配整张样式表，
-    /// 不缓存会把同一份工作重复几十次。键里的文档用地址：同一路径的折叠版与
-    /// 全分支版结构不同。
-    resolved_cache: RefCell<ResolvedValues>,
+    /// 不缓存会把同一份工作重复几十次。
+    resolved_cache: RefCell<HashMap<ResolvedKey, Option<(String, bool)>>>,
 }
 
 /// 在全部图文档的匹配视图上执行 `f`。
@@ -97,6 +105,47 @@ pub(crate) fn with_views<R>(project: &Project, f: impl FnOnce(&DocViews<'_>) -> 
         by_path,
         resolved_cache: RefCell::new(HashMap::new()),
     })
+}
+
+impl DocViews<'_> {
+    pub(crate) fn project(&self) -> &Project {
+        self.project
+    }
+
+    pub(crate) fn graph(&self) -> &WxmlGraph {
+        self.graph
+    }
+
+    /// 节点 → 它自己那份文档上的某个属性值。
+    ///
+    /// `None`：节点在这份视图里找不到（文档不参与渲染）。
+    /// `Some((value, undecidable))`：元素存在；空串表示这份文档里确定没写，布尔位
+    /// 表示「有选择器可能命中、但静态判不了」。
+    fn resolve(&self, node: NodeId, property: &str, dialect: Dialect) -> Option<(String, bool)> {
+        let index = *self.by_path.get(self.graph.doc_path(node.doc))?;
+        let doc = self.docs.get(index)?;
+        let tree = self.trees.get(index)?;
+        let start = self.graph.flat(node).raw_start;
+        let key = ResolvedKey {
+            doc: Rc::as_ptr(doc) as usize,
+            start,
+            property: property.to_string(),
+            dialect,
+        };
+        if let Some(hit) = self.resolved_cache.borrow().get(&key) {
+            return hit.clone();
+        }
+        let value = doc.element_at(start).map(|element| {
+            let (resolved, undecidable) =
+                resolved_property_with_dialect(self.project, tree, element, property, dialect);
+            (
+                resolved.map(|resolved| resolved.value).unwrap_or_default(),
+                undecidable,
+            )
+        });
+        self.resolved_cache.borrow_mut().insert(key, value.clone());
+        value
+    }
 }
 
 /// 按实例化证据合成一个结论。
@@ -141,247 +190,160 @@ pub(crate) fn aggregate(
     }
 }
 
-/// 某个祖先元素上某个属性的有效取值。
+/// 某个祖先元素上某个属性的有效取值（回它**自己那份文档**求级联）。
 ///
-/// `None`：这个节点不是可求值元素（页面根），或元素不在视图里。
-/// `Some((value, undecidable))`：元素存在；`value` 为空串表示这份文档里确定没写，
-/// 布尔位表示「有选择器可能命中、但静态判不了」。
+/// 例：模板 `tpls/book.wxml` 里是 `<template name="t"><text class="name">`，
+/// 页面 `pages/list/index.wxml` 用 `<view class="clamp"><template is="t"/></view>`
+/// 实例化它，`pages/list/index.wxss` 写 `.clamp { -webkit-line-clamp: 2 }`。
+/// 对模板里的 `<text>` 调用 [`WxmlGraph::ancestor_closure`]，闭包里会有页面那个
+/// `<view>` 节点；`property_at(views, 该节点, "-webkit-line-clamp", Dialect::WebView)`
+/// 就返回 `Some(("2", false))`——取值来自**页面**那份文档的样式表，而不是模板自己的。
+///
+/// `None`：这个节点不是可求值元素（页面根 [`AncestorId::PageRoot`]），或元素不在视图里。
+/// `Some((value, undecidable))`：元素存在；空串表示这份文档里确定没写，布尔位表示
+/// 「有选择器可能命中、但静态判不了」。
 pub(crate) fn property_at(
     views: &DocViews<'_>,
     hop: &AncestorId,
     property: &str,
     dialect: Dialect,
 ) -> Option<(String, bool)> {
-    let AncestorId::Node(node) = hop else {
-        return None;
-    };
-    let index = *views.by_path.get(views.graph.doc_path(node.doc))?;
-    let doc = views.docs.get(index)?;
-    let tree = views.trees.get(index)?;
-
-    let raw = views.graph.flat(*node).raw_start;
-    let key = (
-        Rc::as_ptr(doc) as usize,
-        raw,
-        property.to_string(),
-        dialect == Dialect::WebView,
-    );
-    if let Some(hit) = views.resolved_cache.borrow().get(&key) {
-        return hit.clone();
-    }
-
-    let value = doc.element_at(raw).map(|element| {
-        let (resolved, undecidable) =
-            resolved_property_with_dialect(views.project, tree, element, property, dialect);
-        (
-            resolved.map(|resolved| resolved.value).unwrap_or_default(),
-            undecidable,
-        )
-    });
-    views.resolved_cache.borrow_mut().insert(key, value.clone());
-    value
-}
-
-/// WebView 侧会不会截断：自身、单文件祖先，或实例化处的祖先。
-///
-/// `Some(true)` 是证据，`Some(false)` 是「都确定不截断」，`None` 是判不了（调用方
-/// 必须放弃判定）。
-pub(crate) fn webview_truncates(
-    views: &DocViews<'_>,
-    tree: &Tree<'_>,
-    element: &WxmlElement,
-    ancestors: &[&WxmlElement],
-) -> Option<bool> {
-    let own = local_truncates(views, tree, element);
-    if own == Some(true) {
-        return Some(true);
-    }
-    let mut unknown = own.is_none();
-    for candidate in ancestors.iter().rev() {
-        match local_truncates(views, tree, candidate) {
-            Some(true) => return Some(true),
-            Some(false) => {}
-            None => unknown = true,
-        }
-    }
-    if !tree.ancestors_unknown(element) {
-        return (!unknown).then_some(false);
-    }
-    // 模板定义体 / 片段：真实祖先在实例化处。问的是「祖先里有没有截断属性」——
-    // 可达性，走按节点去重的闭包，不随实例化路径数指数增长。
-    let closure = views.graph.ancestor_closure(tree.path(), element);
-    match aggregate(
-        Mode::Any,
-        Ancestors::Closure {
-            nodes: &closure.0,
-            truncated: closure.1,
-        },
-        |node| any_hop_truncates(views, node),
-    ) {
-        Some(true) => Some(true),
-        None => None,
-        Some(false) if unknown => None,
-        Some(false) => Some(false),
+    match hop {
+        AncestorId::Node(node) => views.resolve(*node, property, dialect),
+        AncestorId::PageRoot => None,
     }
 }
 
-/// 自身或祖先最近的 `-webkit-line-clamp` 行数（多行截断的行数来源）。
-///
-/// 多条实例化路径给出不同行数时返回 `None`：消息只能写一个数字，写错比不写更糟。
-pub(crate) fn clamp_lines(
-    views: &DocViews<'_>,
-    tree: &Tree<'_>,
-    element: &WxmlElement,
-    ancestors: &[&WxmlElement],
-) -> Option<u32> {
-    let local = std::iter::once(element)
-        .chain(ancestors.iter().rev().copied())
-        .find_map(|candidate| {
-            let (resolved, _) = resolved_property_with_dialect(
-                views.project,
-                tree,
-                candidate,
-                "-webkit-line-clamp",
-                Dialect::WebView,
-            );
-            resolved.and_then(|resolved| positive_lines(&resolved.value))
-        });
-    if local.is_some() {
-        return local;
-    }
-    if !tree.ancestors_unknown(element) {
-        return None;
-    }
-    let paths = views.graph.ancestor_ids(tree.path(), element);
-    let (paths, truncated) = &*paths;
-    if *truncated || paths.is_empty() {
-        return None;
-    }
-    let values: Option<Vec<u32>> = paths
-        .iter()
-        .map(|path| {
-            for hop in path {
-                match property_at(views, hop, "-webkit-line-clamp", Dialect::WebView) {
-                    // 判不了：这条路径给不出确定的最近行数。
-                    Some((_, true)) => return None,
-                    Some((value, false)) => {
-                        if let Some(lines) = positive_lines(&value) {
-                            return Some(lines);
-                        }
-                    }
-                    None => {}
-                }
-            }
-            None
-        })
-        .collect();
-    let values = values?;
-    let first = *values.first()?;
-    values.iter().all(|lines| *lines == first).then_some(first)
-}
+#[cfg(test)]
+mod tests {
+    use crate::matcher::Dialect;
+    use crate::rules::testutil::wxml::Fixture;
+    use crate::rules::wxml::load_doc;
 
-fn local_truncates(views: &DocViews<'_>, tree: &Tree<'_>, element: &WxmlElement) -> Option<bool> {
-    truncates_with(|property| {
-        let (resolved, undecidable) = resolved_property_with_dialect(
-            views.project,
-            tree,
-            element,
-            property,
-            Dialect::WebView,
+    use super::{AncestorId, property_at, with_views};
+
+    fn fixture(name: &str, template: &str, style: &str) -> Fixture {
+        let fixture = Fixture::new(name);
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<import src="/tpls/t.wxml"/><view class="clamp"><template is="t"/></view>"#,
+            )
+            .write("tpls/t.wxml", template)
+            .write("pages/index/index.wxss", style);
+        fixture
+    }
+
+    /// 祖先的属性值来自**它自己那份文档**的样式表，而不是模板的。
+    #[test]
+    fn ancestor_property_comes_from_its_own_document() {
+        let fixture = fixture(
+            "ancestry-own-doc",
+            r#"<template name="t"><text class="name">a</text></template>"#,
+            ".clamp { -webkit-line-clamp: 2; }",
         );
-        Some((
-            resolved.map(|resolved| resolved.value).unwrap_or_default(),
-            undecidable,
-        ))
-    })
-}
+        let project = fixture.project();
+        let doc = load_doc(&project, "tpls/t.wxml").expect("模板文档");
+        let text = doc.elements().find(|e| e.tag == "text").expect("text");
+        let closure = project.graph().ancestor_closure("tpls/t.wxml", text);
 
-fn hop_truncates(views: &DocViews<'_>, hop: &AncestorId) -> Option<bool> {
-    truncates_with(|property| property_at(views, hop, property, Dialect::WebView))
-}
-
-fn any_hop_truncates(views: &DocViews<'_>, path: &[AncestorId]) -> Option<bool> {
-    let mut unknown = false;
-    for hop in path {
-        match hop_truncates(views, hop) {
-            Some(true) => return Some(true),
-            Some(false) => {}
-            None => unknown = true,
-        }
+        let values = with_views(&project, |views| {
+            closure
+                .0
+                .iter()
+                .filter_map(|hop| property_at(views, hop, "-webkit-line-clamp", Dialect::WebView))
+                .collect::<Vec<_>>()
+        });
+        assert!(
+            values
+                .iter()
+                .any(|(value, undecidable)| !*undecidable && value.trim() == "2"),
+            "实例化处的 clamp 必须能读到：{values:?}"
+        );
     }
-    (!unknown).then_some(false)
-}
 
-/// 「WebView 会截断吗」的取值级判定：多行 clamp，或单行 nowrap + 裁切 + 省略号。
-fn truncates_with(read: impl Fn(&str) -> Option<(String, bool)>) -> Option<bool> {
-    let clamp = match read("-webkit-line-clamp") {
-        Some((value, false)) => Some(positive_lines(&value).is_some()),
-        Some((_, true)) => None,
-        None => Some(false),
-    };
-    let single_line = conj([
-        is_at(&read, "white-space", "nowrap"),
-        clips_with(&read),
-        is_at(&read, "text-overflow", "ellipsis"),
-    ]);
-    disj([clamp, single_line])
-}
+    /// 属性没写时返回空串而不是 `None`：调用方要能区分「确定没写」与「求值不了」。
+    #[test]
+    fn missing_property_reads_as_empty() {
+        let fixture = fixture(
+            "ancestry-missing",
+            r#"<template name="t"><text class="name">a</text></template>"#,
+            ".clamp { color: red; }",
+        );
+        let project = fixture.project();
+        let doc = load_doc(&project, "tpls/t.wxml").expect("模板文档");
+        let text = doc.elements().find(|e| e.tag == "text").expect("text");
+        let closure = project.graph().ancestor_closure("tpls/t.wxml", text);
 
-fn clips_with(read: &impl Fn(&str) -> Option<(String, bool)>) -> Option<bool> {
-    let mut unknown = false;
-    for property in ["overflow", "overflow-x", "overflow-y"] {
-        match read(property) {
-            Some((value, false)) if clips(&value) => return Some(true),
-            Some((_, true)) => unknown = true,
-            _ => {}
-        }
+        let written = with_views(&project, |views| {
+            closure
+                .0
+                .iter()
+                .filter_map(|hop| property_at(views, hop, "display", Dialect::WebView))
+                .collect::<Vec<_>>()
+        });
+        assert!(
+            written
+                .iter()
+                .all(|(value, undecidable)| value.is_empty() && !*undecidable),
+            "{written:?}"
+        );
     }
-    (!unknown).then_some(false)
-}
 
-fn is_at(
-    read: &impl Fn(&str) -> Option<(String, bool)>,
-    property: &str,
-    expected: &str,
-) -> Option<bool> {
-    match read(property) {
-        Some((value, false)) => Some(value.trim().eq_ignore_ascii_case(expected)),
-        Some((_, true)) => None,
-        None => Some(false),
+    /// 方言决定属性选择器能不能命中：Skyline 丢弃属性条件，WebView 按真值匹配。
+    /// 缓存键必须带方言，否则先问的那一方会把结果污染给另一方。
+    #[test]
+    fn dialect_selects_which_selectors_match() {
+        let fixture = fixture(
+            "ancestry-dialect",
+            r#"<template name="t"><text class="name">a</text></template>"#,
+            ".name[data-role='title'] { -webkit-line-clamp: 3; }",
+        );
+        let project = fixture.project();
+        let doc = load_doc(&project, "tpls/t.wxml").expect("模板文档");
+        let text = doc.elements().find(|e| e.tag == "text").expect("text");
+        let node = AncestorId::Node(
+            project
+                .graph()
+                .element_node("tpls/t.wxml", text)
+                .expect("在图上"),
+        );
+
+        let (webview, skyline) = with_views(&project, |views| {
+            (
+                property_at(views, &node, "-webkit-line-clamp", Dialect::WebView),
+                property_at(views, &node, "-webkit-line-clamp", Dialect::Skyline),
+            )
+        });
+        assert!(
+            matches!(&webview, Some((value, _)) if value.is_empty()),
+            "WebView 下这个属性不该取到值：{webview:?}"
+        );
+        assert_eq!(
+            skyline,
+            Some(("3".to_string(), false)),
+            "Skyline 忽略属性条件"
+        );
     }
-}
 
-fn conj(values: [Option<bool>; 3]) -> Option<bool> {
-    let mut unknown = false;
-    for value in values {
-        match value {
-            Some(false) => return Some(false),
-            Some(true) => {}
-            None => unknown = true,
-        }
+    /// 页面根不是可求值元素。
+    #[test]
+    fn page_root_has_no_property() {
+        let fixture = fixture(
+            "ancestry-page-root",
+            r#"<template name="t"><text class="name">a</text></template>"#,
+            ".clamp { color: red; }",
+        );
+        let project = fixture.project();
+        let value = with_views(&project, |views| {
+            property_at(views, &AncestorId::PageRoot, "color", Dialect::WebView)
+        });
+        assert_eq!(value, None);
     }
-    (!unknown).then_some(true)
-}
-
-fn disj(values: [Option<bool>; 2]) -> Option<bool> {
-    let mut unknown = false;
-    for value in values {
-        match value {
-            Some(true) => return Some(true),
-            Some(false) => {}
-            None => unknown = true,
-        }
-    }
-    (!unknown).then_some(false)
-}
-
-fn positive_lines(value: &str) -> Option<u32> {
-    value.trim().parse::<u32>().ok().filter(|lines| *lines > 0)
-}
-
-fn clips(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "hidden" | "clip" | "auto" | "scroll"
-    )
 }
