@@ -211,18 +211,9 @@ impl JsDoc {
 
     /// 字节偏移 → `(line, column)`，均 1-based，`column` 按 Unicode 字符计。
     ///
-    /// 与 `WxssDoc::position` 同语义：偏移落在多字节字符中间时向下取整到该字符起点，
-    /// 超出文件长度时取文件末尾。
+    /// 与 `WxssDoc::position` 同一套换算（[`super::position`]）。
     pub fn position(&self, offset: usize) -> (u32, u32) {
-        let mut end = offset.min(self.source.len());
-        while end > 0 && !self.source.is_char_boundary(end) {
-            end -= 1;
-        }
-        let prefix = &self.source[..end];
-        let line = prefix.bytes().filter(|b| *b == b'\n').count() as u32 + 1;
-        let line_start = prefix.rfind('\n').map_or(0, |i| i + 1);
-        let column = self.source[line_start..end].chars().count() as u32 + 1;
-        (line, column)
+        super::position(&self.source, offset)
     }
 }
 

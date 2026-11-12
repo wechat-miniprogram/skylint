@@ -138,12 +138,13 @@ pub(crate) fn length_unit(token: &ValueToken) -> Option<String> {
     }
 }
 
-fn text_length_unit(token: &str) -> Option<String> {
-    let bytes = token.as_bytes();
-    let mut i = 0usize;
-    if matches!(bytes.first(), Some(b'+') | Some(b'-')) {
-        i = 1;
-    }
+/// 数字前缀的结束位置：可选 `+` / `-`、数字与小数点；一个数字都没有时 `None`。
+///
+/// `4px` → `Some(1)`、`-1.5em` → `Some(4)`、`px` → `None`。词法扫描在图两处
+/// （`value_util::text_length_unit`、`dict_table::is_length`），本就同源。
+pub(crate) fn number_prefix_end(text: &str) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut i = usize::from(matches!(bytes.first(), Some(b'+') | Some(b'-')));
     let mut seen_digit = false;
     while i < bytes.len() {
         match bytes[i] {
@@ -155,10 +156,15 @@ fn text_length_unit(token: &str) -> Option<String> {
             _ => break,
         }
     }
-    if !seen_digit || i >= bytes.len() {
+    seen_digit.then_some(i)
+}
+
+fn text_length_unit(token: &str) -> Option<String> {
+    let i = number_prefix_end(token)?;
+    let unit = token.get(i..)?;
+    if unit.is_empty() {
         return None;
     }
-    let unit = &token[i..];
     if unit.chars().all(|c| c.is_ascii_alphabetic() || c == '%') {
         Some(unit.to_ascii_lowercase())
     } else {

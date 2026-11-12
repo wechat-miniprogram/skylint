@@ -313,23 +313,10 @@ pub(crate) fn normalize_value(value: &str) -> Option<String> {
 /// 单位取 fp `<length>` 接受的集合（float-pigment-css parser/property_value/mod.rs:150-163）；
 /// 无单位零是合法 `<length>`（CSS 只允许零省略单位）。
 fn is_length(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    let mut i = usize::from(matches!(bytes.first(), Some(b'+') | Some(b'-')));
-    let mut seen_digit = false;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'0'..=b'9' => {
-                seen_digit = true;
-                i += 1;
-            }
-            b'.' => i += 1,
-            _ => break,
-        }
-    }
-    if !seen_digit {
+    let Some(end) = super::value_util::number_prefix_end(value) else {
         return false;
-    }
-    let unit = &value[i..];
+    };
+    let unit = &value[end..];
     if unit.is_empty() {
         // `0` / `0.0` / `-0` 都是合法 `<length>`。
         return value.bytes().filter(u8::is_ascii_digit).all(|b| b == b'0');

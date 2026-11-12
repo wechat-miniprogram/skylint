@@ -82,38 +82,14 @@ impl WxssDoc {
     ///
     /// 偏移落在多字节字符中间时向下取整到该字符起点；超出文件长度时取文件末尾。
     pub fn position(&self, offset: usize) -> (u32, u32) {
-        let mut end = offset.min(self.source.len());
-        while end > 0 && !self.source.is_char_boundary(end) {
-            end -= 1;
-        }
-        let prefix = &self.source[..end];
-        let line = prefix.bytes().filter(|b| *b == b'\n').count() as u32 + 1;
-        let line_start = prefix.rfind('\n').map_or(0, |i| i + 1);
-        let column = self.source[line_start..end].chars().count() as u32 + 1;
-        (line, column)
+        super::position(&self.source, offset)
     }
 
     /// `(line, column)` → 字节偏移，均 1-based，`column` 按 Unicode 字符计。
     ///
     /// 是 [`Self::position`] 的反向换算；行/列越界时取源文件末尾。
     pub fn offset(&self, line: u32, column: u32) -> usize {
-        let mut line_start = 0;
-        let mut current = 1;
-        while current < line {
-            let Some(index) = self.source[line_start..].find('\n') else {
-                return self.source.len();
-            };
-            line_start += index + 1;
-            current += 1;
-        }
-        let line_end = self.source[line_start..]
-            .find('\n')
-            .map_or(self.source.len(), |index| line_start + index);
-        let line_text = &self.source[line_start..line_end];
-        line_text
-            .char_indices()
-            .nth(column.saturating_sub(1) as usize)
-            .map_or(line_end, |(index, _)| line_start + index)
+        super::offset(&self.source, line, column)
     }
 }
 

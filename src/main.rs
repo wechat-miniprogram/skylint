@@ -40,9 +40,8 @@ struct Cli {
     #[arg(long)]
     json: bool,
 
-    /// 跳过的规则 id（可重复）
-    #[arg(long = "ignore", value_name = "RULE")]
-    ignore: Vec<String>,
+    #[command(flatten)]
+    ignored: IgnoreRules,
 
     /// 检查方向
     #[arg(long, value_enum, default_value = "skyline")]
@@ -79,93 +78,88 @@ enum MigrationCommand {
     Next(NextArgs),
 }
 
+/// 迁移子命令都接受的「看哪个工程、怎么输出」。
 #[derive(Debug, Args)]
-struct PlanArgs {
+struct Projection {
     /// 项目根目录
     #[arg(default_value = ".", value_name = "PATH")]
     path: PathBuf,
     /// 输出 JSON（机器可读）
     #[arg(long)]
     json: bool,
+}
+
+/// `--ignore`：跳过的规则 id（可重复）。
+#[derive(Debug, Args)]
+struct IgnoreRules {
+    /// 跳过的规则 id（可重复）
+    #[arg(long = "ignore", value_name = "RULE")]
+    ignore: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct PlanArgs {
+    #[command(flatten)]
+    project: Projection,
     /// 写入文件（等价于 `--json > FILE`）
     #[arg(long, value_name = "FILE")]
     out: Option<PathBuf>,
     /// 基线报告，用于对账
     #[arg(long, value_name = "FILE")]
     baseline: Option<PathBuf>,
-    /// 跳过的规则 id（可重复）
-    #[arg(long = "ignore", value_name = "RULE")]
-    ignore: Vec<String>,
+    #[command(flatten)]
+    ignored: IgnoreRules,
 }
 
 #[derive(Debug, Args)]
 struct JobArgs {
-    /// 项目根目录
-    #[arg(default_value = ".", value_name = "PATH")]
-    path: PathBuf,
+    #[command(flatten)]
+    project: Projection,
     /// 单元 id（`unit:components/btn/btn`）或 WXML 路径
     #[arg(long, value_name = "UNIT")]
     unit: String,
-    /// 输出 JSON（机器可读）
-    #[arg(long)]
-    json: bool,
     /// 写入文件
     #[arg(long, value_name = "FILE")]
     out: Option<PathBuf>,
     /// 基线报告
     #[arg(long, value_name = "FILE")]
     baseline: Option<PathBuf>,
-    /// 跳过的规则 id（可重复）
-    #[arg(long = "ignore", value_name = "RULE")]
-    ignore: Vec<String>,
+    #[command(flatten)]
+    ignored: IgnoreRules,
 }
 
 #[derive(Debug, Args)]
 struct BaselineArgs {
-    /// 项目根目录
-    #[arg(default_value = ".", value_name = "PATH")]
-    path: PathBuf,
+    #[command(flatten)]
+    project: Projection,
     /// 写入位置（默认 `<PATH>/.skylint/baseline.json`）
     #[arg(long, value_name = "FILE")]
     out: Option<PathBuf>,
-    /// 输出 JSON（同时写到 `--out`）
-    #[arg(long)]
-    json: bool,
     /// 在已有基线上增量吸收「冻结后新增规则」的诊断（`--out` 必须指向已存在的基线）
     #[arg(long)]
     augment: bool,
-    /// 跳过的规则 id（可重复）
-    #[arg(long = "ignore", value_name = "RULE")]
-    ignore: Vec<String>,
+    #[command(flatten)]
+    ignored: IgnoreRules,
 }
 
 #[derive(Debug, Args)]
 struct VerifyArgs {
-    /// 项目根目录
-    #[arg(default_value = ".", value_name = "PATH")]
-    path: PathBuf,
+    #[command(flatten)]
+    project: Projection,
     /// 基线文件（`skylint migration baseline` 生成）
     #[arg(long, value_name = "FILE")]
     baseline: PathBuf,
     /// 只看这个单元（id 或 WXML 路径）
     #[arg(long, value_name = "UNIT")]
     unit: Option<String>,
-    /// 输出 JSON（机器可读）
-    #[arg(long)]
-    json: bool,
-    /// 跳过的规则 id（可重复）
-    #[arg(long = "ignore", value_name = "RULE")]
-    ignore: Vec<String>,
+    #[command(flatten)]
+    ignored: IgnoreRules,
 }
 
 #[derive(Debug, Args)]
 struct LedgerArgs {
-    /// 项目根目录
-    #[arg(default_value = ".", value_name = "PATH")]
-    path: PathBuf,
-    /// 输出 JSON（机器可读）
-    #[arg(long)]
-    json: bool,
+    #[command(flatten)]
+    project: Projection,
     /// 删掉计划里已不存在的单元（改名/删除组件后的陈旧条目）
     #[arg(long)]
     prune: bool,
@@ -220,21 +214,16 @@ struct RecordArgs {
 
 #[derive(Debug, Args)]
 struct NextArgs {
-    /// 项目根目录
-    #[arg(default_value = ".", value_name = "PATH")]
-    path: PathBuf,
-    /// 输出 JSON（机器可读）
-    #[arg(long)]
-    json: bool,
+    #[command(flatten)]
+    project: Projection,
     /// 顺便生成这个单元的作业单
     #[arg(long, value_name = "FILE")]
     job_out: Option<PathBuf>,
     /// 基线报告
     #[arg(long, value_name = "FILE")]
     baseline: Option<PathBuf>,
-    /// 跳过的规则 id（可重复）
-    #[arg(long = "ignore", value_name = "RULE")]
-    ignore: Vec<String>,
+    #[command(flatten)]
+    ignored: IgnoreRules,
 }
 
 #[derive(Debug, Args)]
@@ -263,7 +252,7 @@ fn main() -> ExitCode {
         None => run_check(
             cli.path.unwrap_or_else(|| PathBuf::from(".")),
             cli.json,
-            cli.ignore,
+            cli.ignored.ignore,
             cli.target.into(),
         ),
     }
@@ -329,14 +318,14 @@ fn run_check(path: PathBuf, json: bool, ignore: Vec<String>, target: Target) -> 
 }
 
 fn run_plan(args: PlanArgs) -> ExitCode {
-    let (projects, report) = match analyse(&args.path, &args.ignore) {
+    let (projects, report) = match analyse(&args.project.path, &args.ignored.ignore) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     let baseline = baseline_ref(args.baseline.as_deref(), report.diagnostics.len());
     let plan = migrate::plan(&projects, &report, baseline);
 
-    if args.json || args.out.is_some() {
+    if args.project.json || args.out.is_some() {
         let json = migrate::to_json(&plan);
         if let Some(out) = args.out {
             if let Err(err) = write_out(&out, &json) {
@@ -354,7 +343,7 @@ fn run_plan(args: PlanArgs) -> ExitCode {
 }
 
 fn run_job(args: JobArgs) -> ExitCode {
-    let (projects, report) = match analyse(&args.path, &args.ignore) {
+    let (projects, report) = match analyse(&args.project.path, &args.ignored.ignore) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -373,7 +362,7 @@ fn run_job(args: JobArgs) -> ExitCode {
         return ExitCode::from(1);
     };
 
-    if args.json || args.out.is_some() {
+    if args.project.json || args.out.is_some() {
         let json = migrate::to_json(&job);
         if let Some(out) = args.out {
             if let Err(err) = write_out(&out, &json) {
@@ -442,7 +431,7 @@ fn run_facts(args: FactsArgs) -> ExitCode {
 }
 
 fn run_baseline(args: BaselineArgs) -> ExitCode {
-    let (projects, report) = match analyse(&args.path, &args.ignore) {
+    let (projects, report) = match analyse(&args.project.path, &args.ignored.ignore) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -458,13 +447,13 @@ fn run_baseline(args: BaselineArgs) -> ExitCode {
     // 默认落在工程根下，不落在当前目录——否则从别处调就会写错地方。
     let out = args
         .out
-        .unwrap_or_else(|| args.path.join(".skylint/baseline.json"));
+        .unwrap_or_else(|| args.project.path.join(".skylint/baseline.json"));
 
     if let Err(err) = write_out(&out, &json) {
         eprintln!("skylint: {err}");
         return ExitCode::from(2);
     }
-    if args.json {
+    if args.project.json {
         println!("{json}");
     } else {
         eprintln!(
@@ -524,7 +513,7 @@ fn run_augment(args: BaselineArgs, identified: &[migrate::Identified]) -> ExitCo
         return ExitCode::from(2);
     }
     print_augment(&out, &report, &before, &check);
-    if args.json {
+    if args.project.json {
         println!("{json}");
     }
     ExitCode::SUCCESS
@@ -573,7 +562,7 @@ fn run_verify(args: VerifyArgs) -> ExitCode {
         }
     };
 
-    let (projects, report) = match analyse(&args.path, &args.ignore) {
+    let (projects, report) = match analyse(&args.project.path, &args.ignored.ignore) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
@@ -600,7 +589,7 @@ fn run_verify(args: VerifyArgs) -> ExitCode {
     );
     let unknown = migrate::unknown_rules(&baseline, &migrate::builtin_rule_ids());
 
-    if args.json {
+    if args.project.json {
         println!("{}", migrate::to_json(&result));
     } else {
         print_verify(&result, &unknown);
@@ -614,12 +603,12 @@ fn run_verify(args: VerifyArgs) -> ExitCode {
 }
 
 fn run_ledger(args: LedgerArgs) -> ExitCode {
-    let (projects, report) = match analyse(&args.path, &[]) {
+    let (projects, report) = match analyse(&args.project.path, &[]) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     let plan = migrate::plan(&projects, &report, None);
-    let path = ledger_path(&args.path);
+    let path = ledger_path(&args.project.path);
     let mut ledger = match load_ledger(&path) {
         Ok(ledger) => ledger,
         Err(err) => {
@@ -637,7 +626,7 @@ fn run_ledger(args: LedgerArgs) -> ExitCode {
         eprintln!("清理了 {removed} 个计划里已不存在的单元");
     }
 
-    if args.json {
+    if args.project.json {
         println!(
             "{}",
             migrate::to_json(&migrate::LedgerReport {
@@ -695,13 +684,13 @@ fn run_record(args: RecordArgs) -> ExitCode {
 }
 
 fn run_next(args: NextArgs) -> ExitCode {
-    let (projects, report) = match analyse(&args.path, &args.ignore) {
+    let (projects, report) = match analyse(&args.project.path, &args.ignored.ignore) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
     let baseline = baseline_ref(args.baseline.as_deref(), report.diagnostics.len());
     let plan = migrate::plan(&projects, &report, baseline.clone());
-    let path = ledger_path(&args.path);
+    let path = ledger_path(&args.project.path);
     let ledger = match load_ledger(&path) {
         Ok(ledger) => ledger,
         Err(err) => {
@@ -724,7 +713,7 @@ fn run_next(args: NextArgs) -> ExitCode {
         eprintln!("wrote {}", out.display());
     }
 
-    if args.json {
+    if args.project.json {
         println!("{}", migrate::to_json(&next));
     } else {
         print_next(&next);
