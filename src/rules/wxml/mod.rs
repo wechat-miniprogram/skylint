@@ -72,7 +72,7 @@ use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::matcher::Tree;
 use crate::project::{Project, Scope};
 use crate::rules::Target;
-use crate::wxml_graph::WxmlGraph;
+use crate::wxml_graph::{SlotHost, WxmlGraph};
 
 /// 页面与组件的 WXML + 被 import / include 的模板，按路径去重。
 ///
@@ -299,6 +299,17 @@ pub(crate) struct ElementSite<'a, 't> {
     pub ancestors: &'a [&'a WxmlElement],
     pub reach: Reach,
     pub graph: &'a WxmlGraph,
+}
+
+impl ElementSite<'_, '_> {
+    /// 子节点被投影到哪个容器（`<slot>` 后面的真实父级）。
+    ///
+    /// 槽名、单/多槽、动态槽全在图里判定；返回 `None` 表示这个标签不是本文件里
+    /// 注册的组件，按原样处理即可。
+    pub(crate) fn projected_parent(&self) -> Option<SlotHost<'_>> {
+        self.graph
+            .projected_parent_tag(self.doc.path(), self.element)
+    }
 }
 
 /// 元素级规则的唯一遍历入口。

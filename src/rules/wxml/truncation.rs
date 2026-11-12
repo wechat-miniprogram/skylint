@@ -13,7 +13,7 @@ use crate::matcher::{Dialect, Tree};
 use crate::project::Project;
 use crate::wxml_graph::AncestorId;
 
-use super::ancestry::{Ancestors, DocViews, Mode, aggregate, property_at};
+use super::ancestry::{DocViews, property_at};
 use super::resolved_property_with_dialect;
 
 /// 一个属性的读取结果：`Some((取值, 是否判不了))`。
@@ -83,23 +83,14 @@ pub(crate) fn webview_truncates(
     if local == Some(true) {
         return Some(true);
     }
-    let unknown = local.is_none();
     if !tree.ancestors_unknown(element) {
-        return (!unknown).then_some(false);
+        return local;
     }
-    let closure = views.graph().ancestor_closure(tree.path(), element);
-    match aggregate(
-        Mode::Any,
-        Ancestors::Closure {
-            nodes: &closure.0,
-            truncated: closure.1,
-        },
-        |node| any_hop_truncates(views, node),
-    ) {
+    match views.any_evidence(tree, element, |nodes| any_hop_truncates(views, nodes)) {
         Some(true) => Some(true),
+        // 跨文档部分没有证据：单文件结论（可能是「本地判不了」）就是全部。
+        Some(false) => local,
         None => None,
-        Some(false) if unknown => None,
-        Some(false) => Some(false),
     }
 }
 
@@ -128,35 +119,24 @@ pub(crate) fn clamp_lines(
     if local.is_some() {
         return local;
     }
-    if !tree.ancestors_unknown(element) {
-        return None;
-    }
-    let paths = views.graph().ancestor_ids(tree.path(), element);
-    let (paths, truncated) = &*paths;
-    if *truncated || paths.is_empty() {
-        return None;
-    }
-    let values: Option<Vec<u32>> = paths
-        .iter()
-        .map(|path| {
-            for hop in path {
-                match property_at(views, hop, "-webkit-line-clamp", Dialect::WebView) {
-                    // 判不了：这条路径给不出确定的最近行数。
-                    Some((_, true)) => return None,
-                    Some((value, false)) => {
-                        if let Some(lines) = positive_lines(&value) {
-                            return Some(lines);
-                        }
-                    }
-                    None => {}
+    views.all_evidence(tree, element, |path| nearest_lines(views, path))
+}
+
+/// 一条实例化路径上最近的 `-webkit-line-clamp` 行数（见 [`clamp_lines`]）。
+fn nearest_lines(views: &DocViews<'_>, path: &[AncestorId]) -> Option<u32> {
+    for hop in path {
+        match property_at(views, hop, "-webkit-line-clamp", Dialect::WebView) {
+            // 判不了：这条路径给不出确定的最近行数。
+            Some((_, true)) => return None,
+            Some((value, false)) => {
+                if let Some(lines) = positive_lines(&value) {
+                    return Some(lines);
                 }
             }
-            None
-        })
-        .collect();
-    let values = values?;
-    let first = *values.first()?;
-    values.iter().all(|lines| *lines == first).then_some(first)
+            None => {}
+        }
+    }
+    None
 }
 
 /// 元素自己是否在 WebView 里裁掉溢出内容（`text-overflow` 生效的前提）。

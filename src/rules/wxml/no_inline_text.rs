@@ -6,15 +6,14 @@
 //! `display`：判明是 flex 就跳过；判不出来仍按块级报，宁可漏报不放过。
 
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
+use crate::input::wxml::{WxmlElement, WxmlNode};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use crate::matcher::Tree;
-use crate::wxml_graph::{SlotHost, WxmlGraph};
+use crate::wxml_graph::SlotHost;
 
 use super::branch::exclusive_branches;
-use super::{flex_container, for_each_element, is_out_of_flow, span_diagnostic};
+use super::{ElementSite, flex_container, for_each_element, is_out_of_flow, span_diagnostic};
 
 pub const ID: &str = "skyline/no-inline-text";
 
@@ -38,9 +37,7 @@ impl Rule for NoInlineText {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut out = Vec::new();
         for_each_element(project, self.target(), |site| {
-            let (doc, tree, element) = (site.doc, site.tree, site.element);
-            let graph = site.graph;
-            check_element(project, graph, doc, tree, element, &mut out);
+            check_element(project, site, &mut out);
         });
         out
     }
@@ -48,20 +45,14 @@ impl Rule for NoInlineText {
 
 /// 只有「文本与元素混排」在 Skyline 下会静默错位：纯文本子节点仍按 inline 流渲染。
 /// 文本根组件内部允许文本与子节点混排，整棵子树豁免。
-fn check_element(
-    project: &Project,
-    graph: &WxmlGraph,
-    doc: &WxmlDoc,
-    tree: &Tree<'_>,
-    element: &WxmlElement,
-    out: &mut Vec<Diagnostic>,
-) {
+fn check_element(project: &Project, site: &ElementSite<'_, '_>, out: &mut Vec<Diagnostic>) {
+    let (doc, tree, element) = (site.doc, site.tree, site.element);
     if TEXT_TAGS.contains(&element.tag.as_str()) {
         return;
     }
     // 子节点被投影进组件的 `<text>`（或根本没有匹配的槽位、不渲染）时，这些文本
     // 运行时不在本元素的盒子里，按本元素判定会误报。槽位解析在图上做。
-    match graph.projected_parent_tag(doc.path(), element) {
+    match site.projected_parent() {
         Some(SlotHost::NotRendered) => return,
         Some(SlotHost::Element(tag)) if TEXT_TAGS.contains(&tag) => return,
         _ => {}
