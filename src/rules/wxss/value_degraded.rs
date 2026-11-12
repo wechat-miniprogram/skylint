@@ -343,7 +343,7 @@ fn check_env(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
     ));
 }
 
-// 来源：/Volumes/2tb-ssd/nebula/Work/skyline-skills/skills/skyline-wxss/references/*.md
+// 来源：skyline-skills/skills/skyline-wxss/references/*.md
 // 语义：属性本身受支持，但该值在 Skyline 下被降级 / 映射 / 无效果，表现与 WebView 不同。
 //       「值根本无效」属于 wxss_support 表（error），不在这里。
 

@@ -84,7 +84,12 @@ pub(crate) struct DocViews<'a> {
     resolved_cache: RefCell<HashMap<ResolvedKey, Option<(String, bool)>>>,
 }
 
-/// 在全部图文档的匹配视图上执行 `f`。
+/// 在**图里每个文档**各自的匹配视图上执行 `f`。
+///
+/// `views` 不是把多份 WXML 拼成的一棵节点图：它持有每个文档自己的 `Tree`（选择器
+/// 只在单文件内求值）外加一份共享的级联缓存。模板定义体 / 片段的祖先落在别的文档里，
+/// 求值必须先顺着 [`AncestorId`] 找到那个文档，再用**它自己**的 `Tree` 与文档级作用域
+/// 算属性值——这正是 [`property_at`] 负责的事。
 pub(crate) fn with_views<R>(project: &Project, f: impl FnOnce(&DocViews<'_>) -> R) -> R {
     let graph = project.graph();
     let docs: Vec<Rc<WxmlDoc>> = graph

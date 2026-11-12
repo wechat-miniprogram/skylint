@@ -379,7 +379,7 @@ pub(crate) fn is_flex_value(value: &str) -> bool {
 
 /// Skyline 组件支持表。
 ///
-/// 来源：/Volumes/2tb-ssd/nebula/Work/skyline-skills/skills/skyline-overview/references/introduction/component-support.md
+/// 来源：skyline-skills/skills/skyline-overview/references/introduction/component-support.md
 /// 同步方式：按「完全支持的组件」「基本支持的组件」「Skyline 新增组件」更新本表，
 /// 按「暂不支持的组件」更新 `UNSUPPORTED_COMPONENTS`；替代方案为空时填「该组件在 Skyline 下不可用」。
 /// 标签一律小写。

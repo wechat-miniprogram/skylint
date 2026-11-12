@@ -1,9 +1,9 @@
 //! Skyline 组件属性值白名单：写了但会被静默忽略的取值，以及跨属性的生效条件。
 //!
 //! 约束以本文件的常量定义，来源：
-//! - /Volumes/2tb-ssd/nebula/Work/skyline-skills/skills/skyline-components/references/{media,form,layout,special,scroll}/*.md
-//! - /Volumes/2tb-ssd/nebula/Work/skyline-skills/skills/skyline-overview/references/introduction/component-support.md
-//! - /Volumes/2tb-ssd/nebula/Work/skyline/package/skyline/lib/widgets/{curve,hero}.dart（缓动名全集）
+//! - skyline-skills/skills/skyline-components/references/{media,form,layout,special,scroll}/*.md
+//! - skyline-skills/skills/skyline-overview/references/introduction/component-support.md
+//! - skyline/package/skyline/lib/widgets/{curve,hero}.dart（缓动名全集）
 //!
 //! 同步方式：只收录文档明确写「Skyline 不支持 / 仅 WebView 支持 / 取值范围」的属性取值；
 //!   枚举值以文档表格为准，条目行尾注释写 references 相对路径与行号。组件不能拆成多条规则。
@@ -31,10 +31,10 @@ use super::{span_diagnostic, truncation, visit, walk_skyline};
 
 #[derive(Debug, Clone, Copy)]
 enum Constraint {
-    /// 合法值白名单；值以 `*` 结尾表示前缀匹配。
-    Enum(&'static [&'static str]),
-    /// 只在 WebView 下生效的值：命中即报。非命中值交给同 key 的 `Enum`，
-    /// 这样裁剪模式才能拿到专门的 help。
+    /// 合法值白名单；值以 `*` 结尾表示前缀匹配。白名单之外即被 Skyline 忽略。
+    Allowed(&'static [&'static str]),
+    /// 只在 WebView 下生效的取值。它不是白名单的补集：既不在白名单、也不在这份
+    /// 名单里的值两个渲染器都不认（按未设置处理），不构成迁移差异。
     WebviewOnly(&'static [&'static str]),
     /// 属性本身不支持：出现即报。
     Unsupported,
@@ -51,11 +51,12 @@ enum NumberRange {
 }
 
 impl Constraint {
+    /// 这个取值会被 Skyline 忽略吗（`Unsupported` 与取值无关，由调用方单独处理）。
     fn rejects(&self, value: &str) -> bool {
         match self {
-            Self::Enum(values) => !contains(values, value),
+            Self::Allowed(values) => !contains(values, value),
             Self::WebviewOnly(values) => contains(values, value),
-            Self::Unsupported => true,
+            Self::Unsupported => unreachable!("属性级约束不参与取值判定"),
             Self::Number(NumberRange::NonNegative) => !value
                 .parse::<f64>()
                 .is_ok_and(|number| number >= 0.0 && number.fract() == 0.0),
@@ -111,10 +112,12 @@ enum Trigger {
 enum Requirement {
     /// `attr=value`：属性必须存在且等于该值。
     Equals(&'static str, &'static str),
-    /// `attr`：属性必须存在。
-    Present(&'static str),
     /// `attr=!(a|b)`：属性不得等于其中任一值。
     NotAny(&'static str, &'static [&'static str]),
+    /// `attr` 必须存在，但**只在 WebView 侧本来就会截断时**才要求：否则两端行为一致。
+    ///
+    /// 行数优先取祖先的 `-webkit-line-clamp`，取不到按单行（1）。
+    PresentIfTruncated(&'static str),
 }
 
 impl Trigger {
@@ -172,38 +175,25 @@ const ATTRIBUTES: &[AttributeRule] = &[
     AttributeRule {
         tags: &["text"],
         attrs: &["overflow"],
-        constraint: Constraint::Enum(&["visible", "clip", "fade", "ellipsis", "unset"]),
+        constraint: Constraint::Allowed(&["visible", "clip", "fade", "ellipsis", "unset"]),
         help: None,
     }, // media/text.md:50-55；text_shadow_node.cc:280-281 有 unset 分支
     AttributeRule {
-        tags: &["image"],
-        attrs: &["mode"],
-        constraint: Constraint::Enum(&[
-            "scaleToFill",
-            "aspectFit",
-            "aspectFill",
-            "widthFix",
-            "heightFix",
-            "auto",
-        ]),
-        help: Some("合法值：scaleToFill、aspectFit、aspectFill、widthFix、heightFix、auto"),
-    }, // media/image.md:32-38；image_shadow_node.cc:99-101 有 auto
-    AttributeRule {
         tags: &["input"],
         attrs: &["type"],
-        constraint: Constraint::Enum(&["text", "number", "idcard", "digit", "nickname"]),
+        constraint: Constraint::Allowed(&["text", "number", "idcard", "digit", "nickname"]),
         help: Some("合法值：text、number、idcard、digit、nickname"),
     }, // form/input.md:44-50
     AttributeRule {
         tags: &["input"],
         attrs: &["confirm-type"],
-        constraint: Constraint::Enum(&["send", "search", "next", "go", "done", "return"]),
+        constraint: Constraint::Allowed(&["send", "search", "next", "go", "done", "return"]),
         help: Some("合法值：send、search、next、go、done、return"),
     }, // form/input.md:54-60；input.dart:1121-1122 映射 return
     AttributeRule {
         tags: &["swiper"],
         attrs: &["layout-type"],
-        constraint: Constraint::Enum(&[
+        constraint: Constraint::Allowed(&[
             "normal",
             "stackLeft",
             "stackRight",
@@ -215,7 +205,7 @@ const ATTRIBUTES: &[AttributeRule] = &[
     AttributeRule {
         tags: &["swiper"],
         attrs: &["transformer-type"],
-        constraint: Constraint::Enum(&[
+        constraint: Constraint::Allowed(&[
             "scaleAndFade",
             "accordion",
             "threeD",
@@ -228,7 +218,7 @@ const ATTRIBUTES: &[AttributeRule] = &[
     AttributeRule {
         tags: &["swiper"],
         attrs: &["indicator-type"],
-        constraint: Constraint::Enum(&[
+        constraint: Constraint::Allowed(&[
             "normal",
             "worm",
             "wormThin",
@@ -251,19 +241,19 @@ const ATTRIBUTES: &[AttributeRule] = &[
     AttributeRule {
         tags: &["swiper"],
         attrs: &["direction"],
-        constraint: Constraint::Enum(&["all", "positive", "negative"]),
+        constraint: Constraint::Allowed(&["all", "positive", "negative"]),
         help: None,
     }, // layout/swiper.md:109-114
     AttributeRule {
         tags: &["snapshot"],
         attrs: &["mode"],
-        constraint: Constraint::Enum(&["view", "picture"]),
+        constraint: Constraint::Allowed(&["view", "picture"]),
         help: Some("合法值：view、picture"),
     }, // special/snapshot.md:11
     AttributeRule {
         tags: &["share-element"],
         attrs: &["rect-tween-type"],
-        constraint: Constraint::Enum(&[
+        constraint: Constraint::Allowed(&[
             "materialRectArc",
             "materialRectCenterArc",
             "linear",
@@ -319,25 +309,25 @@ const ATTRIBUTES: &[AttributeRule] = &[
     AttributeRule {
         tags: &["share-element"],
         attrs: &["shuttle-on-push", "shuttle-on-pop"],
-        constraint: Constraint::Enum(&["to", "from"]),
+        constraint: Constraint::Allowed(&["to", "from"]),
         help: Some("合法值：to（目标页面节点）、from（源页面节点）"),
     }, // special/share-element.md:78-83
     AttributeRule {
         tags: &["scroll-view"],
         attrs: &["refresher-default-style"],
-        constraint: Constraint::Enum(&["black", "white", "none"]),
+        constraint: Constraint::Allowed(&["black", "white", "none"]),
         help: None,
     }, // scroll/scroll-view.md:195
     AttributeRule {
         tags: &["scroll-view"],
         attrs: &["scroll-into-view-alignment"],
-        constraint: Constraint::Enum(&["start", "center", "end", "nearest"]),
+        constraint: Constraint::Allowed(&["start", "center", "end", "nearest"]),
         help: None,
     }, // scroll/scroll-view.md:113
     AttributeRule {
         tags: &["scroll-view"],
         attrs: &["associative-container"],
-        constraint: Constraint::Enum(&["draggable-sheet", "nested-scroll-view", "pop-gesture"]),
+        constraint: Constraint::Allowed(&["draggable-sheet", "nested-scroll-view", "pop-gesture"]),
         help: None,
     }, // scroll/scroll-view.md:182-185
     AttributeRule {
@@ -352,7 +342,7 @@ const ATTRIBUTES: &[AttributeRule] = &[
             "force-press-gesture-handler",
         ],
         attrs: &["native-view"],
-        constraint: Constraint::Enum(&["scroll-view", "swiper"]),
+        constraint: Constraint::Allowed(&["scroll-view", "swiper"]),
         help: Some("仅支持 scroll-view、swiper"),
     }, // gesture/gesture-system.md:15-22,56-67；gesture/gesture-negotiation.md:127-129
     AttributeRule {
@@ -420,7 +410,7 @@ const REQUIRES: &[Requires] = &[
     Requires {
         tag: "text",
         trigger: Trigger::Equals("overflow", "ellipsis"),
-        requirement: Requirement::Present("max-lines"),
+        requirement: Requirement::PresentIfTruncated("max-lines"),
         help: Some("只要一行省略改用 `overflow=\"clip\"`；要限制行数就同时写 `max-lines`"),
     }, // text_shadow_node.h:102-103：max_lines=0 表示不施加行数约束，overflow 与 maxLines 是两个独立属性
 ];
@@ -481,15 +471,6 @@ impl Rule for ComponentAttribute {
                         let Some((entry, value)) = judge_attribute(entries, attr) else {
                             continue;
                         };
-                        // `<image mode>` 的取值既不是 Skyline 的合法值、也不是 WebView 的裁剪模式时
-                        // （`mode="aspectFit|aspectFill|widthFix"` 这类管道串），两个渲染器都回退成
-                        // 拉伸填满：两端一致，不是迁移差异。
-                        if element.tag == "image"
-                            && name == "mode"
-                            && matches!(entry.constraint, Constraint::Enum(_))
-                        {
-                            continue;
-                        }
                         out.push(
                             span_diagnostic(
                                 Self::ID,
@@ -506,31 +487,18 @@ impl Rule for ComponentAttribute {
                     let Some(rules) = table.requires.get(element.tag.as_str()) else {
                         return;
                     };
+                    let context = Context {
+                        views,
+                        tree: &tree,
+                        ancestors,
+                    };
                     for rule in rules {
+                        let Some(violation) = rule.violation(element, &context) else {
+                            continue;
+                        };
                         let Some(attr) = find_attr(element, rule.trigger.attr()) else {
                             continue;
                         };
-                        let Some(value) = trigger_value(attr, &rule.trigger) else {
-                            continue;
-                        };
-                        let Verdict::Violated(current) = judge(element, &rule.requirement) else {
-                            continue;
-                        };
-                        // `<text overflow="ellipsis">` 缺 `max-lines`：WebView 的行内 `<text>`
-                        // 没 nowrap / clamp 时本来就换行不省略，两端一致。
-                        let needs_baseline = rule.trigger.attr() == "overflow"
-                            && matches!(rule.requirement, Requirement::Present("max-lines"));
-                        if needs_baseline
-                            && truncation::webview_truncates(views, &tree, element, ancestors)
-                                != Some(true)
-                        {
-                            continue;
-                        }
-                        // WebView 靠祖先的 `-webkit-line-clamp` 截几行，Skyline 就得补同样行数的
-                        // `max-lines`；行数写进消息，用户能直接照做。
-                        let lines = needs_baseline
-                            .then(|| truncation::clamp_lines(views, &tree, element, ancestors))
-                            .flatten();
                         out.push(
                             span_diagnostic(
                                 Self::ID,
@@ -539,13 +507,7 @@ impl Rule for ComponentAttribute {
                                 attr.end,
                                 doc.path(),
                                 Severity::Warning,
-                                requires_message(
-                                    &element.tag,
-                                    rule,
-                                    &value,
-                                    current.as_deref(),
-                                    lines,
-                                ),
+                                violation.message(&element.tag, rule),
                             )
                             .help(
                                 rule.help
@@ -568,38 +530,48 @@ fn judge_attribute<'a>(
     entries: &'a [Entry],
     attr: &'a WxmlAttribute,
 ) -> Option<(&'a Entry, Value<'a>)> {
+    // 候选枚举不出来时一律跳过（模块头的口径）：属性级约束也守这一条，
+    // 否则 `paging-enabled="{{x}}"` 这类会因为「反正不支持」而绕过准入。
+    if !attr.is_static && attr.candidates.as_deref().is_none_or(|c| c.is_empty()) {
+        return None;
+    }
+    // 属性整体不支持与取值无关：出现即报（无值属性同样算）。
+    if let Some(entry) = entries
+        .iter()
+        .find(|entry| matches!(entry.constraint, Constraint::Unsupported))
+    {
+        return Some((entry, Value::Static(raw_value(attr))));
+    }
     match (attr.is_static, attr.candidates.as_deref()) {
+        // 无值属性是布尔 true：取值类约束（枚举 / 区间）无法判定，跳过。
         (true, _) => {
-            // 无值属性是布尔 true：`[unsupported]` 只看属性是否存在，
-            // 取值类约束（枚举 / 区间）无法判定，跳过。
-            let value = attr.value.as_deref().map(str::trim).unwrap_or("");
-            let entry = entries.iter().find(|entry| match entry.constraint {
-                Constraint::Unsupported => true,
-                _ => !value.is_empty() && entry.constraint.rejects(value),
-            })?;
+            let value = raw_value(attr);
+            let entry = entries
+                .iter()
+                .find(|entry| !value.is_empty() && entry.constraint.rejects(value))?;
             Some((entry, Value::Static(value)))
         }
-        (false, Some(candidates)) => {
-            if candidates.is_empty() {
-                return None;
-            }
-            let entry = entries.iter().find(|entry| match entry.constraint {
-                // 属性本身不支持与取值无关，存在即可报。
-                Constraint::Unsupported => true,
-                _ => candidates
+        (false, Some(candidates)) if !candidates.is_empty() => {
+            let entry = entries.iter().find(|entry| {
+                candidates
                     .iter()
-                    .all(|value| entry.constraint.rejects(value)),
+                    .all(|value| entry.constraint.rejects(value))
             })?;
             Some((entry, Value::AllInvalid(candidates)))
         }
-        (false, None) => None,
+        _ => None,
     }
+}
+
+/// 静态取值的原文（无值属性为空串）。
+fn raw_value(attr: &WxmlAttribute) -> &str {
+    attr.value.as_deref().map(str::trim).unwrap_or("")
 }
 
 /// 属性可能的取值：静态值一个；动态绑定是候选集（枚举不出时为空）。
 fn values(attr: &WxmlAttribute) -> Vec<&str> {
     match (attr.is_static, attr.candidates.as_deref()) {
-        (true, _) => vec![attr.value.as_deref().map(str::trim).unwrap_or_default()],
+        (true, _) => vec![raw_value(attr)],
         (false, Some(candidates)) => candidates.iter().map(String::as_str).collect(),
         (false, None) => Vec::new(),
     }
@@ -649,6 +621,10 @@ enum Verdict {
 
 fn judge(element: &WxmlElement, requirement: &Requirement) -> Verdict {
     match requirement {
+        // 截断门控要先在 WebView 侧求值，统一由 [`Requires::violation`] 处理。
+        Requirement::PresentIfTruncated(_) => {
+            unreachable!("PresentIfTruncated 不走 judge")
+        }
         Requirement::Equals(name, expected) => {
             let Some(attr) = find_attr(element, name) else {
                 // 缺失即走默认值，按「不存在」处理：要求 `=v` 不成立。
@@ -669,11 +645,6 @@ fn judge(element: &WxmlElement, requirement: &Requirement) -> Verdict {
                 Verdict::Violated(Some(values.join(" / ")))
             }
         }
-        Requirement::Present(name) => match find_attr(element, name) {
-            // 声明了就算满足（含无值属性与动态绑定，静态阶段判不了它的取值）。
-            Some(_) => Verdict::Ok,
-            None => Verdict::Violated(None),
-        },
         Requirement::NotAny(name, banned) => {
             let Some(attr) = find_attr(element, name) else {
                 // 缺失同样按「不存在」处理：不等于任一被禁值（如 layout-type 缺省 normal），
@@ -691,41 +662,100 @@ fn judge(element: &WxmlElement, requirement: &Requirement) -> Verdict {
     }
 }
 
-fn requires_message(
-    tag: &str,
-    rule: &Requires,
-    value: &str,
-    current: Option<&str>,
+/// 跨属性判定需要的上下文：祖先可能落在别的文档里，截断判定要它。
+struct Context<'a, 'b> {
+    views: &'a ancestry::DocViews<'b>,
+    tree: &'a Tree<'b>,
+    ancestors: &'a [&'a WxmlElement],
+}
+
+impl Requires {
+    /// 触发条件命中、且要求不成立时返回违规详情。
+    fn violation(&self, element: &WxmlElement, context: &Context<'_, '_>) -> Option<Violation> {
+        let attr = find_attr(element, self.trigger.attr())?;
+        let trigger = trigger_value(attr, &self.trigger)?;
+        let (current, lines) = match &self.requirement {
+            // `<text overflow="ellipsis">` 缺 `max-lines`：WebView 的行内 `<text>` 没
+            // nowrap / clamp 时本来就换行不省略，两端一致，不该要求补。
+            Requirement::PresentIfTruncated(name) => {
+                if truncation::webview_truncates(
+                    context.views,
+                    context.tree,
+                    element,
+                    context.ancestors,
+                ) != Some(true)
+                {
+                    return None;
+                }
+                if find_attr(element, name).is_some() {
+                    return None;
+                }
+                // WebView 靠祖先的 `-webkit-line-clamp` 截几行，Skyline 就得补同样行数的
+                // `max-lines`；行数写进消息，用户能直接照做。
+                (
+                    None,
+                    truncation::clamp_lines(
+                        context.views,
+                        context.tree,
+                        element,
+                        context.ancestors,
+                    ),
+                )
+            }
+            requirement => match judge(element, requirement) {
+                Verdict::Violated(current) => (current, None),
+                Verdict::Ok => return None,
+            },
+        };
+        Some(Violation {
+            trigger,
+            current,
+            lines,
+        })
+    }
+}
+
+/// 一个被违反的跨属性条件。
+struct Violation {
+    /// 触发属性用于展示的取值（无值属性为空串）。
+    trigger: String,
+    /// 要求属性当前的取值；`None` 表示没有该属性。
+    current: Option<String>,
+    /// WebView 侧实际截断的行数（只有 [`Requirement::PresentIfTruncated`] 会给）。
     lines: Option<u32>,
-) -> String {
-    let trigger = match value {
-        "" => rule.trigger.attr().to_string(),
-        value => format!("{}=\"{value}\"", rule.trigger.attr()),
-    };
-    match &rule.requirement {
-        Requirement::Equals(name, expected) => {
-            let current = match current {
-                Some(value) => format!("{name}=\"{value}\""),
-                None => format!("未设置 {name}"),
-            };
-            format!(
-                "`<{tag} {trigger}>` 的 `{}` 需要 `{name}=\"{expected}\"`，当前 {current}",
-                rule.trigger.attr()
-            )
+}
+
+impl Violation {
+    fn message(&self, tag: &str, rule: &Requires) -> String {
+        let trigger = match self.trigger.as_str() {
+            "" => rule.trigger.attr().to_string(),
+            value => format!("{}=\"{value}\"", rule.trigger.attr()),
+        };
+        match &rule.requirement {
+            Requirement::Equals(name, expected) => {
+                let current = match &self.current {
+                    Some(value) => format!("{name}=\"{value}\""),
+                    None => format!("未设置 {name}"),
+                };
+                format!(
+                    "`<{tag} {trigger}>` 的 `{}` 需要 `{name}=\"{expected}\"`，当前 {current}",
+                    rule.trigger.attr()
+                )
+            }
+            Requirement::PresentIfTruncated(name) => match self.lines {
+                Some(lines) => format!(
+                    "`<{tag} {trigger}>` 缺少 `{name}`：WebView 靠祖先的 `-webkit-line-clamp: {lines}` 截 {lines} 行，Skyline 下按属性截断，补 `{name}=\"{lines}\"`"
+                ),
+                None => format!(
+                    "`<{tag} {trigger}>` 缺少 `{name}`：WebView 靠单行省略（`nowrap` + `overflow`）截断，Skyline 下按属性截断，单行补 `{name}=\"1\"`"
+                ),
+            },
+            Requirement::NotAny(name, _) => format!(
+                "`<{tag} {trigger}>` 的 `{}` 在 `{name}=\"{}\"` 时不生效，会被忽略",
+                rule.trigger.attr(),
+                self.current.as_deref().unwrap_or_default()
+            ),
         }
-        Requirement::Present(name) => match lines {
-            Some(lines) => format!(
-                "`<{tag} {trigger}>` 缺少 `{name}`：WebView 靠祖先的 `-webkit-line-clamp: {lines}` 截 {lines} 行，Skyline 下按属性截断，补 `{name}=\"{lines}\"`"
-            ),
-            None => format!(
-                "`<{tag} {trigger}>` 缺少 `{name}`：WebView 靠单行省略（`nowrap` + `overflow`）截断，Skyline 下按属性截断，单行补 `{name}=\"1\"`"
-            ),
-        },
-        Requirement::NotAny(name, _) => format!(
-            "`<{tag} {trigger}>` 的 `{}` 在 `{name}=\"{}\"` 时不生效，会被忽略",
-            rule.trigger.attr(),
-            current.unwrap_or_default()
-        ),
     }
 }
 
@@ -733,6 +763,7 @@ fn message(tag: &str, attr: &str, value: Value<'_>, constraint: &Constraint) -> 
     // 静态值写进属性里；候选集只写属性名，候选列在句末——`mode="{{a ? 'x' : 'y'}}"`
     // 展开成 `mode="x / y"` 会读成「写了一个带斜杠的值」。
     let (subject, note) = match value {
+        Value::Static("") => (format!("`<{tag} {attr}>`"), String::new()),
         Value::Static(value) => (format!("`<{tag} {attr}=\"{value}\">`"), String::new()),
         Value::AllInvalid(candidates) => (
             format!("`<{tag} {attr}>`"),
@@ -756,7 +787,7 @@ fn message(tag: &str, attr: &str, value: Value<'_>, constraint: &Constraint) -> 
         }
         // `<image mode>` 命中这里说明它既不是 Skyline 的值、也不是 WebView 的裁剪模式：
         // 两个渲染器都不认，已在 check 里跳过。
-        Constraint::Enum(_) | Constraint::WebviewOnly(_) => {
+        Constraint::Allowed(_) | Constraint::WebviewOnly(_) => {
             format!("{subject} 不是 Skyline 支持的值，会被忽略")
         }
     };
@@ -768,7 +799,7 @@ fn help(entry: &Entry) -> String {
         return help.to_string();
     }
     match &entry.constraint {
-        Constraint::Enum(values) => format!(
+        Constraint::Allowed(values) => format!(
             "合法值：{}",
             values
                 .iter()
@@ -776,7 +807,9 @@ fn help(entry: &Entry) -> String {
                 .collect::<Vec<_>>()
                 .join("、")
         ),
-        Constraint::WebviewOnly(_) => "改用 aspectFill 配合 CSS 定位".to_string(),
+        Constraint::WebviewOnly(_) => {
+            "这些取值只在 WebView 下生效，Skyline 会按未设置处理".to_string()
+        }
         Constraint::Unsupported => "Skyline 不支持该属性，建议删除".to_string(),
         Constraint::Number(NumberRange::Between(min, max)) => format!("合法值：{min}~{max}"),
         Constraint::Number(NumberRange::NonNegative) => "合法值：非负整数".to_string(),

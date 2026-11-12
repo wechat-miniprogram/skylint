@@ -2,8 +2,8 @@
 //!
 //! 数据直接以 const 形式定义在本模块，来源与证据见各条目的行尾注释。
 //!
-//! 来源：/Volumes/2tb-ssd/nebula/Work/skyline-skills/skills/skyline-wxss/SKILL.md
-//!       /Volumes/2tb-ssd/nebula/Work/skyline-skills/skills/skyline-wxss/references/*.md
+//! 来源：skyline-skills/skills/skyline-wxss/SKILL.md
+//!       skyline-skills/skills/skyline-wxss/references/*.md
 //! 同步方式：
 //!   [`UNSUPPORTED_PROPERTIES`] 按 SKILL.md「NEVER: 使用不支持的 CSS 属性」表逐条更新，
 //!     一格多属性拆成多条；表外补充的属性以行尾注释标注 references 出处。
