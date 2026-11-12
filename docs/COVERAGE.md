@@ -257,7 +257,7 @@
 `getBoundingClientRect(undefined)`、`scope_script` 排除 `.wxs`、
 `text-overflow-ellipsis` 的「自身行内内容 + 祖先 `nowrap`」、`text-hard-break-ellipsis`
 只递归文本容器、`text-decoration-target` 只认会画线的声明、`implicit-color` 的
-`inherit` 链、`root-scope-class` 的页面节点与页面作用域检查。
+`inherit` 链（原 `root-scope-class` 的页面节点与页面作用域检查随该规则于 2026-11-12 一并删除）。
 
 **C 批（级联与折叠）**：`horizontal-scroll-enable-flex` 走级联取值；`fixed-layer` 的
 `contain` 关键字白名单；`draggable-sheet-scroll-to` 的 `size: undefined`；

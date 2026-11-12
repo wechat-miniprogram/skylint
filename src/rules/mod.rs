@@ -138,7 +138,6 @@ impl Registry {
             Box::new(wxml::TextTruncation),
             Box::new(wxml::NestedScroll),
             Box::new(wxml::WorkletBinding),
-            Box::new(wxml::RootScopeClass),
             Box::new(wxml::TextChildren),
             Box::new(wxml::PinnedRenderer),
             Box::new(config::TabBarRenderer),

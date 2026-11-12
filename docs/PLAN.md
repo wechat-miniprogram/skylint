@@ -849,7 +849,13 @@ skit_1 的 8 条落在同组件 stylesheet 里定义的 `.ellipsis`（`slide-tip
 | `skyline/unsupported-property`、`skyline/legacy-flexbox` | 报被 `.skyline` 分支 `unset` 掉的基础声明，也报 `-webkit-line-clamp: unset` 本身 | 新增 `overridden_by_renderer_class`：同 sheet 里存在「本选择器 + `.skyline`」的规则又声明了同属性时，基础声明在 Skyline 下不生效，跳过；`unset`/`initial`/`revert` 一律不报 |
 | `skyline/media-query` | 块内选择器在本作用域 WXML 上一个节点都命不中时仍报 | `any_selector_matches` 先行：全 `No` 即跳过（伪元素按「判不了」保留）。证据：`ad-bookmarks.wxss:43` 的块写 `.container` 而组件根是 `.novel-force-container`；`student-check/styles/weui.wxss:2614,2645` 是整库 vendored 样式 |
 
-**新规则 `skyline/root-scope-class`（warning，双向）**
+**新规则 `skyline/root-scope-class`（warning，双向）—— 已移除（2026-11-12）**
+
+> 移除理由：`~foo` / `^foo` 是 glass-easel 的运行时语义，WebView 与 Skyline 表现**完全相同**
+> （同一份 `class_list.ts`，老渲染器 exparser 同样实现），不符合「WebView 正常、Skyline 异常」
+> 的收录标准。作用于匹配层：静态 `class="~foo"` 的词元就是 `~foo`，本地 `.foo` 选择器本来
+> 就不命中（`matcher/element.rs::has_class` 按原文切词），不需要额外规则。
+> 代价是作者自己写掉的样式会静默失效，但那是工程 bug，不是迁移差异。
 
 `~foo` / `^foo` 是 glass-easel **承认**的作用域类前缀：`~` 登记根作用域、`^` 登记父级作用域（`glass-easel/src/class_list.ts:131-142`，老渲染器同实现 `global-console/src/lib/exparser.js:3008-3023`），用来把节点绑到页面（或父级）的样式表、绕开组件样式隔离。代价是**本单元样式表里的同名规则同时失效**。
 
@@ -1002,7 +1008,8 @@ skit_1 28 → 28、skit-player 179 → 179、businessview 406 → 405（−1 dea
 `~novel-bottom-banner-{{…}}`），由 glass-easel 运行时 `_$resolvePrefixes`
 （`glass-easel/src/class_list.ts:116-149` 的 `_$resolvePrefixes`；本机位于
 `wxapplib/.slim/clonedeps/repos/wechat-miniprogram__glass-easel/`）解析。类被登记到根 scope 后组件本地规则失效，
-这一族由 `skyline/root-scope-class` 负责（`ad-banner` 的 2 条命中为真）。
+这一族原由 `skyline/root-scope-class` 负责（`ad-banner` 的 2 条命中为真），该规则已于 2026-11-12 移除：
+两个渲染器语义相同，不构成迁移差异（详见上文规则段落）。
 
 `float` 缺 flex/grid item 门控 —— **已补**：`unsupported-property` 现在用 `all_matches_satisfy`
 要求「命中的节点全是 flex item 或脱离文档流的元素」时才豁免。六工程 0 变化：businessview 那唯一一条
