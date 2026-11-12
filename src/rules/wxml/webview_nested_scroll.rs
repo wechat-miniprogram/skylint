@@ -12,7 +12,7 @@ use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, Target};
 
-use super::{element_diagnostic, structure::find_attr, visit, walk};
+use super::{element_diagnostic, structure::find_attr, visit, walk_webview};
 
 pub const ID: &str = "webview/nested-scroll";
 
@@ -36,7 +36,7 @@ impl Rule for NestedScroll {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
-            walk(doc, |element, _| {
+            walk_webview(doc, |element, _| {
                 if element.skyline_only() {
                     return;
                 }

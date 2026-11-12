@@ -60,18 +60,8 @@ fn check_element(
         return;
     }
     // 子节点被投影进组件的 `<text>`（或根本没有匹配的槽位、不渲染）时，这些文本
-    // 运行时不在本元素的盒子里，按本元素判定会误报。
-    // 没写 `slot` = 默认槽；写了动态值 = 槽名不可知。
-    let slot = match element
-        .attributes
-        .iter()
-        .find(|attr| attr.name.eq_ignore_ascii_case("slot"))
-    {
-        None => Some(None),
-        Some(attr) if attr.is_static => Some(Some(attr.value.as_deref().unwrap_or(""))),
-        Some(_) => None,
-    };
-    match graph.projected_parent_tag(doc.path(), &element.tag, slot) {
+    // 运行时不在本元素的盒子里，按本元素判定会误报。槽位解析在图上做。
+    match graph.projected_parent_tag(doc.path(), element) {
         Some(SlotHost::NotRendered) => return,
         Some(SlotHost::Element(tag)) if TEXT_TAGS.contains(&tag) => return,
         _ => {}

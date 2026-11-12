@@ -336,6 +336,19 @@ pub(crate) fn resolved_property_with<'a>(
     resolved_property_with_dialect(project, tree, element, property, Dialect::Skyline)
 }
 
+/// 只关心「有没有确定取值」时用它：判不了与没写都返回 `None`。
+///
+/// 需要区分这两种「没有」时用 [`resolved_property_with`]。
+pub(crate) fn resolved_property_checked<'a>(
+    project: &'a Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    property: &str,
+) -> Option<Resolved<'a>> {
+    let (resolved, undecidable) = resolved_property_with(project, tree, element, property);
+    (!undecidable).then_some(resolved).flatten()
+}
+
 /// 内联 `style` 里某属性的全部声明：`(值, 是否 !important)`，按出现顺序。
 fn inline_properties(style: &str, property: &str) -> Vec<(String, bool)> {
     style

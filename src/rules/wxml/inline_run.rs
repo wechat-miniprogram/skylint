@@ -30,7 +30,9 @@ use crate::rules::{Rule, RuleMeta};
 
 use super::branch::exclusive;
 use super::structure::attr_is_off;
-use super::{cascade_entries_with, element_diagnostic, is_flex_value, visit, walk_skyline};
+use super::{
+    cascade_entries_with, element_diagnostic, is_flex_value, resolved_property, visit, walk_skyline,
+};
 
 pub const ID: &str = "skyline/inline-run";
 
@@ -160,6 +162,20 @@ pub(crate) fn is_invisible(
     })
 }
 
+/// 元素是否自己声明了纵向占位：固定宽度或纵向 margin。
+///
+/// 作者这么写就已经表达了「各占一行」，并列关系不是无意中形成的。`auto` / `0` /
+/// `none` 不算（那些不产生纵向块）。
+pub(crate) fn stacks_vertically(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
+    ["width", "margin-top", "margin-bottom"]
+        .iter()
+        .filter_map(|property| resolved_property(project, tree, element, property))
+        .any(|resolved| {
+            let value = resolved.value.trim();
+            !matches!(value, "0" | "0px" | "0rpx" | "auto" | "none")
+        })
+}
+
 /// 文本级成员：标签在内，且靠**默认 layout** 参与行内流。
 ///
 /// 显式写 inline / inline-block 的不算：两种渲染器都会把它们排进行内行，
@@ -177,7 +193,7 @@ pub(crate) fn is_inline_member(project: &Project, tree: &Tree<'_>, element: &Wxm
         && !has_dynamic_style(element)
         && !varies_by_renderer(element)
         && !super::is_out_of_flow(project, tree, element)
-        && !super::stacks_vertically(project, tree, element)
+        && !stacks_vertically(project, tree, element)
 }
 
 /// 元素的某个属性引用了 `renderer`：这个元素在两个渲染器下的样式可能不同。

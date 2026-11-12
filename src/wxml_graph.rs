@@ -438,6 +438,19 @@ fn link_includes(
     (includes, importers)
 }
 
+/// 子节点被投进哪个槽：`None` = 没写（默认槽）；`Some(None)` = 动态槽名，判不了。
+fn slot_assignment(element: &WxmlElement) -> Option<Option<&str>> {
+    match element
+        .attributes
+        .iter()
+        .find(|attr| attr.name.eq_ignore_ascii_case("slot"))
+    {
+        None => Some(None),
+        Some(attr) if attr.is_static => Some(Some(attr.value.as_deref().unwrap_or(""))),
+        Some(_) => None,
+    }
+}
+
 impl WxmlGraph {
     pub fn new(project: &Project) -> Self {
         let sources = Sources::collect(project);
@@ -1112,11 +1125,13 @@ impl WxmlGraph {
     pub fn projected_parent_tag<'a>(
         &'a self,
         host_doc: &str,
-        tag: &str,
-        slot: Option<Option<&str>>,
+        element: &WxmlElement,
     ) -> Option<SlotHost<'a>> {
+        let slot = slot_assignment(element);
         let host = *self.by_path.get(host_doc)?;
-        let component = *self.docs[host].components.get(&tag.to_ascii_lowercase())?;
+        let component = *self.docs[host]
+            .components
+            .get(&element.tag.to_ascii_lowercase())?;
         let tree = &self.docs[component];
         if tree.options.dynamic_slots {
             return Some(SlotHost::Unknown);

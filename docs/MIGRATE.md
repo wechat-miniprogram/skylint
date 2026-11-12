@@ -326,7 +326,7 @@ id = "{rule}|{path}|{line}:{column}"
 
 - `selector` 是诊断所在规则的完整选择器原文（逗号分隔时按源码顺序用 `, ` 连接）。
   诊断在 `@media` 等 at-rule 内时，这里给的是**内层选择器**，不是 `@media` 的 prelude。
-- `property` 是声明属性名（小写）；选择器级诊断（如 `dead-selector`）没有属性，为 `null`。
+- `property` 是声明属性名（小写）；选择器级诊断（如 `tag-selector-isolation`）没有属性，为 `null`。
 - `declarations` 是**整条规则块**的声明，顺序与源码一致。改 `float` 往往要顺手给
   父级加 `flex`，所以必须能看到同块的其他声明。
 - `matches` 只扫 **`unit.files` 里的 WXML / 模板**，不跨单元：别的页面即使也有同名

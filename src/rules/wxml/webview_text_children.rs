@@ -18,7 +18,7 @@ use crate::input::wxml::{WxmlElement, WxmlNode};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, Target};
 
-use super::{element_diagnostic, visit, walk};
+use super::{element_diagnostic, visit, walk_webview};
 
 pub const ID: &str = "webview/text-children";
 
@@ -39,7 +39,7 @@ impl Rule for TextChildren {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
-            walk(doc, |element, _| {
+            walk_webview(doc, |element, _| {
                 if !element.tag.eq_ignore_ascii_case("text") || element.skyline_only() {
                     return;
                 }

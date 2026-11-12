@@ -21,7 +21,7 @@ use crate::rules::Target;
 use crate::rules::wxml::resolved_property;
 
 use super::ancestry;
-use super::{element_diagnostic, structure::find_attr, truncation, visit, walk};
+use super::{element_diagnostic, structure::find_attr, truncation, visit, walk_webview};
 
 pub const ID: &str = "webview/text-truncation";
 
@@ -44,7 +44,7 @@ impl Rule for TextTruncation {
         ancestry::with_views(project, |views| {
             visit(project, |doc, out| {
                 let tree = Tree::new(doc);
-                walk(doc, |element, ancestors| {
+                walk_webview(doc, |element, ancestors| {
                     if !element.tag.eq_ignore_ascii_case("text") {
                         return;
                     }

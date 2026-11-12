@@ -13,7 +13,7 @@ use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, Target};
 
-use super::{span_diagnostic, visit, walk};
+use super::{span_diagnostic, visit, walk_webview};
 
 pub const ID: &str = "webview/worklet-binding";
 
@@ -34,7 +34,7 @@ impl Rule for WorkletBinding {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit(project, |doc, out| {
-            walk(doc, |element, _| {
+            walk_webview(doc, |element, _| {
                 if element.skyline_only() {
                     return;
                 }

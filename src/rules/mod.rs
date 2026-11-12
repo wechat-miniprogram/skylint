@@ -87,7 +87,8 @@ impl Registry {
             Box::new(wxml::ScrollViewFamily),
             Box::new(wxml::ComponentChildren),
             Box::new(wxml::ShareElementKey),
-            Box::new(wxml::TemplateDataScope),
+            // 已停用：模板数据作用域是框架语义，两个渲染器一致，不是迁移差异（源码保留）
+            // Box::new(wxml::TemplateDataScope),
             Box::new(wxml::HorizontalScrollEnableFlex),
             Box::new(wxml::TextHardBreakEllipsis),
             Box::new(wxml::InlineRun),
@@ -99,7 +100,8 @@ impl Registry {
             Box::new(wxss::FixedZIndexInversion),
             Box::new(wxss::TextOverflowEllipsis),
             Box::new(wxss::AttributeSelector),
-            Box::new(wxss::DeadSelector),
+            // 已停用：死选择器是通用 lint，与本工具「WebView 正常 / Skyline 异常」的收录标准无关（源码保留）
+            // Box::new(wxss::DeadSelector),
             Box::new(wxss::ScrollViewHeight),
             Box::new(wxss::NativeLayoutIgnored),
             Box::new(wxss::NativePadding),
@@ -139,7 +141,8 @@ impl Registry {
             Box::new(wxml::NestedScroll),
             Box::new(wxml::WorkletBinding),
             Box::new(wxml::TextChildren),
-            Box::new(wxml::PinnedRenderer),
+            // 已停用：renderer 被钉成常量是构建期约定问题，不是渲染差异（源码保留）
+            // Box::new(wxml::PinnedRenderer),
             Box::new(config::TabBarRenderer),
             Box::new(config::LazyCodeLoading),
             Box::new(config::ComponentFramework),

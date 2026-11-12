@@ -12,6 +12,7 @@ pub mod branch;
 pub(crate) mod cascade;
 pub mod component_attribute;
 pub mod component_children;
+pub(crate) mod emit;
 pub mod horizontal_scroll_enable_flex;
 pub mod inline_run;
 pub mod no_inline_text;
@@ -20,6 +21,8 @@ pub mod scroll_view_family;
 pub mod scroll_view_type;
 pub mod share_element_key;
 pub(crate) mod structure;
+pub(crate) mod style;
+pub(crate) mod tags;
 pub mod template_data_scope;
 pub mod text_hard_break_ellipsis;
 pub(crate) mod truncation;
@@ -51,8 +54,11 @@ pub use webview_worklet_binding::WorkletBinding;
 // 级联是「元素 + 属性 → 取值」的唯一入口；规则模块只调它，不自己筛样式表。
 pub(crate) use cascade::{
     Resolved, cascade_entries, cascade_entries_with, matched_declarations, resolved_property,
-    resolved_property_with, resolved_property_with_dialect,
+    resolved_property_checked, resolved_property_with, resolved_property_with_dialect,
 };
+pub(crate) use emit::{element_diagnostic, span_diagnostic};
+pub(crate) use style::{flex_container, is_flex_value, is_out_of_flow, width_follows_content};
+pub(crate) use tags::{is_builtin, unsupported_replacement};
 
 // 截断语义单独一个模块（[`truncation`]）：两条迁移规则与 `inspect` 的事实输出共用，
 // 规则模块不再各自复制一份。
@@ -61,11 +67,8 @@ pub(crate) use truncation::{clips_overflow, max_lines};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use glass_easel_template_compiler::parse::Position;
-
-use crate::diag::{Diagnostic, Severity};
+use crate::diag::Diagnostic;
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
-use crate::matcher::Tree;
 use crate::project::{Project, Scope};
 
 /// 页面与组件的 WXML + 被 import / include 的模板，按路径去重。
@@ -294,325 +297,22 @@ pub(crate) fn walk_skyline(doc: &WxmlDoc, mut visit: impl FnMut(&WxmlElement, &[
     });
 }
 
-/// 元素是否脱离文档流（`position: absolute | fixed`）。
-pub(crate) fn is_out_of_flow(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
-    resolved_property(project, tree, element, "position").is_some_and(|resolved| {
-        matches!(
-            resolved.value.trim().to_ascii_lowercase().as_str(),
-            "fixed" | "absolute"
-        )
-    })
-}
-
-/// 元素是否自己声明了纵向占位：固定宽度或纵向 margin。
+/// WebView 方向的遍历：跳过只会在 Skyline 下渲染的元素。
 ///
-/// 作者这么写就已经表达了「各占一行」，并列关系不是无意中形成的。`auto` / `0` /
-/// `none` 不算（那些不产生纵向块）。
-pub(crate) fn stacks_vertically(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
-    ["width", "margin-top", "margin-bottom"]
-        .iter()
-        .filter_map(|property| resolved_property(project, tree, element, property))
-        .any(|resolved| {
-            let value = resolved.value.trim();
-            !matches!(value, "0" | "0px" | "0rpx" | "auto" | "none")
-        })
-}
-
-/// 元素的 `width` 是否本来就由内容决定，`fit-content` 被丢弃也不改变渲染。
-///
-/// 两种情况：自身脱离文档流（`position: absolute | fixed`），或父级是行向 flex 容器
-/// 且自己不参与拉伸——`flex-basis: auto` 下主轴尺寸就是内容尺寸，与 `fit-content`
-/// 同解。写了 `flex` / `flex-grow` 就不算：那会让元素按剩余空间拉伸。
-///
-/// 方向缺省按引擎的 `ApplyInitial` 走：普通模式下是 `column`
-/// （`skyline/css/css_properties/flex_direction.cc:39-48`），列向容器里 `width` 是
-/// 交叉轴、`auto` 会被拉伸；开了 `defaultDisplayBlock` 才回到 `row`——与
-/// `scroll_view_height::flex_axis` 同一口径。那个开关同时让没写 `display` 的父级
-/// 变成 `block`（`flex_container` 返回 false），`width: auto` 撑满父级，同样不按
-/// 内容收缩。
-pub(crate) fn width_follows_content(
-    project: &Project,
-    tree: &Tree<'_>,
-    element: &WxmlElement,
-) -> bool {
-    if is_out_of_flow(project, tree, element) {
-        return true;
-    }
-    let Some(parent) = tree.parent_of(element) else {
-        return false;
-    };
-    if !flex_container(project, tree, parent) {
-        return false;
-    }
-    let default_block = project.scope_of(tree.path()).map_or_else(
-        || project.app_display_block(),
-        |scope| project.renders_as_block(&scope),
-    );
-    let row = resolved_property(project, tree, parent, "flex-direction").map_or(
-        default_block,
-        |resolved| {
-            matches!(
-                resolved.value.trim().to_ascii_lowercase().as_str(),
-                "row" | "row-reverse"
-            )
-        },
-    );
-    row && ["flex", "flex-grow"]
-        .iter()
-        .all(|name| resolved_property(project, tree, element, name).is_none())
-}
-
-/// 元素的 `display` 是否算成 flex 容器（取级联最后一个近似值）。
-///
-/// 与 [`display_values`] 的区别：这里要的是「最终算出哪个值」，同一元素命中
-/// 多份互相矛盾的 `display` 时按样式表顺序取最后一个，让各规则口径一致。
-pub(crate) fn flex_container(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
-    resolved_property(project, tree, element, "display")
-        .is_some_and(|resolved| is_flex_value(&resolved.value))
-}
-
-/// `display: flex` / `inline-flex`：文本与元素在 WebView 与 Skyline 下都是 flex item。
-pub(crate) fn is_flex_value(value: &str) -> bool {
-    let value = value.trim();
-    value.eq_ignore_ascii_case("flex") || value.eq_ignore_ascii_case("inline-flex")
-}
-
-/// Skyline 组件支持表。
-///
-/// 来源：skyline-skills/skills/skyline-overview/references/introduction/component-support.md
-/// 同步方式：按「完全支持的组件」「基本支持的组件」「Skyline 新增组件」更新本表，
-/// 按「暂不支持的组件」更新 `UNSUPPORTED_COMPONENTS`；替代方案为空时填「该组件在 Skyline 下不可用」。
-/// 标签一律小写。
-const SUPPORTED_COMPONENTS: &[&str] = &[
-    "view",
-    "cover-view",
-    "button",
-    "scroll-view",
-    "swiper",
-    "swiper-item",
-    "input",
-    "textarea",
-    "navigator",
-    "map",
-    "canvas",
-    "radio",
-    "radio-group",
-    "label",
-    "checkbox",
-    "checkbox-group",
-    "picker",
-    "camera",
-    "root-portal",
-    "form",
-    "ad",
-    "official-account",
-    "live-player",
-    "live-pusher",
-    "voip-room",
-    "icon",
-    "slider",
-    "switch",
-    "share-element",
-    "page-container",
-    "text",
-    "image",
-    "cover-image",
-    "video",
-    "picker-view",
-    "picker-view-column",
-    "rich-text",
-    "page-meta",
-    "span",
-    "sticky-header",
-    "sticky-section",
-    "list-view",
-    "grid-view",
-    "list-builder",
-    "grid-builder",
-    "nested-scroll-header",
-    "nested-scroll-body",
-    "draggable-sheet",
-    "open-container",
-    "snapshot",
-    "tap-gesture-handler",
-    "double-tap-gesture-handler",
-    "long-press-gesture-handler",
-    "pan-gesture-handler",
-    "scale-gesture-handler",
-    "horizontal-drag-gesture-handler",
-    "vertical-drag-gesture-handler",
-    "force-press-gesture-handler",
-];
-
-/// Skyline 下不可用的组件及替代方案。来源同 `SUPPORTED_COMPONENTS`。
-const UNSUPPORTED_COMPONENTS: &[(&str, &str)] = &[
-    ("web-view", r#"该页面配置 `"renderer": "webview"`"#),
-    ("movable-area", "手势 + worklet 动画方案"),
-    ("movable-view", "手势 + worklet 动画方案"),
-    ("editor", "该组件在 Skyline 下不可用"),
-    ("progress", "该组件在 Skyline 下不可用"),
-    ("match-media", "该组件在 Skyline 下不可用"),
-    // 知识库 component-support.md:63 把该组件拼成 `keyboard-accessary`（官方名为
-    // keyboard-accessory，developers.weixin.qq.com/miniprogram/dev/component/keyboard-accessory.html），
-    // 我们按官方名收录，否则真实使用永远命中不了。
-    (
-        "keyboard-accessory",
-        "input 的 worklet:onkeyboardheightchange 回调",
-    ),
-    ("navigation-bar", "Skyline 只能用自定义导航"),
-    ("xr-frame", "该组件在 Skyline 下不可用"),
-];
-
-/// 组件是否属于内置组件（用于区分自定义组件）。
-pub(crate) fn is_builtin(tag: &str) -> bool {
-    SUPPORTED_COMPONENTS.contains(&tag)
-}
-
-/// 黑名单命中才返回替代方案；白名单与未知自定义组件都不报。
-pub(crate) fn unsupported_replacement(tag: &str) -> Option<&'static str> {
-    if is_builtin(tag) {
-        return None;
-    }
-    UNSUPPORTED_COMPONENTS
-        .iter()
-        .find(|(name, _)| *name == tag)
-        .map(|(_, replacement)| *replacement)
-}
-
-/// 定位在 WXML 源文本任意一段区间上的诊断。
-pub(crate) fn span_diagnostic(
-    id: &'static str,
-    doc: &WxmlDoc,
-    start: Position,
-    end: Position,
-    path: &str,
-    severity: Severity,
-    message: impl Into<String>,
-) -> Diagnostic {
-    let (line, column) = doc.position(start);
-    let (end_line, end_column) = doc.position(end);
-    Diagnostic::new(id, severity, message, path, line, column).end(end_line, end_column)
-}
-
-/// 定位在元素标签起止位置上的诊断。
-pub(crate) fn element_diagnostic(
-    id: &'static str,
-    doc: &WxmlDoc,
-    element: &WxmlElement,
-    path: &str,
-    severity: Severity,
-    message: impl Into<String>,
-) -> Diagnostic {
-    span_diagnostic(
-        id,
-        doc,
-        element.tag_start,
-        element.tag_end,
-        path,
-        severity,
-        message,
-    )
+/// `wx:if="{{renderer === 'skyline'}}"` 的分支在 WebView 下不渲染，对它讲「WebView 下
+/// 会不会 …」是误报。Skyline 方向用 [`walk_skyline`]。
+pub(crate) fn walk_webview(doc: &WxmlDoc, mut visit: impl FnMut(&WxmlElement, &[&WxmlElement])) {
+    walk(doc, |element, ancestors| {
+        if !element.skyline_only() {
+            visit(element, ancestors);
+        }
+    });
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Reach, element_docs, is_builtin};
-    use crate::matcher::Tree;
+    use super::{Reach, element_docs};
     use crate::rules::testutil::Fixture;
-
-    /// `width_follows_content` 看的是 fixture 里 `class="x"` 的那个元素。
-    fn follows_content_in(fixture: Fixture) -> bool {
-        let project = fixture.project();
-        let path = project.pages[0].files.wxml.clone().unwrap();
-        let doc = super::load_doc(&project, &path).unwrap();
-        let tree = Tree::new(&doc);
-        let element = doc
-            .elements()
-            .find(|element| {
-                element.attributes.iter().any(|attribute| {
-                    attribute.name == "class" && attribute.value.as_deref() == Some("x")
-                })
-            })
-            .expect("fixture 里没有 class=x 的元素");
-        super::width_follows_content(&project, &tree, element)
-    }
-
-    fn follows_content(name: &str, wxml: &str, wxss: &str) -> bool {
-        follows_content_in(Fixture::page(name, wxml, wxss))
-    }
-
-    fn default_block_fixture(name: &str, wxml: &str, wxss: &str) -> Fixture {
-        let fixture = Fixture::new(name);
-        fixture
-            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
-            .write(
-                "app.json",
-                r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true}}}"#,
-            )
-            .write("pages/index/index.json", "{}")
-            .write("pages/index/index.wxml", wxml)
-            .write("pages/index/index.wxss", wxss);
-        fixture
-    }
-
-    /// Skyline 的 `flex-direction` 初始值是 `column`（`flex_direction.cc:39-48`）：
-    /// `display: flex` 不带方向时 `width` 落在交叉轴、`auto` 会被拉伸，与
-    /// `fit-content` 不同解，不能豁免。
-    #[test]
-    fn width_follows_content_defaults_to_column() {
-        assert!(
-            !follows_content(
-                "wfc-default-column",
-                r#"<view class="p"><view class="x"/></view>"#,
-                ".p { display: flex }\n.x { width: fit-content }",
-            ),
-            "缺省方向是 column，应判为不按内容收缩"
-        );
-        assert!(
-            !follows_content(
-                "wfc-explicit-column",
-                r#"<view class="p"><view class="x"/></view>"#,
-                ".p { display: flex; flex-direction: column }\n.x { width: fit-content }",
-            ),
-            "显式 column 同样在交叉轴"
-        );
-        assert!(
-            follows_content(
-                "wfc-explicit-row",
-                r#"<view class="p"><view class="x"/></view>"#,
-                ".p { display: flex; flex-direction: row }\n.x { width: fit-content }",
-            ),
-            "行向主轴上的 auto 才等于内容宽"
-        );
-    }
-
-    /// `defaultDisplayBlock: true` 时没写 `display` 的父级是 block，不是 flex：
-    /// `width: auto` 撑满父级，同样不按内容收缩。
-    #[test]
-    fn width_follows_content_sees_a_block_parent_under_default_display_block() {
-        assert!(
-            !follows_content_in(default_block_fixture(
-                "wfc-default-block",
-                r#"<view class="p"><view class="x"/></view>"#,
-                ".p { }\n.x { width: fit-content }",
-            )),
-            "block 父级下 width: auto 是拉伸"
-        );
-    }
-
-    /// 同一个开关把缺省 `flex-direction` 拉回 row（`FlexDirection::ApplyInitial`）：
-    /// 父级显式 `display: flex` 时仍是行向主轴，按内容收缩。
-    #[test]
-    fn width_follows_content_defaults_to_row_under_default_display_block() {
-        assert!(
-            follows_content_in(default_block_fixture(
-                "wfc-default-block-row",
-                r#"<view class="p"><view class="x"/></view>"#,
-                ".p { display: flex }\n.x { width: fit-content }",
-            )),
-            "defaultDisplayBlock 下缺省方向是 row"
-        );
-    }
 
     /// 三种引用形态：只被 Skyline 页面用、只被 WebView 页面用、两边都用。
     #[test]
@@ -711,14 +411,5 @@ mod tests {
 
         assert_eq!(reach["templates/sky.wxml"], Reach::Skyline);
         assert_eq!(reach["templates/web.wxml"], Reach::WebviewOnly);
-    }
-
-    /// 引擎节点工厂注册的内置组件（shadow/node_factory.cc:329,331,342-343）
-    /// 必须在白名单里，否则结构规则会把它们当成自定义组件边界而跳过内部约束。
-    #[test]
-    fn engine_builtin_components_are_known() {
-        for tag in ["open-container", "list-builder", "grid-builder"] {
-            assert!(is_builtin(tag), "{tag} should be builtin");
-        }
     }
 }

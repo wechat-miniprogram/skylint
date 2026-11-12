@@ -536,7 +536,7 @@ A 页失效、B 页正常时要报）、`no_pseudo` 的转义冒号（`.hover\:b
 | 规则 | 判据 | 六工程新增 |
 |---|---|---|
 | `skyline/fixed-layer`（重写） | `position: fixed` 且解析不出整数 `z-index`（无声明 / `auto` / 变量 / 插值） | 18（biz 4 / p1 7 / p2 6 / player 1） |
-| `skyline/dead-selector`（新） | 主体带 class + 每个 class 名在文档里确定出现 + 全作用域求值皆 `No` | 9（skit_1 2 / p1 2 / p2 2 / player 3） |
+| ~~`skyline/dead-selector`（新，已停用）~~ | 主体带 class + 每个 class 名在文档里确定出现 + 全作用域求值皆 `No` | 9（skit_1 2 / p1 2 / p2 2 / player 3） |
 | `skyline/unsupported-value`（扩） | 只接受关键字的属性写了长度值（当前 `vertical-align`） | 0（六个工程里没有消费中的写法） |
 | `skyline/scroll-view-height`（新） | `scroll-view` + `flex-grow > 0` + 自己没有确定高度 + 父是纵向 flex 容器且同样没有确定高度 | 8（p1 3 / p2 3 / player 2） |
 | `skyline/implicit-color`（新，Info） | 省略颜色的 `border*` / `text-decoration` / 阴影 + 元素有效 `color` 非黑 | 8（biz 5 / player 3） |
@@ -692,7 +692,7 @@ WidgetSpan 内部排版。因此原先计划的「`<text>` 子节点 display 收
 | `webview/nested-scroll`（warning） | `scroll-view type="nested"` / `nested-scroll-header` / `nested-scroll-body` | `type` 从不被读（`wx-scroll-view.js:239`）；后两个标签**不在** WebView 的 `globalUsingComponents` 表里（`glass-easel-adapter/src/render/webview.ts:166-254`）→ 默认组件（只有默认 slot）+ inline 显示，头部不联动 |
 | `webview/text-children`（error） | `<text>` 下的元素子节点（非嵌套 `<text>`） | `wx-text` 的 `TextPseudoSlot` 只放行文本节点、`__wxElement.is === 'wx-text'` 的子元素与文档片段（`wxapplib/src/wx-component/src/wx-text/wx-text.js:15-62`），`<view>` / `<image>` / `<span>` / 任何自定义组件直接消失、不报错 |
 | `webview/worklet-binding`（error） | WXML 的 `worklet:` 前缀属性 | 模板编成 `wl()`，DOM wrapper 里它就是 `noop()`（`glass-easel/src/tmpl/proc_gen_wrapper_dom.ts:249-251`）——连 Skyline 的 `worklet-handler` behavior 都轮不到，回调不触发也不报错 |
-| `webview/pinned-renderer`（warning） | 单元的 `renderer` 被固定成常量 | 判据不是属性名，而是正向折叠用的同一份事实：单元常量环境（`Project::env`）里 `renderer` 能定成 `skyline`（或定成 `webview` 但被 Skyline 页面用到）。环境只收 `properties` 默认值与父级静态传值，任何一处动态传 / 没传都会让它失效；因此命中就意味着「这个单元已把渲染后端当常量在用」——`wx:if` 相应分支在编译期就被折掉。`59a2d74f` 的修法（`data.renderer` 默认值 + `onLoad` 里 `setData({renderer: this.renderer})`、6 处 prop 改成 `{{renderer}}`）完成后两条路径都判不出常量 |
+| ~~`webview/pinned-renderer`（warning，已停用）~~ | 单元的 `renderer` 被固定成常量 | 判据不是属性名，而是正向折叠用的同一份事实：单元常量环境（`Project::env`）里 `renderer` 能定成 `skyline`（或定成 `webview` 但被 Skyline 页面用到）。环境只收 `properties` 默认值与父级静态传值，任何一处动态传 / 没传都会让它失效；因此命中就意味着「这个单元已把渲染后端当常量在用」——`wx:if` 相应分支在编译期就被折掉。`59a2d74f` 的修法（`data.renderer` 默认值 + `onLoad` 里 `setData({renderer: this.renderer})`、6 处 prop 改成 `{{renderer}}`）完成后两条路径都判不出常量 |
 | `webview/tabbar-renderer`（error） | `app.json` 的 `tabBar.custom: true` + `tabBar.renderer: "skyline"` | tabBar 渲染器与页面分开取（`onAppRoute.js:672` 的 `WXConfig.tabBar.renderer \|\| res.renderer`），钉成 skyline 后回退时 `WebviewAdapterTabBar.getInstance` **直接 `throw`**（`render/webview.ts:1071-1075`），不是降级 |
 
 消音机制：`WxmlElement::renderer_guarded()`——元素（或祖先）处在条件里引用 `renderer` 的分支里
@@ -890,6 +890,12 @@ skit-player 170 → 180（+10 `fit-content`）。
 ### P13 二轮审计后的判据修正：包含块、主体 compound、模板数据作用域
 
 第二轮 novel plugin 审计（`.tmp/novel-audit2/REPORT.md`）复核后，只落了「有源码证据、且在六个参考工程上零噪音」的几项；三条被否的候选也记在这里。
+
+**新规则 `skyline/template-data-scope`（warning）—— 已停用（2026-11-12）**
+
+> 停用理由：模板数据作用域是框架语义，WebView 与 Skyline 表现一致，不满足「WebView 正常、
+> Skyline 异常」的收录标准。连同 `skyline/dead-selector`、`webview/pinned-renderer` 一起
+> 只停用注册，源码保留（后续可能需要复用判据）。
 
 **新规则 `skyline/template-data-scope`（warning）**
 

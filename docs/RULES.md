@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 66 条：error 18 条、warning 43 条、info 5 条。
+共 63 条：error 18 条、warning 40 条、info 5 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
@@ -17,7 +17,6 @@
 | `skyline/scroll-view-family` | error | skyline | scroll-view 家族组件的结构约束（挂载位置 / 顺序 / 唯一性 / 必需属性 / 关联容器） |
 | `skyline/component-children` | error | skyline | 组件对直接子节点的结构约束（只允许某类子节点 / 必须唯一子节点 / 条件必需的子节点） |
 | `skyline/share-element-key` | error | skyline | `<share-element>` 的 key 必填且同一文件内唯一 |
-| `skyline/template-data-scope` | warning | skyline | 模板体引用的字段在它的所有 `<template is>` 调用点都没传，引用恒为 undefined |
 | `skyline/horizontal-scroll-enable-flex` | warning | skyline | 横向滚动的 `<scroll-view>` 需开启 `enable-flex` 以兼容 WebView |
 | `skyline/text-hard-break-ellipsis` | info | skyline | 多行省略里含硬换行时，Skyline 默认不给末行省略号 |
 | `skyline/inline-run` | warning | skyline | 并列的文本级元素在 WebView 下排在同一行，在 Skyline 下各自占一行 |
@@ -29,7 +28,6 @@
 | `skyline/fixed-z-index-inversion` | warning | skyline | `position: fixed` 在 Skyline 下跳出祖先的层叠上下文，上下顺序可能与 WebView 相反 |
 | `skyline/text-overflow-ellipsis` | warning | skyline | text-overflow: ellipsis 在 Skyline 下只对 `<text>` 生效 |
 | `skyline/attribute-selector` | warning | skyline | 属性选择器在 Skyline 下不参与匹配：主体只有属性时整条声明失效，否则命中范围被放宽 |
-| `skyline/dead-selector` | warning | both | 样式表里的选择器在它作用到的所有 WXML 里都不命中任何节点，多半是类名 / 标签名写错 |
 | `skyline/scroll-view-height` | warning | skyline | scroll-view 没有确定高度，Skyline 下内容不会撑开它，会塌成 0 |
 | `skyline/native-layout-ignored` | warning | skyline | 没有 CSS 盒的内置组件上，布局类声明在 Skyline 下不生效 |
 | `skyline/native-padding` | warning | skyline | 内置组件上的 CSS padding 在 Skyline 下不内缩子节点 |
@@ -69,7 +67,6 @@
 | `webview/nested-scroll` | warning | webview | 嵌套滚动只在 Skyline 下生效，WebView 下头部不联动、常驻顶部 |
 | `webview/worklet-binding` | error | webview | `worklet:` 事件绑定在 WebView 下不触发回调，且不报错 |
 | `webview/text-children` | error | webview | `<text>` 里的元素子节点在 WebView 下被丢弃（只保留文本与嵌套 text） |
-| `webview/pinned-renderer` | warning | webview | 单元的 renderer 被固定成常量，回退 WebView 后所有按它分叉的地方都判错 |
 | `webview/tabbar-renderer` | error | webview | 自定义 tabBar 声明 renderer: "skyline"，退回 WebView 时抛异常 |
 | `skyline/lazy-code-loading` | error | skyline | 页面显式声明 Skyline 渲染时，app.json 必须设置 lazyCodeLoading: "requiredComponents" |
 | `skyline/component-framework` | error | skyline | Skyline 页面的 componentFramework 解析结果必须是 glass-easel |

@@ -23,7 +23,9 @@ use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::Rule;
 use crate::rules::RuleMeta;
-use crate::rules::wxml::{ElementDoc, element_docs, resolved_property_with, walk_skyline};
+use crate::rules::wxml::{
+    ElementDoc, element_docs, resolved_property_checked, resolved_property_with, walk_skyline,
+};
 use crate::rules::wxss::value_util::at_declaration;
 use crate::{Diagnostic, Severity};
 
@@ -54,13 +56,9 @@ impl Rule for FixedLayer {
         for ElementDoc { doc, reach } in element_docs(project) {
             let tree = Tree::new(&doc);
             walk_skyline(&doc, |element, ancestors| {
-                let (position, undecidable) =
-                    resolved_property_with(project, &tree, element, "position");
                 // 模板定义体 / 片段里选择器判不了：不能断言它不是 fixed。
-                if undecidable {
-                    return;
-                }
-                let Some(position) = position else {
+                let Some(position) = resolved_property_checked(project, &tree, element, "position")
+                else {
                     return;
                 };
                 if !clean_value(&position.value).eq_ignore_ascii_case("fixed") {
