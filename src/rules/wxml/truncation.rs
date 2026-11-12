@@ -22,17 +22,22 @@ use super::resolved_property_with_dialect;
 pub(crate) type Reading = Option<(String, bool)>;
 
 /// 把「某个元素上某属性」包成读取器。
+///
+/// `legacy` 为真时忽略「判不了」位（历史口径）：`inspect` 的事实输出与
+/// `text-overflow-ellipsis` 的裁切判定都用 Skyline 方言取值，行为与拆分前一致。
 fn resolved_reader<'a>(
     project: &'a Project,
     tree: &'a Tree<'_>,
     element: &'a WxmlElement,
+    dialect: Dialect,
+    legacy: bool,
 ) -> impl Fn(&str) -> Reading + 'a {
     move |property| {
         let (resolved, undecidable) =
-            resolved_property_with_dialect(project, tree, element, property, Dialect::WebView);
+            resolved_property_with_dialect(project, tree, element, property, dialect);
         Some((
             resolved.map(|resolved| resolved.value).unwrap_or_default(),
-            undecidable,
+            undecidable && !legacy,
         ))
     }
 }
@@ -48,7 +53,13 @@ pub(crate) fn webview_truncates_local(
 ) -> Option<bool> {
     let mut unknown = false;
     for candidate in std::iter::once(element).chain(ancestors.iter().rev().copied()) {
-        match truncates(&resolved_reader(project, tree, candidate)) {
+        match truncates(&resolved_reader(
+            project,
+            tree,
+            candidate,
+            Dialect::WebView,
+            false,
+        )) {
             Some(true) => return Some(true),
             Some(false) => {}
             None => unknown = true,
@@ -151,8 +162,40 @@ pub(crate) fn clamp_lines(
 /// 元素自己是否在 WebView 里裁掉溢出内容（`text-overflow` 生效的前提）。
 ///
 /// `visible` / 缺省时不裁，`hidden` / `clip` / `auto` / `scroll` 都会裁。
+///
+/// 按 Skyline 方言取值且不区分「判不了」（与拆分前的口径一致）：这条判据问的是
+/// 「元素上有没有裁切声明」，属性条件在 Skyline 的匹配里不参与，取值面更宽。
 pub(crate) fn clips_overflow(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
-    clips_with(&resolved_reader(project, tree, element)) == Some(true)
+    clips_with(&resolved_reader(
+        project,
+        tree,
+        element,
+        Dialect::Skyline,
+        true,
+    )) == Some(true)
+}
+
+/// [`webview_truncates_local`] 的布尔版，供 `inspect` 的事实输出使用。
+///
+/// 与拆分前的口径一致：Skyline 方言取值、忽略「判不了」位。
+#[allow(dead_code)]
+pub(crate) fn webview_truncates_any(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    ancestors: &[&WxmlElement],
+) -> bool {
+    std::iter::once(element)
+        .chain(ancestors.iter().rev().copied())
+        .any(|candidate| {
+            truncates(&resolved_reader(
+                project,
+                tree,
+                candidate,
+                Dialect::Skyline,
+                true,
+            )) == Some(true)
+        })
 }
 
 /// `<text max-lines>` 的行数。
