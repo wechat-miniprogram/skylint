@@ -239,3 +239,68 @@ static/relative/absolute/fixed，`sticky` 落到 `default:` 只 `Diag` 然后返
 变成 `new 1 / fixed 1`——和样式诊断修好之前一模一样的漂移。样式侧已经改成
 `rule|path|selector|property|#occ`，JSON 侧缺同样的稳定身份（可以按 JSON 指针
 路径 + 值指纹生成）。在修好之前，改 `app.json` 的批次要人工核对这 1 条。
+# 第四轮实测（组件收尾 + 页面批次）
+
+## 一个会让 DevTools 起不来的 WXML 结构错误
+
+lane 把 `<view wx:if="{{item.money}}" class="red-packet-price">` 改成
+`<text class="red-packet-price">` 时把 `wx:if` 丢了，紧邻的 `<text wx:else>` 就此
+没有前驱。后果：
+
+| 检查 | 结果 |
+| --- | --- |
+| `minidev build --no-pack` | **exit 0，68867 entries，不报** |
+| DevTools 编译 | `Bad attr wx:else with message: wx:if not found` → appservice 起不来 |
+| 运行时表现 | `navigateTo` 不回调、`currentPage` 一直变、截图返回上一页旧帧——看起来像「Skyline 卡死」 |
+
+所以「卡死」这一个症状至少有两种成因：渲染器级（B1/B2/B3）和**我们自己的编译错误**。
+后者可以静态查出来，已固化成 `tools/checks/wx-branches.js`（扫每层的 `wx:elif` /
+`wx:else` 是否紧跟同级 `wx:if` / `wx:elif`，有问题时退出码非 0）。**改过 WXML 就跑一次**，
+比排查「卡死」便宜得多。
+
+## 截图链路：实测时序（推翻上一轮的经验值）
+
+上一轮为了稳，`shot.sh` 里写了「打开工程后等 ≥180s」。实测不需要：
+
+| 步骤 | 实际耗时 |
+| --- | --- |
+| `cli quit` + `pkill` 清残留 | 3–5s |
+| `cli open` | **3s**（返回即表示 IDE server 起来了） |
+| `sleep 40` + `cli auto` | 50s |
+| `shot-one.js`（内部轮询 readiness + `navigateTo` + 校身份 + 截图） | **45s** |
+
+一页冷启动约 1.5–2 分钟，而等 300s 的写法把单页成本推到 6 分钟以上。`shot-one.js`
+本来就会自己轮询 `pageStack` 直到 ready，多等没有收益。
+
+**同一 DevTools 会话里第二次 `navigateTo` 之后截出来的是旧帧**：`currentPage`、
+`pageStack` 都正确地变成新页，画面还是上一页。所以**每页必须独立冷启动**，不能
+「开一次连续截 5 页」。
+
+## 像素对比必须先位移对齐、再分带看
+
+直接逐像素比在这个工程上没有意义，两个稳定噪声源：
+
+1. 自定义导航让整页上下差 4–8px（`nav-bar` 高度与原生导航不同）；
+2. 远程图片（海报、头像）每次跑是不同帧。
+
+做法：在 `dy∈[-14,14]、dx∈[-3,3]` 里找最小差异，再按 100px 分带统计差异落点。
+实测两页空内容页（`goods/order-detail`、`goods/buy`）最佳位移 (0,0)、总差异
+7.9%，但**分带全部落在 y0–199（导航、状态栏）与 y1200+（Home 条），正文
+y200–1199 逐像素 0 差异**——这种结论比「差异 7.9% < 阈值」更有说服力。
+
+## 逐条豁免：agent 判定「不需要处理」的机械表达
+
+`migration waive <PATH> --finding <ID> --reason <TEXT>`（另有 `--undo` / `--list`）。
+语义按「宁可漏报，不许假装修过」设计：
+
+| 位置 | 行为 |
+| --- | --- |
+| `plan` / `job` / `next` | 该诊断直接消失；单元只剩豁免项时 `diagnostics.total` 归零、不再排队 |
+| `verify` | 当前侧存在→不算 `new`；基线侧存在→不算 `fixed`；单独计 `waived` |
+| 豁免后又真改掉 | 不进 `fixed`（确实没修） |
+| 豁免对不上当前诊断 | `verify` 告警，避免豁免腐烂 |
+
+`--reason` 必填：没有理由的豁免等于静默忽略。本项目实际用过的三类口径：
+`scroll-view-type` 的 info（规则 help 自己写「兼容传统滚动则省略 type」）、
+`app.json` 的 `defaultContentBox`（开启会整体改盒模型，已有页面是按 border-box 修的）、
+`app.wxss` 的 `.ellipsis-txt`（应随各页迁移逐处包 `<text max-lines>`，不该改全局）。
