@@ -1,7 +1,7 @@
 //! 迁移接口的端到端测试：真造工程，验证三件容易漂的事——批次顺序、诊断归属、
 //! 以及「元素挪了位置诊断 id 不变」。
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -1589,4 +1589,116 @@ fn baseline_command_without_augment_writes_fresh_baseline_with_rules() {
             .as_array()
             .is_some_and(|rules| !rules.is_empty())
     );
+}
+
+// ------------------------------------------------------- 逐条豁免（waiver）
+
+/// 豁免是「两边都不算」：不算新增，也不算修复，单独计数。
+#[test]
+fn waived_finding_is_neither_new_nor_fixed() {
+    let f = inline_text_fixture("waive-verify", ".box { display: block; }");
+    let baseline = baseline_of(f.path());
+    let (projects, report) = analyse(f.path());
+    let plan = migrate::plan(&projects, &report, None);
+    let current = migrate::identify(&projects, &plan, &report);
+    let id = current
+        .iter()
+        .find(|finding| finding.rule == "skyline/no-inline-text")
+        .expect("夹具应有一条 no-inline-text")
+        .id
+        .clone();
+
+    let waived: BTreeSet<&str> = [id.as_str()].into_iter().collect();
+    let result = migrate::verify_with(&baseline, &current, None, None, &waived);
+
+    assert_eq!(result.new, 0, "豁免的条目不该算新增：{:?}", result.findings);
+    assert_eq!(result.fixed, 0, "豁免不是修复，不该进 fixed");
+    assert_eq!(result.waived, 1);
+    assert!(result.findings.is_empty());
+    assert!(!result.blocks());
+}
+
+/// 豁免后在新代码里被删掉的那条，不该冒充「修复」。
+#[test]
+fn waived_finding_removed_from_code_is_not_counted_as_fixed() {
+    let f = inline_text_fixture("waive-removed", ".box { display: block; }");
+    let baseline = baseline_of(f.path());
+    let (projects, report) = analyse(f.path());
+    let plan = migrate::plan(&projects, &report, None);
+    let current = migrate::identify(&projects, &plan, &report);
+    let waived: BTreeSet<&str> = current
+        .iter()
+        .filter(|finding| finding.rule == "skyline/no-inline-text")
+        .map(|finding| finding.id.as_str())
+        .collect();
+    assert_eq!(waived.len(), 1, "夹具应有一条 no-inline-text");
+
+    // 代码里真的修掉了：只剩元素，不再混排。
+    f.write(
+        "miniprogram/pages/index/index.wxml",
+        "<view class=\"box\"><view class=\"inner\">x</view></view>",
+    );
+    let (projects, report) = analyse(f.path());
+    let plan = migrate::plan(&projects, &report, None);
+    let current = migrate::identify(&projects, &plan, &report);
+    let result = migrate::verify_with(&baseline, &current, None, None, &waived);
+
+    assert_eq!(result.fixed, 0, "豁免过的条目即使被删掉也不算修复成绩");
+    assert_eq!(result.waived, 0, "当前已无此诊断，waived 计数归零");
+}
+
+/// 豁免从报告里摘掉之后，`plan` 不再为它排队。
+#[test]
+fn waived_findings_disappear_from_the_plan() {
+    let f = inline_text_fixture("waive-plan", ".box { display: block; }");
+    let (projects, report) = analyse(f.path());
+    let before = migrate::plan(&projects, &report, None);
+    let total_before: usize = before.units.iter().map(|unit| unit.diagnostics.total).sum();
+    assert!(total_before >= 1, "夹具先要有一条诊断");
+
+    let mut report = report;
+    let waived: BTreeSet<String> = migrate::diagnostic_ids(&projects, &report)
+        .into_iter()
+        .collect();
+    let mut keep = migrate::diagnostic_ids(&projects, &report)
+        .into_iter()
+        .map(|id| !waived.contains(&id));
+    report.retain_diagnostics(|_| keep.next().unwrap_or(true));
+    assert!(report.diagnostics.is_empty(), "豁免项应被摘掉");
+
+    let after = migrate::plan(&projects, &report, None);
+    let total_after: usize = after.units.iter().map(|unit| unit.diagnostics.total).sum();
+    assert_eq!(total_after, 0, "摘掉之后不该再有待修诊断");
+    assert_eq!(
+        report.summary.errors + report.summary.warnings + report.summary.infos,
+        0
+    );
+}
+
+/// 台账里的豁免能存能读，撤销返回原理由。
+#[test]
+fn ledger_keeps_waivers_with_their_reasons() {
+    let mut ledger = migrate::Ledger::default();
+    ledger.waive(
+        "unit:pages/index/index",
+        migrate::Waiver {
+            id: "rule|path|anchor".to_string(),
+            rule: "skyline/no-inline-text".to_string(),
+            path: "pages/index/index.wxml".to_string(),
+            reason: "预加载容器，静态不可见，不影响渲染".to_string(),
+        },
+    );
+
+    let text = migrate::to_json(&ledger);
+    let loaded: migrate::Ledger = migrate::from_json(&text).expect("台账应能读回");
+    assert_eq!(loaded.waived_count(), 1);
+    assert_eq!(
+        loaded.waived_ids().into_iter().collect::<Vec<_>>(),
+        vec!["rule|path|anchor"]
+    );
+
+    let mut loaded = loaded;
+    let reason = loaded.unwaive("rule|path|anchor").expect("应该有这条豁免");
+    assert!(reason.contains("预加载容器"));
+    assert_eq!(loaded.waived_count(), 0);
 }

@@ -74,6 +74,8 @@ enum MigrationCommand {
     Ledger(LedgerArgs),
     /// 记一条单元状态
     Record(RecordArgs),
+    /// 逐条豁免诊断：认定不需要处理，机械判定里当它已解决
+    Waive(WaiveArgs),
     /// 下一个该做的单元
     Next(NextArgs),
 }
@@ -213,6 +215,25 @@ struct RecordArgs {
 }
 
 #[derive(Debug, Args)]
+struct WaiveArgs {
+    /// 项目根目录
+    #[arg(default_value = ".", value_name = "PATH")]
+    path: PathBuf,
+    /// 诊断 id（`migration job --json` / `verify --json` 里的 `id`）
+    #[arg(long, value_name = "ID")]
+    finding: Option<String>,
+    /// 为什么不处理（必填，写进台账供复核）
+    #[arg(long, value_name = "TEXT")]
+    reason: Option<String>,
+    /// 撤销一条豁免
+    #[arg(long, value_name = "ID")]
+    undo: Option<String>,
+    /// 列出当前全部豁免
+    #[arg(long)]
+    list: bool,
+}
+
+#[derive(Debug, Args)]
 struct NextArgs {
     #[command(flatten)]
     project: Projection,
@@ -267,6 +288,7 @@ fn run_migration(command: MigrationCommand) -> ExitCode {
         MigrationCommand::Verify(args) => run_verify(args),
         MigrationCommand::Ledger(args) => run_ledger(args),
         MigrationCommand::Record(args) => run_record(args),
+        MigrationCommand::Waive(args) => run_waive(args),
         MigrationCommand::Next(args) => run_next(args),
     }
 }
@@ -322,6 +344,7 @@ fn run_plan(args: PlanArgs) -> ExitCode {
         Ok(pair) => pair,
         Err(code) => return code,
     };
+    let report = apply_waivers(&projects, report, &waived_ids(&args.project.path));
     let baseline = baseline_ref(args.baseline.as_deref(), report.diagnostics.len());
     let plan = migrate::plan(&projects, &report, baseline);
 
@@ -347,6 +370,7 @@ fn run_job(args: JobArgs) -> ExitCode {
         Ok(pair) => pair,
         Err(code) => return code,
     };
+    let report = apply_waivers(&projects, report, &waived_ids(&args.project.path));
     let baseline = baseline_ref(args.baseline.as_deref(), report.diagnostics.len());
     let plan = migrate::plan(&projects, &report, baseline.clone());
 
@@ -581,11 +605,14 @@ fn run_verify(args: VerifyArgs) -> ExitCode {
     };
 
     let identified = migrate::identify(&projects, &plan, &report);
-    let result = migrate::verify(
+    let waived = waived_ids(&args.project.path);
+    let waived_refs: std::collections::BTreeSet<&str> = waived.iter().map(String::as_str).collect();
+    let result = migrate::verify_with(
         &baseline,
         &identified,
         unit.as_deref(),
         Some(args.baseline.display().to_string()),
+        &waived_refs,
     );
     let unknown = migrate::unknown_rules(&baseline, &migrate::builtin_rule_ids());
 
@@ -607,6 +634,7 @@ fn run_ledger(args: LedgerArgs) -> ExitCode {
         Ok(pair) => pair,
         Err(code) => return code,
     };
+    let report = apply_waivers(&projects, report, &waived_ids(&args.project.path));
     let plan = migrate::plan(&projects, &report, None);
     let path = ledger_path(&args.project.path);
     let mut ledger = match load_ledger(&path) {
@@ -683,11 +711,102 @@ fn run_record(args: RecordArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn run_waive(args: WaiveArgs) -> ExitCode {
+    let path = ledger_path(&args.path);
+    let mut ledger = match load_ledger(&path) {
+        Ok(ledger) => ledger,
+        Err(err) => {
+            eprintln!("skylint: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
+    if args.list {
+        print_waivers(&ledger);
+        return ExitCode::SUCCESS;
+    }
+
+    if let Some(id) = args.undo {
+        let Some(reason) = ledger.unwaive(&id) else {
+            eprintln!("skylint: 台账里没有诊断 `{id}` 的豁免");
+            return ExitCode::from(1);
+        };
+        return match save_ledger(&path, &ledger) {
+            Ok(()) => {
+                eprintln!("撤销豁免 {id}（原理由：{reason}）");
+                ExitCode::SUCCESS
+            }
+            Err(err) => {
+                eprintln!("skylint: {err}");
+                ExitCode::from(2)
+            }
+        };
+    }
+
+    let Some(finding) = args.finding else {
+        eprintln!("skylint: 要 `--finding <ID> --reason <TEXT>`，或者 `--undo <ID>` / `--list`");
+        return ExitCode::from(2);
+    };
+    let Some(reason) = args.reason.filter(|reason| !reason.trim().is_empty()) else {
+        eprintln!("skylint: --reason 必填——豁免是人的判断，没有理由的豁免等于静默忽略");
+        return ExitCode::from(2);
+    };
+
+    let (projects, report) = match analyse(&args.path, &[]) {
+        Ok(pair) => pair,
+        Err(code) => return code,
+    };
+    let plan = migrate::plan(&projects, &report, None);
+    let identified = migrate::identify(&projects, &plan, &report);
+    let Some(hit) = identified.iter().find(|found| found.id == finding) else {
+        eprintln!(
+            "skylint: 当前诊断里没有 id `{finding}`（id 会随代码与规则集变化，\n  先跑 `migration job --json` 或 `migration verify --json` 拿现在的 id）"
+        );
+        return ExitCode::from(1);
+    };
+
+    ledger.waive(
+        &hit.unit,
+        migrate::Waiver {
+            id: hit.id.clone(),
+            rule: hit.rule.clone(),
+            path: hit.path.clone(),
+            reason,
+        },
+    );
+    if let Err(err) = save_ledger(&path, &ledger) {
+        eprintln!("skylint: {err}");
+        return ExitCode::from(2);
+    }
+    eprintln!(
+        "{} 豁免一条：{}  {}  {}",
+        hit.unit, hit.id, hit.rule, hit.path
+    );
+    ExitCode::SUCCESS
+}
+
+fn print_waivers(ledger: &migrate::Ledger) {
+    let total = ledger.waived_count();
+    if total == 0 {
+        println!("没有豁免");
+        return;
+    }
+    println!("豁免 {total} 条（不参与排队与门禁）");
+    for (unit, state) in &ledger.units {
+        for waiver in &state.waived {
+            println!("  {unit}");
+            println!("    {}  {}  {}", waiver.rule, waiver.path, waiver.id);
+            println!("    理由：{}", waiver.reason);
+        }
+    }
+}
+
 fn run_next(args: NextArgs) -> ExitCode {
     let (projects, report) = match analyse(&args.project.path, &args.ignored.ignore) {
         Ok(pair) => pair,
         Err(code) => return code,
     };
+    let report = apply_waivers(&projects, report, &waived_ids(&args.project.path));
     let baseline = baseline_ref(args.baseline.as_deref(), report.diagnostics.len());
     let plan = migrate::plan(&projects, &report, baseline.clone());
     let path = ledger_path(&args.project.path);
@@ -744,6 +863,37 @@ fn ledger_path(root: &Path) -> PathBuf {
     root.join(".skylint/ledger.json")
 }
 
+/// 台账里的逐条豁免。读不到台账就当没有——它不是门禁输入，只是人的判断记录。
+fn waived_ids(root: &Path) -> std::collections::BTreeSet<String> {
+    load_ledger(&ledger_path(root))
+        .map(|ledger| {
+            ledger
+                .waived_ids()
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 把豁免从报告里摘掉：之后所有产物（plan / job / next）都当它不存在。
+///
+/// 必须按 `diagnostic_ids` 的同一工具算 id——豁免的粒度是稳定身份，不是行列。
+fn apply_waivers(
+    projects: &[Project],
+    mut report: Report,
+    waived: &std::collections::BTreeSet<String>,
+) -> Report {
+    if waived.is_empty() {
+        return report;
+    }
+    let mut keep = migrate::diagnostic_ids(projects, &report)
+        .into_iter()
+        .map(|id| !waived.contains(&id));
+    report.retain_diagnostics(|_| keep.next().unwrap_or(true));
+    report
+}
+
 fn load_ledger(path: &Path) -> Result<migrate::Ledger, String> {
     match std::fs::read_to_string(path) {
         Ok(text) => migrate::from_json(&text)
@@ -772,6 +922,10 @@ fn print_ledger(plan: &Plan, ledger: &migrate::Ledger) {
     );
     if progress.not_needed > 0 {
         println!("另有 {} 个单元无诊断，不需要迁移", progress.not_needed);
+    }
+    let waived = ledger.waived_count();
+    if waived > 0 {
+        println!("已豁免 {waived} 条诊断（不参与排队与门禁，`waive --list` 看理由）");
     }
     if progress.shared > 0 {
         println!(
@@ -1087,6 +1241,12 @@ fn print_verify(report: &migrate::VerifyReport, unknown_rules: &[String]) {
     );
     if let Some(unit) = &report.unit {
         println!("只看：{unit}");
+    }
+    if report.waived > 0 {
+        println!(
+            "豁免 {} 条：不计入新增也不计入修复（`migration waive --list` 看理由）",
+            report.waived
+        );
     }
     for finding in &report.findings {
         let sign = match finding.kind {

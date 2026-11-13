@@ -3,7 +3,7 @@
 //! 台账是**纯状态**，不含时间戳——何时改的由 git 提交记录回答，写进文件只会让
 //! diff 变噪、让两次运行的结果不可比。它必须能被提交、被 diff、被断点续跑。
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -87,6 +87,9 @@ pub struct UnitState {
     pub last_failure: Option<Failure>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// 逐条豁免的诊断：认定「不需要处理」，机械判定里当它已经解决。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub waived: Vec<Waiver>,
 }
 
 impl Default for UnitState {
@@ -96,8 +99,24 @@ impl Default for UnitState {
             failures: 0,
             last_failure: None,
             note: None,
+            waived: Vec::new(),
         }
     }
+}
+
+/// 一条被认定为「不需要处理」的诊断。
+///
+/// 粒度是**单条诊断**而不是整个单元：单元里往往一半是真问题、一半是刻意保留的
+/// 差异（info 级、既定取舍、需要页面级改造才能修）。`reason` 必填——没有理由的
+/// 豁免等于静默忽略，复核时无从判断。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Waiver {
+    /// 与 baseline / verify 同一套稳定 id（`docs/MIGRATE.md` §4.2）。
+    pub id: String,
+    pub rule: String,
+    pub path: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +159,39 @@ impl Ledger {
         if status == Status::Accepted {
             state.last_failure = None;
         }
+    }
+
+    /// 豁免一条诊断。同一 id 重复写会覆盖理由（判断可能被修正）。
+    pub fn waive(&mut self, unit: &str, waiver: Waiver) {
+        let state = self.units.entry(unit.to_string()).or_default();
+        match state.waived.iter_mut().find(|slot| slot.id == waiver.id) {
+            Some(slot) => *slot = waiver,
+            None => state.waived.push(waiver),
+        }
+    }
+
+    /// 撤销一条豁免，返回原来的理由。
+    pub fn unwaive(&mut self, id: &str) -> Option<String> {
+        for state in self.units.values_mut() {
+            if let Some(pos) = state.waived.iter().position(|waiver| waiver.id == id) {
+                return Some(state.waived.remove(pos).reason);
+            }
+        }
+        None
+    }
+
+    /// 全部豁免的诊断 id。`plan` / `verify` 据此把豁免项从两侧一起摘掉。
+    pub fn waived_ids(&self) -> BTreeSet<&str> {
+        self.units
+            .values()
+            .flat_map(|state| state.waived.iter())
+            .map(|waiver| waiver.id.as_str())
+            .collect()
+    }
+
+    /// 豁免总数（不看单元）。
+    pub fn waived_count(&self) -> usize {
+        self.units.values().map(|state| state.waived.len()).sum()
     }
 
     /// 删掉计划里已经不存在的单元（改名、删除组件后留下的陈旧条目）。

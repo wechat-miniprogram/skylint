@@ -21,7 +21,7 @@ use crate::rules::wxml::Reach;
 
 pub use guidance::{Guidance, family_of, guidance_for};
 pub use ledger::{
-    Failure, Ledger, LedgerReport, Next, Progress, Status, UnitState, next as next_unit,
+    Failure, Ledger, LedgerReport, Next, Progress, Status, UnitState, Waiver, next as next_unit,
 };
 
 /// 产物格式版本。破坏性变更才 +1。
@@ -1217,6 +1217,38 @@ pub struct Identified {
     pub help: Option<String>,
 }
 
+/// 全部诊断的稳定 id，按 `report.diagnostics` 顺序。
+///
+/// 与 [`identify`] 同一套算法，区别只是不需要 `plan` 就能算（豁免要在建计划之前
+/// 生效，那时还没有单元划分）。
+pub fn diagnostic_ids(views: &[Project], report: &Report) -> Vec<String> {
+    let mut docs: BTreeMap<String, Option<LoadedDoc>> = BTreeMap::new();
+    report
+        .diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic_id(views, &mut docs, diagnostic))
+        .collect()
+}
+
+/// 单条诊断的 id。`docs` 是同一次运行的 WXML 解析缓存。
+fn diagnostic_id(
+    views: &[Project],
+    docs: &mut BTreeMap<String, Option<LoadedDoc>>,
+    diagnostic: &Diagnostic,
+) -> String {
+    // WXML 按元素锚点；样式按 selector + property；JS / JSON 等退回行列。
+    match find_view(views, &diagnostic.path) {
+        Some((project, rel)) if diagnostic.path.ends_with(".wxml") => {
+            let doc = docs
+                .entry(diagnostic.path.clone())
+                .or_insert_with(|| LoadedDoc::load(project, rel));
+            identify_one(project, doc.as_ref(), diagnostic).0
+        }
+        Some((project, _)) => identify_one(project, None, diagnostic).0,
+        None => identify_one_fallback(diagnostic).0,
+    }
+}
+
 /// 给全部诊断算稳定 id。同一份代码重复调用结果一致；元素挪行不变。
 pub fn identify(views: &[Project], plan: &Plan, report: &Report) -> Vec<Identified> {
     let mut docs: BTreeMap<String, Option<LoadedDoc>> = BTreeMap::new();
@@ -1229,18 +1261,7 @@ pub fn identify(views: &[Project], plan: &Plan, report: &Report) -> Vec<Identifi
             .find(|unit| unit.kind != "shared" && owns(unit, &diagnostic.path))
             .or_else(|| plan.units.iter().find(|unit| unit.kind == "shared"));
         let unit_id = unit.map(|unit| unit.id.clone()).unwrap_or_default();
-
-        // WXML 按元素锚点；样式按 selector + property；JS / JSON 等退回行列。
-        let (id, _) = match find_view(views, &diagnostic.path) {
-            Some((project, rel)) if diagnostic.path.ends_with(".wxml") => {
-                let doc = docs
-                    .entry(diagnostic.path.clone())
-                    .or_insert_with(|| LoadedDoc::load(project, rel));
-                identify_one(project, doc.as_ref(), diagnostic)
-            }
-            Some((project, _)) => identify_one(project, None, diagnostic),
-            None => identify_one_fallback(diagnostic),
-        };
+        let id = diagnostic_id(views, &mut docs, diagnostic);
 
         out.push(Identified {
             id,
@@ -1647,6 +1668,8 @@ pub struct VerifyReport {
     pub changed_up: usize,
     /// 其中变松的（error/warning→info、error→warning）。
     pub changed_down: usize,
+    /// 被豁免、因此不参与新增/修复统计的条数（台账里 `waived` 与当前诊断对上的）。
+    pub waived: usize,
     pub findings: Vec<DiffEntry>,
 }
 
@@ -1677,6 +1700,21 @@ pub fn verify(
     unit: Option<&str>,
     baseline_file: Option<String>,
 ) -> VerifyReport {
+    verify_with(baseline, current, unit, baseline_file, &BTreeSet::new())
+}
+
+/// 带豁免的 `verify`。
+///
+/// 豁免是「两边都不算」：当前里跳过它（不算 `new` / `changed`），基线里也跳过它
+/// （不算 `fixed`）。这样「认定不处理」与「修掉了」在机械判定上等价，但它们在
+/// 报告里分得开——`waived` 单独计数，不会被当成修复成绩。
+pub fn verify_with(
+    baseline: &Baseline,
+    current: &[Identified],
+    unit: Option<&str>,
+    baseline_file: Option<String>,
+    waived: &BTreeSet<&str>,
+) -> VerifyReport {
     let baseline_by_id: BTreeMap<&str, &BaselineFinding> = baseline
         .findings
         .iter()
@@ -1690,10 +1728,16 @@ pub fn verify(
     let mut changed = 0;
     let mut changed_up = 0;
     let mut changed_down = 0;
+    let mut waived_hits = 0;
     let mut seen: BTreeSet<&str> = BTreeSet::new();
 
     for finding in current {
         if unit.is_some_and(|wanted| finding.unit != wanted) {
+            continue;
+        }
+        // 豁免项：不进 `new` / `changed`，也不进下面的 `fixed`。
+        if waived.contains(finding.id.as_str()) {
+            waived_hits += 1;
             continue;
         }
         match baseline_by_id.get(finding.id.as_str()).copied() {
@@ -1744,7 +1788,7 @@ pub fn verify(
 
     let mut fixed = 0;
     for previous in baseline_by_id.values() {
-        if seen.contains(previous.id.as_str()) {
+        if seen.contains(previous.id.as_str()) || waived.contains(previous.id.as_str()) {
             continue;
         }
         fixed += 1;
@@ -1784,6 +1828,7 @@ pub fn verify(
         changed,
         changed_up,
         changed_down,
+        waived: waived_hits,
         findings,
     }
 }

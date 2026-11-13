@@ -529,6 +529,7 @@ baseline --augment 吸收」。只提示，不改计数、不改退出码。
 ```
 skylint migration ledger <PATH> [--json] [--prune]
 skylint migration record <PATH> --unit <ID> --status <S> [--gate G --reason R] [--note N]
+skylint migration waive  <PATH> --finding <ID> --reason <TEXT> | --undo <ID> | --list
 skylint migration next   <PATH> [--json] [--job-out FILE] [--baseline FILE]
 ```
 
@@ -595,3 +596,37 @@ skylint migration record --unit <unit> --status accepted
 
 四条命令都是确定性的；`record` 只记数（`failures`）与最后一条失败原因，
 重试上限由 runner 自己定。
+
+### 10.5 逐条豁免（`waive`）
+
+`record --status accepted` 是**单元级**判断：接受一个单元，把还没修的诊断一起接受。
+实际上一单元里常常一半是真问题、一半是刻意保留的差异（info 级、既定取舍、
+要改页面结构才能修的）。单元级接受太粗——早了会盖住后面的真回归，晚了会让
+「其余已改完」的单元一直挂在进程里。
+
+所以另有一个**诊断级**动作：
+
+```
+skylint migration waive <PATH> --finding <ID> --reason "为什么不需要处理"
+skylint migration waive <PATH> --undo <ID>
+skylint migration waive <PATH> --list
+```
+
+- `--finding` 用 `job.json` / `verify --json` 里的 `id`（稳定身份，不是行列）。
+  当前诊断里找不到就报错退出——id 会随代码与规则集变化，不猜。
+- `--reason` 必填。豁免是人的判断，没有理由的豁免等于静默忽略；理由随台账提交，
+  复核时能看出当时怎么想的。
+- 存在 `ledger.json` 对应单元的 `waived: [{ id, rule, path, reason }]`，
+  跟状态一样持久、可 diff；单元被 `--prune` 清掉时豁免一起清。
+
+**机械判定把豁免当「已解决」，但不当「修复」：**
+
+| 产物 | 行为 |
+|---|---|
+| `plan` / `job` / `next` | 豁免项从报告里摘掉；单元只剩豁免时 `diagnostics.total == 0`，不再排队 |
+| `verify` | 当前侧跳过（不算 `new` / `changed`），基线侧也跳过（不算 `fixed`），单独计 `waived` |
+| 豁免后又真改掉了 | `waived` 归零，也不进 `fixed`——判过「不处理」就不拿它充成绩 |
+
+这一条对「刻意保留」与「修不好」是同一种处理，区别只在 `reason` 里写清楚。
+两面都不参与门禁，意味着**豁免会稀释门禁**——所以它要求显式 id 与理由，
+而不是一个 `--ignore` 通配。

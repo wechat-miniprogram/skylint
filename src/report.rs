@@ -101,6 +101,18 @@ impl Report {
         serde_json::to_string_pretty(self).expect("report is always serializable")
     }
 
+    /// 按诊断顺序过滤，并重算 summary 的三档计数。
+    ///
+    /// `keep` 会按 `diagnostics` 原顺序访问每一条 —— 调用方靠自己的计数器或
+    /// 索引对齐（与 `Vec::retain` 一致）。用于迁移台账的「逐条豁免」。
+    pub fn retain_diagnostics(&mut self, mut keep: impl FnMut(&Diagnostic) -> bool) {
+        self.diagnostics.retain(|diagnostic| keep(diagnostic));
+        let count = |s: Severity| self.diagnostics.iter().filter(|d| d.severity == s).count();
+        self.summary.errors = count(Severity::Error);
+        self.summary.warnings = count(Severity::Warning);
+        self.summary.infos = count(Severity::Info);
+    }
+
     /// CI 判据：出现任何 error 级结果即失败。
     pub fn has_errors(&self) -> bool {
         self.summary.errors > 0
