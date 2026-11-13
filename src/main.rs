@@ -616,6 +616,20 @@ fn run_verify(args: VerifyArgs) -> ExitCode {
     );
     let unknown = migrate::unknown_rules(&baseline, &migrate::builtin_rule_ids());
 
+    // 豁免跟着 id 走；代码/规则一变就可能对不上，不能默默失效。
+    let stale: Vec<&str> = waived
+        .iter()
+        .map(String::as_str)
+        .filter(|id| !identified.iter().any(|finding| finding.id == *id))
+        .collect();
+    if !stale.is_empty() {
+        eprintln!(
+            "⚠ {} 条豁免对不上当前诊断（id 变了或诊断已消失）：{}",
+            stale.len(),
+            stale.join("、")
+        );
+    }
+
     if args.project.json {
         println!("{}", migrate::to_json(&result));
     } else {
