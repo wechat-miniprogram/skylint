@@ -3,13 +3,14 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 65 条：error 18 条、warning 42 条、info 5 条。
+共 66 条：error 19 条、warning 42 条、info 5 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
 | 规则 | 级别 | 方向 | 说明 |
 |---|---|---|---|
 | `skyline/no-inline-text` | warning | skyline | Skyline 下文本与元素混排会变成独立 flex item，需用 `<text>` 包裹 |
+| `skyline/unregistered-tag` | error | skyline | 未注册的标签：WebView 不渲染其子树，Skyline 按普通元素渲染 |
 | `skyline/unsupported-component` | error | skyline | Skyline 下不可用的组件（如 web-view / movable-view / editor） |
 | `skyline/scroll-gesture-conflict` | warning | skyline | 滚动容器上的滑动会冒泡触发祖先的 touchmove 手势（拖拽收起等） |
 | `skyline/scroll-view-type` | info | skyline | `<scroll-view>` 建议显式指定 type：省略 type 走传统滚动（没有按需渲染），`default` 与未知值会被 JS 层回退成 `list` 并告警 |
