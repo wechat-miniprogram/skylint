@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 66 条：error 19 条、warning 42 条、info 5 条。
+共 66 条：error 19 条、warning 43 条、info 4 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
@@ -63,7 +63,7 @@
 | `skyline/dynamic-style-value` | warning | skyline | JS 字符串里的内联样式用了 Skyline 不支持的写法（前缀渐变、老式弹性盒、不可解析的 display、-webkit-line-clamp、会回落初始值的取值） |
 | `skyline/autoprefix-build` | info | skyline | prod 构建的 autoprefixer 会给样式注入 `-webkit-` 前缀，Skyline 不认 |
 | `skyline/config-ignored` | warning | skyline | 配置写在不被读取的位置或类型上，静默无效 |
-| `skyline/default-layout-drift` | info | skyline | app.json 未开启 defaultDisplayBlock / defaultContentBox，Skyline 的默认布局与盒模型仍与 WebView 不同 |
+| `skyline/default-layout-drift` | warning | skyline | app.json 未开启 defaultDisplayBlock / defaultContentBox，Skyline 的默认布局与盒模型仍与 WebView 不同 |
 | `skyline/lib-version` | error | skyline | 项目配置的 libVersion 低于所用 Skyline 特性的最低要求 |
 | `skyline/renderer-options` | warning | skyline | rendererOptions 的写法或类型不会被运行时读取，配置静默失效 |
 | `webview/text-truncation` | warning | webview | `<text>` 的 max-lines / overflow 在 WebView 下被忽略，截断与省略失效 |

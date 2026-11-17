@@ -148,6 +148,7 @@ pub fn guidance_for(rule: &str) -> &'static Guidance {
             preconditions: &[
                 "`rendererOptions.skyline.defaultDisplayBlock: true` 时 Skyline 的 display 默认 block",
                 "`defaultContentBox: true` 时 box-sizing 默认 content-box",
+                "Skyline 丢弃主体为空的选择器（`*`、仅属性），用它们做 box-sizing reset 在 Skyline 不生效",
             ],
             counterexamples: &[
                 "不要在页面级再写一遍 `display: block` —— 默认值已经在工程配置里改了",

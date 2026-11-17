@@ -1179,15 +1179,18 @@ fn json_removed_switch_is_not_a_pair() {
         .findings
         .iter()
         .find(|finding| finding.id.contains("defaultContentBox"))
-        .expect("baseline 里应只有 defaultContentBox 那条 info");
+        .expect("baseline 里应只有 defaultContentBox 那条 warning");
 
     f.write(
         "miniprogram/app.json",
         r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{}}}"#,
     );
     let result = verify_now(f.path(), &baseline);
-    assert_eq!(result.new, 0, "只有新增 info：{:?}", result.findings);
-    assert_eq!(result.new_info, 1, "defaultDisplayBlock 应成为唯一新增");
+    assert_eq!(result.new, 1, "只有新增 warning：{:?}", result.findings);
+    assert_eq!(
+        result.new_info, 0,
+        "defaultDisplayBlock 已改为 warning 级别，计入 new"
+    );
     assert_eq!(result.fixed, 0, "defaultContentBox 不该漂成修复");
     assert!(
         result

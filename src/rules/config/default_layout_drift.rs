@@ -14,8 +14,10 @@
 //!   `skyline/renderer-options` 负责），不在这条规则里再解析一遍真值。
 
 use crate::input::json::JsonPositions;
+use crate::matcher::Dialect;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::wxml::{cascade::resolved_property_with_dialect, for_each_element};
+use crate::rules::{Rule, RuleMeta, Target};
 use crate::{Diagnostic, Severity};
 
 pub struct DefaultLayoutDrift;
@@ -28,7 +30,7 @@ impl Rule for DefaultLayoutDrift {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
             id: Self::ID,
-            severity: Severity::Info,
+            severity: Severity::Warning,
             description: "app.json 未开启 defaultDisplayBlock / defaultContentBox，Skyline 的默认布局与盒模型仍与 WebView 不同",
         }
     }
@@ -68,7 +70,7 @@ impl Rule for DefaultLayoutDrift {
         // 复杂化。因此口径固定为「app 级未开启就报」，消息里也写「app 级未开启」——命中本身
         // 意味着这个工程还没做整体决定。
         if !project.app_display_block() {
-            out.push(info(
+            out.push(warning(
                 "app.json",
                 line,
                 column,
@@ -77,21 +79,102 @@ impl Rule for DefaultLayoutDrift {
                 "在 app.json 的 rendererOptions.skyline 里开启 defaultDisplayBlock: true 可让这三项对齐 WebView",
             ));
         }
-        if !project.app_content_box() {
-            out.push(info(
-                "app.json",
-                line,
-                column,
-                "/rendererOptions/skyline/defaultContentBox",
-                "app 级未开启 defaultContentBox：Skyline 下 box-sizing 默认 border-box（WebView 默认 content-box），显式声明 width 的元素实际内容盒会比 WebView 中小（少掉 padding 与 border）",
-                "开启 rendererOptions.skyline.defaultContentBox: true 对齐 WebView，或显式写 box-sizing: content-box",
-            ));
-        }
+        out.extend(content_box_drift(project, line, column));
         out
     }
 }
 
-fn info(
+/// `box-sizing` 的两端差异，按元素实测而不是按开关猜。
+///
+/// 判据是「同一份样式在两端解析出的有效值是否不同」：WebView 侧按规范默认
+/// `content-box`，Skyline 侧按 `defaultContentBox` 决定默认值。这样两种工程形态都能
+/// 判对——没有 reset 时逐个元素命中默认值差异；有 `* { box-sizing: border-box }` 这类
+/// reset 时，WebView 全部变成 border-box，而 Skyline 会整条丢弃主体为空的选择器
+/// （`style/rule_set.cc` 的 `ExtractRuleBySelector`），回落到默认值，此时若开了
+/// `defaultContentBox` 反而是 Skyline 单方面变 content-box。
+fn content_box_drift(project: &Project, line: u32, column: u32) -> Option<Diagnostic> {
+    let skyline_default = if project.app_content_box() {
+        "content-box"
+    } else {
+        "border-box"
+    };
+    // 两个方向的计数分开记：前者是「开关没开」，后者是「reset 的选择器在 Skyline 不生效」，
+    // 修法完全相反，混成一个数就没法给建议。
+    let mut open_content_box = 0usize;
+    let mut unreachable_reset = 0usize;
+    for_each_element(project, Target::Skyline, |site| {
+        let (webview, webview_undecidable) = resolved_property_with_dialect(
+            site.project,
+            site.tree,
+            site.element,
+            "box-sizing",
+            Dialect::WebView,
+        );
+        if webview_undecidable {
+            return;
+        }
+        let (skyline, skyline_undecidable) = resolved_property_with_dialect(
+            site.project,
+            site.tree,
+            site.element,
+            "box-sizing",
+            Dialect::Skyline,
+        );
+        if skyline_undecidable {
+            return;
+        }
+        let webview = box_sizing(webview).unwrap_or("content-box");
+        let skyline = box_sizing(skyline).unwrap_or(skyline_default);
+        match (webview, skyline) {
+            ("content-box", "border-box") => open_content_box += 1,
+            ("border-box", "content-box") => unreachable_reset += 1,
+            _ => {}
+        }
+    });
+
+    let (message, help) = match (open_content_box, unreachable_reset) {
+        (0, 0) => return None,
+        (count, 0) => (
+            format!(
+                "app 级未开启 defaultContentBox：{count} 个元素两端解析出的 box-sizing 不同（WebView content-box / Skyline border-box），显式声明尺寸的元素实际内容盒比 WebView 小，少掉的正是同轴 padding 与 border"
+            ),
+            "开启 rendererOptions.skyline.defaultContentBox: true 对齐 WebView；不想动全局开关时逐元素显式写 box-sizing: content-box",
+        ),
+        (0, count) => (
+            format!(
+                "{count} 个元素的 box-sizing 两端解析结果不同（WebView border-box / Skyline content-box）：WebView 侧的值来自不会进入 Skyline 规则集的选择器（`*`、仅属性选择器），Skyline 回落到默认值"
+            ),
+            "把这类选择器的主体改成标签（如 view、text）或逐元素显式声明 box-sizing；主体为空的选择器整条规则在 Skyline 不生效，只改开关无法对齐",
+        ),
+        (open, unreachable) => (
+            format!(
+                "盒模型默认值两端不一致：{open} 个元素 WebView content-box / Skyline border-box，另有 {unreachable} 个元素相反（Skyline 丢弃了 `*` 或仅属性选择器后回落到默认值）"
+            ),
+            "先统一默认值：无 reset 的元素开 defaultContentBox；由 `*` 之类选择器提供的 border-box 改成标签选择器再开开关，否则两边只能对齐一侧",
+        ),
+    };
+    Some(warning(
+        "app.json",
+        line,
+        column,
+        "/rendererOptions/skyline/defaultContentBox",
+        message,
+        help,
+    ))
+}
+
+/// 声明值归一；动态值（模板串）判不了。
+fn box_sizing<'a>(
+    resolved: Option<crate::rules::wxml::cascade::Resolved<'a>>,
+) -> Option<&'static str> {
+    match resolved?.value.trim().to_ascii_lowercase().as_str() {
+        "content-box" => Some("content-box"),
+        "border-box" => Some("border-box"),
+        _ => None,
+    }
+}
+
+fn warning(
     path: &str,
     line: u32,
     column: u32,
@@ -101,7 +184,7 @@ fn info(
 ) -> Diagnostic {
     Diagnostic::new(
         DefaultLayoutDrift::ID,
-        Severity::Info,
+        Severity::Warning,
         message,
         path,
         line,
@@ -134,7 +217,7 @@ mod tests {
         );
         let diags = DefaultLayoutDrift.check(&project);
         assert_eq!(diags.len(), 2);
-        assert!(diags.iter().all(|d| d.severity == Severity::Info));
+        assert!(diags.iter().all(|d| d.severity == Severity::Warning));
         assert!(diags.iter().all(|d| d.path == "app.json"));
         // 没有 rendererOptions 键：落在文件开头。
         assert!(diags.iter().all(|d| (d.line, d.column) == (1, 1)));
@@ -263,5 +346,71 @@ mod tests {
             "{}",
         );
         assert!(DefaultLayoutDrift.check(&project).is_empty());
+    }
+
+    /// `* { box-sizing: border-box }` 这类 reset：WebView 全变 border-box，Skyline 丢
+    /// 主体为空的选择器后回落到默认 border-box，两端其实一致——不能报。
+    #[test]
+    fn universal_reset_silences_the_content_box_report() {
+        let (_f, project) = reset_project(
+            "drift-universal-reset",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true}}}"#,
+            "*{box-sizing:border-box}",
+        );
+        assert!(DefaultLayoutDrift.check(&project).is_empty());
+    }
+
+    /// 同上但开关已开：Skyline 默认变 content-box，而 `*` 的 border-box 进不了规则集，
+    /// 这时两端反而不同。建议必须是「改选择器」，不能是「改开关」。
+    #[test]
+    fn universal_reset_with_the_switch_on_reports_the_other_direction() {
+        let (_f, project) = reset_project(
+            "drift-universal-reset-on",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true,"defaultContentBox":true}}}"#,
+            "*{box-sizing:border-box}",
+        );
+        let diags = DefaultLayoutDrift.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert!(diags[0].message.contains("Skyline content-box"));
+        assert!(!diags[0].message.contains("未开启 defaultContentBox"));
+        assert!(diags[0].help.as_deref().unwrap().contains("标签"));
+    }
+
+    /// 标签选择器的 reset 两端都生效，不构成差异。
+    #[test]
+    fn tag_reset_keeps_both_renderers_equal() {
+        let (_f, project) = reset_project(
+            "drift-tag-reset",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true}}}"#,
+            "view{box-sizing:border-box}",
+        );
+        assert!(DefaultLayoutDrift.check(&project).is_empty());
+    }
+
+    /// 类选择器同理：两端都进桶。
+    #[test]
+    fn class_reset_keeps_both_renderers_equal() {
+        let (_f, project) = reset_project(
+            "drift-class-reset",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true}}}"#,
+            ".page{box-sizing:border-box}",
+        );
+        assert!(DefaultLayoutDrift.check(&project).is_empty());
+    }
+
+    /// app.wxss 由用例给；页面 wxml 用 reset 能命中的写法。
+    fn reset_project(name: &str, app: &str, app_wxss: &str) -> (Fixture, Project) {
+        let fixture = Fixture::new(name);
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write("app.json", app)
+            .write("app.wxss", app_wxss)
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<view class="page"><view class="page"/></view>"#,
+            );
+        let loaded = fixture.project();
+        (fixture, loaded)
     }
 }
