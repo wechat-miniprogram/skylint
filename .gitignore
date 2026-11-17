@@ -1,0 +1,22 @@
+/target
+/.cargo/config.toml
+/.cortexkit
+node_modules
+.DS_Store
+*.log
+.tmp
+/.opencode
+/dist
+
+# 编排器的本地 journal（迁移台账 .skylint/ledger.json 相反，要提交）
+harness/.workflow-data
+harness/.nitro
+harness/.output
+
+# 内部工程记录：只在本地保留，不入库
+/docs/AUDIT-2026-10.md
+/docs/AUDIT-2026-10-round2.md
+/docs/AUDIT-2026-11.md
+/docs/COVERAGE.md
+/docs/FACTS.md
+/docs/HARNESS.md

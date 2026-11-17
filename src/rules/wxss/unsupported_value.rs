@@ -1,0 +1,719 @@
+//! 属性可用，但该**整值**在 Skyline 下不支持。引擎的处理分三种，文案必须与之一致：
+//!
+//! - **映射后照常生效**：`white-space: pre | pre-wrap | pre-line` 被映射成 `normal`。
+//! - **按 unset 回落**：解析失败返回「未设置」后，非继承属性回落到初始值、继承属性回落到
+//!   父值。这不是「忽略声明」：它在该条声明的位置生效，覆盖级联里更早的值。
+//! - **声明被丢弃**：解析失败整条回滚，或写入 computed style 时没有对应分支；此时级联
+//!   里更早的声明仍然生效。
+//!
+//! 前两种都会覆盖级联里更早的值，文案要能让人算出最终结果
+//! （`.x{white-space:nowrap}` 后面再写 `.x{white-space:pre}`，最终是 `normal`）。
+//!
+//! `position: sticky` 属于第二类：引擎只映射 static/relative/absolute/fixed，`sticky`
+//! 解析成「未设置」后回落到初始值 **relative**，不是退回上一条声明。若同时声明了
+//! `top`/`right`/`bottom`/`left`，元素会以原位置为基准偏移且不占位，直接盖住后面的内容
+//! （实测某电商工程详情页的吸顶筛选条压住首行）。
+
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use crate::input::wxml::WxmlDoc;
+use crate::project::Project;
+use crate::rules::{Rule, RuleMeta};
+use crate::{Diagnostic, Severity};
+
+use super::dict_table::{BORDER_STYLE_PROPERTIES, normalize_value, table};
+use super::value_util::at_declaration;
+use super::visit_declarations;
+
+pub struct UnsupportedValue;
+
+/// 尺寸类属性在 fp 里都是 `<length_percentage_auto>`：只接受 number / percentage /
+/// dimension / `auto` / `env()` / `calc()` / `min()` / `max()` / `clamp()`
+/// （`float-pigment-css/src/property.rs:781-786`、`parser/property_value/mod.rs:141-146,215-249`）。
+/// 内在尺寸关键字不在其中，解析失败后整条声明被回滚（`parser/mod.rs:1075`）。
+const INTRINSIC_SIZE_PROPERTIES: &[&str] = &[
+    "width",
+    "height",
+    "min-width",
+    "min-height",
+    "max-width",
+    "max-height",
+    "flex-basis",
+];
+
+/// `stretch` 与 `-webkit-fill-available` 同样不在语法里，但 WebView 的支持面也随版本变，
+/// 两个渲染器一起失效就不构成迁移差异，故不报。
+const INTRINSIC_SIZE_KEYWORDS: &[&str] = &["fit-content", "min-content", "max-content"];
+
+fn intrinsic_size_keyword(name: &str, value: &str) -> Option<&'static str> {
+    if !INTRINSIC_SIZE_PROPERTIES.contains(&name) {
+        return None;
+    }
+    INTRINSIC_SIZE_KEYWORDS.iter().copied().find(|keyword| {
+        value == *keyword
+            || value
+                .strip_prefix(keyword)
+                .is_some_and(|rest| rest.starts_with('('))
+    })
+}
+
+/// 引擎返回 `CSSUnsetValue` 后按 `ApplyInitial` 回落的取值 → `(初始值, 额外后果)`。
+///
+/// 只用于非继承属性；继承属性走 [`inherited_value`]。与「fp 解析失败、声明被丢弃」
+/// 不同：unset 会在该条声明的位置生效为初始值，覆盖级联里更早的值。
+/// `skyline/dynamic-style-value` 也用它判 JS 字符串里的内联声明。
+pub(crate) fn initial_value(name: &str, value: &str) -> Option<(&'static str, &'static str)> {
+    Some(match (name, value) {
+        // display 的初始值：默认 flex，开启默认块级布局时为 block。
+        ("display", "grid" | "flow-root" | "inline-grid") => ("`display: flex`", ""),
+        // position 的初始值硬编码为 relative（属性自身的初值也是 relative）。
+        // 相对偏移不占兄弟布局，所以带 top/left 时会压住后面的内容。
+        ("position", "sticky") => (
+            "`position: relative`",
+            "；若同时声明了 top/right/bottom/left，元素会以原位置为基准偏移且不占位，可能遮住后面的内容",
+        ),
+        // overflow 的初始值是 visible；两轴同构，
+        // 解析失败后把 kOverflow 设成 unset，最终落到 Overflow::ApplyInitial。
+        ("overflow", "auto" | "scroll") => ("`overflow: visible`", ""),
+        ("overflow-x", "auto" | "scroll") => ("`overflow-x: visible`", ""),
+        ("overflow-y", "auto" | "scroll") => ("`overflow-y: visible`", ""),
+        // vertical-align 的初始值是 baseline。
+        ("vertical-align", "text-top" | "text-bottom") => ("`vertical-align: baseline`", ""),
+        // 边框样式的 default 返回 CSSUnsetValue，
+        // 各边 ApplyInitial 是 none；该条边直接没有边框。
+        (name, "groove" | "ridge" | "inset" | "outset")
+            if BORDER_STYLE_PROPERTIES.contains(&name) =>
+        {
+            ("`none`", "；该条边不再有边框")
+        }
+        _ => return None,
+    })
+}
+
+/// 继承属性按 `ApplyInherit` 回落：回到父元素的取值，根节点才落到初始值。
+///
+/// 引擎在 unset 且属性可继承时走 inherit 分支，
+/// 只有没有父节点时才 `ApplyInitial`。
+fn inherited_value(name: &str, value: &str) -> Option<&'static str> {
+    Some(match (name, value) {
+        // visibility 返回 CSSUnsetValue；初始值 visible。
+        ("visibility", "collapse") => "`visibility: visible`",
+        // font-weight 返回 CSSUnsetValue；初始值 normal。
+        ("font-weight", "bolder" | "lighter") => "`font-weight: normal`",
+        // text-align 返回 CSSUnsetValue；初始值 start。
+        ("text-align", "justify-all" | "match-parent") => "`text-align: start`",
+        _ => return None,
+    })
+}
+
+impl UnsupportedValue {
+    pub const ID: &'static str = "skyline/unsupported-value";
+}
+
+impl Rule for UnsupportedValue {
+    fn meta(&self) -> RuleMeta {
+        RuleMeta {
+            id: Self::ID,
+            severity: Severity::Error,
+            description: "属性在 Skyline 下可用，但该值不支持：按 unset 回落到初始值或父元素的值，或整条声明被丢弃",
+        }
+    }
+
+    fn check(&self, project: &Project) -> Vec<Diagnostic> {
+        let table = table();
+        let mut docs: HashMap<String, Option<Rc<WxmlDoc>>> = HashMap::new();
+        visit_declarations(project, |sheet, rule, decl, out| {
+            let doc = &sheet.doc;
+            let name = decl.name.to_ascii_lowercase();
+            let Some(value) = normalize_value(&decl.value) else {
+                return;
+            };
+            let raw = decl.value.trim();
+            let (message, advice) = if let Some(keyword) = intrinsic_size_keyword(&name, &value) {
+                // `auto` 与 `fit-content` 同解时丢弃不改变渲染：`height` 只看脱离文档流，
+                // `width` 还接受行向 flex 里的非拉伸项（见 `width_follows_content`）。
+                // `min-` / `max-` 不行：它们的初始值是 `0` / `none`，丢掉的约束是真差异。
+                //
+                // 还要看级联里同一属性的其它声明：被后面的声明覆盖时本来就没生效；
+                // 生效中时丢弃会落到更早那条上，只有落到 `auto`（或压根没有）才与
+                // 「宽度由内容决定」同解——`.btn { width: 24px }` + `.btn.x { width:
+                // fit-content }` 丢掉后是 24px，属于真差异。
+                if matches!(name.as_str(), "width" | "height")
+                    && keyword == "fit-content"
+                    && super::all_matches_satisfy(
+                        project,
+                        sheet,
+                        &rule.selectors,
+                        &mut docs,
+                        |tree, element| {
+                            let cascade = crate::rules::wxml::matched_declarations(
+                                project, tree, element, &name,
+                            );
+                            let Some(pos) = cascade
+                                .iter()
+                                .position(|(_, other)| std::ptr::eq(*other, decl))
+                            else {
+                                return false;
+                            };
+                            if pos + 1 < cascade.len() {
+                                return true;
+                            }
+                            if !(pos == 0
+                                || cascade[pos - 1].1.value.trim().eq_ignore_ascii_case("auto"))
+                            {
+                                return false;
+                            }
+                            match name.as_str() {
+                                "width" => crate::rules::wxml::width_follows_content(
+                                    project, tree, element,
+                                ),
+                                _ => crate::rules::wxml::is_out_of_flow(project, tree, element),
+                            }
+                        },
+                    )
+                {
+                    return;
+                }
+                (
+                    format!(
+                        "`{name}: {raw}` 用了内在尺寸关键字 `{keyword}`：Skyline 的 `{name}` 只接受长度 / 百分比 / `auto`，整条声明会被丢弃"
+                    ),
+                    "换成明确长度；`auto` 只在父级是行向 flex（或元素脱离文档流）时等于内容宽。父级是列向 flex 时给元素写 `align-self: flex-start`，其余情况用 `display: inline-flex`",
+                )
+            } else if let Some(advice) = table.value(&name, &value) {
+                // white-space 是映射成 normal 后照常 Apply；其余取值返回 CSSUnsetValue，
+                // 由 StyleResolver 按继承性走 ApplyInitial / ApplyInherit。两者都会覆盖
+                // 级联里更早的值，不能写成「声明被忽略」。
+                let message = if name == "white-space"
+                    && matches!(value.as_str(), "pre" | "pre-wrap" | "pre-line")
+                {
+                    format!(
+                        "`{name}: {raw}` 在 Skyline 下会被映射成 `normal` 并照常生效（不是忽略声明）：它会覆盖级联里更早的值，`.x{{white-space:nowrap}} .x{{white-space:{value}}}` 最终是 `normal`，不是 `nowrap`"
+                    )
+                } else if let Some((initial, note)) = initial_value(&name, &value) {
+                    format!(
+                        "`{name}: {raw}` 在 Skyline 下不被支持，引擎按 unset 处理并回落到初始值 {initial}：它会覆盖级联里更早的值，而不是退回上一条声明{note}"
+                    )
+                } else if let Some(initial) = inherited_value(&name, &value) {
+                    format!(
+                        "`{name}: {raw}` 在 Skyline 下不被支持，引擎按 unset 处理：{name} 是继承属性，会回到父元素的取值（根节点上是 {initial}），而不是退回上一条声明"
+                    )
+                } else {
+                    format!("`{name}: {raw}` 这个取值在 Skyline 下不受支持，声明会被忽略")
+                };
+                (message, advice)
+            } else if let Some(advice) = table.length_valued(&name, &value) {
+                // 该属性只认关键字：长度值连解析都过不了，整条声明被丢弃。
+                (
+                    format!("`{name}: {raw}` 使用了长度值，Skyline 下该值不支持，整条声明会被丢弃"),
+                    advice,
+                )
+            } else {
+                // 多值形态：引擎按项解析（分轴 overflow、分边 border-style），
+                // 不支持的项被丢弃，其余项照常生效。
+                let items = table.unsupported_items(&name, &value);
+                let Some((_, advice)) = items.first().copied() else {
+                    return;
+                };
+                let names = items
+                    .iter()
+                    .map(|(item, _)| format!("`{item}`"))
+                    .collect::<Vec<_>>()
+                    .join("、");
+                (
+                    format!("`{name}: {raw}` 里的 {names} 在 Skyline 下不受支持，这些项会被丢弃"),
+                    advice,
+                )
+            };
+            // 迁移工程的标准写法：基础块服务 WebView，`.x.skyline` 分支在 Skyline 下
+            // 覆盖掉这条声明。此时基础声明永远不生效，报「取值不支持」是反着看。
+            if super::overridden_in_renderer_branch(
+                project,
+                sheet,
+                rule,
+                &name,
+                self.target(),
+                &mut docs,
+            ) {
+                return;
+            }
+            out.push(at_declaration(
+                Self::ID,
+                doc,
+                decl,
+                Severity::Error,
+                message,
+                advice,
+            ));
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::rules::Rule;
+
+    use super::UnsupportedValue;
+    use crate::rules::testutil::wxss::{messages, page};
+
+    #[test]
+    fn value_reports_unsupported_items_of_multi_value_forms() {
+        // 引擎按项解析（overflow 分轴、border-style 分边），不支持的项被丢弃，
+        // 其余项照常生效。
+        let (_f, project) = page(
+            "value-multi",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
+            r#"
+            .a { overflow: hidden auto; }
+            .b { border-style: solid double; }
+            .c { border-top-style: double groove; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 3, "{diags:?}");
+        assert!(diags[0].message.contains("`auto`"), "{}", diags[0].message);
+        assert!(
+            diags[1].message.contains("`double`"),
+            "{}",
+            diags[1].message
+        );
+        assert!(
+            diags[2].message.contains("`double`") && diags[2].message.contains("`groove`"),
+            "{}",
+            diags[2].message
+        );
+    }
+
+    #[test]
+    fn multi_value_forms_keep_supported_items_silent() {
+        let (_f, project) = page(
+            "value-multi-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
+            r#"
+            .a { overflow: hidden visible; }
+            .b { border-style: solid dashed none dotted; }
+            .c { padding: 1px 2px 3px 4px; }
+            "#,
+        );
+        assert!(UnsupportedValue.check(&project).is_empty());
+    }
+
+    #[test]
+    fn value_reports_unsupported_values() {
+        let (_f, project) = page(
+            "value-positive",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/>"#,
+            r#"
+            .a { display: grid; }
+            .b { position: sticky; }
+            .c { overflow: auto; }
+            .d { visibility: collapse; }
+            .e { white-space: pre-wrap; }
+            .f { font-weight: bolder; }
+            .g { border-top-style: double; }
+            .h { DISPLAY: GRID !important; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 8);
+        assert!(diags.iter().all(|d| d.severity == crate::Severity::Error));
+        assert!(diags.iter().any(|d| d.message.contains("display: grid")));
+        assert!(diags.iter().any(|d| d.message.contains("position: sticky")));
+        assert!(diags.iter().any(|d| d.message.contains("overflow: auto")));
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("border-top-style: double"))
+        );
+        assert_eq!(diags[0].help.as_deref(), Some("改用 flex 布局替代 grid"));
+    }
+
+    /// 迁移工程的标准写法：基础声明在 WebView 生效，`.x.skyline` 分支在 Skyline
+    /// 下换成合法值，基础声明永远不生效，不该报。
+    #[test]
+    fn renderer_branch_override_exempts_the_base_declaration() {
+        let (_f, project) = page(
+            "value-skyline-branch",
+            r#"<view class="a {{renderer}}"/><view class="b"/>"#,
+            r#"
+            .a { display: grid; }
+            .a.skyline { display: flex; }
+            .b { display: grid; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert!(diags[0].message.contains("display: grid"));
+        assert_eq!(diags[0].line, 4, "只会剩下没有分支覆盖的 `.b`：{diags:?}");
+    }
+
+    /// 分支类名要在 WXML 里真的由 `renderer` 拼出来才算数：没有绑定就是真问题。
+    #[test]
+    fn renderer_branch_without_binding_is_still_reported() {
+        let (_f, project) = page(
+            "value-skyline-branch-static",
+            r#"<view class="a"/>"#,
+            r#"
+            .a { display: grid; }
+            .a.skyline { display: flex; }
+            "#,
+        );
+        assert_eq!(UnsupportedValue.check(&project).len(), 1);
+    }
+
+    #[test]
+    fn value_ignores_supported_values_vars_and_partial_matches() {
+        let (_f, project) = page(
+            "value-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/><view class="i"/><view class="j"/><view class="k"/><view class="l"/><view class="m"/><view class="n"/>"#,
+            r#"
+            .a { display: flex; }
+            .b { position: relative; }
+            .c { overflow: hidden; }
+            .d { display: var(--d); }
+            .e { margin: 0 auto; }
+            .f { background: url(grid.png); }
+            .g { overflow: visible hidden; }
+            .h { content: "pre-wrap"; }
+            .i { display: env(display); }
+            .j { width: calc(100% - 1px); }
+            .k { text-decoration-line: underline line-through; }
+            .l { --grid: 1; }
+            .m { border-style: hidden; }
+            .n { border-top-style: hidden; }
+            "#,
+        );
+        assert_eq!(messages(&UnsupportedValue, &project), Vec::<String>::new());
+    }
+
+    /// `white-space: pre | pre-wrap | pre-line` 不是被忽略：引擎把它映射成 `normal`
+    /// 并照常 Apply，所以后写的这条会覆盖级联里更早的 `nowrap`。
+    #[test]
+    fn white_space_values_are_applied_as_normal() {
+        let (_f, project) = page(
+            "value-white-space-mapped",
+            r#"<view class="a"/><view class="b"/>"#,
+            r#"
+            .a { white-space: pre; }
+            .b { white-space: pre-line; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 2, "{diags:?}");
+        assert!(diags.iter().all(
+            |d| d.message.contains("映射成 `normal`") && d.message.contains("最终是 `normal`")
+        ));
+        assert!(!diags.iter().any(|d| d.message.contains("声明会被忽略")));
+    }
+
+    /// `display` / `text-align` / `vertical-align` 的这几个值在 C++ 里返回
+    /// `CSSUnsetValue`：非继承属性走 `ApplyInitial`，继承属性（`text-align`）走
+    /// `ApplyInherit`——同样会覆盖级联里更早的值。
+    #[test]
+    fn unset_values_fall_back_to_initial_or_parent() {
+        let (_f, project) = page(
+            "value-unset-initial",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
+            r#"
+            .a { display: grid; }
+            .b { text-align: justify-all; }
+            .c { vertical-align: text-top; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 3, "{diags:?}");
+        assert!(diags[0].message.contains("回落到初始值 `display: flex`"));
+        assert!(
+            diags[1].message.contains("继承属性")
+                && diags[1].message.contains("`text-align: start`"),
+            "{}",
+            diags[1].message
+        );
+        assert!(
+            diags[2]
+                .message
+                .contains("回落到初始值 `vertical-align: baseline`")
+        );
+        assert!(!diags.iter().any(|d| d.message.contains("声明会被忽略")));
+    }
+
+    /// `position: sticky` 不是「被忽略」：引擎返回 `CSSUnsetValue`，
+    /// `:39-44` 的 `ApplyInitial` 把初值写成 relative。带偏移时元素不占位，会压住内容。
+    #[test]
+    fn sticky_falls_back_to_relative_and_warns_about_offsets() {
+        let (_f, project) = page(
+            "value-sticky-relative",
+            r#"<view class="a"/>"#,
+            ".a { position: sticky; top: 88rpx; }",
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        let message = &diags[0].message;
+        assert!(
+            message.contains("回落到初始值 `position: relative`"),
+            "{message}"
+        );
+        assert!(
+            message.contains("偏移且不占位") && message.contains("遮住"),
+            "{message}"
+        );
+        assert!(!message.contains("声明会被忽略"), "{message}");
+        let help = diags[0].help.as_deref().unwrap_or_default();
+        assert!(
+            help.contains("sticky-section")
+                && help.contains("sticky-header")
+                && help.contains("<scroll-view type=\"custom\">")
+                && help.contains("第一个子元素")
+                && help.contains("relative/absolute/fixed"),
+            "{help}"
+        );
+    }
+
+    /// `overflow` 的 auto / scroll 落到 `Overflow::ApplyInitial`（visible），不是丢弃。
+    #[test]
+    fn overflow_values_fall_back_to_visible() {
+        let (_f, project) = page(
+            "value-overflow-visible",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/>"#,
+            r#"
+            .a { overflow: auto; }
+            .b { overflow: scroll; }
+            .c { overflow-x: auto; }
+            .d { overflow-y: scroll; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 4, "{diags:?}");
+        assert!(
+            diags[0].message.contains("`overflow: visible`")
+                && diags[1].message.contains("`overflow: visible`")
+                && diags[2].message.contains("`overflow-x: visible`")
+                && diags[3].message.contains("`overflow-y: visible`"),
+            "{diags:#?}"
+        );
+        assert!(!diags.iter().any(|d| d.message.contains("声明会被忽略")));
+    }
+
+    /// 继承属性按 unset 回落时走 `ApplyInherit`，回到父元素的值（根节点才是初始值）。
+    #[test]
+    fn inherited_values_return_to_parent_value() {
+        let (_f, project) = page(
+            "value-inherited-parent",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
+            r#"
+            .a { visibility: collapse; }
+            .b { font-weight: bolder; }
+            .c { text-align: justify-all; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 3, "{diags:?}");
+        assert!(diags.iter().all(|d| d.message.contains("继承属性")));
+        assert!(diags[0].message.contains("`visibility: visible`"));
+        assert!(diags[1].message.contains("`font-weight: normal`"));
+        assert!(diags[2].message.contains("`text-align: start`"));
+        assert!(!diags.iter().any(|d| d.message.contains("声明会被忽略")));
+    }
+
+    /// 只有真正不写 computed style 的取值才能写「被忽略」：
+    /// `groove/ridge/inset/outset` 走 unset → 该边初始值 none，`double` 是
+    /// `ApplyValue` 的 `default: return`（保留级联里更早的值），`contents` 在 fp 就解析失败。
+    #[test]
+    fn border_style_fallbacks_distinguish_none_and_ignored() {
+        let (_f, project) = page(
+            "value-border-style-fallback",
+            r#"<view class="a"/><view class="b"/><view class="c"/>"#,
+            r#"
+            .a { border-style: groove; }
+            .b { border-style: double; }
+            .c { display: contents; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 3, "{diags:?}");
+        assert!(
+            diags[0].message.contains("回落到初始值 `none`")
+                && diags[0].message.contains("该条边不再有边框"),
+            "{}",
+            diags[0].message
+        );
+        assert!(
+            diags[1].message.contains("声明会被忽略"),
+            "{}",
+            diags[1].message
+        );
+        assert!(
+            diags[2].message.contains("声明会被忽略"),
+            "{}",
+            diags[2].message
+        );
+    }
+
+    #[test]
+    fn value_reports_intrinsic_size_keywords() {
+        // fp 的 width/height/min/max/flex-basis 都是 `<length_percentage_auto>`，
+        // `fit-content` 一类关键字解析失败 → 整条声明回滚。
+        let (_f, project) = page(
+            "value-intrinsic-size",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/>"#,
+            r#"
+            .a { width: fit-content; }
+            .b { height: fit-content; }
+            .c { min-width: min-content; }
+            .d { max-height: max-content; }
+            .e { flex-basis: fit-content(200px); }
+            .f { WIDTH: FIT-CONTENT !important; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 6, "{diags:?}");
+        assert!(diags.iter().all(|d| d.severity == crate::Severity::Error));
+        assert!(diags[0].message.contains("width: fit-content"));
+        assert!(diags[2].message.contains("min-content"));
+        assert!(diags[4].message.contains("fit-content(200px)"));
+        assert!(diags[0].help.as_deref().unwrap().contains("inline-flex"));
+    }
+
+    /// 只有显式行向 flex 里的非拉伸项，主轴尺寸才由内容决定，`fit-content` 被丢弃
+    /// 不改变渲染；列向容器（含缺省 `flex-direction`）、或自己写了 `flex` 会拉伸时，
+    /// 差异仍然成立。
+    #[test]
+    fn intrinsic_size_keywords_follow_explicit_row_flex_content_width() {
+        let (_f, project) = page(
+            "value-intrinsic-row-flex",
+            r#"
+            <view class="row"><view class="a"/><view class="b"/></view>
+            <view class="col"><view class="c"/></view>
+            <view class="row"><view class="d"/></view>
+            <view class="p"><view class="e"/></view>
+            "#,
+            r#"
+            .row { display: flex; flex-direction: row; }
+            .col { display: flex; flex-direction: column; }
+            .p { display: flex; }
+            .a { width: fit-content; }
+            .b { width: fit-content; flex: 1; }
+            .c { width: fit-content; }
+            .d { width: fit-content; }
+            .e { width: fit-content; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        // `.b` 会按剩余空间拉伸、`.c` 是列向容器、`.e` 的父级缺省方向是 column。
+        assert_eq!(diags.len(), 3, "{diags:?}");
+        assert!(
+            diags
+                .iter()
+                .all(|d| d.message.contains("width: fit-content"))
+        );
+    }
+
+    /// 级联里还有别的 `width` 时不能一律豁免：被后面的声明覆盖的本来就没生效，
+    /// 生效中的丢弃后会落到更早那条上——只有落到 `auto` 才与「内容宽」同解。
+    #[test]
+    fn intrinsic_size_keywords_respect_other_width_declarations() {
+        let (_f, project) = page(
+            "value-intrinsic-other-width",
+            r#"<view class="row"><view class="a"/><view class="b"/></view>"#,
+            r#"
+            .row { display: flex; }
+            .a { width: 24px; }
+            .a { width: fit-content; }
+            .b { width: fit-content; }
+            .b { width: 24px; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert!(diags[0].message.contains("width: fit-content"));
+    }
+
+    /// 豁免走的是「父元素的级联」：`.Panel` 命中不了父节点时 `display` 取不到，
+    /// 就当成非 flex → 误报。旧实现把标识符统一小写，所以大写开头的父类名
+    /// 会把这条豁免整个打掉。
+    #[test]
+    fn intrinsic_size_keywords_read_capitalized_row_flex_parent_class() {
+        let (_f, project) = page(
+            "value-capitalized-parent",
+            r#"<view class="Panel"><view class="btn"/></view>"#,
+            r#"
+            .Panel { display: flex; flex-direction: row; }
+            .btn { width: fit-content; }
+            "#,
+        );
+        assert!(
+            messages(&UnsupportedValue, &project).is_empty(),
+            "父级是大写开头的类名且是显式行向 flex 时才该豁免"
+        );
+    }
+
+    #[test]
+    fn intrinsic_size_keywords_stay_silent_outside_size_properties() {
+        let (_f, project) = page(
+            "value-intrinsic-size-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/>"#,
+            r#"
+            .a { width: 100%; }
+            .b { height: auto; }
+            .c { min-width: calc(100% - 24px); }
+            .d { max-width: var(--w); }
+            .e { width: fit-content-grid; }
+            .f { line-height: max-content; }
+            .g { padding: 0 fit-content; }
+            "#,
+        );
+        assert_eq!(messages(&UnsupportedValue, &project), Vec::<String>::new());
+    }
+
+    #[test]
+    fn value_reports_length_values_of_vertical_align() {
+        // fp 的 vertical-align 值语法只有关键字分支（property.rs:426-433），长度值
+        // 解析失败后属性被回滚（parser/mod.rs:1768-1781）；引擎 ParseValue 也只认关键字。
+        let (_f, project) = page(
+            "value-vertical-align-length",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/>"#,
+            r#"
+            .a { vertical-align: 4px; }
+            .b { vertical-align: -2px; }
+            .c { vertical-align: 50%; }
+            .d { vertical-align: 1.5em; }
+            .e { VERTICAL-ALIGN: 4rpx !important; }
+            "#,
+        );
+        let diags = UnsupportedValue.check(&project);
+        assert_eq!(diags.len(), 5, "{diags:?}");
+        assert!(diags.iter().all(|d| d.severity == crate::Severity::Error));
+        assert!(diags.iter().all(|d| d.message.contains("长度值")));
+        assert!(diags[0].message.contains("vertical-align: 4px"));
+        assert!(diags[2].message.contains("50%"));
+        assert!(
+            diags[0]
+                .help
+                .as_deref()
+                .unwrap()
+                .contains("baseline/top/middle/bottom")
+        );
+    }
+
+    #[test]
+    fn length_values_of_other_properties_and_keywords_stay_silent() {
+        let (_f, project) = page(
+            "value-vertical-align-length-negative",
+            r#"<view class="a"/><view class="b"/><view class="c"/><view class="d"/><view class="e"/><view class="f"/><view class="g"/><view class="h"/><view class="i"/><view class="j"/>"#,
+            r#"
+            .a { vertical-align: middle; }
+            .b { vertical-align: baseline; }
+            .c { vertical-align: top; }
+            .d { vertical-align: bottom; }
+            .e { vertical-align: var(--align); }
+            .f { vertical-align: env(safe-area-inset-bottom); }
+            .g { padding: 4px; }
+            .h { margin-top: -2px; }
+            .i { line-height: 1.5em; }
+            .j { width: 50%; }
+            "#,
+        );
+        assert_eq!(messages(&UnsupportedValue, &project), Vec::<String>::new());
+    }
+}
