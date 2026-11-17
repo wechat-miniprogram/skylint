@@ -56,16 +56,23 @@ pub fn text(report: &Report, source: impl Fn(&str) -> Option<String>, style: Sty
         if let Some(help) = &d.help {
             diag = diag.with_help(help.clone());
         }
-        match text {
-            Some(src) => {
-                diag = diag.with_labels(vec![LabeledSpan::new_with_span(None, span(src, d))]);
+        // miette 用 `{:width$}` 画下划线，而 Rust 的格式化宽度上限是 `u16::MAX`：
+        // 起始列超过 65535 它直接 panic（`Formatting argument out of range`）。WXML 常
+        // 整段写一行，几十万字节很常见，这种位置退回单行输出，不整份报告陪葬。
+        let snippet = text.as_deref().and_then(|src| {
+            let span = span(src, d);
+            (column_in_line(src, span.0) <= usize::from(u16::MAX)).then_some(span)
+        });
+        match (text, snippet) {
+            (Some(src), Some(span)) => {
+                diag = diag.with_labels(vec![LabeledSpan::new_with_span(None, span)]);
                 // NamedSource 带文件名，片段头才会渲染成 `╭─[path:line:col]`
                 let report = MietteReport::new(diag)
                     .with_source_code(NamedSource::new(d.path.clone(), src.clone()));
                 let _ = handler.render_report(&mut out, report.as_ref());
                 out.push('\n');
             }
-            None => {
+            _ => {
                 let _ = writeln!(
                     out,
                     "{}:{}:{}  {}  {}  {}",
@@ -136,6 +143,17 @@ fn span(source: &str, d: &Diagnostic) -> (usize, usize) {
         start + width
     };
     (start, end - start)
+}
+
+/// `offset` 在其所在行内的字符列（0 起）。
+///
+/// miette 的下划线宽度是这个值的差，超过 `u16::MAX` 会 panic。
+fn column_in_line(source: &str, offset: usize) -> usize {
+    source[..offset]
+        .chars()
+        .rev()
+        .take_while(|c| *c != '\n')
+        .count()
 }
 
 /// 从 `offset` 所在行的行尾（不含换行符）。
@@ -226,6 +244,24 @@ mod tests {
         let (start, len) = span(WXML, &d);
         assert_eq!(start + len, line_end(WXML, start), "应止于起始行行尾");
         assert!(!WXML[start..start + len].contains('\n'));
+    }
+
+    /// miette 的下划线宽度上限是 `u16::MAX`，起始列超过它会在 `{:width$}` 上 panic。
+    /// WXML 整段写一行时列号可以到几十万，这种位置必须退回单行输出。
+    #[test]
+    fn far_column_falls_back_to_a_plain_line() {
+        let source = format!("{}<scroll-view>", "a".repeat(67_000));
+        let d = Diagnostic::new("skyline/x", Severity::Warning, "m", "big.wxml", 1, 68_000);
+        let out = text(&report(d), |_| Some(source.clone()), Style::default());
+        assert!(out.contains("big.wxml:1:68000"), "{out}");
+        assert!(!out.contains('╭'), "不应渲染源码片段：{out}");
+    }
+
+    #[test]
+    fn near_column_keeps_the_snippet() {
+        let d = Diagnostic::new("skyline/x", Severity::Warning, "m", "a.wxml", 2, 4);
+        let out = text(&report(d), |_| Some(WXML.to_string()), Style::default());
+        assert!(out.contains('╭'), "{out}");
     }
 
     #[test]
