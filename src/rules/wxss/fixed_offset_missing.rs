@@ -121,10 +121,7 @@ fn mispositioned(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> O
             (axis, row),
             (Axis::Horizontal, true) | (Axis::Vertical, false)
         );
-        if alignment(project, tree, parent, element, main)? == Alignment::Away {
-            return Some(true);
-        }
-        Some(false)
+        Some(alignment(project, tree, parent, element, main)? == Alignment::Away)
     };
 
     if horizontal && differs(Axis::Horizontal)? {
