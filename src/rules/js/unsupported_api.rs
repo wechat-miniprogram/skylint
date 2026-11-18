@@ -114,6 +114,7 @@ impl Rule for UnsupportedApi {
                             skyline_only,
                             ..
                         } => (Callee::Exact(callee).matches(&call.callee)
+                            && !shadows_with_own_method(&file.doc, callee)
                             && (!skyline_only || renders_in_skyline(project, &file.scope)))
                         .then_some((call.start, call.end)),
                         Entry::PluginCall { prefix, .. } => (in_plugin(project, &file.path)
@@ -134,6 +135,22 @@ impl Rule for UnsupportedApi {
         }
         out
     }
+}
+
+/// `this.xxx(...)` 是不是调本单元自己声明的方法（`methods: { xxx() {} }`、`this.xxx = ...`）。
+///
+/// 内置的 `this.animate` 同名方法会被单元自己定义的同名方法遮住（组件里 `methods: { animate() {} }`
+/// 写好后调 `this.animate(...)` 就是调自己那个），这种调用不受 Skyline 限制，报了是误报。
+fn shadows_with_own_method(doc: &crate::input::js::JsDoc, callee: &str) -> bool {
+    let Some(name) = callee.strip_prefix("this.") else {
+        return false;
+    };
+    if name.contains('.') {
+        return false;
+    }
+    doc.members().iter().any(|member| member.key == name)
+        || doc.object_fns().iter().any(|function| function.key == name)
+        || doc.this_binds().iter().any(|binding| binding.key == name)
 }
 
 #[cfg(test)]
@@ -249,6 +266,28 @@ mod tests {
         let diagnostics = UnsupportedApi.check(&project);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert_eq!(diagnostics[0].path, "pages/index/index.js");
+    }
+
+    /// 单元自己定义了同名方法（`methods: { animate() {} }`）时，`this.animate(...)` 调的是它，
+    /// 不是内置动画 API，报出来是误报。
+    #[test]
+    fn own_method_with_the_same_name_shadows_the_builtin() {
+        let f = Fixture::new("unsupported-shadowed");
+        f.write(
+            "project.config.json",
+            r#"{"miniprogramRoot":"","compileType":"miniprogram"}"#,
+        )
+        .write(
+            "app.json",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+        )
+        .write("pages/index/index.json", "{}")
+        .write("pages/index/index.wxml", "<view/>")
+        .write(
+            "pages/index/index.js",
+            r#"Component({ methods: { animate(name) { this[name](); }, open() { this.animate('showIn'); } } });"#,
+        );
+        assert!(UnsupportedApi.check(&f.project()).is_empty());
     }
 
     /// 纯 WebView 页面照常支持 `this.animate`，不能报。
