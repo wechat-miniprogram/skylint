@@ -290,6 +290,79 @@ mod tests {
         assert!(UnsupportedApi.check(&f.project()).is_empty());
     }
 
+    /// 老写法把方法直接挂在 `Page` / `Component` 选项对象上，同样遮住同名内置 API。
+    #[test]
+    fn top_level_methods_shadow_the_builtin() {
+        for js in [
+            "Page({ animate(name) {}, open() { this.animate('showIn'); } });",
+            "Component({ animate(name) {}, open() { this.animate('showIn'); } });",
+        ] {
+            let (_f, project) = single("unsupported-shadowed-top-level", js);
+            assert_eq!(
+                messages(&UnsupportedApi, &project),
+                Vec::<String>::new(),
+                "{js}"
+            );
+        }
+    }
+
+    /// `key: function () {}` 与对象方法简写是同一种方法表，两种都要认。
+    #[test]
+    fn function_property_methods_shadow_the_builtin() {
+        let (_f, project) = single(
+            "unsupported-shadowed-fn-property",
+            "Component({ methods: { animate: function (name) { this[name](); }, open: function () { this.animate('showIn'); } } });",
+        );
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
+
+    /// 运行时挂到 `this` 上的同名方法同样遮住内置 API。
+    #[test]
+    fn this_binding_shadows_the_builtin() {
+        let (_f, project) = single(
+            "unsupported-shadowed-this-bind",
+            "Page({ onLoad() { this.animate = function (name) { this[name](); }; this.animate('showIn'); } });",
+        );
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
+
+    /// `Behavior` 的方法表与 `Page` / `Component` 同形。
+    #[test]
+    fn behavior_methods_shadow_the_builtin() {
+        let (_f, project) = single(
+            "unsupported-shadowed-behavior",
+            "Behavior({ methods: { animate(name) { this[name](); }, open() { this.animate('showIn'); } } });",
+        );
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
+
+    /// 同名方法定义在别的文件里不算遮住：过滤只看同一文件。
+    #[test]
+    fn method_in_another_file_does_not_shadow() {
+        let f = Fixture::new("unsupported-shadowed-cross-file");
+        f.write(
+            "project.config.json",
+            r#"{"miniprogramRoot":"","compileType":"miniprogram"}"#,
+        )
+        .write(
+            "app.json",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+        )
+        .write("pages/index/index.json", "{}")
+        .write("pages/index/index.wxml", "<view/>")
+        .write(
+            "pages/index/index.js",
+            "Page({ open() { this.animate('showIn'); } });",
+        )
+        .write(
+            "pages/other/other.js",
+            "Component({ methods: { animate() {} } });",
+        );
+        let diagnostics = UnsupportedApi.check(&f.project());
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].path, "pages/index/index.js");
+    }
+
     /// 纯 WebView 页面照常支持 `this.animate`，不能报。
     #[test]
     fn webview_page_is_not_reported() {
