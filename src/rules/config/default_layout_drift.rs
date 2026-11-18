@@ -4,7 +4,8 @@
 //! 这两个开关是**工程级**的迁移决定：`defaultDisplayBlock` 让 `display`（flex→block）、
 //! `flex-direction`（column→row）、`align-items`（stretch→normal）对齐 WebView，
 //! `defaultContentBox` 让 `box-sizing`（border-box→content-box）对齐 WebView。迁移中的
-//! 工程整体还按 WebView 的默认值写样式，所以按工程报一条 info，而不是逐个元素/逐条声明报。
+//! 工程整体还按 WebView 的默认值写样式，所以按工程报一条 warning，而不是逐个元素/逐条声明报；
+//! 消息里附「受影响最多的 5 个文档」让这条工程级告警能落到具体页面上。
 //!
 //! 两个刻意的取舍：
 //! - 工程里存在 Skyline 页面、或**根本没有声明 renderer**（工具按 Skyline 默认口径检查）时判。
@@ -12,6 +13,8 @@
 //!   不在这里说一句，报告里就只剩逐条改样式的建议。显式声明 WebView 的工程不判；
 //! - 布尔值只认 JSON `true`。字符串 `"true"` 按未开启处理（类型写错由
 //!   `skyline/renderer-options` 负责），不在这条规则里再解析一遍真值。
+
+use std::collections::HashMap;
 
 use crate::input::json::JsonPositions;
 use crate::matcher::Dialect;
@@ -102,6 +105,8 @@ fn content_box_drift(project: &Project, line: u32, column: u32) -> Option<Diagno
     // 修法完全相反，混成一个数就没法给建议。
     let mut open_content_box = 0usize;
     let mut unreachable_reset = 0usize;
+    // 工程级一条告警定位不到页面；按文档聚合出「哪些页面受影响最多」，让这条告警可操作。
+    let mut pages: HashMap<String, usize> = HashMap::new();
     for_each_element(project, Target::Skyline, |site| {
         let (webview, webview_undecidable) = resolved_property_with_dialect(
             site.project,
@@ -126,17 +131,30 @@ fn content_box_drift(project: &Project, line: u32, column: u32) -> Option<Diagno
         let webview = box_sizing(webview).unwrap_or("content-box");
         let skyline = box_sizing(skyline).unwrap_or(skyline_default);
         match (webview, skyline) {
-            ("content-box", "border-box") => open_content_box += 1,
+            ("content-box", "border-box") => {
+                open_content_box += 1;
+                *pages.entry(site.doc.path().to_string()).or_default() += 1;
+            }
             ("border-box", "content-box") => unreachable_reset += 1,
             _ => {}
         }
     });
 
+    // 只看前 5 个：这类差异往往是「几个公共组件 × 页面数」，列多了没有信息量。
+    let mut hottest: Vec<(String, usize)> = pages.into_iter().collect();
+    hottest.sort_by(|(a_path, a), (b_path, b)| b.cmp(a).then_with(|| a_path.cmp(b_path)));
+    let hot_list = hottest
+        .iter()
+        .take(5)
+        .map(|(path, count)| format!("`{path}`（{count} 个）"))
+        .collect::<Vec<_>>()
+        .join("、");
+
     let (message, help) = match (open_content_box, unreachable_reset) {
         (0, 0) => return None,
         (count, 0) => (
             format!(
-                "app 级未开启 defaultContentBox：{count} 个元素两端解析出的 box-sizing 不同（WebView content-box / Skyline border-box），显式声明尺寸的元素实际内容盒比 WebView 小，少掉的正是同轴 padding 与 border"
+                "app 级未开启 defaultContentBox：{count} 个元素两端解析出的 box-sizing 不同（WebView content-box / Skyline border-box），显式声明尺寸的元素实际内容盒比 WebView 小，少掉的正是同轴 padding 与 border；受影响最多的文档：{hot_list}"
             ),
             "开启 rendererOptions.skyline.defaultContentBox: true 对齐 WebView；不想动全局开关时逐元素显式写 box-sizing: content-box",
         ),
@@ -148,7 +166,7 @@ fn content_box_drift(project: &Project, line: u32, column: u32) -> Option<Diagno
         ),
         (open, unreachable) => (
             format!(
-                "盒模型默认值两端不一致：{open} 个元素 WebView content-box / Skyline border-box，另有 {unreachable} 个元素相反（Skyline 丢弃了 `*` 或仅属性选择器后回落到默认值）"
+                "盒模型默认值两端不一致：{open} 个元素 WebView content-box / Skyline border-box，另有 {unreachable} 个元素相反（Skyline 丢弃了 `*` 或仅属性选择器后回落到默认值）；受影响最多的文档：{hot_list}"
             ),
             "先统一默认值：无 reset 的元素开 defaultContentBox；由 `*` 之类选择器提供的 border-box 改成标签选择器再开开关，否则两边只能对齐一侧",
         ),
@@ -396,6 +414,34 @@ mod tests {
             ".page{box-sizing:border-box}",
         );
         assert!(DefaultLayoutDrift.check(&project).is_empty());
+    }
+
+    /// 工程级一条告警要能落到页面：消息里列出受影响最多的文档。
+    #[test]
+    fn message_lists_the_most_affected_pages() {
+        let fixture = Fixture::new("drift-hot-pages");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index","pages/big/big"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true}}}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", r#"<view><view/></view>"#)
+            .write("pages/big/big.json", "{}")
+            .write(
+                "pages/big/big.wxml",
+                r#"<view><view/><view/><view/><view/></view>"#,
+            );
+        let project = fixture.project();
+        let diags = DefaultLayoutDrift.check(&project);
+        assert_eq!(diags.len(), 1);
+        let message = &diags[0].message;
+        assert!(message.contains("受影响最多的文档"), "{message}");
+        // 元素多的页面排在前面。
+        let big = message.find("pages/big/big").expect("缺少 big 页");
+        let index = message.find("pages/index/index").expect("缺少 index 页");
+        assert!(big < index, "{message}");
     }
 
     /// app.wxss 由用例给；页面 wxml 用 reset 能命中的写法。

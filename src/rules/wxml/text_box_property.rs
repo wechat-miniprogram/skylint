@@ -1,20 +1,19 @@
 //! `skyline/text-box-property`：顶层 `<text>` 上的盒属性两端语义不同。
 //!
-//! 实测（同一探针页两端各跑一次）：
+//! 实测（同一探针页两端各跑一次），`<text>` 与 `<span>` 行为一致：
 //!
 //! - Skyline：`<text>` 在普通流里是**块级盒**——独占一行，`width` / `height` /
 //!   `margin-top` 都生效；它内部的文字与嵌套 `<text>` 才是 inline。
 //! - WebView：`<text>` 是 **inline**——宽度由内容决定，`width` / `height` /
 //!   垂直 `margin` / 垂直 `padding` 都不参与布局。
 //!
-//! 所以顶层 `<text>` 写了这些属性时两端必然不同：Skyline 按声明值折行、截断、撑高，
-//! WebView 完全忽略。典型例子是给说明文字写 `width: 492rpx`——Skyline 的可用宽度比
-//! WebView 窄，于是多折一行。
+//! 所以顶层 `<text>` / `<span>` 写了这些属性时两端必然不同：Skyline 按声明值折行、
+//! 截断、撑高，WebView 完全忽略。典型例子是给说明文字写 `width: 492rpx`——Skyline 的
+//! 可用宽度比 WebView 窄，于是多折一行。
 //!
 //! 不报的情况（实测两端一致，报出来是噪声）：
 //!
-//! - 嵌套在 `text` / `span` 里的 `<text>`：两端都是 inline；
-//! - 作为 flex 子项：两端都按 flex item 处理，宽度声明两边都生效；
+//! - 嵌套在 `text` / `span` 里的 `<text>`：两端都是 inline；//! - 作为 flex 子项：两端都按 flex item 处理，宽度声明两边都生效；
 //! - 自身显式 `display: block` / `inline-block` / `flex` / `grid`：两端都按块级盒排；
 //! - 取值等于初始值（`width: auto`、`max-width: none`、间距为 0）；
 //! - 模板定义体与 `<include>` 片段：祖先链不全，判不出是否嵌套，宁可漏报。
@@ -30,11 +29,9 @@ use crate::rules::{Rule, RuleMeta};
 
 pub const ID: &str = "skyline/text-box-property";
 
-const MESSAGE: &str = "`<text>` 上的这些盒属性只在 Skyline 生效、WebView 会忽略：Skyline 把 `<text>` 当块级盒，WebView 当 inline";
+const HELP: &str = "把这些属性挪到外层 `<view>`；或给文本元素显式 `display: block`（两端一致）；只是想让文字与相邻元素同排时，改用 flex 布局";
 
-const HELP: &str = "把这些属性挪到外层 `<view>`；或给 `<text>` 显式 `display: block`（两端一致）；只是想让文字与相邻元素同排时，改用 flex 布局";
-
-/// 文本节点容器：它们内部的 `<text>` 在两端都是 inline。
+/// 文本节点容器：两端都把元素当成 inline 盒子，顶层的盒属性在两端语义不同。
 const TEXT_CONTAINERS: [&str; 2] = ["text", "span"];
 
 /// 只在 Skyline 里生效、WebView 里被忽略的盒属性。
@@ -70,7 +67,7 @@ impl Rule for TextBoxProperty {
         RuleMeta {
             id: ID,
             severity: Severity::Warning,
-            description: "顶层 `<text>` 上写了宽高或垂直间距：Skyline 会按块级盒应用，WebView 把这些声明当 inline 忽略",
+            description: "顶层 `<text>` / `<span>` 上写了宽高或垂直间距：Skyline 会按块级盒应用，WebView 把这些声明当 inline 忽略",
         }
     }
 
@@ -85,7 +82,7 @@ impl Rule for TextBoxProperty {
 
 fn check_element(site: &ElementSite<'_, '_>, out: &mut Vec<Diagnostic>) {
     let (project, doc, tree, element) = (site.project, site.doc, site.tree, site.element);
-    if element.tag != "text" {
+    if !TEXT_CONTAINERS.contains(&element.tag.as_str()) {
         return;
     }
     // 片段与模板定义体的祖先链不全：判不出是否嵌套、父级是不是 flex。
@@ -128,7 +125,7 @@ fn check_element(site: &ElementSite<'_, '_>, out: &mut Vec<Diagnostic>) {
     }
 
     out.push(
-        element_diagnostic(ID, doc, element, doc.path(), Severity::Warning, MESSAGE)
+        element_diagnostic(ID, doc, element, doc.path(), Severity::Warning, format!("`<{}>` 上的这些盒属性只在 Skyline 生效、WebView 会忽略：Skyline 把它当块级盒，WebView 当 inline", element.tag))
             .help(format!("这里见到的是 {}。{HELP}", hits.join("、"))),
     );
 }
@@ -180,6 +177,10 @@ fn misaligned_text_align(
     tree: &Tree<'_>,
     element: &WxmlElement,
 ) -> Option<String> {
+    // RTL 与竖排下 `text-align` 的值到物理方向的映射两端不一定一致，没实测过就不判。
+    if has_exotic_flow(project, tree, element) {
+        return None;
+    }
     let (resolved, undecidable) = resolved_property_with(project, tree, element, "text-align");
     if undecidable {
         return None;
@@ -189,6 +190,29 @@ fn misaligned_text_align(
         return None;
     }
     (declared != inherited_text_align(project, tree, element)).then_some(declared)
+}
+
+/// 元素或祖先声明了 RTL / 竖排：`text-align` 的 `left` / `right` / `start` 在两端到物理方向
+/// 的映射未验证，不判。
+fn has_exotic_flow(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
+    let mut current = Some(element);
+    while let Some(node) = current {
+        let exotic = |property: &str| match resolved_property_with(project, tree, node, property) {
+            (Some(resolved), false) => {
+                let value = resolved.value.trim().to_ascii_lowercase();
+                match property {
+                    "direction" => value == "rtl",
+                    _ => !matches!(value.as_str(), "horizontal-tb" | "initial" | "normal"),
+                }
+            }
+            _ => false,
+        };
+        if exotic("direction") || exotic("writing-mode") {
+            return true;
+        }
+        current = tree.parent_of(node);
+    }
+    false
 }
 
 /// 沿祖先链找最近一条 `text-align`——`text-align` 是可继承属性，WebView 下行内盒子用的
@@ -301,6 +325,57 @@ mod tests {
             count(
                 r#"<view><text class="t">说明文字</text></view>"#,
                 ".t { display: block; width: 200rpx; }"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn span_box_property_is_reported() {
+        assert_eq!(
+            count(
+                r#"<view><span class="t">说明文字</span></view>"#,
+                ".t { width: 200rpx; }"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn nested_span_is_skipped() {
+        assert_eq!(
+            count(
+                r#"<view><span class="outer">外层<span class="t">内层</span></span></view>"#,
+                ".t { width: 80px; }"
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn rtl_context_skips_text_align_but_not_box_properties() {
+        assert_eq!(
+            count(
+                r#"<view class="row"><text class="t">说明文字</text></view>"#,
+                ".row { direction: rtl; } .t { text-align: center; }"
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                r#"<view class="row"><text class="t">说明文字</text></view>"#,
+                ".row { direction: rtl; } .t { width: 200rpx; }"
+            ),
+            1
+        );
+    }
+
+    #[test]
+    fn vertical_writing_mode_skips_text_align() {
+        assert_eq!(
+            count(
+                r#"<view class="row"><text class="t">说明文字</text></view>"#,
+                ".row { writing-mode: vertical-rl; } .t { text-align: center; }"
             ),
             0
         );
