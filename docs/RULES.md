@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 69 条：error 19 条、warning 46 条、info 4 条。
+共 70 条：error 19 条、warning 47 条、info 4 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
@@ -60,6 +60,7 @@
 | `skyline/worklet-directive` | error | skyline | worklet: 绑定、applyAnimatedStyle 与路由动画处理函数缺少 'worklet' 指令（回调不会注册） |
 | `skyline/worklet-data-freeze` | error | skyline | worklet 内解构 this.data 会冻结 this.data，导致 setData 失效 |
 | `skyline/worklet-compile-setting` | warning | skyline | 工程使用了 worklet，但 project.config.json 没有开启 setting.compileWorklet |
+| `skyline/scroll-context-enhanced` | warning | skyline | 用 ScrollViewContext 控制滚动 / 刷新前，`<scroll-view>` 必须开启 `enhanced` |
 | `skyline/scroll-context-ref` | warning | skyline | 用 scrollViewContext.scrollTo 前没有通过 NodesRef.ref 拿到 scroll-view 引用 |
 | `skyline/draggable-sheet-scroll-to` | warning | skyline | DraggableSheetContext.scrollTo 同时传 size 与 pixels 时 pixels 被忽略 |
 | `skyline/route-type` | warning | skyline | routeType 必须是 wx.router.addRouteBuilder 注册过的类型或 wx:// 预设 |

@@ -146,6 +146,7 @@ impl Registry {
             Box::new(js::WorkletDirective),
             Box::new(js::WorkletDataFreeze),
             Box::new(js::WorkletCompileSetting),
+            Box::new(js::ScrollContextEnhanced),
             Box::new(js::ScrollContextRef),
             Box::new(js::DraggableSheetScrollTo),
             Box::new(js::RouteType),
