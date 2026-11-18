@@ -92,6 +92,9 @@ impl Registry {
     pub fn builtin() -> Self {
         Self::from_rules(vec![
             Box::new(wxml::NoInlineText),
+            Box::new(wxml::NestedTextBlock),
+            Box::new(wxml::InlineDisplayIgnored),
+            Box::new(wxml::TextBoxProperty),
             Box::new(wxml::UnregisteredTag),
             Box::new(wxml::UnsupportedComponent),
             Box::new(wxml::ScrollGestureConflict),
