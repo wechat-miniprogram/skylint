@@ -26,7 +26,7 @@
 | `skyline/inline-run` | warning | skyline | 并列的文本级元素在 WebView 下排在同一行，在 Skyline 下各自占一行 |
 | `skyline/no-pseudo` | warning | skyline | Skyline 不支持该伪类/伪元素：条件被丢弃（命中范围变大）或整条规则被跳过（声明不生效） |
 | `skyline/pseudo-inline-layout` | warning | skyline | 伪元素与文本并排时 Skyline 下会换行：伪元素是块级盒，WebView 下是 inline |
-| `skyline/box-sizing` | error | skyline | box-sizing 的值在两端都非法，Skyline 与 WebView 的回落值不同 |
+| `skyline/box-sizing` | error | skyline | box-sizing 两端不一致：非法取值/initial 的回落值不同，或未开 defaultContentBox 时默认值不同 |
 | `skyline/flex-direction` | warning | skyline | display: flex 未声明 flex-direction，迁移后默认方向会从 row 变为 column |
 | `skyline/fixed-layer` | warning | skyline | `position: fixed` 在 Skyline 下被提到页面根，祖先的包含块不再约束它（WebView 下相对该祖先定位），两端位置不同 |
 | `skyline/fixed-offset-missing` | warning | skyline | `position: fixed` 元素没写某轴偏移：Skyline 下按页面根起点定位，WebView 下按它在原容器里的位置 |

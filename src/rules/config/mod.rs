@@ -46,6 +46,32 @@ pub(crate) fn applicable_project_level(project: &Project) -> bool {
     applicable(project) && !project.plugin_view
 }
 
+/// 工程级开关类规则是否该在这个工程上判：`rendererOptions` 与迁移状态都要成立。
+///
+/// 三件事统一在这里判，避免每个读开关的规则各写一份：
+/// - 单文件 / 插件视图不判（没有 app 级配置可读）；
+/// - 显式声明 renderer 却没有任何 Skyline 页面：纯 WebView 工程，还没开始迁移；
+///   没声明 renderer 时工具按 Skyline 默认口径检查，照判；
+/// - `rendererOptions` 或它下面 `skyline` 写成非对象时交给 `skyline/renderer-options`，
+///   不在开关类规则里重复报同一份写坏的配置。
+pub(crate) fn applicable_renderer_options(project: &Project) -> bool {
+    if !applicable_project_level(project) {
+        return false;
+    }
+    if project.declares_renderer() && !project.pages.iter().any(|page| page.is_skyline) {
+        return false;
+    }
+    !project
+        .app_json
+        .get("rendererOptions")
+        .is_some_and(|options| {
+            !options.is_object()
+                || options
+                    .get("skyline")
+                    .is_some_and(|skyline| !skyline.is_object())
+        })
+}
+
 /// RFC 6901 指针：`~` → `~0`、`/` → `~1`，每段前加 `/`。
 pub(crate) fn pointer(segments: &[&str]) -> String {
     let mut out = String::new();
