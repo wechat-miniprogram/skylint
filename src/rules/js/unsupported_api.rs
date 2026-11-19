@@ -357,6 +357,45 @@ mod tests {
         assert_eq!(messages(&UnsupportedApi, &project).len(), 1);
     }
 
+    /// 渲染器比较先存进本地常量、再用常量做条件时，同样能辨认 WebView 分支。
+    #[test]
+    fn renderer_aliases_guard_webview_branches() {
+        for js in [
+            "Page({ open() { const isSkyline = this.renderer === 'skyline'; if (isSkyline) {} else { this.animate('showIn'); } } });",
+            "Page({ open() { const isWebview = app.renderer === 'webview'; if (isWebview) { this.animate('showIn'); } } });",
+            "Page({ open() { const isSkyline = this.renderer === 'skyline'; if (!isSkyline) { this.animate('showIn'); } } });",
+        ] {
+            let (_f, project) = single("unsupported-webview-alias", js);
+            assert_eq!(
+                messages(&UnsupportedApi, &project),
+                Vec::<String>::new(),
+                "{js}"
+            );
+        }
+    }
+
+    /// 别名落在 Skyline 分支上、或初始化值判不出来时不能当守卫，照常报。
+    #[test]
+    fn aliases_without_a_webview_branch_are_still_reported() {
+        for js in [
+            "Page({ open() { const isSkyline = this.renderer === 'skyline'; if (isSkyline) { this.animate('showIn'); } } });",
+            "Page({ open() { const flag = foo(); if (flag) { this.animate('showIn'); } } });",
+        ] {
+            let (_f, project) = single("unsupported-alias-not-webview", js);
+            assert_eq!(messages(&UnsupportedApi, &project).len(), 1, "{js}");
+        }
+    }
+
+    /// 别名只在定义它的函数作用域内有效：另一个函数里的同名条件不沿用。
+    #[test]
+    fn renderer_alias_does_not_cross_function_scopes() {
+        let (_f, project) = single(
+            "unsupported-alias-scope",
+            "Page({ a() { const isSkyline = this.renderer === 'skyline'; }, b() { if (isSkyline) { this.animate('showIn'); } } });",
+        );
+        assert_eq!(messages(&UnsupportedApi, &project).len(), 1);
+    }
+
     /// `Behavior` 的方法表与 `Page` / `Component` 同形。
     #[test]
     fn behavior_methods_shadow_the_builtin() {
