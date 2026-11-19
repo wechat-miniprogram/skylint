@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 70 条：error 19 条、warning 47 条、info 4 条。
+共 71 条：error 19 条、warning 48 条、info 4 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
@@ -13,6 +13,7 @@
 | `skyline/nested-text-block` | warning | skyline | 嵌套 `<text>` 上的 `display: block` 只在 WebView 生效：Skyline 的文本内部只走 inline 流 |
 | `skyline/inline-display-ignored` | warning | skyline | 非文本元素上的 `display: inline` 在 Skyline 被忽略，元素仍按块级盒布局 |
 | `skyline/text-box-property` | warning | skyline | 顶层 `<text>` / `<span>` 上写了宽高或垂直间距：Skyline 会按块级盒应用，WebView 把这些声明当 inline 忽略 |
+| `skyline/image-text-align` | warning | skyline | 父级靠 `text-align` 居中 `<image>`：WebView 里图片是行内元素会被居中，Skyline 里是块级盒、居中失效 |
 | `skyline/unregistered-tag` | error | skyline | 未注册的标签：WebView 不渲染其子树，Skyline 按普通元素渲染 |
 | `skyline/unsupported-component` | error | skyline | Skyline 下不可用的组件（如 web-view / movable-view / editor） |
 | `skyline/scroll-gesture-conflict` | warning | skyline | 滚动容器上的滑动会冒泡触发祖先的 touchmove 手势（拖拽收起等） |

@@ -95,6 +95,7 @@ impl Registry {
             Box::new(wxml::NestedTextBlock),
             Box::new(wxml::InlineDisplayIgnored),
             Box::new(wxml::TextBoxProperty),
+            Box::new(wxml::ImageTextAlign),
             Box::new(wxml::UnregisteredTag),
             Box::new(wxml::UnsupportedComponent),
             Box::new(wxml::ScrollGestureConflict),

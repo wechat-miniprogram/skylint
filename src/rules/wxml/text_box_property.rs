@@ -22,6 +22,9 @@ use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::WxmlElement;
 use crate::matcher::Tree;
 use crate::project::Project;
+use crate::rules::wxml::style::{
+    has_exotic_flow, inherited_text_align, inline_box_in_skyline, is_initial_value, is_zero,
+};
 use crate::rules::wxml::{
     ElementSite, element_diagnostic, flex_container, for_each_element, resolved_property_with,
 };
@@ -46,18 +49,6 @@ const BOX_PROPERTIES: [&str; 10] = [
     "margin-bottom",
     "padding-top",
     "padding-bottom",
-];
-
-/// 显式成块（或非行内）的 `display` 取值：两端都按块级盒排，不报。
-const NON_INLINE_DISPLAY: [&str; 8] = [
-    "block",
-    "inline-block",
-    "flex",
-    "inline-flex",
-    "grid",
-    "inline-grid",
-    "flow-root",
-    "none",
 ];
 
 pub struct TextBoxProperty;
@@ -101,7 +92,7 @@ fn check_element(site: &ElementSite<'_, '_>, out: &mut Vec<Diagnostic>) {
     {
         return;
     }
-    if !inline_in_skyline(project, tree, element) {
+    if !inline_box_in_skyline(project, tree, element) {
         return;
     }
 
@@ -130,44 +121,16 @@ fn check_element(site: &ElementSite<'_, '_>, out: &mut Vec<Diagnostic>) {
     );
 }
 
-/// 元素在 Skyline 下是否仍是行内模式的 `<text>`（没有显式改成块级）。
-///
-/// `display: inline` 不算例外：Skyline 会忽略它，`<text>` 依旧是块级盒。
-fn inline_in_skyline(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
-    match resolved_property_with(project, tree, element, "display") {
-        (_, true) => false,
-        (Some(resolved), false) => {
-            !NON_INLINE_DISPLAY.contains(&resolved.value.trim().to_ascii_lowercase().as_str())
-        }
-        (None, false) => true,
-    }
-}
-
 /// 取值是不是「写了就会改变渲染」。
 fn is_meaningful(property: &str, value: &str) -> bool {
-    let value = value.trim().to_ascii_lowercase();
-    let initial = matches!(
-        value.as_str(),
-        "" | "auto" | "none" | "initial" | "unset" | "inherit" | "revert"
-    );
-    if initial {
+    if is_initial_value(value) {
         return false;
     }
     match property {
         // 垂直间距为 0 时两端都看不出变化。
-        "margin-top" | "margin-bottom" | "padding-top" | "padding-bottom" => !is_zero(&value),
+        "margin-top" | "margin-bottom" | "padding-top" | "padding-bottom" => !is_zero(value),
         _ => true,
     }
-}
-
-fn is_zero(value: &str) -> bool {
-    let number: String = value
-        .chars()
-        .take_while(|c| c.is_ascii_digit() || matches!(c, '.' | '-'))
-        .collect();
-    let unit = value[number.len()..].trim();
-    let known_unit = matches!(unit, "" | "px" | "rpx" | "%" | "em" | "rem" | "vw" | "vh");
-    known_unit && !number.is_empty() && number.chars().all(|c| matches!(c, '0' | '.' | '-'))
 }
 
 /// `text-align` 只在 Skyline 的块级 `<text>` 里生效；WebView 用最近块级祖先的对齐。
@@ -190,43 +153,6 @@ fn misaligned_text_align(
         return None;
     }
     (declared != inherited_text_align(project, tree, element)).then_some(declared)
-}
-
-/// 元素或祖先声明了 RTL / 竖排：`text-align` 的 `left` / `right` / `start` 在两端到物理方向
-/// 的映射未验证，不判。
-fn has_exotic_flow(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
-    let mut current = Some(element);
-    while let Some(node) = current {
-        let exotic = |property: &str| match resolved_property_with(project, tree, node, property) {
-            (Some(resolved), false) => {
-                let value = resolved.value.trim().to_ascii_lowercase();
-                match property {
-                    "direction" => value == "rtl",
-                    _ => !matches!(value.as_str(), "horizontal-tb" | "initial" | "normal"),
-                }
-            }
-            _ => false,
-        };
-        if exotic("direction") || exotic("writing-mode") {
-            return true;
-        }
-        current = tree.parent_of(node);
-    }
-    false
-}
-
-/// 沿祖先链找最近一条 `text-align`——`text-align` 是可继承属性，WebView 下行内盒子用的
-/// 就是它。默认 `left`。
-fn inherited_text_align(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> String {
-    let mut current = tree.parent_of(element);
-    while let Some(node) = current {
-        match resolved_property_with(project, tree, node, "text-align") {
-            (Some(resolved), false) => return resolved.value.trim().to_ascii_lowercase(),
-            (_, true) => return "left".to_string(),
-            (None, false) => current = tree.parent_of(node),
-        }
-    }
-    "left".to_string()
 }
 
 #[cfg(test)]
