@@ -13,7 +13,7 @@
 | `skyline/nested-text-block` | warning | skyline | 嵌套 `<text>` 上的 `display: block` 只在 WebView 生效：Skyline 的文本内部只走 inline 流 |
 | `skyline/inline-display-ignored` | warning | skyline | 非文本元素上的 `display: inline` 在 Skyline 被忽略，元素仍按块级盒布局 |
 | `skyline/text-box-property` | warning | skyline | 顶层 `<text>` / `<span>` 上写了宽高或垂直间距：Skyline 会按块级盒应用，WebView 把这些声明当 inline 忽略 |
-| `skyline/image-text-align` | warning | skyline | 父级靠 `text-align` 居中 `<image>`：WebView 里图片是行内元素会被居中，Skyline 里是块级盒、居中失效 |
+| `skyline/image-block-layout` | warning | skyline | `<image>` 在 Skyline 是块级盒、WebView 是 inline-block：靠行内对齐居中、单侧 auto 外边距、`vertical-align`、祖先的 `text-indent` 在 Skyline 下都不再生效 |
 | `skyline/unregistered-tag` | error | skyline | 未注册的标签：WebView 不渲染其子树，Skyline 按普通元素渲染 |
 | `skyline/unsupported-component` | error | skyline | Skyline 下不可用的组件（如 web-view / movable-view / editor） |
 | `skyline/scroll-gesture-conflict` | warning | skyline | 滚动容器上的滑动会冒泡触发祖先的 touchmove 手势（拖拽收起等） |
