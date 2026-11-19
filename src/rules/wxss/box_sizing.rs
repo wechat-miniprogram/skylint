@@ -139,7 +139,7 @@ fn drift_elements(project: &Project, out: &mut Vec<Diagnostic>) {
                 site.doc,
                 site.element,
                 site.doc.path(),
-                Severity::Warning,
+                Severity::Info,
                 format!(
                     "`<{}>` 写了 `{size_property}: {size_value}` 和同轴 padding `{padding}`：Skyline（border-box）把这些 padding 算进尺寸里，内容区比 WebView 小",
                     site.element.tag
