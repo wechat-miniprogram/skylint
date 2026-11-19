@@ -43,6 +43,10 @@ impl Rule for ButtonAfterReset {
             let Some(declaration) = reset_declaration(rule) else {
                 return;
             };
+            // 按钮选择器上已经写了同族重置，这条伪元素声明就没有可修的内容了。
+            if already_reset(sheet, rule, &declaration.name) {
+                return;
+            }
             let (line, column) = sheet.doc.position(pseudo.offset);
             let (end_line, end_column) = sheet.doc.position(pseudo.offset + pseudo.len);
             out.push(
@@ -88,6 +92,43 @@ fn is_button_after(selector: &WxssSelector) -> bool {
         .and_then(strip_after)
         .and_then(tag_of)
         .is_some_and(|tag| tag.eq_ignore_ascii_case("button"))
+}
+
+/// 同一份样式里，去掉伪元素后的选择器上是否已经声明了同族属性。
+///
+/// `button.noborder:after { border: 0 }` 只有在按钮本身没有重置时才值得报；
+/// 已经写了 `button.noborder { border: 0 }` 的，伪元素那条留着也无害。
+fn already_reset(sheet: &crate::project::StyleSheet, rule: &WxssRule, reset_name: &str) -> bool {
+    let Some(family) = reset_family(reset_name) else {
+        return false;
+    };
+    rule.selectors
+        .iter()
+        .filter(|selector| is_button_after(selector))
+        .filter_map(|selector| strip_after(&selector.text).map(str::to_string))
+        .any(|base| {
+            sheet.doc.rules.iter().any(|candidate| {
+                candidate.selectors.iter().any(|selector| {
+                    selector.text.trim() == base
+                        && candidate
+                            .declarations
+                            .iter()
+                            .any(|declaration| reset_family(&declaration.name) == Some(family))
+                })
+            })
+        })
+}
+
+/// 属性名属于哪一族重置：`border` / `background`。
+fn reset_family(name: &str) -> Option<&'static str> {
+    let name = name.to_ascii_lowercase();
+    if name == "border" || name.starts_with("border-") {
+        Some("border")
+    } else if name == "background" || name.starts_with("background-") {
+        Some("background")
+    } else {
+        None
+    }
 }
 
 /// 块里第一条 `border` / `background`（含 `border-*` / `background-*`）声明。
@@ -155,6 +196,28 @@ mod tests {
     fn report(name: &str, wxss: &str) -> Vec<String> {
         let (_fixture, project) = page(name, r#"<button class="noborder"/>"#, wxss);
         messages(&ButtonAfterReset, &project)
+    }
+
+    /// 按钮选择器上已经写了同族重置，伪元素那条就没有可修的内容了。
+    #[test]
+    fn reset_on_the_button_itself_silences_the_after_block() {
+        assert_eq!(
+            report(
+                "button-after-fixed",
+                "button.noborder { border: 0; } button.noborder:after { border: 0; content: none; }"
+            ),
+            Vec::<String>::new()
+        );
+    }
+
+    /// 只重置了背景、按钮上只修了边框：背景那条仍然要报。
+    #[test]
+    fn different_property_family_is_still_reported() {
+        let messages = report(
+            "button-after-half",
+            "button.noborder { border: 0; } button.noborder:after { background: transparent; }",
+        );
+        assert_eq!(messages.len(), 1, "{messages:?}");
     }
 
     #[test]
