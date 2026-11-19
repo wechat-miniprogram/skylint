@@ -607,7 +607,7 @@ impl<'a> Facts<'a> {
             multiple_slots,
             virtual_host,
             default_display_block,
-            default_content_box: self.project.app_content_box(),
+            default_content_box: self.project.content_box(path),
             scroll_view_auto_size: self.project.scroll_view_auto_size(),
         }
     }
