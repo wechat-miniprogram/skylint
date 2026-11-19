@@ -106,6 +106,10 @@ impl Rule for UnsupportedApi {
         let mut out = Vec::new();
         for file in &project.scripts {
             for call in file.doc.calls() {
+                // 只在 WebView 分支里执行的调用：Skyline 根本不走这段，报了是误报。
+                if call.webview_only {
+                    continue;
+                }
                 for entry in ENTRIES {
                     // `this.animate` 只在 Skyline 下失效：纯 WebView 页面照常可用。
                     let span = match entry {
@@ -324,6 +328,33 @@ mod tests {
             "Page({ onLoad() { this.animate = function (name) { this[name](); }; this.animate('showIn'); } });",
         );
         assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
+
+    /// 只在 WebView 分支里调的 API 不报：`renderer` 直接比较的 then / else 都要认。
+    #[test]
+    fn webview_only_branches_are_skipped() {
+        for js in [
+            "Page({ open() { if (this.renderer === 'webview') { this.animate('showIn'); } } });",
+            "Page({ open() { if (getApp().renderer !== 'skyline') { this.animate('showIn'); } } });",
+            "Page({ open() { if (this.renderer === 'skyline') { return 1; } else { this.animate('showIn'); } } });",
+        ] {
+            let (_f, project) = single("unsupported-webview-branch", js);
+            assert_eq!(
+                messages(&UnsupportedApi, &project),
+                Vec::<String>::new(),
+                "{js}"
+            );
+        }
+    }
+
+    /// 反过来：Skyline 分支里的调用仍然要报。
+    #[test]
+    fn skyline_branch_is_still_reported() {
+        let (_f, project) = single(
+            "unsupported-skyline-branch",
+            "Page({ open() { if (this.renderer === 'skyline') { this.animate('showIn'); } } });",
+        );
+        assert_eq!(messages(&UnsupportedApi, &project).len(), 1);
     }
 
     /// `Behavior` 的方法表与 `Page` / `Component` 同形。
