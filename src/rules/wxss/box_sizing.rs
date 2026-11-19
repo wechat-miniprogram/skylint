@@ -24,7 +24,9 @@ use crate::{Diagnostic, Severity};
 
 use super::value_util::{at_value_with, is_dynamic};
 use super::visit_declarations;
-use crate::rules::wxml::{cascade::resolved_property_with_dialect, for_each_element};
+use crate::rules::wxml::{
+    cascade::resolved_property_with_dialect, element_diagnostic, for_each_element,
+};
 use crate::rules::{Rule, RuleMeta, Target};
 
 pub struct BoxSizing;
@@ -88,8 +90,142 @@ impl Rule for BoxSizing {
         });
 
         out.extend(default_drift(project));
+        drift_elements(project, &mut out);
         out
     }
+}
+
+/// 默认值级差异里**真的会改变布局**的那部分，逐元素指到 WXML。
+///
+/// 工程级一条告警只说「多少元素不同」，落到代码还得自己找。真正有可见后果的是
+/// 「某一轴写了尺寸 + 同一轴有非零 padding」的组合：border-box 会把 padding 挤进
+/// 尺寸里（`width:750rpx; padding:0 36rpx` 就是 `address/pages/index-v3` 骨架屏
+/// 那一次）。这类点比全部漂移元素少一个量级，按元素报得动。
+fn drift_elements(project: &Project, out: &mut Vec<Diagnostic>) {
+    if project.app_content_box() {
+        return;
+    }
+    for_each_element(project, Target::Skyline, |site| {
+        let drift = |dialect| {
+            resolved_property_with_dialect(
+                site.project,
+                site.tree,
+                site.element,
+                "box-sizing",
+                dialect,
+            )
+        };
+        let (webview, webview_undecidable) = drift(Dialect::WebView);
+        if webview_undecidable {
+            return;
+        }
+        let (skyline, skyline_undecidable) = drift(Dialect::Skyline);
+        if skyline_undecidable {
+            return;
+        }
+        if resolved_box_sizing(webview).unwrap_or("content-box") != "content-box"
+            || resolved_box_sizing(skyline).unwrap_or("border-box") != "border-box"
+        {
+            return;
+        }
+
+        let axis = sized_axis_with_padding(site.project, site.tree, site.element);
+        let Some((size_property, size_value, padding)) = axis else {
+            return;
+        };
+        out.push(
+            element_diagnostic(
+                BoxSizing::ID,
+                site.doc,
+                site.element,
+                site.doc.path(),
+                Severity::Warning,
+                format!(
+                    "`<{}>` 写了 `{size_property}: {size_value}` 和同轴 padding `{padding}`：Skyline（border-box）把这些 padding 算进尺寸里，内容区比 WebView 小",
+                    site.element.tag
+                ),
+            )
+            .help("显式写 `box-sizing: content-box`，把尺寸挪到外层元素，或开启 rendererOptions.skyline.defaultContentBox"),
+        );
+    });
+}
+
+/// 找出「某轴有确定尺寸且有同轴非零 padding」的那一轴。
+fn sized_axis_with_padding(
+    project: &Project,
+    tree: &crate::matcher::Tree<'_>,
+    element: &crate::input::wxml::WxmlElement,
+) -> Option<(&'static str, String, String)> {
+    for (size_property, padding_properties) in [
+        (
+            "width",
+            ["padding-left", "padding-right", "padding"].as_slice(),
+        ),
+        (
+            "height",
+            ["padding-top", "padding-bottom", "padding"].as_slice(),
+        ),
+    ] {
+        let Some(size) = definite_value(project, tree, element, size_property) else {
+            continue;
+        };
+        for padding_property in padding_properties {
+            if let Some(padding) = non_zero_value(project, tree, element, padding_property) {
+                return Some((size_property, size, padding));
+            }
+        }
+    }
+    None
+}
+
+/// 写了且不是「按内容 / 按父级」的尺寸值。
+fn definite_value(
+    project: &Project,
+    tree: &crate::matcher::Tree<'_>,
+    element: &crate::input::wxml::WxmlElement,
+    property: &str,
+) -> Option<String> {
+    let (resolved, undecidable) =
+        resolved_property_with_dialect(project, tree, element, property, Dialect::Skyline);
+    if undecidable {
+        return None;
+    }
+    let value = resolved?.value.trim().to_ascii_lowercase();
+    let content_sized = matches!(
+        value.as_str(),
+        "" | "auto"
+            | "none"
+            | "inherit"
+            | "initial"
+            | "unset"
+            | "revert"
+            | "min-content"
+            | "max-content"
+            | "fit-content"
+    );
+    (!content_sized).then_some(value)
+}
+
+/// 写了且不为零的 padding 值。
+fn non_zero_value(
+    project: &Project,
+    tree: &crate::matcher::Tree<'_>,
+    element: &crate::input::wxml::WxmlElement,
+    property: &str,
+) -> Option<String> {
+    let (resolved, undecidable) =
+        resolved_property_with_dialect(project, tree, element, property, Dialect::Skyline);
+    if undecidable {
+        return None;
+    }
+    let value = resolved?.value.trim().to_ascii_lowercase();
+    if matches!(value.as_str(), "inherit" | "initial" | "unset" | "revert") {
+        return None;
+    }
+    let all_zero = value
+        .split_whitespace()
+        .all(|part| crate::rules::wxml::style::is_zero(part));
+    (!all_zero && !value.is_empty()).then_some(value)
 }
 
 /// 默认值级的差异：元素没写 `box-sizing` 时，两端默认值不同。
@@ -451,5 +587,86 @@ mod tests {
             "#,
         );
         assert_eq!(declarations(&project), Vec::<String>::new());
+    }
+
+    /// 「某轴写了尺寸 + 同轴非零 padding」的漂移元素要单独指到 WXML——工程级那条只说总数。
+    fn element_hits(app_json: &str, wxml: &str, wxss: &str) -> Vec<String> {
+        let fixture = Fixture::new("box-sizing-elements");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write("app.json", app_json)
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", wxml)
+            .write("pages/index/index.wxss", wxss);
+        BoxSizing
+            .check(&fixture.project())
+            .into_iter()
+            .filter(|diagnostic| diagnostic.path.ends_with(".wxml"))
+            .map(|diagnostic| diagnostic.message)
+            .collect()
+    }
+
+    const SKYLINE_APP: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#;
+
+    #[test]
+    fn sized_element_with_matching_padding_is_reported() {
+        let hits = element_hits(
+            SKYLINE_APP,
+            r#"<view class="a">内容</view>"#,
+            r#".a { width: 750rpx; padding: 0 36rpx; }"#,
+        );
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits[0].contains("width: 750rpx"), "{}", hits[0]);
+    }
+
+    #[test]
+    fn vertical_axis_padding_is_reported() {
+        let hits = element_hits(
+            SKYLINE_APP,
+            r#"<view class="a">内容</view>"#,
+            r#".a { height: 82rpx; padding-top: 5rpx; }"#,
+        );
+        assert_eq!(hits.len(), 1, "{hits:?}");
+    }
+
+    #[test]
+    fn content_sized_element_is_not_reported() {
+        let hits = element_hits(
+            SKYLINE_APP,
+            r#"<view class="a">内容</view>"#,
+            r#".a { width: auto; padding: 0 36rpx; }"#,
+        );
+        assert!(hits.is_empty(), "{hits:?}");
+    }
+
+    #[test]
+    fn zero_padding_is_not_reported() {
+        let hits = element_hits(
+            SKYLINE_APP,
+            r#"<view class="a">内容</view>"#,
+            r#".a { width: 750rpx; padding: 0; }"#,
+        );
+        assert!(hits.is_empty(), "{hits:?}");
+    }
+
+    #[test]
+    fn cross_axis_padding_is_not_reported() {
+        // 宽 + 垂直 padding 不会挤宽内容区。
+        let hits = element_hits(
+            SKYLINE_APP,
+            r#"<view class="a">内容</view>"#,
+            r#".a { width: 750rpx; padding-top: 8rpx; }"#,
+        );
+        assert!(hits.is_empty(), "{hits:?}");
+    }
+
+    #[test]
+    fn explicit_content_box_is_not_reported() {
+        let hits = element_hits(
+            SKYLINE_APP,
+            r#"<view class="a">内容</view>"#,
+            r#".a { box-sizing: content-box; width: 750rpx; padding: 0 36rpx; }"#,
+        );
+        assert!(hits.is_empty(), "{hits:?}");
     }
 }
