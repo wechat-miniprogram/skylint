@@ -21,13 +21,15 @@ use oxc_ast::ast::{
     AssignmentExpression, AssignmentTarget, BindingPattern, CallExpression, ChainElement,
     Expression, Function, FunctionBody, IfStatement, ImportDeclaration, ImportDeclarationSpecifier,
     MethodDefinition, ObjectExpression, ObjectProperty, ObjectPropertyKind, PropertyDefinition,
-    PropertyKey, Statement, StringLiteral, TemplateLiteral, VariableDeclarator,
+    PropertyKey, Statement, StringLiteral, TemplateLiteral, VariableDeclaration,
+    VariableDeclarationKind, VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
 use std::collections::{BTreeMap, BTreeSet};
 
 use oxc_parser::{ParseOptions, Parser};
 use oxc_span::{GetSpan, SourceType, Span};
+use oxc_syntax::operator::{BinaryOperator, UnaryOperator};
 use oxc_syntax::scope::ScopeFlags;
 
 use crate::input::env::{Env, Lit};
@@ -111,6 +113,8 @@ impl JsDoc {
 
         let mut collector = Collector {
             source: owned.clone(),
+            // 顶层也是一个作用域：模块级 `const isSkyline = ...` 同样要能解析。
+            renderer_aliases: vec![BTreeMap::new()],
             ..Default::default()
         };
         collector.visit_program(&ret.program);
@@ -414,6 +418,43 @@ fn renderer_branches(test: &str) -> (bool, bool) {
     }
 }
 
+/// `X.renderer === 'webview'` 这类单个比较的两个分支归属，供常量别名使用。
+///
+/// 与 [`renderer_branches`] 同一套归属规则，但要求表达式本身就是一次比较、
+/// 两侧至少一侧是 `renderer` 成员访问：`a === 'skyline' && b === 'webview'` 这种
+/// 组合表达式不归属，宁可不加守卫。
+fn renderer_comparison_branches(expr: &Expression) -> Option<(bool, bool)> {
+    let Expression::BinaryExpression(binary) = expr else {
+        return None;
+    };
+    let negated = match binary.operator {
+        BinaryOperator::Equality | BinaryOperator::StrictEquality => false,
+        BinaryOperator::Inequality | BinaryOperator::StrictInequality => true,
+        _ => return None,
+    };
+    let (literal, reference) = match (&binary.left, &binary.right) {
+        (Expression::StringLiteral(literal), reference) => (literal, reference),
+        (reference, Expression::StringLiteral(literal)) => (literal, reference),
+        _ => return None,
+    };
+    match literal.value.as_str()?.to_ascii_lowercase().as_str() {
+        value @ ("webview" | "skyline") if is_renderer_reference(reference) => {
+            let cons_webview = (value == "webview") != negated;
+            Some((cons_webview, !cons_webview))
+        }
+        _ => None,
+    }
+}
+
+/// `renderer` / `this.renderer` / `info.renderer`：比较的另一侧要是取渲染器。
+fn is_renderer_reference(expr: &Expression) -> bool {
+    match expr {
+        Expression::StaticMemberExpression(member) => member.property.name == "renderer",
+        Expression::Identifier(id) => id.name == "renderer",
+        _ => false,
+    }
+}
+
 #[derive(Default)]
 struct Collector {
     functions: Vec<OwnedFunction>,
@@ -438,6 +479,11 @@ struct Collector {
     worklet_stack: Vec<bool>,
     /// 已经过的 `if` 语句分支区间与「该分支是否只属于 WebView」。
     renderer_guards: Vec<RendererGuard>,
+    /// 每个函数作用域里的渲染器常量：
+    /// `const isSkyline = this.renderer === 'skyline'` 的名字 →
+    /// `(条件成立时是否只在 WebView, 条件不成立时是否只在 WebView)`。
+    /// 函数进出时压栈/出栈，跨作用域的同名常量互不影响。
+    renderer_aliases: Vec<BTreeMap<String, (bool, bool)>>,
     /// 原始源码：守卫判定要读 `if` 条件的原文。
     source: String,
 }
@@ -469,6 +515,7 @@ impl Collector {
             body_directives,
         });
         self.worklet_stack.push(has_worklet);
+        self.renderer_aliases.push(BTreeMap::new());
     }
 
     fn worklet_scope(&self) -> bool {
@@ -516,6 +563,7 @@ impl<'a> Visit<'a> for Collector {
         self.push_function(name, it.span, body, body_span);
         walk::walk_function(self, it, flags);
         self.worklet_stack.pop();
+        self.renderer_aliases.pop();
     }
 
     fn visit_arrow_function_expression(&mut self, it: &ArrowFunctionExpression<'a>) {
@@ -530,6 +578,7 @@ impl<'a> Visit<'a> for Collector {
         self.push_function(name, it.span, body, body_span);
         walk::walk_arrow_function_expression(self, it);
         self.worklet_stack.pop();
+        self.renderer_aliases.pop();
     }
 
     fn visit_string_literal(&mut self, it: &StringLiteral<'a>) {
@@ -559,6 +608,24 @@ impl<'a> Visit<'a> for Collector {
             });
         }
         walk::walk_template_literal(self, it);
+    }
+
+    fn visit_variable_declaration(&mut self, it: &VariableDeclaration<'a>) {
+        // 只看 `const`：`let` / `var` 可能被重新赋值，不能当稳定常量。
+        if it.kind == VariableDeclarationKind::Const {
+            for declarator in &it.declarations {
+                let (Some(name), Some(init)) = (binding_name(&declarator.id), &declarator.init)
+                else {
+                    continue;
+                };
+                if let Some(branches) = renderer_comparison_branches(init)
+                    && let Some(scope) = self.renderer_aliases.last_mut()
+                {
+                    scope.insert(name, branches);
+                }
+            }
+        }
+        walk::walk_variable_declaration(self, it);
     }
 
     fn visit_variable_declarator(&mut self, it: &VariableDeclarator<'a>) {
@@ -717,8 +784,12 @@ impl<'a> Visit<'a> for Collector {
     }
 
     fn visit_if_statement(&mut self, it: &IfStatement<'a>) {
-        let test = &self.source[it.test.span().start as usize..it.test.span().end as usize];
-        let (cons_webview, alt_webview) = renderer_branches(test);
+        // 优先按本地常量别名解析：`const isSkyline = this.renderer === 'skyline'`
+        // 之后的 `if (isSkyline)` / `if (!isSkyline)`。解析不出来再读条件原文。
+        let (cons_webview, alt_webview) = self.alias_branches(&it.test).unwrap_or_else(|| {
+            let span = it.test.span();
+            renderer_branches(&self.source[span.start as usize..span.end as usize])
+        });
         let cons = it.consequent.span();
         self.renderer_guards.push(RendererGuard {
             cons: (cons.start, cons.end),
@@ -791,10 +862,30 @@ impl<'a> Visit<'a> for Collector {
 }
 
 impl Collector {
+    /// 测试表达式是本地常量别名时的分支归属：`isSkyline` / `!isSkyline`。
+    ///
+    /// 只查当前作用域，不向父作用域找：常量定义在哪个函数里就只在哪个函数里有效，
+    /// 跨函数的同名绑定不能串味。
+    fn alias_branches(&self, test: &Expression) -> Option<(bool, bool)> {
+        let (name, negated) = match test {
+            Expression::Identifier(id) => (id.name.as_str(), false),
+            Expression::UnaryExpression(unary) if unary.operator == UnaryOperator::LogicalNot => {
+                let Expression::Identifier(id) = &unary.argument else {
+                    return None;
+                };
+                (id.name.as_str(), true)
+            }
+            _ => return None,
+        };
+        let &(cons, alt) = self.renderer_aliases.last()?.get(name)?;
+        Some(if negated { (alt, cons) } else { (cons, alt) })
+    }
+
     /// 调用点是否落在「只在 WebView 执行」的分支里。
     ///
-    /// 只认条件里**直接**比较 `renderer` 的形态；`const isSkyline = this.renderer === 'skyline'`
-    /// 这类再经变量间接判断的解不了（那需要把常量传播回来），按未加守卫处理。
+    /// 条件认两种写法：直接比较 `renderer` 的原文，以及指向这种比较的本地
+    /// `const` 别名（`if (isSkyline)` / `if (!isSkyline)`）。两者都解不出来时
+    /// 不加守卫，保持「宁可漏报不要误报」。
     fn renderer_guarded(&self, offset: u32) -> bool {
         self.renderer_guards.iter().any(|guard| {
             let in_cons = offset >= guard.cons.0 && offset < guard.cons.1;
