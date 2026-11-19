@@ -20,8 +20,18 @@ const UNSUPPORTED_PROPERTIES: &[(&str, &str)] = &[
     ("text-indent", "使用 padding-left 模拟"),           // 属性支持表
     ("overflow-wrap", "使用 word-break"),                // 属性支持表
     ("word-wrap", "使用 word-break"), // `overflow-wrap` 的旧名，引擎属性表里同样没有（css_property_names.h 无该 id）
+    // 属性表（fp 的 `property_list!`）里没有任何 `border-image-*`，声明整条丢弃；
+    // 官方天空属性支持表也未列该项。丢弃后 `border-color` 回落 `currentColor`，
+    // 常见后果是彩色下划线变成当前文字色（往往接近黑色）。
+    ("border-image", "改用叠加的背景色块或独立元素绘制"),
+    ("border-image-source", "改用叠加的背景色块或独立元素绘制"),
+    ("border-image-slice", "无替代"),
+    ("border-image-width", "无替代"),
+    ("border-image-outset", "无替代"),
+    ("border-image-repeat", "无替代"),
     (
         "clip-path",
+
         "裁切动画改用外层 `overflow: hidden` + 内层 `transform` 位移",
     ), // css_property_names.h 无该 id，声明整条丢弃
     ("text-decoration-thickness", "无替代"), // 属性支持表
