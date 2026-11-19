@@ -9,6 +9,7 @@
 //! - 自动修复（旧实现的 patch 层同起点 insert 顺序未定义，没有原文校验）。
 
 pub mod config;
+pub mod general;
 pub mod js;
 #[cfg(test)]
 pub(crate) mod testutil;
@@ -96,6 +97,7 @@ impl Registry {
             Box::new(wxml::InlineDisplayIgnored),
             Box::new(wxml::TextBoxProperty),
             Box::new(wxml::ImageBlockLayout),
+            Box::new(general::TransparentBackground),
             Box::new(wxml::UnregisteredTag),
             Box::new(wxml::UnsupportedComponent),
             Box::new(wxml::ScrollGestureConflict),

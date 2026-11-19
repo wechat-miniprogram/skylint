@@ -95,7 +95,8 @@ const UNSUPPORTED_COMPONENTS: &[(&str, &str)] = &[
 /// 仍是平台组件，只是 Skyline 不支持。判「未注册标签」看前者，判「不可用」看
 /// [`unsupported_replacement`]。
 pub(crate) fn is_builtin(tag: &str) -> bool {
-    SUPPORTED_COMPONENTS.contains(&tag) || UNSUPPORTED_COMPONENTS.iter().any(|(name, _)| *name == tag)
+    SUPPORTED_COMPONENTS.contains(&tag)
+        || UNSUPPORTED_COMPONENTS.iter().any(|(name, _)| *name == tag)
 }
 
 /// 黑名单命中才返回替代方案；其余内置组件与未知自定义组件都不报。
