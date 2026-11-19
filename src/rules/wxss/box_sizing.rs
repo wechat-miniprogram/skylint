@@ -224,7 +224,7 @@ fn non_zero_value(
     }
     let all_zero = value
         .split_whitespace()
-        .all(|part| crate::rules::wxml::style::is_zero(part));
+        .all(crate::rules::wxml::style::is_zero);
     (!all_zero && !value.is_empty()).then_some(value)
 }
 

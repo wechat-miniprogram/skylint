@@ -332,6 +332,20 @@ impl Project {
             .unwrap_or_default()
     }
 
+    /// 这份 WXML 可见的组件标签名。
+    ///
+    /// 独立模板与 `<include>` 片段没有自己的 json，声明来自引用它的单元（模板在调用处
+    /// 按调用方作用域展开），取所有引用单元的并集：只要有一处能解析，就不是「未注册」。
+    pub fn visible_declared_components(&self, wxml_path: &str) -> BTreeSet<String> {
+        let mut declared = self.declared_components(wxml_path);
+        for scope in self.template_scopes.get(wxml_path).into_iter().flatten() {
+            if let Some(wxml) = self.scope_wxml_any(scope) {
+                declared.extend(self.declared_components(wxml));
+            }
+        }
+        declared
+    }
+
     /// 这份 WXML 的常量环境；没有可折叠的绑定时返回 `None`。
     pub fn env(&self, wxml_path: &str) -> Option<&Env> {
         self.envs.get(wxml_path).filter(|env| !env.is_empty())

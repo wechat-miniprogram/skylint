@@ -8,11 +8,10 @@
 use std::collections::BTreeSet;
 
 use crate::diag::{Diagnostic, Severity};
-use crate::input::wxml::WxmlDoc;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta};
 
-use super::{element_diagnostic, for_each_element, is_builtin, unsupported_replacement};
+use super::{element_diagnostic, for_each_element, is_builtin};
 
 pub struct UnregisteredTag;
 
@@ -41,7 +40,7 @@ impl Rule for UnregisteredTag {
         for_each_element(project, self.target(), |site| {
             let (doc, element) = (site.doc, site.element);
             if current.as_deref() != Some(doc.path()) {
-                declared = declared_in(project, doc);
+                declared = project.visible_declared_components(doc.path());
                 current = Some(doc.path().to_string());
             }
             let tag = element.tag.to_ascii_lowercase();
@@ -50,7 +49,7 @@ impl Rule for UnregisteredTag {
             }
             // Skyline 下不可用的内置组件由 `unsupported-component` 单独报，它们仍是
             // 平台组件，不能算「未注册」。
-            if is_builtin(&tag) || unsupported_replacement(&tag).is_some() {
+            if is_builtin(&tag) {
                 return;
             }
             if declared.contains(&tag) {
@@ -73,27 +72,6 @@ impl Rule for UnregisteredTag {
         });
         out
     }
-}
-
-/// 这份文档可见的组件标签名。
-///
-/// 独立模板与 `<include>` 片段没有自己的 json，声明来自引用它的单元（模板在调用处按
-/// 调用方作用域展开），取所有引用单元的并集：只要有一处能解析，就不是「未注册」。
-fn declared_in(project: &Project, doc: &WxmlDoc) -> BTreeSet<String> {
-    let mut declared = project.declared_components(doc.path());
-    if doc.fragment {
-        for scope in project
-            .template_scopes
-            .get(doc.path())
-            .into_iter()
-            .flatten()
-        {
-            if let Some(wxml) = project.scope_wxml_any(scope) {
-                declared.extend(project.declared_components(wxml));
-            }
-        }
-    }
-    declared
 }
 
 #[cfg(test)]
