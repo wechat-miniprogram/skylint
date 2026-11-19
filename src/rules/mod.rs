@@ -114,6 +114,7 @@ impl Registry {
             Box::new(wxss::NoPseudo),
             Box::new(wxss::PseudoInlineLayout),
             Box::new(wxss::BoxSizing),
+            Box::new(wxss::BorderRadiusPerSideColor),
             Box::new(wxss::ButtonAfterReset),
             Box::new(wxss::FlexDirection),
             Box::new(wxss::FixedLayer),
