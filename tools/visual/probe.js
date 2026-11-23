@@ -10,7 +10,7 @@
 //   - page 模式（target 为空串）：不查选择器，bbox 视为整张截图——组件内部节点从
 //     页面层查不到（选择器不跨组件边界），只能退到整页比对。
 //   - 截图：sky 用 `minidev sim shot --frame __pageframe__`（skyline 画布导出；画布尺寸
-//           = 窗口逻辑尺寸×dpr，是视口而不是整页，见 minidev docs/simulator.md）；
+//           = 窗口逻辑尺寸×dpr，是视口而不是整页）；
 //           wv 用 serve 的 CDP 代理 Page.captureScreenshot（先把视口钉成 375x667@2x，
 //           与 Electron 宿主窗口一致，否则两端窗口尺寸不同，bbox 没法比）。
 //   - 每侧都记截图实际像素尺寸并算 scale（= 截图像素 / 视口 CSS×dpr，横纵各一）。
