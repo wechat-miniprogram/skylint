@@ -352,6 +352,9 @@ pub enum ValueShape {
 pub struct MemberBinding {
     pub key: String,
     pub value: ValueShape,
+    /// 属性在源码里的范围（键到值），用于把诊断落在声明处。
+    pub start: u32,
+    pub end: u32,
 }
 
 /// 一次模块引用：本地名指向哪个文件的什么导出。
@@ -775,6 +778,8 @@ impl<'a> Visit<'a> for Collector {
                 self.this_binds.push(MemberBinding {
                     key: member.property.name.to_string(),
                     value: value_shape(&it.right),
+                    start: it.span.start,
+                    end: it.span.end,
                 });
             }
             _ => {}
@@ -923,6 +928,8 @@ impl Collector {
             self.members.push(MemberBinding {
                 key,
                 value: value_shape(&property.value),
+                start: property.span.start,
+                end: property.span.end,
             });
         }
     }
