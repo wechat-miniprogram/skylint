@@ -15,10 +15,89 @@
 
 use crate::input::json::JsonPositions;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta, Target};
+use crate::rules::{EvidenceCase, EvidenceExpect, EvidenceRun, Rule, RuleMeta, Target, VisualFile};
 use crate::{Diagnostic, Severity};
 
 pub struct AutoprefixBuild;
+
+/// 两份只差 `setting.postcss` 的最小工程，页面 WXSS 含 `@keyframes` 与
+/// `transition: transform`（prod 构建的 autoprefixer 会各注入一个 `-webkit-`）。
+const APP_JS: &str = "App({})\n";
+const PAGE_JS: &str = "Page({})\n";
+const PAGE_WXML: &str = "<view class=\"box\">prefix probe</view>\n";
+const APP_JSON: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","componentFramework":"glass-easel","lazyCodeLoading":"requiredComponents"}"#;
+const PAGE_JSON: &str = r#"{"renderer":"skyline","navigationStyle":"custom"}"#;
+const PAGE_WXSS: &str = "@keyframes fade { from { opacity: 0 } to { opacity: 1 } }\n.box { transition: transform 300ms ease; animation: fade 1s linear; }\n";
+const CONFIG_ON: &str =
+    r#"{"miniprogramRoot":"","appid":"touristappid","setting":{"postcss":true}}"#;
+const CONFIG_OFF: &str =
+    r#"{"miniprogramRoot":"","appid":"touristappid","setting":{"postcss":false}}"#;
+const ARTIFACT: &str = "pages/index/index.wxss";
+
+const FILES: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.wxss",
+        content: PAGE_WXSS,
+    },
+];
+
+static EVIDENCE_CASES: &[EvidenceCase] = &[
+    EvidenceCase {
+        name: "postcss-on-artifact",
+        files: FILES,
+        project_config: Some(CONFIG_ON),
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::Artifact {
+            path: ARTIFACT,
+            must: &["-webkit-keyframes", "-webkit-transform"],
+            must_not: &[],
+        },
+        note: "setting.postcss: true 的产物里同时出现前缀 at-rule 与 transition 值内前缀",
+    },
+    EvidenceCase {
+        name: "postcss-on-build-log",
+        files: FILES,
+        project_config: Some(CONFIG_ON),
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::BuildLog {
+            must: &["unsupported @-webkit-keyframes"],
+            must_not: &[],
+        },
+        note: "同一份 postcss 开启的工程：构建日志报出 Skyline 不认的前缀 at-rule",
+    },
+    EvidenceCase {
+        name: "postcss-off-artifact",
+        files: FILES,
+        project_config: Some(CONFIG_OFF),
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::Artifact {
+            path: ARTIFACT,
+            must: &[],
+            must_not: &["-webkit-"],
+        },
+        note: "阴性对照：setting.postcss: false 时产物逐字保留源码，没有 -webkit- 前缀",
+    },
+];
 
 impl AutoprefixBuild {
     pub const ID: &'static str = "skyline/autoprefix-build";
@@ -35,6 +114,10 @@ impl Rule for AutoprefixBuild {
 
     fn target(&self) -> Target {
         Target::Skyline
+    }
+
+    fn evidence_cases(&self) -> &'static [EvidenceCase] {
+        EVIDENCE_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {

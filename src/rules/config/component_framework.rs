@@ -18,10 +18,121 @@ use serde_json::Value;
 use crate::diag::JsonAnchor;
 use crate::input::json::JsonPositions;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta, Target};
+use crate::rules::{EvidenceCase, EvidenceExpect, EvidenceRun, Rule, RuleMeta, Target, VisualFile};
 use crate::{Diagnostic, Severity};
 
 pub struct ComponentFramework;
+
+/// 三个最小工程只差 app.json 的 `componentFramework`；页面 json 显式 Skyline，
+/// `lazyCodeLoading` 写齐，避免被另一条校验先拦下。
+const APP_JS: &str = "App({})\n";
+const PAGE_JS: &str = "Page({})\n";
+const PAGE_WXML: &str = "<view>component framework probe</view>\n";
+const PAGE_JSON: &str = r#"{"renderer":"skyline","navigationStyle":"custom"}"#;
+const APP_JSON_MISSING: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","lazyCodeLoading":"requiredComponents"}"#;
+const APP_JSON_EXPARSER: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","lazyCodeLoading":"requiredComponents","componentFramework":"exparser"}"#;
+const APP_JSON_GLASS: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","lazyCodeLoading":"requiredComponents","componentFramework":"glass-easel"}"#;
+const ERROR_FRAGMENTS: &[&str] = &["componentFramework", "glass-easel"];
+
+const FILES_MISSING: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON_MISSING,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS,
+    },
+];
+
+const FILES_EXPARSER: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON_EXPARSER,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS,
+    },
+];
+
+const FILES_GLASS: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON_GLASS,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS,
+    },
+];
+
+static EVIDENCE_CASES: &[EvidenceCase] = &[
+    EvidenceCase {
+        name: "missing-component-framework",
+        files: FILES_MISSING,
+        project_config: None,
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::BuildFails {
+            stderr_contains: ERROR_FRAGMENTS,
+        },
+        note: "app.json 缺 componentFramework：Skyline 页面构建必须失败，并在 stderr 点名该键与 glass-easel",
+    },
+    EvidenceCase {
+        name: "exparser-component-framework",
+        files: FILES_EXPARSER,
+        project_config: None,
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::BuildFails {
+            stderr_contains: ERROR_FRAGMENTS,
+        },
+        note: "显式 exparser 与缺省同一条错误：构建失败，stderr 要求 glass-easel",
+    },
+    EvidenceCase {
+        name: "glass-easel-component-framework",
+        files: FILES_GLASS,
+        project_config: None,
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::BuildOk,
+        note: "阴性对照：唯一差异是 componentFramework: glass-easel，构建即通过",
+    },
+];
 
 impl ComponentFramework {
     pub const ID: &'static str = "skyline/component-framework";
@@ -76,6 +187,10 @@ impl Rule for ComponentFramework {
 
     fn target(&self) -> Target {
         Target::Skyline
+    }
+
+    fn evidence_cases(&self) -> &'static [EvidenceCase] {
+        EVIDENCE_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {

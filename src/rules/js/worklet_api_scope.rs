@@ -16,7 +16,7 @@
 
 use crate::Severity;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{EvidenceCase, EvidenceExpect, EvidenceRun, Rule, RuleMeta, VisualFile};
 
 use super::{Callee, at_span, in_plugin};
 
@@ -25,6 +25,124 @@ use super::{Callee, at_span, in_plugin};
 const SCROLL_TO: Callee = Callee::Suffix("scrollViewContext.scrollTo");
 
 pub struct WorkletApiScope;
+
+/// 两个工程共用同一页面代码：worklet 内调 `wx.getStorageSync`。
+///
+/// 证据强度：**弱于报错类**。模拟器不会因为 worklet 内调 `wx.*` 而抛错或告警；
+/// `wx.*` 在 UI 线程上仍然存在，但存储 / 系统信息这类同步接口静默返回 `undefined`，
+/// 而同一份代码在 JS 线程能读到真实值。可断言的是「返回值失效」，不是「报错」。
+/// `wx.pageScrollTo` / `wx.showToast` 在 worklet 内调用会直接卡住 appservice，
+/// 不能用作可读证据，故未采用。
+const APP_JSON: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","componentFramework":"glass-easel","lazyCodeLoading":"requiredComponents","window":{"navigationStyle":"custom"}}"#;
+const APP_JS: &str = "App({})\n";
+const PAGE_JSON: &str = r#"{"renderer":"skyline","navigationStyle":"custom"}"#;
+const PAGE_WXML: &str = r#"<view>worklet probe</view>"#;
+const PROJECT_CONFIG: &str =
+    r#"{"miniprogramRoot":"","appid":"touristappid","setting":{"compileWorklet":true}}"#;
+const WORKLET_MARKER: &str = "EVIDENCE_WORKLET_STORAGE undefined";
+const THREAD_MARKER: &str = "EVIDENCE_THREAD_STORAGE probe-value";
+const PAGE_JS_WORKLET: &str = r#"
+const KEY = 'skylint-evidence';
+Page({
+  onReady() {
+    setTimeout(() => {
+      wx.setStorageSync(KEY, 'probe-value');
+      function readStorage() {
+        'worklet';
+        try {
+          console.log('EVIDENCE_WORKLET_STORAGE ' + String(wx.getStorageSync(KEY)));
+        } catch (e) {
+          console.log('EVIDENCE_WORKLET_STORAGE_THROW ' + e.message);
+        }
+      }
+      wx.worklet.runOnUI(readStorage)();
+      console.log('EVIDENCE_THREAD_STORAGE ' + String(wx.getStorageSync(KEY)));
+    }, 300);
+  },
+});
+"#;
+const PAGE_JS_THREAD_ONLY: &str = r#"
+const KEY = 'skylint-evidence';
+Page({
+  onReady() {
+    setTimeout(() => {
+      wx.setStorageSync(KEY, 'probe-value');
+      console.log('EVIDENCE_THREAD_STORAGE ' + String(wx.getStorageSync(KEY)));
+    }, 300);
+  },
+});
+"#;
+
+static EVIDENCE_CASES: &[EvidenceCase] = &[
+    EvidenceCase {
+        name: "worklet-wx-silently-degrades",
+        files: &[
+            VisualFile {
+                path: "app.json",
+                content: APP_JSON,
+            },
+            VisualFile {
+                path: "app.js",
+                content: APP_JS,
+            },
+            VisualFile {
+                path: "pages/index/index.json",
+                content: PAGE_JSON,
+            },
+            VisualFile {
+                path: "pages/index/index.wxml",
+                content: PAGE_WXML,
+            },
+            VisualFile {
+                path: "pages/index/index.js",
+                content: PAGE_JS_WORKLET,
+            },
+        ],
+        project_config: Some(PROJECT_CONFIG),
+        run: EvidenceRun::Serve {
+            page: "pages/index/index",
+        },
+        expect: EvidenceExpect::Console {
+            must: &[WORKLET_MARKER, THREAD_MARKER],
+            must_not: &[],
+        },
+        note: "同一 key、同一页面：worklet 内 wx.getStorageSync 静默返回 undefined，JS 线程能读到 probe-value",
+    },
+    EvidenceCase {
+        name: "js-thread-storage-intact",
+        files: &[
+            VisualFile {
+                path: "app.json",
+                content: APP_JSON,
+            },
+            VisualFile {
+                path: "app.js",
+                content: APP_JS,
+            },
+            VisualFile {
+                path: "pages/index/index.json",
+                content: PAGE_JSON,
+            },
+            VisualFile {
+                path: "pages/index/index.wxml",
+                content: PAGE_WXML,
+            },
+            VisualFile {
+                path: "pages/index/index.js",
+                content: PAGE_JS_THREAD_ONLY,
+            },
+        ],
+        project_config: Some(PROJECT_CONFIG),
+        run: EvidenceRun::Serve {
+            page: "pages/index/index",
+        },
+        expect: EvidenceExpect::Console {
+            must: &[THREAD_MARKER],
+            must_not: &[WORKLET_MARKER],
+        },
+        note: "阴性对照：不上 worklet 时同一 key 的读取正常，说明上面的 undefined 不是 key 不存在",
+    },
+];
 
 impl WorkletApiScope {
     pub const ID: &'static str = "skyline/worklet-api-scope";
@@ -37,6 +155,10 @@ impl Rule for WorkletApiScope {
             severity: Severity::Error,
             description: "scrollViewContext.scrollTo 必须在 worklet 内调用，worklet 内不能调用 wx.*",
         }
+    }
+
+    fn evidence_cases(&self) -> &'static [EvidenceCase] {
+        EVIDENCE_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<crate::Diagnostic> {

@@ -12,6 +12,19 @@
 //! - 同一文件还要有 `.node(...)`：context 只能从 `NodesRef.node` 取到。
 //! - `enhanced` 按单元的渲染闭包找：页面自己的 WXML 与它引用到的组件 / 模板里，
 //!   任意一个 `<scroll-view>` 开了 `enhanced` 就算通过——scroll-view 常被封装在组件里。
+//!
+//! ## 证据用例：为什么没有
+//!
+//! 本条**不可自动证**。沙箱复核（同一页面并排放未开 / 开启 `enhanced` 的两个
+//! `<scroll-view>`，各自 `node().triggerRefresh({ duration: 300 })`）的结果是：
+//!
+//! - 两者返回值都是 `undefined`；
+//! - 两者都没有出现 `此方法需要 scroll-view 开启 enhanced 属性！`；
+//! - `node().scrollTo` 在两类 scroll-view 上都照常生效（未开 `enhanced` 也能滚）。
+//!
+//! 也就是说当前模拟器不实现「未开 enhanced 时只 warn 并 return false」这一步，
+//! 取不到能区分两个分支的读数，硬写一条 warning 断言只会因为「本来就没有日志」
+//! 而永远失败。需要在真实开发者工具 / 真机复核后再补。
 
 use std::collections::HashSet;
 

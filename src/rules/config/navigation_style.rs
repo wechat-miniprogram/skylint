@@ -16,12 +16,123 @@ use serde_json::Value;
 
 use crate::input::json::JsonPositions;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta, Target};
+use crate::rules::{EvidenceCase, EvidenceExpect, EvidenceRun, Rule, RuleMeta, Target, VisualFile};
 use crate::{Diagnostic, Severity};
 
 use super::anchor;
 
 pub struct NavigationStyle;
+
+/// 三个最小工程只差页面 json 的 `navigationStyle` / `navigationBar*`。
+const APP_JS: &str = "App({})\n";
+const PAGE_JS: &str = "Page({})\n";
+const PAGE_WXML: &str = "<view>navigation style probe</view>\n";
+const APP_JSON: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","componentFramework":"glass-easel","lazyCodeLoading":"requiredComponents"}"#;
+const PAGE_JSON_DEFAULT: &str = r#"{"renderer":"skyline","navigationStyle":"default"}"#;
+const PAGE_JSON_FIELDS: &str = r#"{"renderer":"skyline","navigationBarTitleText":"probe"}"#;
+const PAGE_JSON_CUSTOM: &str = r#"{"renderer":"skyline","navigationStyle":"custom"}"#;
+
+const FILES_DEFAULT: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON_DEFAULT,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS,
+    },
+];
+
+const FILES_FIELDS: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON_FIELDS,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS,
+    },
+];
+
+const FILES_CUSTOM: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON_CUSTOM,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS,
+    },
+];
+
+static EVIDENCE_CASES: &[EvidenceCase] = &[
+    EvidenceCase {
+        name: "default-navigation-style",
+        files: FILES_DEFAULT,
+        project_config: None,
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::BuildFails {
+            stderr_contains: &["should set navigationStyle to custom."],
+        },
+        note: "页面显式 navigationStyle: default：构建失败，stderr 要求 custom",
+    },
+    EvidenceCase {
+        name: "navigation-bar-fields",
+        files: FILES_FIELDS,
+        project_config: None,
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::BuildFails {
+            stderr_contains: &[
+                "should set navigationStyle to custom when using navigationBar* fields.",
+            ],
+        },
+        note: "写了 navigationBarTitleText 却没有 custom：构建失败，错误行点名 navigationBar* 字段",
+    },
+    EvidenceCase {
+        name: "custom-navigation-style",
+        files: FILES_CUSTOM,
+        project_config: None,
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::BuildOk,
+        note: "阴性对照：唯一差异是 navigationStyle: custom，构建即通过",
+    },
+];
 
 impl NavigationStyle {
     pub const ID: &'static str = "skyline/navigation-style";
@@ -45,6 +156,10 @@ impl Rule for NavigationStyle {
 
     fn target(&self) -> Target {
         Target::Skyline
+    }
+
+    fn evidence_cases(&self) -> &'static [EvidenceCase] {
+        EVIDENCE_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {

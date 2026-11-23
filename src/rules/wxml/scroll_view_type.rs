@@ -12,12 +12,96 @@
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlAttribute, WxmlDoc, WxmlElement};
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{EvidenceCase, EvidenceExpect, EvidenceRun, Rule, RuleMeta, VisualFile};
 
 use super::structure::find_attr;
 use super::{element_diagnostic, for_each_element, span_diagnostic};
 
 pub struct ScrollViewType;
+
+/// 两个单页工程：`type="default"` 与不写 `type`。
+///
+/// 页面加载后由采集脚本读取 console：`default` 不在 JS 白名单里，observer 回退成
+/// `list` 并打一行固定 warning；缺省 `type` 走兼容 wrapper，不应打这行。
+const APP_JS: &str = "App({})\n";
+const PAGE_JS: &str = "Page({})\n";
+const APP_JSON: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","componentFramework":"glass-easel","lazyCodeLoading":"requiredComponents"}"#;
+const PAGE_JSON: &str = r#"{"renderer":"skyline","navigationStyle":"custom"}"#;
+const WXML_DEFAULT: &str = r#"<scroll-view id="sv" type="default" scroll-y style="height: 300px;"><view>default</view></scroll-view>"#;
+const WXML_MISSING: &str =
+    r#"<scroll-view id="sv" scroll-y style="height: 300px;"><view>missing</view></scroll-view>"#;
+const WARNING: &str = "Do not support the attribute default in scroll-view";
+
+static EVIDENCE_CASES: &[EvidenceCase] = &[
+    EvidenceCase {
+        name: "default-type-warns",
+        files: &[
+            VisualFile {
+                path: "app.json",
+                content: APP_JSON,
+            },
+            VisualFile {
+                path: "app.js",
+                content: APP_JS,
+            },
+            VisualFile {
+                path: "pages/index/index.json",
+                content: PAGE_JSON,
+            },
+            VisualFile {
+                path: "pages/index/index.wxml",
+                content: WXML_DEFAULT,
+            },
+            VisualFile {
+                path: "pages/index/index.js",
+                content: PAGE_JS,
+            },
+        ],
+        project_config: None,
+        run: EvidenceRun::Serve {
+            page: "pages/index/index",
+        },
+        expect: EvidenceExpect::Console {
+            must: &[WARNING],
+            must_not: &[],
+        },
+        note: "type=\"default\" 不在公开白名单里：页面日志必须出现回退 warning",
+    },
+    EvidenceCase {
+        name: "missing-type-silent",
+        files: &[
+            VisualFile {
+                path: "app.json",
+                content: APP_JSON,
+            },
+            VisualFile {
+                path: "app.js",
+                content: APP_JS,
+            },
+            VisualFile {
+                path: "pages/index/index.json",
+                content: PAGE_JSON,
+            },
+            VisualFile {
+                path: "pages/index/index.wxml",
+                content: WXML_MISSING,
+            },
+            VisualFile {
+                path: "pages/index/index.js",
+                content: PAGE_JS,
+            },
+        ],
+        project_config: None,
+        run: EvidenceRun::Serve {
+            page: "pages/index/index",
+        },
+        expect: EvidenceExpect::Console {
+            must: &[],
+            must_not: &[WARNING],
+        },
+        note: "阴性对照：不写 type 不等于 default，同一页面不得出现回退 warning",
+    },
+];
 
 impl ScrollViewType {
     pub const ID: &'static str = "skyline/scroll-view-type";
@@ -33,6 +117,10 @@ impl Rule for ScrollViewType {
             severity: Severity::Info,
             description: "`<scroll-view>` 建议显式指定 type：省略 type 走传统滚动（没有按需渲染），`default` 与未知值会被 JS 层回退成 `list` 并告警",
         }
+    }
+
+    fn evidence_cases(&self) -> &'static [EvidenceCase] {
+        EVIDENCE_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {

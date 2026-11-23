@@ -18,7 +18,7 @@ use serde_json::Value;
 use crate::input::json::JsonPositions;
 use crate::project::Project;
 use crate::rules::wxml::load_doc;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{EvidenceCase, EvidenceExpect, EvidenceRun, Rule, RuleMeta, VisualFile};
 use crate::{Diagnostic, Severity};
 
 use super::unit_wxml;
@@ -27,6 +27,68 @@ const MESSAGE: &str = "工程使用了 worklet，但没有开启 setting.compile
 const HELP: &str = "在开发者工具 详情 > 本地设置 勾选「编译 worklet 代码」，或把 project.config.json（或 project.private.config.json）的 setting.compileWorklet 设为 true";
 
 pub struct WorkletCompileSetting;
+
+/// 同一份带 `'worklet'` 的页面脚本，唯一差异是 `setting.compileWorklet`。
+const APP_JS: &str = "App({})\n";
+const APP_JSON: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","componentFramework":"glass-easel","lazyCodeLoading":"requiredComponents"}"#;
+const PAGE_JSON: &str = r#"{"renderer":"skyline","navigationStyle":"custom"}"#;
+const PAGE_WXML: &str = "<view>worklet compile probe</view>\n";
+const PAGE_JS: &str = "const tick = () => { 'worklet'; return 1; };\nPage({ onLoad() { console.log('tick', tick()); } });\n";
+const CONFIG_ON: &str =
+    r#"{"miniprogramRoot":"","appid":"touristappid","setting":{"compileWorklet":true}}"#;
+const CONFIG_OFF: &str =
+    r#"{"miniprogramRoot":"","appid":"touristappid","setting":{"compileWorklet":false}}"#;
+const ARTIFACT: &str = "js/pages/index/index.js";
+
+const FILES: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS,
+    },
+];
+
+static EVIDENCE_CASES: &[EvidenceCase] = &[
+    EvidenceCase {
+        name: "compile-worklet-on",
+        files: FILES,
+        project_config: Some(CONFIG_ON),
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::Artifact {
+            path: ARTIFACT,
+            must: &["__workletHash"],
+            must_not: &[],
+        },
+        note: "compileWorklet: true 时产物里的 worklet 函数被转换成带 __workletHash 的包装",
+    },
+    EvidenceCase {
+        name: "compile-worklet-off",
+        files: FILES,
+        project_config: Some(CONFIG_OFF),
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::Artifact {
+            path: ARTIFACT,
+            must: &[],
+            must_not: &["__workletHash"],
+        },
+        note: "阴性对照：同一页面脚本在 compileWorklet: false 下保留源码，产物没有 __workletHash",
+    },
+];
 
 impl WorkletCompileSetting {
     pub const ID: &'static str = "skyline/worklet-compile-setting";
@@ -39,6 +101,10 @@ impl Rule for WorkletCompileSetting {
             severity: Severity::Warning,
             description: "工程使用了 worklet，但 project.config.json 没有开启 setting.compileWorklet",
         }
+    }
+
+    fn evidence_cases(&self) -> &'static [EvidenceCase] {
+        EVIDENCE_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {

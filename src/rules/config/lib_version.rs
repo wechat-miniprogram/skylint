@@ -13,13 +13,130 @@
 
 use crate::input::json::JsonPositions;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta, Target};
+use crate::rules::{EvidenceCase, EvidenceExpect, EvidenceRun, Rule, RuleMeta, Target, VisualFile};
 use crate::{Diagnostic, Severity};
 
 /// `(major, minor, patch)`，按字典序比较。
 type Version = (u32, u32, u32);
 
 pub struct LibVersion;
+
+/// 三个工程只差 `libVersion`：2.20.0 低于 Skyline 渲染要求的 2.30.4，3.3.0 高于所有门槛。
+///
+/// 模拟器不按工程的 `libVersion` 选基础库：三种取值下 `getSystemInfoSync().SDKVersion`
+/// 都是 vendor 的 `3.17.3`，构建也都 exit 0。所以「版本不够会退回 WebView」这一步
+/// 在模拟器上不可观测，自动用例只证明「构建静默 + 运行时版本不受工程 libVersion 影响」。
+const APP_JSON: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","componentFramework":"glass-easel","lazyCodeLoading":"requiredComponents","window":{"navigationStyle":"custom"}}"#;
+const APP_JS: &str = "App({})\n";
+const PAGE_JSON: &str = r#"{"renderer":"skyline","navigationStyle":"custom"}"#;
+const PAGE_WXML: &str = r#"<view>lib version probe</view>"#;
+const PAGE_JS: &str = "Page({})\n";
+const PROJECT_CONFIG_LOW: &str =
+    r#"{"miniprogramRoot":"","appid":"touristappid","libVersion":"2.20.0"}"#;
+const PROJECT_CONFIG_HIGH: &str =
+    r#"{"miniprogramRoot":"","appid":"touristappid","libVersion":"3.3.0"}"#;
+const SDK_VERSION_EXPR: &str = "wx.getSystemInfoSync().SDKVersion";
+const VENDOR_SDK_VERSION: &str = "3.17.3";
+
+static EVIDENCE_CASES: &[EvidenceCase] = &[
+    EvidenceCase {
+        name: "low-lib-version-build-ok",
+        files: &[
+            VisualFile {
+                path: "app.json",
+                content: APP_JSON,
+            },
+            VisualFile {
+                path: "app.js",
+                content: APP_JS,
+            },
+            VisualFile {
+                path: "pages/index/index.json",
+                content: PAGE_JSON,
+            },
+            VisualFile {
+                path: "pages/index/index.wxml",
+                content: PAGE_WXML,
+            },
+            VisualFile {
+                path: "pages/index/index.js",
+                content: PAGE_JS,
+            },
+        ],
+        project_config: Some(PROJECT_CONFIG_LOW),
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::BuildOk,
+        note: "libVersion 2.20.0 低于 Skyline 渲染要求的 2.30.4，sim build 仍然静默成功",
+    },
+    EvidenceCase {
+        name: "low-lib-version-runtime-vendor",
+        files: &[
+            VisualFile {
+                path: "app.json",
+                content: APP_JSON,
+            },
+            VisualFile {
+                path: "app.js",
+                content: APP_JS,
+            },
+            VisualFile {
+                path: "pages/index/index.json",
+                content: PAGE_JSON,
+            },
+            VisualFile {
+                path: "pages/index/index.wxml",
+                content: PAGE_WXML,
+            },
+            VisualFile {
+                path: "pages/index/index.js",
+                content: PAGE_JS,
+            },
+        ],
+        project_config: Some(PROJECT_CONFIG_LOW),
+        run: EvidenceRun::Serve {
+            page: "pages/index/index",
+        },
+        expect: EvidenceExpect::Runtime {
+            expr: SDK_VERSION_EXPR,
+            equals: VENDOR_SDK_VERSION,
+        },
+        note: "工程写 libVersion 2.20.0，模拟器运行时仍是 vendor 3.17.3：不按工程版本选库",
+    },
+    EvidenceCase {
+        name: "high-lib-version-runtime-vendor",
+        files: &[
+            VisualFile {
+                path: "app.json",
+                content: APP_JSON,
+            },
+            VisualFile {
+                path: "app.js",
+                content: APP_JS,
+            },
+            VisualFile {
+                path: "pages/index/index.json",
+                content: PAGE_JSON,
+            },
+            VisualFile {
+                path: "pages/index/index.wxml",
+                content: PAGE_WXML,
+            },
+            VisualFile {
+                path: "pages/index/index.js",
+                content: PAGE_JS,
+            },
+        ],
+        project_config: Some(PROJECT_CONFIG_HIGH),
+        run: EvidenceRun::Serve {
+            page: "pages/index/index",
+        },
+        expect: EvidenceExpect::Runtime {
+            expr: SDK_VERSION_EXPR,
+            equals: VENDOR_SDK_VERSION,
+        },
+        note: "阴性对照：libVersion 3.3.0 时运行时同样是 vendor 3.17.3——两次一致才说明工程版本不参与选库；退回 WebView 不可观测",
+    },
+];
 
 impl LibVersion {
     pub const ID: &'static str = "skyline/lib-version";
@@ -37,6 +154,10 @@ impl Rule for LibVersion {
     fn target(&self) -> Target {
         // `libVersion` 低于 Skyline 要求只会让页面继续用 WebView——那正是反向的目标环境。
         Target::Skyline
+    }
+
+    fn evidence_cases(&self) -> &'static [EvidenceCase] {
+        EVIDENCE_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {

@@ -13,12 +13,87 @@ use serde_json::Value;
 
 use crate::input::json::JsonPositions;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta, Target};
+use crate::rules::{EvidenceCase, EvidenceExpect, EvidenceRun, Rule, RuleMeta, Target, VisualFile};
 use crate::{Diagnostic, Severity};
 
 use super::anchor;
 
 pub struct LazyCodeLoading;
+
+/// 同一份最小工程，唯一差异是 app.json 有没有 `lazyCodeLoading`。
+///
+/// 页面 json 显式 `renderer: "skyline"`；`componentFramework` / `navigationStyle`
+/// 都写齐，否则构建可能先被另一条校验拦下，缺键就不再是唯一变量。
+const APP_JS: &str = "App({})\n";
+const PAGE_JS: &str = "Page({})\n";
+const PAGE_WXML: &str = "<view>lazy probe</view>\n";
+const PAGE_JSON: &str = r#"{"renderer":"skyline","navigationStyle":"custom"}"#;
+const APP_JSON_MISSING: &str =
+    r#"{"pages":["pages/index/index"],"renderer":"skyline","componentFramework":"glass-easel"}"#;
+const APP_JSON_OK: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","componentFramework":"glass-easel","lazyCodeLoading":"requiredComponents"}"#;
+
+static EVIDENCE_CASES: &[EvidenceCase] = &[
+    EvidenceCase {
+        name: "missing-lazy-code-loading",
+        files: &[
+            VisualFile {
+                path: "app.json",
+                content: APP_JSON_MISSING,
+            },
+            VisualFile {
+                path: "app.js",
+                content: APP_JS,
+            },
+            VisualFile {
+                path: "pages/index/index.json",
+                content: PAGE_JSON,
+            },
+            VisualFile {
+                path: "pages/index/index.wxml",
+                content: PAGE_WXML,
+            },
+            VisualFile {
+                path: "pages/index/index.js",
+                content: PAGE_JS,
+            },
+        ],
+        project_config: None,
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::BuildFails {
+            stderr_contains: &["lazyCodeLoading", "requiredComponents"],
+        },
+        note: "页面显式 Skyline 而 app.json 缺 lazyCodeLoading：构建必须失败，并在 stderr 点名该键",
+    },
+    EvidenceCase {
+        name: "required-components",
+        files: &[
+            VisualFile {
+                path: "app.json",
+                content: APP_JSON_OK,
+            },
+            VisualFile {
+                path: "app.js",
+                content: APP_JS,
+            },
+            VisualFile {
+                path: "pages/index/index.json",
+                content: PAGE_JSON,
+            },
+            VisualFile {
+                path: "pages/index/index.wxml",
+                content: PAGE_WXML,
+            },
+            VisualFile {
+                path: "pages/index/index.js",
+                content: PAGE_JS,
+            },
+        ],
+        project_config: None,
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::BuildOk,
+        note: "阴性对照：唯一差异是补上 lazyCodeLoading: requiredComponents，构建即通过",
+    },
+];
 
 impl Rule for LazyCodeLoading {
     fn meta(&self) -> RuleMeta {
@@ -32,6 +107,10 @@ impl Rule for LazyCodeLoading {
     fn target(&self) -> Target {
         // 这是 Skyline 构建期的硬性前提，不是 WebView 回退场景。
         Target::Skyline
+    }
+
+    fn evidence_cases(&self) -> &'static [EvidenceCase] {
+        EVIDENCE_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
