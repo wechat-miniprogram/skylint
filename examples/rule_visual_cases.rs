@@ -18,7 +18,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use skylint::Registry;
-use skylint::rules::VisualComponent;
+use skylint::rules::{VisualAction, VisualComponent};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut renderer: Option<String> = None;
@@ -63,7 +63,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 组件目录是全局的 `components/<name>/`：同名组件必须内容一致，否则后写的会
     // 静默覆盖先写的，某个 case 的夹具就不是它声明的那个了。
     let mut components: BTreeMap<&'static str, &'static VisualComponent> = BTreeMap::new();
-    for (meta, visual_cases, rule_components, app_override) in Registry::builtin().visual_cases() {
+    for (meta, visual_cases, rule_components, app_override, rule_files, rule_actions) in
+        Registry::builtin().visual_cases()
+    {
         if skips.iter().any(|skip| meta.id.contains(skip.as_str())) {
             continue;
         }
@@ -86,6 +88,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             write(&dir.join("index.wxml"), case.wxml)?;
             write(&dir.join("index.wxss"), case.wxss)?;
             write(&dir.join("index.js"), case.js.unwrap_or("Page({})\n"))?;
+            for file in rule_files {
+                validate_visual_file(meta.id, file.path)?;
+                write(&dir.join(file.path), file.content)?;
+            }
             let mut page_json = serde_json::json!({
                 "renderer": renderer,
                 "componentFramework": "glass-easel",
@@ -108,7 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             assert_no_renderer_options(&page_json, &format!("页面 json {slug}"))?;
             write(&dir.join("index.json"), &serde_json::to_string(&page_json)?)?;
             pages.push(route.clone());
-            cases.push(serde_json::json!({
+            let mut case_json = serde_json::json!({
                 "id": meta.id,
                 "slug": slug,
                 "page": route,
@@ -116,7 +122,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "note": case.note,
                 "target": case.target,
                 "mode": case.mode().as_str(),
-            }));
+            });
+            if !rule_actions.is_empty() {
+                case_json["actions"] =
+                    serde_json::Value::Array(rule_actions.iter().map(action_json).collect());
+            }
+            cases.push(case_json);
         }
     }
 
@@ -170,6 +181,31 @@ fn write(path: &Path, content: &str) -> std::io::Result<()> {
         fs::create_dir_all(parent)?;
     }
     fs::write(path, content)
+}
+
+/// 附属文件路径必须是页面目录内的相对路径：绝对路径或 `..` 会写出生成目录。
+fn validate_visual_file(rule_id: &str, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let unsafe_path = Path::new(path).is_absolute()
+        || Path::new(path)
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)));
+    if unsafe_path || path.is_empty() {
+        return Err(format!(
+            "规则 `{rule_id}` 的视觉附属文件路径必须是不含 `..` 的相对路径：{path:?}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn action_json(action: &VisualAction) -> serde_json::Value {
+    match action {
+        VisualAction::Tap(selector) => serde_json::json!({"type": "tap", "selector": selector}),
+        VisualAction::Swipe(selector, dx, dy) => {
+            serde_json::json!({"type": "swipe", "selector": selector, "dx": dx, "dy": dy})
+        }
+        VisualAction::Wait(ms) => serde_json::json!({"type": "wait", "ms": ms}),
+    }
 }
 
 /// 把规则级组件夹具登记进全局表；同名组件内容必须一致。

@@ -228,8 +228,8 @@ start_wv() {
 }
 
 serve_healthy() {
-  curl -sf --max-time 2 "http://127.0.0.1:$1/cdp/json/list" >/dev/null 2>&1 && return 0
-  curl -sf --max-time 2 "http://127.0.0.1:$1/cdp/json" >/dev/null 2>&1
+  curl -sf --max-time 2 "http://127.0.0.1:$1/browser-cdp/json/list" >/dev/null 2>&1 && return 0
+  curl -sf --max-time 2 "http://127.0.0.1:$1/browser-cdp/json" >/dev/null 2>&1
 }
 
 wait_ready() {

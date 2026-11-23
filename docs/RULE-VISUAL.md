@@ -41,10 +41,15 @@ impl Rule for X {
 ```rust
 fn visual_components(&self) -> &'static [VisualComponent] { ... }   // 挂到本规则每个用例页面
 fn visual_app_json(&self) -> Option<&'static str> { ... }           // 合并进 app.json
+fn visual_files(&self) -> &'static [VisualFile] { ... }             // 写到页面目录，如 "probe.wxs"
+fn visual_actions(&self) -> &'static [VisualAction] { ... }         // Tap / Swipe / Wait，截图前执行
 ```
 
-两者都是默认空实现的 trait 方法，所以给 `VisualCase` 加字段不会逼着所有既有字面量一起改；
-代价是同一规则的多条用例只能共享同一组组件与同一份 app.json 覆盖。
+四者都是默认空实现的 trait 方法，所以给 `VisualCase` 加字段不会逼着所有既有字面量一起改；
+代价是同一规则的多条用例只能共享同一组组件、同一份 app.json 覆盖与同一串动作。
+
+需要真实输入的规则（WXS 里用事件处理器第二参数做同步查询、`scroll-view` 与祖先 `touchmove` 抢手势）
+用 `visual_files` 写真实 `.wxs`（内联 `<wxs>` 不进编译产物）、用 `visual_actions` 注入 `Tap` / `Swipe`。
 
 `visual_app_json` 的覆盖里**不许**出现 `renderer` / `pages` / `componentFramework` / `lazyCodeLoading`，
 生成器会直接报错而不是静默忽略；同理页面 json 与 app json 都不得写 `rendererOptions`——
@@ -66,13 +71,16 @@ fn visual_app_json(&self) -> Option<&'static str> { ... }           // 合并进
 `Same` 成立要求两者都在容差内。阈值不设成「像素差足够小」的原因是系统性色差：容差 1 个单位
 就会把 2 个单位的偏色放大成整页 70% 的差异。
 
-纯位移的差异在交集里是 0%（两块完全不重叠），只能靠 bbox 边差兜底——当前有 9 条用例属于这一类：
+纯位移的差异在交集里接近 0%，只能靠 bbox 边差兜底——当前有 6 条用例完全依赖它：
 
 ```
-text-hard-break-ellipsis 1.88%(bbox 44)   box-sizing 0.00%(bbox 80)      box-sizing-2 0.00%(bbox 80)
-text-overflow-ellipsis  1.28%(bbox 32)   value-degraded 0.20%(bbox 120) text-decoration-target 1.83%(bbox 48)
-calc-min-max            0.00%(bbox 160)  default-layout-drift 0.00%(bbox 40)   renderer-options 0.00%(bbox 40)
+box-sizing 0.00%(bbox 80)   box-sizing-2 0.00%(bbox 80)   value-degraded 0.20%(bbox 120)
+calc-min-max 0.00%(bbox 160)   default-layout-drift 0.00%(bbox 40)   renderer-options 0.00%(bbox 40)
 ```
+
+另有 4 条处于 1%–2% 的边缘（`text-hard-break-ellipsis` 1.88%、`text-decoration-target` 1.83%、
+`worklet-data-freeze` 1.74%、`text-overflow-ellipsis` 1.28%），报告会单列为 `nearThreshold`，
+复核时优先看这四条。
 
 `error` 不等于 `fail`：截图尺度不对、bbox 取不到、`reLaunch` 超时、serve 掉线都记 `error`，
 必须解决后重跑，不能当「规则不成立」。
@@ -85,25 +93,30 @@ calc-min-max            0.00%(bbox 160)  default-layout-drift 0.00%(bbox 40)   r
 2. `minidev sim build` 两份工程（构建期串行，避免争编译缓存）。
 3. 起两个 `sim serve`（默认 9783/9784，只绑 127.0.0.1）：Skyline 侧由 serve 托管 Electron，
    Skyline 引擎只活在开发者工具整包里；WebView 侧显式传 `--browser`。
-4. `probe.js` 逐页 `reLaunch` → 等 `WAIT_MS`（默认 8000）→ 取 bbox → 两侧各自截图 → 判定。
+4. `probe.js` 逐页 `reLaunch` → 等 `WAIT_MS`（默认 8000）→ 执行 `actions`（每个动作后 300ms，
+   全部结束再等 500ms）→ 取 bbox → 两侧各自截图 → 判定。
    每页开始前做一次 CDP 健康检查；任何一步失败只写该页 `error`，不中断整批。
 5. `run.sh` 按 `CHUNK_SIZE`（默认 8）分块，块前检查 serve 健康、挂了就按记录的 pid 重启，
    块间把结果并回 `results.jsonl`；全部跑完再统一 `--report-only` 出报告。
+
+`MINIDEV_BIN` 必须指向**已构建的二进制**（`target/debug/minidev`），不要指向「先编译再 exec」的包装脚本：
+采集时每页都要 spawn 一次 `sim shot`，包装脚本会让每次调用都去抢编译锁，30 秒后子进程超时，
+整批表现为随机的 `error` 与反复重试。先 `cargo build -p daemon --bin minidev`，再指向二进制。
+
+serve 的端点分层（旧版本只有 `/cdp`）：`/automator` 是协议层、`/browser-cdp` 是浏览器层、
+`/inspectee-cdp` 是框架层。健康检查与截图都走 `/browser-cdp`。
 
 清理只 kill 自己记录的 pid，禁止 `pkill -f`（会连带杀掉别的实例与开发者工具）。
 并发上限 3 个实例，每个实例不同 `--dist` + 不同 `--port`。
 
 ## 覆盖现状
 
-59 个用例覆盖 47 条规则：48 条靠像素差（≥2%）、9 条靠 bbox 边差、1 条是**故意失败的阴性对照**
-（`skyline/text-box-property` 的第二条用例：实测两端宽度必然不同，用它标注「这类阴性对照不成立」）。
+70 个用例覆盖 55 条规则：66 条 `Differ`（其中 60 条像素差 ≥1%、6 条完全靠 bbox 边差）+ 4 条阴性对照；
+其中 1 条是对照里**故意失败**的（`skyline/text-box-property` 的第二条：实测两端宽度必然不同，
+用它标注「这类阴性对照不成立」）。
 
-尚未覆盖的 24 条按证明方式分类：
+尚未覆盖的 15 条：
 
-- **需要动作或时序**（`page-scroll-api`、`wxs-sync-query`、`worklet-data-freeze`、
-  `scroll-gesture-conflict`、`transition-animation-conflict`、`transition-property`、
-  `vendor-prefix`、`unsupported-api`）：多数可以用「页面 JS + 延时」表达（`VisualCase.js` 本身就是
-  页面 JS，在 `onShow` 里 `setTimeout` 后调 API 或切 class，采集端等 8 秒足够），尚未逐条试。
 - **只能产物/日志取证**（`worklet-api-scope`、`worklet-directive`、`worklet-compile-setting`、
   `scroll-context-enhanced`、`scroll-context-ref`、`draggable-sheet-scroll-to`、`autoprefix-build`、
   `config-ignored`、`lib-version`、`lazy-code-loading`、`component-framework`、`navigation-style`、
@@ -127,6 +140,10 @@ calc-min-max            0.00%(bbox 160)  default-layout-drift 0.00%(bbox 40)   r
   不要靠调低阈值通过——阈值一松，系统性色差就会变成假阳性。
 - **报告里的 diff% 含系统性色差与整页位移，只作参考**。偏色方向已确认是 WebView 侧偏，
   不是 Skyline 侧；判读时以 bbox 与区域像素分布为主。
+- **注入的手势不等于真机手势。** `Swipe` 由宿主按 touchstart/move/end 注入，Skyline 的原生滚动
+  控件不消费这串序列（列表 `top` 不动、事件照常冒泡给祖先），而 WebView 的 `scroll-view` 会滚动并
+  阻止冒泡。`scroll-gesture-conflict` 的 Differ 正是这个终态差，它证明的是「两端对同一串触摸的反应不同」，
+  不等于真机上「原生滚动与 JS `touchmove` 并行」的手感；真机结论仍需单独验证。
 - 视觉用例证明的是「两端在这份最小源码上不同」，不证明「真实工程里一定出现」。规则在真实工程
   是否命中、命中后修法是否两端一致，仍按原有流程验证。
 

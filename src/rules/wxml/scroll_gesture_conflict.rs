@@ -18,7 +18,7 @@ use std::collections::HashSet;
 
 use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta, Target};
+use crate::rules::{Rule, RuleMeta, Target, VisualAction, VisualCase, VisualExpect};
 use crate::wxml_graph::FlatElement;
 
 use super::{Reach, for_each_element};
@@ -32,6 +32,60 @@ const HELP: &str = "在列表的 `bind:scroll` 里按 `scrollTop` 门控手势�
      或把拖拽手势绑到不包含滚动容器的区域；已经这样做了可以忽略，用\
      `<!-- skylint-disable-next-line skyline/scroll-gesture-conflict -->` 关掉这条提示";
 
+/// 视觉用例：阴性对照 + 真实 Differ。
+///
+/// 规则主张的差异在**触摸事件的冒泡路径**上（Skyline 原生滚动与 `touchmove` 并行），
+/// 而不是静态渲染：没有输入注入时两端都不触发 `touchmove`，同一结构画出来一样。
+/// 所以第一条记一份 `Same`，明确「结构本身不产生视觉差异」；第二条注入一次纵向滑动：
+/// 同一串触摸打在列表内部，WebView 的滚动容器会滚动并把它吃掉，Skyline 下事件照常
+/// 冒泡到祖先——用祖先里的指示条把「有没有收到触摸」画成终态。
+static VISUAL_CASES: &[VisualCase] = &[
+    VisualCase {
+        wxml: r#"<view class="sheet" id="target" bind:touchmove="onMove">
+  <scroll-view class="list" scroll-y>
+    <view class="row">第一行</view>
+    <view class="row">第二行</view>
+    <view class="row">第三行</view>
+  </scroll-view>
+</view>"#,
+        wxss: ".sheet { padding: 12px; }\n.list { height: 96px; }\n.row { height: 24px; line-height: 24px; font-size: 14px; color: #333; }\n",
+        js: Some("Page({ onMove() {} });\n"),
+        expect: VisualExpect::Same,
+        note: "结构命中规则（祖先 bind:touchmove + 子 scroll-y），但内容不溢出、处理函数为空：注入滑动后两端仍然一致",
+        target: "#target",
+    },
+    VisualCase {
+        wxml: r#"<view class="sheet" id="target" bind:touchmove="onMove">
+  <view class="banner {{moved ? 'hit' : ''}}">
+    <text>moves={{moves}} top={{top}}</text>
+  </view>
+  <scroll-view class="list" id="list" scroll-y bindscroll="onScroll">
+    <view class="row">第 1 行</view>
+    <view class="row">第 2 行</view>
+    <view class="row">第 3 行</view>
+    <view class="row">第 4 行</view>
+    <view class="row">第 5 行</view>
+    <view class="row">第 6 行</view>
+    <view class="row">第 7 行</view>
+    <view class="row">第 8 行</view>
+    <view class="row">第 9 行</view>
+    <view class="row">第 10 行</view>
+    <view class="row">第 11 行</view>
+    <view class="row">第 12 行</view>
+  </scroll-view>
+</view>"#,
+        wxss: ".sheet { padding: 12px; }\n.banner { height: 64px; line-height: 64px; text-align: center; color: #ffffff; background-color: #8a93a3; font-size: 14px; }\n.banner.hit { background-color: #c2402a; }\n.list { height: 144px; background-color: #f4f6fb; }\n.row { height: 24px; line-height: 24px; font-size: 13px; color: #333; }\n",
+        js: Some(
+            "Page({\n  data: { moves: 0, top: 0, moved: false },\n  onMove() { this.setData({ moves: this.data.moves + 1, moved: true }); },\n  onScroll(e) { this.setData({ top: Math.round(e.detail.scrollTop) }); },\n});\n",
+        ),
+        expect: VisualExpect::Differ,
+        note: "在列表第一行上向上滑：Skyline 的祖先照常收到 `touchmove`（moves=6、指示条变红，原生滚动与 JS 事件并行）；WebView 的滚动容器处理这串触摸并吃掉它（列表滚了 100，祖先 moves=0）",
+        target: "#target",
+    },
+];
+
+static VISUAL_ACTIONS: &[VisualAction] = &[VisualAction::Swipe(".row", 0, -120)];
+
 pub struct ScrollGestureConflict;
 
 impl Rule for ScrollGestureConflict {
@@ -41,6 +95,14 @@ impl Rule for ScrollGestureConflict {
             severity: Severity::Warning,
             description: "滚动容器上的滑动会冒泡触发祖先的 touchmove 手势（拖拽收起等）",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
+    }
+
+    fn visual_actions(&self) -> &'static [VisualAction] {
+        VISUAL_ACTIONS
     }
 
     fn target(&self) -> Target {
@@ -168,6 +230,24 @@ mod tests {
 
     fn check(fixture: &Fixture) -> Vec<crate::Diagnostic> {
         ScrollGestureConflict.check(&fixture.project())
+    }
+
+    /// 视觉用例那份页面结构本身要真的命中本规则（虽然它期望两端一致）。
+    #[test]
+    fn visual_cases_trigger_the_rule() {
+        for (index, case) in super::VISUAL_CASES.iter().enumerate() {
+            let fixture = Fixture::page(&format!("gesture-visual-{index}"), case.wxml, case.wxss);
+            if let Some(js) = case.js {
+                fixture.write("pages/index/index.js", js);
+            }
+            let diagnostics = check(&fixture);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.rule == super::ID),
+                "case {index}: {diagnostics:#?}"
+            );
+        }
     }
 
     #[test]

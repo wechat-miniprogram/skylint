@@ -20,7 +20,7 @@
 
 use crate::Severity;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualAction, VisualCase, VisualExpect, VisualFile};
 
 use super::{at_span, renders_in_skyline};
 
@@ -29,6 +29,40 @@ const RECT_MESSAGE: &str = "WXS 里同步调用 `getBoundingClientRect()` 在 Sk
 const STYLE_MESSAGE: &str = "WXS 里同步调用 `getComputedStyle()` 在 Skyline 下返回 `undefined`（引擎只提供回调式样式查询）；改成 `getComputedStyle(fields, style => …)`";
 
 const HELP: &str = "WebView 的 DOM 可以同步取矩形与计算样式，Skyline 的查询要跨线程、只能回调；回调里算好再缓存，在触摸回调里读缓存";
+
+/// 视觉用例的 WXS 模块：在事件处理器的第二参数上做同步矩形查询，按结果改背景。
+///
+/// 必须是真实的 `.wxs` 文件：内联 `<wxs>` 不进 `project.scripts`，规则看不到。
+static VISUAL_FILES: &[VisualFile] = &[VisualFile {
+    path: "probe.wxs",
+    content: r#"function onTap(evt, owner) {
+  var rect = owner.getBoundingClientRect()
+  var wide = !!rect && rect.width > 100
+  owner.setStyle(
+    wide
+      ? 'background-color: #1b8a5a;'
+      : 'background-color: #c2402a;'
+  )
+}
+
+module.exports = { onTap: onTap }
+"#,
+}];
+
+static VISUAL_ACTIONS: &[VisualAction] = &[VisualAction::Tap("#target")];
+
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<wxs src="./probe.wxs" module="m"></wxs>
+<view class="card" id="target" bind:tap="{{m.onTap}}">
+  <text class="title">WXS 同步矩形查询</text>
+  <text class="hint">点击后按 rect.width 改背景</text>
+</view>"#,
+    wxss: ".card { box-sizing: border-box; width: 240px; height: 180px; margin: 60px auto; padding: 20px; background-color: #6b7a90; border-radius: 12px; }\n.title { display: block; color: #ffffff; font-size: 18px; }\n.hint { display: block; margin-top: 14px; color: #e4e9f0; font-size: 14px; }\n",
+    js: Some("Page({});\n"),
+    expect: VisualExpect::Differ,
+    note: "点击后 WXS 在 `ownerInstance`（页面根）上做同步矩形查询并按 `rect.width` 改背景：WebView 拿到真实宽度变绿，Skyline 的同步查询恒为空（全 0）走兜底变红——整页终态相反",
+    target: "",
+}];
 
 pub struct WxsSyncQuery;
 
@@ -43,6 +77,18 @@ impl Rule for WxsSyncQuery {
             severity: Severity::Warning,
             description: "WXS 里同步形式的 `getBoundingClientRect()` / `getComputedStyle()` 在 Skyline 下拿不到值",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
+    }
+
+    fn visual_files(&self) -> &'static [VisualFile] {
+        VISUAL_FILES
+    }
+
+    fn visual_actions(&self) -> &'static [VisualAction] {
+        VISUAL_ACTIONS
     }
 
     fn check(&self, project: &Project) -> Vec<crate::Diagnostic> {
@@ -128,7 +174,7 @@ mod tests {
     use crate::rules::Rule;
     use crate::rules::testutil::js::Fixture;
 
-    use super::WxsSyncQuery;
+    use super::{VISUAL_CASES, VISUAL_FILES, WxsSyncQuery};
 
     fn fixture(name: &str, renderer: &str, wxs: &str) -> Fixture {
         let f = Fixture::new(name);
@@ -145,6 +191,31 @@ mod tests {
             .write("pages/index/index.js", "Page({});")
             .write("pages/index/index.wxs", wxs);
         f
+    }
+
+    /// 视觉用例的同一份 WXML 与 `.wxs` 文件必须真的能触发本规则。
+    #[test]
+    fn visual_case_triggers_the_rule() {
+        let case = &VISUAL_CASES[0];
+        let f = Fixture::new("wxs-visual");
+        f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", case.wxml)
+            .write("pages/index/index.js", case.js.unwrap_or("Page({});"));
+        for file in VISUAL_FILES {
+            f.write(&format!("pages/index/{}", file.path), file.content);
+        }
+        let diagnostics = WxsSyncQuery.check(&f.project());
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.rule == WxsSyncQuery::ID),
+            "视觉用例未触发规则：{diagnostics:#?}"
+        );
     }
 
     #[test]

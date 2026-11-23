@@ -16,10 +16,28 @@
 
 use crate::input::js::ThisDataDestructure;
 use crate::project::{JsFile, Project};
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::at_span;
+
+/// 视觉用例：页面 JS 在 1.2s 后注册一个解构 `this.data` 的 worklet 样式更新器，
+/// 0.4s 后再 `setData`。
+///
+/// Skyline 的 worklet 会被传到 UI 线程，捕获的 `this.data` 被冻结，随后的 `setData`
+/// 静默失效；WebView 的 updater 在逻辑线程上跑（不过线程），`setData` 正常生效。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="wrap">
+  <view class="target {{accent ? 'accent' : ''}}" id="target">{{label}}</view>
+</view>"#,
+    wxss: ".wrap { padding: 20px; }\n.target { width: 200px; height: 88px; background-color: #dfe6f5; color: #213; text-align: center; line-height: 88px; font-size: 16px; }\n.target.accent { width: 300px; height: 160px; background-color: #d33; color: #ffffff; line-height: 160px; }\n",
+    js: Some(
+        "Page({\n  data: { label: 'BEFORE', accent: false },\n  onReady() {\n    setTimeout(() => {\n      if (typeof this.applyAnimatedStyle === 'function') {\n        this.applyAnimatedStyle('#target', function () {\n          'worklet'\n          const { accent } = this.data\n          return { opacity: accent ? 0.35 : 1 }\n        })\n      }\n      setTimeout(() => {\n        this.setData({ label: 'AFTER', accent: true })\n      }, 400)\n    }, 800)\n  },\n});\n",
+    ),
+    expect: VisualExpect::Differ,
+    note: "worklet 里解构 `this.data`：Skyline 把它冻结后 `setData` 静默失效，#target 停在浅蓝 BEFORE；WebView 不过线程冻结，`setData` 生效，#target 变成红色 AFTER",
+    target: "#target",
+}];
 
 pub struct WorkletDataFreeze;
 
@@ -34,6 +52,10 @@ impl Rule for WorkletDataFreeze {
             severity: Severity::Error,
             description: "worklet 内解构 this.data 会冻结 this.data，导致 setData 失效",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -66,9 +88,34 @@ fn diagnostic(file: &JsFile, item: &ThisDataDestructure) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use crate::rules::Rule;
-    use crate::rules::testutil::js::{messages, single};
+    use crate::rules::testutil::check_rule;
+    use crate::rules::testutil::js::{Fixture, messages, single};
 
-    use super::WorkletDataFreeze;
+    use super::{VISUAL_CASES, WorkletDataFreeze};
+
+    /// 视觉用例的同一份 WXML/WXSS/JS 必须真的能触发本规则。
+    #[test]
+    fn visual_case_triggers_rule() {
+        let case = &VISUAL_CASES[0];
+        let fixture = Fixture::new("freeze-visual");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", case.wxml)
+            .write("pages/index/index.wxss", case.wxss)
+            .write("pages/index/index.js", case.js.expect("视觉用例需要 JS"));
+        let diagnostics = check_rule(&fixture, &WorkletDataFreeze);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.rule == WorkletDataFreeze::ID),
+            "视觉用例未触发规则：{diagnostics:#?}"
+        );
+    }
 
     #[test]
     fn destructuring_inside_worklet_is_reported() {

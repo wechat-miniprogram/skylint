@@ -43,6 +43,27 @@ pub struct VisualComponent {
     pub js: Option<&'static str>,
 }
 
+/// 规则级页面附属文件：生成器写到 `pages/<slug>/<path>`（相对页面目录）。
+///
+/// 需要真实文件的场景只用它：例如 `<wxs src="./probe.wxs">`，内联 `<wxs>` 不进
+/// `project.scripts`，规则看不到。
+pub struct VisualFile {
+    pub path: &'static str,
+    pub content: &'static str,
+}
+
+/// 采集脚本在页面渲染完成后、取 bbox 与截图之前注入的交互动作。
+///
+/// 用于差异必须靠输入才能触发的规则（WXS 事件处理器的第二参数、touchmove 冒泡）。
+pub enum VisualAction {
+    /// 点击选择器命中的元素（SDK 的 `Element.tap()`）。
+    Tap(&'static str),
+    /// 在元素 bbox 中心起算的滑动：选择器、CSS px 的 dx、dy。
+    Swipe(&'static str, i32, i32),
+    /// 等待指定毫秒数。
+    Wait(u32),
+}
+
 /// 规则的两端渲染差异用例：一个小程序页面，证明这条规则描述的现象在 Skyline 与
 /// WebView 里真的不同（或是阴性对照，证明两端确实一致）。
 ///
@@ -184,6 +205,19 @@ pub trait Rule {
         &[]
     }
 
+    /// 本规则所有视觉用例共用的页面附属文件；空表示页面不引用额外文件。
+    ///
+    /// 与 [`Self::visual_components`] 同理，放在规则级：给 [`VisualCase`] 加字段会让
+    /// 所有既有用例字面量都要同步补齐。
+    fn visual_files(&self) -> &'static [VisualFile] {
+        &[]
+    }
+
+    /// 本规则所有视觉用例渲染后要注入的动作，按声明顺序执行。默认不做任何输入。
+    fn visual_actions(&self) -> &'static [VisualAction] {
+        &[]
+    }
+
     /// 规则级 app.json 覆盖夹具，写成 JSON 对象；生成器把它合并进整批工程的
     /// app.json。默认 `None`。
     ///
@@ -196,12 +230,15 @@ pub trait Rule {
     }
 }
 
-/// 视觉用例生成器用的规则条目：元数据、用例、组件夹具、app.json 覆盖。
+/// 视觉用例生成器用的规则条目：元数据、用例、组件夹具、app.json 覆盖、
+/// 页面附属文件、渲染后动作。
 pub type VisualEntry = (
     RuleMeta,
     &'static [VisualCase],
     &'static [VisualComponent],
     Option<&'static str>,
+    &'static [VisualFile],
+    &'static [VisualAction],
 );
 
 #[derive(Default)]
@@ -337,9 +374,11 @@ impl Registry {
                     rule.visual_cases(),
                     rule.visual_components(),
                     rule.visual_app_json(),
+                    rule.visual_files(),
+                    rule.visual_actions(),
                 )
             })
-            .filter(|(_, cases, _, _)| !cases.is_empty())
+            .filter(|(_, cases, _, _, _, _)| !cases.is_empty())
             .collect()
     }
 

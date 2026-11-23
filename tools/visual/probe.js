@@ -65,6 +65,11 @@ const CONNECT_TIMEOUT_MS = 15000
 const RELAUNCH_TIMEOUT_MS = 20000
 const RECT_TIMEOUT_MS = 10000
 const SHOT_TIMEOUT_MS = 20000
+// 动作之间的沉降时间，与动作全部结束后的最终等待；之后才取 bbox 与截图。
+const ACTION_SETTLE_MS = 300
+const ACTION_FINAL_WAIT_MS = 500
+// 滑动分几步发 touchmove：一步到位时部分框架会把它当成点击或直接丢弃。
+const SWIPE_STEPS = 6
 
 const BOOLEAN_FLAGS = new Set(['resume', 'retryFailed', 'reportOnly'])
 
@@ -102,10 +107,11 @@ function httpStatus(url, timeoutMs) {
   })
 }
 
-/// serve 轻量健康检查：优先 /cdp/json/list，兼容只暴露 /cdp/json 的版本。
+/// serve 轻量健康检查：优先 /browser-cdp/json/list，兼容只暴露 /browser-cdp/json 的版本。
+/// 端点分层见 serve：`/automator` 是协议层、`/browser-cdp` 是浏览器层、`/inspectee-cdp` 是框架层。
 async function serveHealthy(base) {
   const root = base.replace(/\/+$/, '')
-  for (const pathname of ['/cdp/json/list', '/cdp/json']) {
+  for (const pathname of ['/browser-cdp/json/list', '/browser-cdp/json']) {
     const status = await httpStatus(root + pathname, HEALTH_TIMEOUT_MS)
     if (status >= 200 && status < 300) return { ok: true }
   }
@@ -120,7 +126,7 @@ async function checkServes(args) {
   if (!wv.ok) down.push(`wv ${args.wvBase}`)
   return {
     ok: false,
-    reason: `serve 不健康：${down.join('、')} 未通过健康检查（GET /cdp/json/list，2s 超时或非 2xx）`,
+    reason: `serve 不健康：${down.join('、')} 未通过健康检查（GET /browser-cdp/json/list，2s 超时或非 2xx）`,
   }
 }
 
@@ -246,6 +252,57 @@ async function systemInfo(mp) {
   } catch (e) {
     return { pixelRatio: DPR, windowWidth: CSS_WIDTH, windowHeight: CSS_HEIGHT }
   }
+}
+
+/// 触点的四个坐标都写成同一个 CSS px 值：框架两侧取哪个字段都能落到同一点。
+function touchPoint(x, y) {
+  return { identifier: 1, pageX: x, pageY: y, clientX: x, clientY: y }
+}
+
+/// 在元素 bbox 中心起算，分步发 touchstart / touchmove / touchend。
+async function swipe(element, dx, dy) {
+  const offset = await element.offset()
+  const size = await element.size()
+  const startX = offset.left + size.width / 2
+  const startY = offset.top + size.height / 2
+  const start = touchPoint(startX, startY)
+  await element.touchstart({ touches: [start], changedTouches: [start] })
+  for (let step = 1; step <= SWIPE_STEPS; step++) {
+    const point = touchPoint(
+      startX + (dx * step) / SWIPE_STEPS,
+      startY + (dy * step) / SWIPE_STEPS,
+    )
+    await element.touchmove({ touches: [point], changedTouches: [point] })
+    await sleep(16)
+  }
+  const end = touchPoint(startX + dx, startY + dy)
+  await element.touchend({ touches: [], changedTouches: [end] })
+}
+
+/// 按 cases.json 的顺序执行动作；任一动作失败就抛错，由 collectCase 写进该页 error。
+async function runActions(mp, actions, label) {
+  if (!Array.isArray(actions) || actions.length === 0) return
+  for (const action of actions) {
+    if (action.type === 'wait') {
+      await sleep(action.ms)
+      continue
+    }
+    const page = await mp.currentPage()
+    if (!page) throw new Error(`${label} 动作失败（${action.type}）：当前没有页面`)
+    const element = await page.$(action.selector)
+    if (!element) {
+      throw new Error(`${label} 动作失败（${action.type}）：选择器 ${action.selector} 找不到元素`)
+    }
+    if (action.type === 'tap') {
+      await element.tap()
+    } else if (action.type === 'swipe') {
+      await swipe(element, action.dx, action.dy)
+    } else {
+      throw new Error(`${label} 动作失败：未知动作类型 ${action.type}`)
+    }
+    await sleep(ACTION_SETTLE_MS)
+  }
+  await sleep(ACTION_FINAL_WAIT_MS)
 }
 
 function edge(rect, name) {
@@ -636,6 +693,11 @@ async function collectCase(testCase, record, ctx) {
 
   await withTimeout(sky.reLaunch(pagePath), RELAUNCH_TIMEOUT_MS, `sky reLaunch ${pagePath} `)
   await sleep(waitMs)
+  await withTimeout(
+    runActions(sky, testCase.actions, `sky ${testCase.slug}`),
+    RECT_TIMEOUT_MS,
+    `sky 执行动作 `,
+  )
   const skyRect =
     mode === 'element'
       ? await withTimeout(rectOf(sky, testCase.target), RECT_TIMEOUT_MS, `sky 取 bbox(${testCase.target}) `)
@@ -644,6 +706,11 @@ async function collectCase(testCase, record, ctx) {
 
   await withTimeout(wv.reLaunch(pagePath), RELAUNCH_TIMEOUT_MS, `wv reLaunch ${pagePath} `)
   await sleep(waitMs)
+  await withTimeout(
+    runActions(wv, testCase.actions, `wv ${testCase.slug}`),
+    RECT_TIMEOUT_MS,
+    `wv 执行动作 `,
+  )
   const wvRect =
     mode === 'element'
       ? await withTimeout(rectOf(wv, testCase.target), RECT_TIMEOUT_MS, `wv 取 bbox(${testCase.target}) `)
@@ -842,20 +909,20 @@ async function main() {
 
   const sky = await withTimeout(
     automator.connect(`ws://${new URL(args.skyBase).host}/automator`, {
-      cdpBaseUrl: `${args.skyBase}/cdp`,
+      cdpBaseUrl: `${args.skyBase}/browser-cdp`,
     }),
     CONNECT_TIMEOUT_MS,
     '连接 skyline serve ',
   )
   const wv = await withTimeout(
     automator.connect(`ws://${new URL(args.wvBase).host}/automator`, {
-      cdpBaseUrl: `${args.wvBase}/cdp`,
+      cdpBaseUrl: `${args.wvBase}/browser-cdp`,
     }),
     CONNECT_TIMEOUT_MS,
     '连接 webview serve ',
   )
   const wvCdp = await withTimeout(
-    CdpSession.connect(`${args.wvBase}/cdp`),
+    CdpSession.connect(`${args.wvBase}/browser-cdp`),
     CONNECT_TIMEOUT_MS,
     '连接 webview CDP ',
   )

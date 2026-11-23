@@ -18,7 +18,7 @@
 use crate::input::json::JsonPositions;
 use crate::project::Project;
 use crate::rules::config::{anchor, warn};
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::at_span;
@@ -62,6 +62,24 @@ const PAGE_KEYS: &[(&str, &str, &str)] = &[
     ),
 ];
 
+/// 视觉用例：页面 JS 在 1.2s 后用 `wx.pageScrollTo` 把页面滚到 400。
+///
+/// 两端首帧一致（`#target` 都在 top 500）；动作之后 WebView 的页面根滚了 400，
+/// Skyline 的页面根不是滚动容器，`#target` 留在原处。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="stage">
+  <view class="marker" id="target">scrollTop = {{top}}</view>
+  <view class="tail">页尾</view>
+</view>"#,
+    wxss: ".stage { position: relative; height: 1400px; background: #f4f6fb; }\n.marker { position: absolute; left: 20px; top: 500px; width: 240px; height: 96px; background: #2f6fed; color: #ffffff; text-align: center; line-height: 96px; font-size: 16px; border-radius: 8px; }\n.tail { position: absolute; left: 20px; top: 1200px; font-size: 14px; color: #888; }\n",
+    js: Some(
+        "Page({\n  data: { top: 0 },\n  onPageScroll(e) { this.setData({ top: e.scrollTop }); },\n  onReady() {\n    setTimeout(() => { wx.pageScrollTo({ scrollTop: 400, duration: 0 }); }, 1200);\n  },\n});\n",
+    ),
+    expect: VisualExpect::Differ,
+    note: "两端首帧相同；1.2s 后 `wx.pageScrollTo(400)`：WebView 的页面根滚动 400（#target 从 top 500 到 100、文本变 400），Skyline 页面根不可滚，位置与文本都不变（同页的 `wx.pageScrollTo` 也会被 unsupported-api 报出）",
+    target: "#target",
+}];
+
 pub struct PageScrollApi;
 
 impl Rule for PageScrollApi {
@@ -71,6 +89,10 @@ impl Rule for PageScrollApi {
             severity: Severity::Warning,
             description: "页面级滚动生命周期 / 配置在 Skyline 下不生效：页面根不是滚动容器，改用 scroll-view",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -148,9 +170,34 @@ fn check_page_json(project: &Project, out: &mut Vec<Diagnostic>) {
 #[cfg(test)]
 mod tests {
     use crate::rules::Rule;
-    use crate::rules::testutil::js::{single, single_with_app};
+    use crate::rules::testutil::check_rule;
+    use crate::rules::testutil::js::{Fixture, single, single_with_app};
 
-    use super::PageScrollApi;
+    use super::{PageScrollApi, VISUAL_CASES};
+
+    /// 视觉用例的同一份 WXML/WXSS/JS 必须真的能触发本规则。
+    #[test]
+    fn visual_case_triggers_rule() {
+        let case = &VISUAL_CASES[0];
+        let fixture = Fixture::new("psa-visual");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", case.wxml)
+            .write("pages/index/index.wxss", case.wxss)
+            .write("pages/index/index.js", case.js.expect("视觉用例需要 JS"));
+        let diagnostics = check_rule(&fixture, &PageScrollApi);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.rule == PageScrollApi::ID),
+            "视觉用例未触发规则：{diagnostics:#?}"
+        );
+    }
 
     #[test]
     fn page_scroll_lifecycles_are_reported() {
