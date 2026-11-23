@@ -10,7 +10,7 @@
 //! 所以简写里的线型丢失只影响 line，color / style / thickness 仍然生效。
 
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{at_value, is_dynamic, is_ident, split_tokens};
@@ -28,6 +28,26 @@ impl TextDecorationLine {
     pub const ID: &'static str = "skyline/text-decoration-line";
 }
 
+/// 视觉用例：多线型让 line 回落到 `none`——长写与简写各一条。
+static VISUAL_CASES: &[VisualCase] = &[
+    VisualCase {
+        wxml: r#"<text class="label" id="target">两行线型</text>"#,
+        wxss: ".label { font-size: 20px; color: #222; text-decoration-line: underline line-through; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "长写声明两种线型：WebView 画出下划线与删除线，Skyline 只支持单值，line 回落到 none 什么都不画",
+        target: "#target",
+    },
+    VisualCase {
+        wxml: r#"<text class="label" id="target">简写多线型</text>"#,
+        wxss: ".label { font-size: 20px; color: #222; text-decoration: underline line-through; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "简写里的多线型同样让 line 失效：WebView 画出两种线，Skyline 不画线（简写其它子属性仍生效）",
+        target: "#target",
+    },
+];
+
 impl Rule for TextDecorationLine {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -35,6 +55,10 @@ impl Rule for TextDecorationLine {
             severity: Severity::Warning,
             description: "text-decoration-line 只支持单值；多值或特殊线型会让 line 回落到 none（简写里其它子属性仍生效）",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -100,7 +124,21 @@ mod tests {
     use crate::rules::Rule;
 
     use super::TextDecorationLine;
-    use crate::rules::testutil::wxss::{messages, page};
+    use crate::rules::testutil::check_rule;
+    use crate::rules::testutil::wxss::{Fixture, messages, page};
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture = Fixture::page("decoration-visual", case.wxml, case.wxss);
+            let hits = check_rule(&fixture, &TextDecorationLine)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == TextDecorationLine::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     #[test]
     fn text_decoration_line_reports_combinations() {

@@ -1,7 +1,7 @@
 //! filter / backdrop-filter 的函数限制。
 
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{at_value, is_dynamic, top_level_calls};
@@ -26,6 +26,19 @@ impl FilterLimit {
     pub const ID: &'static str = "skyline/filter-limit";
 }
 
+/// 视觉用例：多个滤镜函数组合在 Skyline 下不被支持。
+///
+/// WebView 先灰度再反相，红色块变成浅灰；Skyline 不会得到同样的处理结果，
+/// 色块保持明显不同的颜色。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="swatch" id="target"></view>"#,
+    wxss: ".swatch { width: 220px; height: 160px; background: #ff3b30; filter: grayscale(1) invert(1); }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`filter` 多函数组合在 Skyline 不被支持：WebView 把红色块灰化再反相成浅灰，Skyline 色块大面积保持不同颜色",
+    target: "#target",
+}];
+
 impl Rule for FilterLimit {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -33,6 +46,10 @@ impl Rule for FilterLimit {
             severity: Severity::Warning,
             description: "filter / backdrop-filter 使用了不支持的函数或组合",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -100,6 +117,20 @@ mod tests {
 
     use super::FilterLimit;
     use crate::rules::testutil::wxss::{Fixture, messages, page};
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture =
+                crate::rules::testutil::Fixture::page("filter-limit-visual", case.wxml, case.wxss);
+            let hits = crate::rules::testutil::check_rule(&fixture, &FilterLimit)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == FilterLimit::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     #[test]
     fn filter_limit_reports_url_drop_shadow_and_combinations() {

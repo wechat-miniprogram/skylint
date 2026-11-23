@@ -74,7 +74,7 @@ impl Rule for ShareElementKey {
                 Some(attr) => attr.value.as_deref().unwrap_or("").trim(),
             };
             // 空 key（`key=""` 或裸属性）等同于没写：引擎按 `tag.isNotEmpty` 决定是否
-            // 建立 hero 关系（`package/skyline/lib/widgets/hero.dart:400`），空串直接失效。
+            // 建立 hero 关系（Skyline 引擎的 hero 实现里），空串直接失效。
             if key.is_empty() {
                 out.push(
                 element_diagnostic(

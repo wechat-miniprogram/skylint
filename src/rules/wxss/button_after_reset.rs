@@ -4,15 +4,17 @@
 //! 常见 `button::after { border: 0 }`。Skyline 下伪元素本身能画，但按钮的默认边框
 //! 不是它画的：这条重置不会去掉按钮上那圈 1px 描边（背景同理）。
 //!
-//! 判据只看选择器与块内声明，不做 WXML 可达性推断：主体是标签 `button`（`.noborder`、
-//! `button.foo` 都算，`view:after`、`.icon:after` 不算），伪元素是 `::after` / `:after`，
-//! 且块里确实有 `border` / `border-*` 或 `background` / `background-*` 声明。只写
-//! `content` / `display` 的块在 Skyline 下没有副作用，不报。
+//! 判据先看选择器与块内声明：主体是标签 `button`（`button.foo` 也算），或主体是单个
+//! class，伪元素是 `::after` / `:after`，且块里确实有 `border` / `border-*` 或
+//! `background` / `background-*` 声明。class 主体还要回到 WXML：只有该类在可见单元里
+//! 命中的元素**全是** `<button>` 才报，有一处不是就不报（宁可漏报）。只写 `content` /
+//! `display` 的块在 Skyline 下没有副作用，不报。
 //!
 //! 修法：在按钮选择器上直接写 `border: 0`，背景写 `background: transparent`。
 
 use crate::input::wxss::{SelectorPart, WxssDeclaration, WxssPseudo, WxssRule, WxssSelector};
-use crate::project::Project;
+use crate::matcher::{Dialect, Tree, Tri};
+use crate::project::{Project, StyleSheet};
 use crate::{Diagnostic, Severity};
 
 use super::visit_matching_rules;
@@ -37,16 +39,23 @@ impl Rule for ButtonAfterReset {
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         visit_matching_rules(project, |sheet, rule, out| {
-            let Some(pseudo) = after_pseudo(rule) else {
+            let Some(after) = after_block(rule) else {
                 return;
             };
             let Some(declaration) = reset_declaration(rule) else {
                 return;
             };
             // 按钮选择器上已经写了同族重置，这条伪元素声明就没有可修的内容了。
-            if already_reset(sheet, rule, &declaration.name) {
+            if already_reset(sheet, &after.base, &declaration.name) {
                 return;
             }
+            // 类主体只有在 WXML 里确实全落在 `<button>` 上时才成立。
+            if matches!(after.subject, Subject::Class)
+                && !only_button_elements(project, sheet, &after.base)
+            {
+                return;
+            }
+            let pseudo = after.pseudo;
             let (line, column) = sheet.doc.position(pseudo.offset);
             let (end_line, end_column) = sheet.doc.position(pseudo.offset + pseudo.len);
             out.push(
@@ -68,55 +77,108 @@ impl Rule for ButtonAfterReset {
     }
 }
 
-/// 找到带 `::after` / `:after`、且主体是 `button` 的选择器上的伪元素位置。
-fn after_pseudo(rule: &WxssRule) -> Option<&WxssPseudo> {
-    rule.selectors
-        .iter()
-        .filter(|selector| is_button_after(selector))
-        .find_map(|selector| {
-            selector
-                .pseudos
-                .iter()
-                .find(|pseudo| pseudo.name == "after")
-        })
+/// 命中的 `::after` 块：伪元素、去掉伪元素后的选择器、伪元素的承载主体。
+struct After<'a> {
+    pseudo: &'a WxssPseudo,
+    /// 选择器去掉 `::after` 后的原文；检查元素自身是否已重置、以及 class 的 WXML 归属。
+    base: String,
+    subject: Subject,
 }
 
-/// 选择器主体（最后一个复合选择器）是不是标签 `button`。
-fn is_button_after(selector: &WxssSelector) -> bool {
+/// 伪元素的承载主体。只有这两种才算按钮：标签 `button`、单个 class。
+enum Subject {
+    Tag,
+    Class,
+}
+
+/// 找到 `::after` / `:after` 块，并确认它的主体是标签 `button` 或单个 class。
+fn after_block(rule: &WxssRule) -> Option<After<'_>> {
+    rule.selectors.iter().find_map(|selector| {
+        let pseudo = selector
+            .pseudos
+            .iter()
+            .find(|pseudo| pseudo.name == "after")?;
+        let base = strip_after(&selector.text)?.trim().to_string();
+        let subject = subject_of(selector)?;
+        Some(After {
+            pseudo,
+            base,
+            subject,
+        })
+    })
+}
+
+/// 选择器主体（最后一个 compound）是标签 `button` 还是单个 class。
+fn subject_of(selector: &WxssSelector) -> Option<Subject> {
     if !selector.parts.contains(&SelectorPart::Other) {
-        // 单 compound：部件顺序稳定，第一个部件就是选择器开头。
-        return matches!(selector.parts.first(), Some(SelectorPart::Tag(tag)) if tag == "button");
+        // 单 compound：部件顺序稳定，去掉结尾的 `::after` 后只剩一个主体部件。
+        let mut parts = selector.parts.clone();
+        if matches!(parts.last(), Some(SelectorPart::Pseudo { name, element: true, .. }) if name == "after")
+        {
+            parts.pop();
+        }
+        return match parts.as_slice() {
+            [SelectorPart::Tag(tag), ..] if tag.eq_ignore_ascii_case("button") => {
+                Some(Subject::Tag)
+            }
+            [SelectorPart::Class(_)] => Some(Subject::Class),
+            _ => subject_from_text(selector),
+        };
     }
-    // 组合 / 嵌套写法：按原文取最后一个 compound，去掉结尾的伪元素再看标签。
-    last_compound(&selector.text)
-        .and_then(strip_after)
-        .and_then(tag_of)
-        .is_some_and(|tag| tag.eq_ignore_ascii_case("button"))
+    // 组合 / 嵌套写法：按原文取最后一个 compound，去掉结尾的伪元素再看主体。
+    subject_from_text(selector)
+}
+
+fn subject_from_text(selector: &WxssSelector) -> Option<Subject> {
+    let compound = last_compound(&selector.text).and_then(strip_after)?;
+    if tag_of(compound).is_some_and(|tag| tag.eq_ignore_ascii_case("button")) {
+        Some(Subject::Tag)
+    } else {
+        class_of(compound).map(|_| Subject::Class)
+    }
+}
+
+/// `selector` 在可见单元里命中的元素是不是**全都**是 `<button>`，且至少命中一个。
+///
+/// 只认确定的静态命中：动态 class 让某处「可能是这个类」时无法证明它一定是按钮，
+/// 按「宁可漏报」跳过整条。
+fn only_button_elements(project: &Project, sheet: &StyleSheet, selector: &str) -> bool {
+    let mut matched = false;
+    for scope in &sheet.scopes {
+        for path in super::scope_wxml(project, scope) {
+            let Some(doc) = crate::rules::wxml::load_doc(project, path) else {
+                return false;
+            };
+            let tree = Tree::new(&doc);
+            for element in doc.elements() {
+                match tree.matches(element, selector, Dialect::WebView) {
+                    Tri::Yes if element.tag == "button" => matched = true,
+                    Tri::Yes | Tri::Unknown => return false,
+                    Tri::No => {}
+                }
+            }
+        }
+    }
+    matched
 }
 
 /// 同一份样式里，去掉伪元素后的选择器上是否已经声明了同族属性。
 ///
 /// `button.noborder:after { border: 0 }` 只有在按钮本身没有重置时才值得报；
 /// 已经写了 `button.noborder { border: 0 }` 的，伪元素那条留着也无害。
-fn already_reset(sheet: &crate::project::StyleSheet, rule: &WxssRule, reset_name: &str) -> bool {
+fn already_reset(sheet: &StyleSheet, base: &str, reset_name: &str) -> bool {
     let Some(family) = reset_family(reset_name) else {
         return false;
     };
-    rule.selectors
-        .iter()
-        .filter(|selector| is_button_after(selector))
-        .filter_map(|selector| strip_after(&selector.text).map(str::to_string))
-        .any(|base| {
-            sheet.doc.rules.iter().any(|candidate| {
-                candidate.selectors.iter().any(|selector| {
-                    selector.text.trim() == base
-                        && candidate
-                            .declarations
-                            .iter()
-                            .any(|declaration| reset_family(&declaration.name) == Some(family))
-                })
-            })
+    sheet.doc.rules.iter().any(|candidate| {
+        candidate.selectors.iter().any(|selector| {
+            selector.text.trim() == base
+                && candidate
+                    .declarations
+                    .iter()
+                    .any(|declaration| reset_family(&declaration.name) == Some(family))
         })
+    })
 }
 
 /// 属性名属于哪一族重置：`border` / `background`。
@@ -184,6 +246,20 @@ fn tag_of(compound: &str) -> Option<&str> {
         .find(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-' || ch == '_'))
         .unwrap_or(compound.len());
     (end > 0).then(|| &compound[..end])
+}
+
+/// 整个 compound 就是单个 class（`.foo`）时返回类名。
+///
+/// `.a.b`、`.a:hover`、`.a x` 这类无法断言「元素只有这一个身份」的写法一律不猜。
+fn class_of(compound: &str) -> Option<&str> {
+    let name = compound.strip_prefix('.')?;
+    let first = name.chars().next()?;
+    let valid = !first.is_ascii_digit()
+        && first != '-'
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_');
+    valid.then_some(name)
 }
 
 #[cfg(test)]
@@ -276,5 +352,51 @@ mod tests {
         assert_eq!(diags.len(), 1, "{diags:#?}");
         assert_eq!((diags[0].line, diags[0].column), (1, 13));
         assert_eq!(diags[0].end_column, 20);
+    }
+
+    /// 类只落在 `<button>` 上：伪元素重置无效，要报。
+    #[test]
+    fn class_used_only_on_buttons_is_reported() {
+        let (_fixture, project) = page(
+            "class-after-button",
+            r#"<view><button class="plain"/><button class="plain"/></view>"#,
+            ".plain::after { border: 0; }",
+        );
+        let out = messages(&ButtonAfterReset, &project);
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert!(out[0].contains("Skyline 下不生效"), "{out:?}");
+    }
+
+    /// 同一个类也用在 `<view>` 上：无法断定是按钮，不报。
+    #[test]
+    fn class_used_on_a_view_too_is_ignored() {
+        let (_fixture, project) = page(
+            "class-after-mixed",
+            r#"<view class="plain"/><button class="plain"/>"#,
+            ".plain::after { border: 0; }",
+        );
+        assert_eq!(messages(&ButtonAfterReset, &project), Vec::<String>::new());
+    }
+
+    /// 按钮元素自己已经写了同族重置，伪元素那条没有可修的内容。
+    #[test]
+    fn class_after_is_silenced_by_reset_on_the_element() {
+        let (_fixture, project) = page(
+            "class-after-fixed",
+            r#"<button class="plain"/>"#,
+            ".plain { border: 0; } .plain:after { border: 0; }",
+        );
+        assert_eq!(messages(&ButtonAfterReset, &project), Vec::<String>::new());
+    }
+
+    /// 类选择器 + `::after` 只写内容声明：没有副作用，不报。
+    #[test]
+    fn class_after_content_only_is_ignored() {
+        let (_fixture, project) = page(
+            "class-after-content",
+            r#"<button class="plain"/>"#,
+            ".plain::after { content: \"\"; display: block; }",
+        );
+        assert_eq!(messages(&ButtonAfterReset, &project), Vec::<String>::new());
     }
 }

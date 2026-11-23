@@ -23,10 +23,9 @@
 //! 自己的布局树，padding 正常生效。
 
 use crate::project::Project;
-use crate::rules::Rule;
-use crate::rules::RuleMeta;
 use crate::rules::wxml::{Reach, element_diagnostic, for_each_element};
 use crate::rules::wxss::natives::{self, NATIVES, Native, NativeKind};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 pub struct NativePadding;
@@ -61,6 +60,20 @@ impl NativePadding {
     }
 }
 
+/// 视觉用例：`swiper` 的 CSS padding 在 WebView 内缩子节点，Skyline 的子节点仍是独立布局根。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<swiper class="slides">
+  <swiper-item class="page">
+    <view class="inner" id="target">页 1</view>
+  </swiper-item>
+</swiper>"#,
+    wxss: ".slides { width: 300px; height: 160px; padding: 20px; background: #dcdcdc; }\n.page { height: 120px; }\n.inner { width: 120px; height: 60px; background: #f56c6c; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`swiper` 的 `padding: 20px` 在 WebView 里把内容内缩 20px，Skyline 的子节点是独立布局根，红块贴左上角",
+    target: "#target",
+}];
+
 impl Rule for NativePadding {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -68,6 +81,10 @@ impl Rule for NativePadding {
             severity: Severity::Warning,
             description: "内置组件上的 CSS padding 在 Skyline 下不内缩子节点",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -142,6 +159,16 @@ mod tests {
 
     const SWIPER: &str = r#"<swiper class="slides"><swiper-item class="page"><view class="inner"/></swiper-item></swiper>"#;
     const SCROLL: &str = r#"<scroll-view class="list"><view class="item"/></scroll-view>"#;
+
+    #[test]
+    fn visual_case_swiper_padding_is_reported() {
+        let diagnostics = check(
+            "native-pad-visual",
+            r#"<swiper class="slides"><swiper-item class="page"><view class="inner" id="target">页 1</view></swiper-item></swiper>"#,
+            ".slides { width: 300px; height: 160px; padding: 20px; background: #dcdcdc; }\n.page { height: 120px; }\n.inner { width: 120px; height: 60px; background: #f56c6c; }",
+        );
+        assert!(!diagnostics.is_empty(), "{diagnostics:#?}");
+    }
 
     #[test]
     fn border_box_tail_component_is_reported() {

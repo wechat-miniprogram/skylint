@@ -13,6 +13,7 @@ pub(crate) mod cascade;
 pub mod component_attribute;
 pub mod component_children;
 pub(crate) mod emit;
+pub mod hidden_binding;
 pub mod horizontal_scroll_enable_flex;
 pub mod image_block_layout;
 pub mod inline_display_ignored;
@@ -41,6 +42,7 @@ pub mod webview_worklet_binding;
 
 pub use component_attribute::ComponentAttribute;
 pub use component_children::ComponentChildren;
+pub use hidden_binding::HiddenBinding;
 pub use horizontal_scroll_enable_flex::HorizontalScrollEnableFlex;
 pub use image_block_layout::ImageBlockLayout;
 pub use inline_display_ignored::InlineDisplayIgnored;

@@ -52,7 +52,7 @@
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::WxmlNode;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::wxml_graph::WxmlGraph;
 
 use super::branch::element_children;
@@ -263,6 +263,25 @@ fn virtual_host_top_tags<'a>(
 
 pub struct ScrollViewFamily;
 
+/// 视觉用例：`<scroll-view type="nested">` 的直接子节点只认 header / body。
+///
+/// 另外补一个多余子节点：Skyline 把它整段丢弃（`#target` 里看不到红色块），
+/// WebView 的 scroll-view 只是普通滚动容器，会把它排在 header / body 之后。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="page">
+  <scroll-view type="nested" class="scroller" id="target">
+    <nested-scroll-header><view class="header">头部</view></nested-scroll-header>
+    <nested-scroll-body><view class="body">主体</view></nested-scroll-body>
+    <view class="extra">多余子节点</view>
+  </scroll-view>
+</view>"#,
+    wxss: ".scroller { height: 300px; }\n.header { height: 120px; background: #cde; }\n.body { height: 120px; background: #edc; }\n.extra { height: 60px; background: #f00; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`<scroll-view type=\"nested\">` 只渲染 header / body：Skyline 丢掉 `.extra`，WebView 照常把它渲染出来",
+    target: "#target",
+}];
+
 impl Rule for ScrollViewFamily {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -270,6 +289,10 @@ impl Rule for ScrollViewFamily {
             severity: Severity::Error,
             description: "scroll-view 家族组件的结构约束（挂载位置 / 顺序 / 唯一性 / 必需属性 / 关联容器）",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -403,6 +426,28 @@ mod tests {
 
     fn check(fixture: &Fixture) -> Vec<crate::Diagnostic> {
         check_rule(fixture, &ScrollViewFamily)
+    }
+
+    /// 视觉用例同源的页面：nested 模式下多写一个直接子节点会被整段丢弃。
+    #[test]
+    fn visual_case_extra_child_of_nested_scroll_is_reported() {
+        let fixture = Fixture::page(
+            "family-visual-extra",
+            r#"<view class="page">
+  <scroll-view type="nested" class="scroller" id="target">
+    <nested-scroll-header><view class="header">头部</view></nested-scroll-header>
+    <nested-scroll-body><view class="body">主体</view></nested-scroll-body>
+    <view class="extra">多余子节点</view>
+  </scroll-view>
+</view>"#,
+            ".scroller { height: 300px; }\n.header { height: 120px; }\n.body { height: 120px; }\n.extra { height: 60px; }\n",
+        );
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0].message.contains("整段丢弃"),
+            "{diagnostics:#?}"
+        );
     }
 
     /// 通过 `<slot>` 传进组件的节点，按**渲染树**判祖先：

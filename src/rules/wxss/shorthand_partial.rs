@@ -6,7 +6,7 @@
 
 use crate::input::wxss::{ValueToken, WxssDeclaration, WxssDoc};
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{at_value, is_dynamic, token_text};
@@ -23,6 +23,19 @@ impl ShorthandPartial {
     pub const ID: &'static str = "skyline/shorthand-partial";
 }
 
+/// 视觉用例：`background` 简写里的盒关键字被丢弃。
+///
+/// `background: … content-box` 在 WebView 把背景裁到内容盒（padding 留白），
+/// Skyline 丢掉这个子属性后按初始的 border-box 绘制，padding 也被涂满。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="card" id="target">内容</view>"#,
+    wxss: ".card { box-sizing: content-box; width: 200px; height: 100px; padding: 24px; background: #ff3b30 content-box; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`background: … content-box` 的盒关键字在 Skyline 被丢弃：WebView 只涂内容区（padding 留白），Skyline 把 padding 也涂满",
+    target: "#target",
+}];
+
 impl Rule for ShorthandPartial {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -30,6 +43,10 @@ impl Rule for ShorthandPartial {
             severity: Severity::Warning,
             description: "简写属性在 Skyline 下部分生效：值里属于不受支持子属性的那一段被丢弃",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -156,6 +173,23 @@ mod tests {
 
     use super::ShorthandPartial;
     use crate::rules::testutil::wxss::{messages, page};
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture = crate::rules::testutil::Fixture::page(
+                "shorthand-partial-visual",
+                case.wxml,
+                case.wxss,
+            );
+            let hits = crate::rules::testutil::check_rule(&fixture, &ShorthandPartial)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == ShorthandPartial::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     #[test]
     fn unsupported_sub_properties_in_shorthands_are_reported() {

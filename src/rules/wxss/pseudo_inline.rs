@@ -23,8 +23,9 @@
 //!
 //! 同时满足才报：
 //!
-//! 1. 伪元素规则里有**非空字符串** `content`（`content: ""` / `none` / `normal`
-//!    不产生可见盒子；`var()` / `attr()` 静态不可知，放过）；
+//! 1. 伪元素规则要么有**非空字符串** `content`，要么 `content: ""` 但规则自己画得出
+//!    尺寸（非零宽高 / 背景 / 边框）——后者是分隔线写法，盒子照样占位
+//!    （`none` / `normal` 不建盒；`var()` / `attr()` 静态不可知，放过）；
 //! 2. 宿主是 `<view>`（其它内置组件有自己的内部布局，自定义组件的子树静态不可知，
 //!    都不臆测）；
 //! 3. 宿主自己的 `display` 不是 `flex` / `inline-flex` / `grid`（显式 flex 时两端
@@ -44,15 +45,30 @@ use crate::input::wxml::{WxmlDoc, WxmlNode};
 use crate::input::wxss::WxssSelector;
 use crate::matcher::{Dialect, Tree, Tri};
 use crate::project::{Project, StyleSheet};
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 use super::scope_wxml;
+use crate::input::wxss::WxssDeclaration;
 use crate::rules::wxml::inline_run::is_inline_member;
+use crate::rules::wxml::style::is_zero;
 use crate::rules::wxml::{cascade_entries_with, is_flex_value, load_doc};
 
 pub const ID: &str = "skyline/pseudo-inline-layout";
 
 pub struct PseudoInlineLayout;
+
+/// 视觉用例：伪元素与宿主里的文本并排。
+///
+/// WebView 下 `::before` 是 inline 盒，和文本同一行；Skyline 下非文本宿主的伪节点
+/// 是块级 / flex 子盒，独占一行，宿主因此高出一行。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="tip" id="target">提交后不可取消</view>"#,
+    wxss: ".tip { width: 240px; padding: 10px; background: #f5f5f5; color: #333; font-size: 14px; line-height: 20px; }\n.tip::before { content: \"!\"; color: #e54d42; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "伪元素与文本并排：WebView 同一行，Skyline 下伪元素是块级盒、会多占一行（宿主高度不同）",
+    target: "#target",
+}];
 
 impl Rule for PseudoInlineLayout {
     fn meta(&self) -> RuleMeta {
@@ -61,6 +77,10 @@ impl Rule for PseudoInlineLayout {
             severity: Severity::Warning,
             description: "伪元素与文本并排时 Skyline 下会换行：伪元素是块级盒，WebView 下是 inline",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -79,7 +99,11 @@ impl Rule for PseudoInlineLayout {
                 else {
                     continue;
                 };
-                if !has_visible_content(&content.value) {
+                // `content: ""` 只是没有文字，伪节点仍会建盒：只要规则自己画得出尺寸
+                // （宽高 / 背景 / 边框），它在两端照样参与排版——分隔线就是这么写的。
+                let visible = has_visible_content(&content.value)
+                    || (is_empty_string_content(&content.value) && draws_a_box(&rule.declarations));
+                if !visible {
                     continue;
                 }
                 let Some(selector) = rule.selectors.iter().find_map(|selector| {
@@ -151,19 +175,46 @@ fn strip_trailing_pseudo<'a>(text: &'a str, name: &str) -> Option<&'a str> {
 
 /// `content` 是否会生成一个非空盒子。
 ///
-/// 只认字符串字面量：`content: "!"`。空串、`none` / `normal` 不产生可见内容；
+/// 只认字符串字面量：`content: "!"`。空串不生成文字（但仍会建盒，见
+/// [`is_empty_string_content`]）；`none` / `normal` 不产生可见内容；
 /// `var()` / `attr()` / `counter()` 在静态阶段无法知道最终值，按漏报处理。
 fn has_visible_content(value: &str) -> bool {
+    string_literal(value).is_some_and(|inner| !inner.is_empty())
+}
+
+fn is_empty_string_content(value: &str) -> bool {
+    string_literal(value).is_some_and(str::is_empty)
+}
+
+/// 取 `""` / `''` 里的字符串内容；不是字符串字面量时返回 `None`。
+fn string_literal(value: &str) -> Option<&str> {
     let value = value.trim();
-    let inner = value
+    value
         .strip_prefix('"')
         .and_then(|rest| rest.strip_suffix('"'))
         .or_else(|| {
             value
                 .strip_prefix('\'')
                 .and_then(|rest| rest.strip_suffix('\''))
-        });
-    inner.is_some_and(|inner| !inner.is_empty())
+        })
+}
+
+/// 规则自己画不画得出一块东西：非零宽高、背景不是透明、或带边框 / 阴影。
+///
+/// 只在 `content: ""` 时用——没有文字时，只有它确实占位才会改变排版。
+fn draws_a_box(declarations: &[WxssDeclaration]) -> bool {
+    declarations.iter().any(|declaration| {
+        let name = declaration.name.trim().to_ascii_lowercase();
+        let value = declaration.value.trim().to_ascii_lowercase();
+        match name.as_str() {
+            "width" | "height" | "min-width" | "min-height" => !is_zero(&value),
+            name if name.starts_with("background") || name.starts_with("border") => {
+                !matches!(value.as_str(), "" | "none" | "transparent" | "0")
+            }
+            "box-shadow" => value != "none",
+            _ => false,
+        }
+    })
 }
 
 /// 伪元素本身是否脱离文档流 / 不生成盒子。
@@ -279,6 +330,19 @@ mod tests {
     use crate::rules::Rule;
     use crate::rules::testutil::wxml::Fixture;
 
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture = Fixture::page("pseudo-inline-visual", case.wxml, case.wxss);
+            let hits = crate::rules::testutil::check_rule(&fixture, &PseudoInlineLayout)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == super::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
+
     fn check(fixture: &Fixture) -> Vec<crate::Diagnostic> {
         PseudoInlineLayout.check(&fixture.project())
     }
@@ -367,6 +431,30 @@ mod tests {
             "pseudo-empty",
             r#"<view class="warn">文案</view>"#,
             r#".warn::before { content: ""; }"#,
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 分隔线写法：`content: ""` 只是没文字，1px 宽的盒子照样占位。
+    #[test]
+    fn empty_content_that_paints_a_box_is_reported() {
+        let diagnostics = check(&page(
+            "pseudo-empty-separator",
+            r#"<view class="row"><view class="sep">随时退</view></view>"#,
+            r#".sep { display: inline-block; }
+               .sep::before { content: ""; display: inline-block; width: 1px; height: 18rpx; background: rgba(0,0,0,.2); margin: 0 8rpx; }"#,
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("::before"));
+    }
+
+    /// 空串 + 只有透明的着色声明：不出盒子，不报。
+    #[test]
+    fn empty_content_with_transparent_paint_is_skipped() {
+        let diagnostics = check(&page(
+            "pseudo-empty-transparent",
+            r#"<view class="warn">文案</view>"#,
+            r#".warn::before { content: ""; background: transparent; }"#,
         ));
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }

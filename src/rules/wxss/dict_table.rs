@@ -31,20 +31,19 @@ const UNSUPPORTED_PROPERTIES: &[(&str, &str)] = &[
     ("border-image-repeat", "无替代"),
     (
         "clip-path",
-
         "裁切动画改用外层 `overflow: hidden` + 内层 `transform` 位移",
     ), // css_property_names.h 无该 id，声明整条丢弃
     ("text-decoration-thickness", "无替代"), // 属性支持表
-    ("background-attachment", "无替代"), // 属性支持表
-    ("background-clip", "无替代"),    // 属性支持表
-    ("background-origin", "无替代"),  // 属性支持表
-    ("mask-origin", "无替代"),        // 属性支持表（一格多属性拆分）
-    ("mask-clip", "无替代"),          // 属性支持表（一格多属性拆分）
-    ("mask-mode", "无替代"),          // 属性支持表（一格多属性拆分）
-    ("justify-items", "无替代"),      // 属性支持表
-    ("list-style-type", "无替代"),    // 属性支持表（一格多属性拆分）
-    ("list-style-image", "无替代"),   // 属性支持表（一格多属性拆分）
-    ("list-style-position", "无替代"), // 属性支持表（一格多属性拆分）
+    ("background-attachment", "无替代"),     // 属性支持表
+    ("background-clip", "无替代"),           // 属性支持表
+    ("background-origin", "无替代"),         // 属性支持表
+    ("mask-origin", "无替代"),               // 属性支持表（一格多属性拆分）
+    ("mask-clip", "无替代"),                 // 属性支持表（一格多属性拆分）
+    ("mask-mode", "无替代"),                 // 属性支持表（一格多属性拆分）
+    ("justify-items", "无替代"),             // 属性支持表
+    ("list-style-type", "无替代"),           // 属性支持表（一格多属性拆分）
+    ("list-style-image", "无替代"),          // 属性支持表（一格多属性拆分）
+    ("list-style-position", "无替代"),       // 属性支持表（一格多属性拆分）
     ("text-transform", "改用 WXML 里预先转换好的文本"), // css_property_names.h 无该属性 id，声明整条丢弃
     (
         "user-select",

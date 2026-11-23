@@ -27,13 +27,46 @@ use crate::project::Project;
 use crate::{Diagnostic, Severity};
 
 use super::visit_matching_rules;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 pub struct NoPseudo;
 
 impl NoPseudo {
     pub const ID: &'static str = "skyline/no-pseudo";
 }
+
+/// 视觉用例：两条失败路径各一例。
+///
+/// - `:is()` 属于「整条规则被跳过」：WebView 命中后应用样式，Skyline 块内声明全不生效。
+/// - `:nth-of-type()` 属于「条件被丢弃、规则照常生效」：WebView 只命中第二项，
+///   Skyline 把条件丢掉后命中全部同类节点。
+///
+/// `::placeholder` 只能挂在原生 `input` 上才有可见宿主；本用例集不使用原生组件，
+/// 所以「跳过」这一分支由 `:is()` 代表。
+static VISUAL_CASES: &[VisualCase] = &[
+    VisualCase {
+        wxml: r#"<view class="wrap">
+  <view class="badge on" id="target">NEW</view>
+</view>"#,
+        wxss: ".wrap { padding: 16px; background: #f5f5f5; }\n.badge { width: 120px; height: 32px; line-height: 32px; text-align: center; color: #fff; background: #999; }\n.badge:is(.on) { background: #e54d42; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "`:is()` 在 Skyline 下让整条规则被跳过（徽标保持灰色），WebView 命中后变红",
+        target: "#target",
+    },
+    VisualCase {
+        wxml: r#"<view class="list">
+  <view class="item" id="target">第一项</view>
+  <view class="item">第二项</view>
+  <view class="item">第三项</view>
+</view>"#,
+        wxss: ".list { padding: 12px; background: #f5f5f5; }\n.item { height: 40px; line-height: 40px; padding-left: 12px; background: #fff; }\n.item:nth-of-type(2) { background: #e54d42; color: #fff; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "`:nth-of-type(2)` 在 Skyline 下只丢条件、规则仍生效：三项全变红，WebView 只有第二项",
+        target: "#target",
+    },
+];
 
 impl Rule for NoPseudo {
     fn meta(&self) -> RuleMeta {
@@ -42,6 +75,10 @@ impl Rule for NoPseudo {
             severity: Severity::Warning,
             description: "Skyline 不支持该伪类/伪元素：条件被丢弃（命中范围变大）或整条规则被跳过（声明不生效）",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -144,6 +181,20 @@ mod tests {
 
     use super::NoPseudo;
     use crate::rules::testutil::wxss::{Fixture, messages, page};
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture =
+                crate::rules::testutil::Fixture::page("no-pseudo-visual", case.wxml, case.wxss);
+            let hits = crate::rules::testutil::check_rule(&fixture, &NoPseudo)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == NoPseudo::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     #[test]
     fn no_pseudo_reports_unsupported_pseudos() {

@@ -16,7 +16,7 @@ use crate::input::wxml::WxmlDoc;
 use crate::input::wxss::WxssSelector;
 use crate::matcher::Tri;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 pub struct MediaQuery;
@@ -25,6 +25,19 @@ impl MediaQuery {
     pub const ID: &'static str = "skyline/media-query";
 }
 
+/// 视觉用例：恒不成立的媒体条件在 Skyline 下被丢弃，块内声明无条件生效。
+///
+/// 375px 视口下 `min-width: 5000px` 必然不成立，WebView 只用基础声明；
+/// Skyline 不解析条件，后写的块内声明生效。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="panel" id="target">面板</view>"#,
+    wxss: ".panel { height: 40px; line-height: 40px; text-align: center; background: #007aff; color: #fff; }\n@media (min-width: 5000px) { .panel { height: 160px; line-height: 160px; background: #ff3b30; } }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`@media (min-width: 5000px)` 恒不成立：WebView 保持 40px 蓝底，Skyline 丢弃条件后块内声明无条件生效，变成 160px 红底",
+    target: "#target",
+}];
+
 impl Rule for MediaQuery {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -32,6 +45,10 @@ impl Rule for MediaQuery {
             severity: Severity::Warning,
             description: "媒体查询条件在 Skyline 下被丢弃，块内声明对全部设备生效",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -130,6 +147,20 @@ mod tests {
 
     fn check(name: &str, wxml: &str, wxss: &str) -> Vec<crate::Diagnostic> {
         wxss::check(&MediaQuery, name, wxml, wxss)
+    }
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture =
+                crate::rules::testutil::Fixture::page("media-query-visual", case.wxml, case.wxss);
+            let hits = crate::rules::testutil::check_rule(&fixture, &MediaQuery)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == MediaQuery::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
     }
 
     #[test]

@@ -17,7 +17,7 @@ use crate::rules::wxml::{
     ElementSite, element_diagnostic, flex_container, for_each_element, is_out_of_flow,
     resolved_property_with,
 };
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 pub const ID: &str = "skyline/inline-display-ignored";
 
@@ -30,6 +30,19 @@ const TEXT_CONTAINERS: [&str; 2] = ["text", "span"];
 
 pub struct InlineDisplayIgnored;
 
+/// 视觉用例：同一段 WXML/WXSS 两端各渲一次，看 `#target` 的几何与像素。
+///
+/// `display: inline` 的 `<view>`：WebView 收缩到文字宽、与兄弟同排；
+/// Skyline 忽略这条声明，仍是撑满父宽的块级盒。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="row"><view class="a" id="target">甲</view><view class="b">乙</view></view>"#,
+    wxss: ".row { padding: 10px; }\n.a { display: inline; background: #cde; }\n.b { background: #edc; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "WebView 的 display:inline 让 <view> 收缩到文字宽并与兄弟同排；Skyline 忽略它，仍是撑满父宽的块级盒",
+    target: "",
+}];
+
 impl Rule for InlineDisplayIgnored {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -37,6 +50,10 @@ impl Rule for InlineDisplayIgnored {
             severity: Severity::Warning,
             description: "非文本元素上的 `display: inline` 在 Skyline 被忽略，元素仍按块级盒布局",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -80,7 +97,7 @@ fn declares_inline(project: &Project, tree: &Tree<'_>, element: &WxmlElement) ->
 
 #[cfg(test)]
 mod tests {
-    use super::{ID, InlineDisplayIgnored};
+    use super::{ID, InlineDisplayIgnored, VISUAL_CASES};
     use crate::rules::testutil::wxml::{Fixture, check_rule};
 
     fn count(wxml: &str, wxss: &str) -> usize {
@@ -144,5 +161,12 @@ mod tests {
             ),
             0
         );
+    }
+
+    /// 视觉用例的同一份 WXML/WXSS 必须真的能触发本规则。
+    #[test]
+    fn visual_case_triggers_rule() {
+        let case = &VISUAL_CASES[0];
+        assert!(count(case.wxml, case.wxss) >= 1, "视觉用例未触发规则");
     }
 }

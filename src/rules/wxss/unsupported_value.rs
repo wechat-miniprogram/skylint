@@ -19,7 +19,7 @@ use std::rc::Rc;
 
 use crate::input::wxml::WxmlDoc;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::dict_table::{BORDER_STYLE_PROPERTIES, normalize_value, table};
@@ -111,6 +111,37 @@ impl UnsupportedValue {
     pub const ID: &'static str = "skyline/unsupported-value";
 }
 
+/// 视觉用例：两种「值不支持」的落点。
+///
+/// - `display: grid` 回落到初始的 flex（Skyline 默认列向），网格变竖排。
+/// - `position: sticky` 回落到 relative，`top` 立即生效、元素下移并盖住内容。
+static VISUAL_CASES: &[VisualCase] = &[
+    VisualCase {
+        wxml: r#"<view class="grid">
+  <view class="cell a">1</view>
+  <view class="cell b" id="target">2</view>
+  <view class="cell c">3</view>
+  <view class="cell d">4</view>
+</view>"#,
+        wxss: ".grid { display: grid; grid-template-columns: 80px 80px; width: 200px; padding: 8px; background: #eee; }\n.cell { width: 80px; height: 50px; line-height: 50px; text-align: center; color: #fff; }\n.a { background: #e54d42; }\n.b { background: #4caf50; }\n.c { background: #2196f3; }\n.d { background: #f0a020; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "`display: grid` 在 Skyline 下回落到初始的 flex 列布局：WebView 里第二格在右上方，Skyline 里纵向排列到下方",
+        target: "#target",
+    },
+    VisualCase {
+        wxml: r#"<view class="page">
+  <view class="bar" id="target">吸顶筛选</view>
+  <view class="content">内容</view>
+</view>"#,
+        wxss: ".page { padding: 16px; background: #f5f5f5; }\n.bar { position: sticky; top: 88px; height: 44px; line-height: 44px; text-align: center; background: #e54d42; color: #fff; }\n.content { height: 220px; background: #4caf50; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "`position: sticky` 在 Skyline 回落成 relative：`top: 88px` 立即生效，筛选条下移并盖住内容，WebView 未滚动时仍在原位",
+        target: "#target",
+    },
+];
+
 impl Rule for UnsupportedValue {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -118,6 +149,10 @@ impl Rule for UnsupportedValue {
             severity: Severity::Error,
             description: "属性在 Skyline 下可用，但该值不支持：按 unset 回落到初始值或父元素的值，或整条声明被丢弃",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -256,6 +291,23 @@ mod tests {
 
     use super::UnsupportedValue;
     use crate::rules::testutil::wxss::{messages, page};
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture = crate::rules::testutil::Fixture::page(
+                "unsupported-value-visual",
+                case.wxml,
+                case.wxss,
+            );
+            let hits = crate::rules::testutil::check_rule(&fixture, &UnsupportedValue)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == UnsupportedValue::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     #[test]
     fn value_reports_unsupported_items_of_multi_value_forms() {

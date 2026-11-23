@@ -13,8 +13,8 @@ use std::collections::HashMap;
 
 use crate::input::wxml::{self, WxmlElement, WxmlNode};
 use crate::project::Project;
-use crate::rules::RuleMeta;
 use crate::rules::wxml::is_builtin;
+use crate::rules::{RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::at_declaration;
@@ -38,6 +38,16 @@ impl TextDecorationTarget {
     pub const ID: &'static str = ID;
 }
 
+/// 视觉用例：`<view>` 上的下划线在 WebView 绘制、在 Skyline 消失（装饰不继承）。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="link" id="target">商品详情</view>"#,
+    wxss: ".link { width: 160px; padding: 12px; font-size: 20px; color: #222; background: #fff; text-decoration: underline; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`<view>` 上的下划线：WebView 把装饰画到文本上，Skyline 只对 `<text>` 绘制，这段文字没有下划线",
+    target: "#target",
+}];
+
 impl crate::rules::Rule for TextDecorationTarget {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -45,6 +55,10 @@ impl crate::rules::Rule for TextDecorationTarget {
             severity: Severity::Warning,
             description: "text-decoration 在 Skyline 下只对 `<text>` / `<span>` / `<input>` / `<navigator>` 生效",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -130,6 +144,19 @@ mod tests {
     }
 
     // ---- positive ----
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture = Fixture::page("decoration-target-visual", case.wxml, case.wxss);
+            let hits = crate::rules::testutil::check_rule(&fixture, &TextDecorationTarget)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     #[test]
     fn decoration_on_view_is_reported() {

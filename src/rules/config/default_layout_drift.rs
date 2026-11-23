@@ -17,7 +17,7 @@
 
 use crate::input::json::JsonPositions;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 pub struct DefaultLayoutDrift;
@@ -26,6 +26,22 @@ impl DefaultLayoutDrift {
     pub const ID: &'static str = "skyline/default-layout-drift";
 }
 
+/// 视觉用例：app.json 没开 `defaultDisplayBlock`，相邻块的垂直外边距行为不同。
+///
+/// WebView 里两个兄弟块处于普通块级布局，`margin-bottom: 20px` 与 `margin-top: 30px`
+/// 折叠成 30px；Skyline 的 `display: flex; flex-direction: column` 不折叠，间距 50px。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="page">
+  <view class="first"></view>
+  <view class="second" id="target"></view>
+</view>"#,
+    wxss: ".page { padding: 20px; background: #f5f5f5; }\n.first { height: 40px; margin-bottom: 20px; background: #e54d42; }\n.second { height: 40px; margin-top: 30px; background: #1e88e5; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "未开 defaultDisplayBlock：WebView 折叠相邻外边距，间距 30px；Skyline 是 flex column，不折叠，间距 50px，第二个块下移 20px",
+    target: "#target",
+}];
+
 impl Rule for DefaultLayoutDrift {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -33,6 +49,10 @@ impl Rule for DefaultLayoutDrift {
             severity: Severity::Warning,
             description: "app.json 未开启 defaultDisplayBlock / defaultContentBox，Skyline 的默认布局与盒模型仍与 WebView 不同",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -92,10 +112,34 @@ mod tests {
     use crate::rules::Rule;
     use crate::rules::testutil::{Fixture, config};
 
-    use super::DefaultLayoutDrift;
+    use super::{DefaultLayoutDrift, VISUAL_CASES};
+    use crate::rules::testutil::check_rule;
 
     fn project(name: &str, app: &str, page: &str) -> (Fixture, Project) {
         config::project(name, app, page)
+    }
+
+    /// 视觉用例的同一份 WXML/WXSS（页面级配置）必须真的能触发本规则。
+    #[test]
+    fn visual_case_triggers_rule() {
+        let case = &VISUAL_CASES[0];
+        let fixture = Fixture::new("drift-visual");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", case.wxml)
+            .write("pages/index/index.wxss", case.wxss);
+        let diagnostics = check_rule(&fixture, &DefaultLayoutDrift);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.rule == DefaultLayoutDrift::ID),
+            "视觉用例未触发规则：{diagnostics:#?}"
+        );
     }
 
     #[test]

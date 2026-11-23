@@ -28,13 +28,41 @@ use super::visit_declarations;
 use crate::rules::wxml::{
     cascade::resolved_property_with_dialect, element_diagnostic, for_each_element,
 };
-use crate::rules::{Rule, RuleMeta, Target};
+use crate::rules::{Rule, RuleMeta, Target, VisualCase, VisualExpect};
 
 pub struct BoxSizing;
 
 impl BoxSizing {
     pub const ID: &'static str = "skyline/box-sizing";
 }
+
+/// 视觉用例：声明级与默认值级两种形态。
+///
+/// - 非法值 `padding-box` 两端都丢弃，差异在回落值：Skyline `border-box`、WebView `content-box`。
+/// - 完全不写 `box-sizing` 时两端默认值本身就是这对组合。
+///
+/// 两条都靠「确定宽度 + 同轴 padding」放大成 40 CSS px 的外宽差；不开 `defaultContentBox`，
+/// 否则两端都回落 content-box，差异消失。
+static VISUAL_CASES: &[VisualCase] = &[
+    VisualCase {
+        wxml: r#"<view class="panel">
+  <view class="card" id="target">内容</view>
+</view>"#,
+        wxss: ".panel { padding: 10px; background: #eee; }\n.card { box-sizing: padding-box; width: 240px; padding: 20px; background: #4caf50; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "非法值 `padding-box` 两端都丢弃：Skyline 回落 border-box（外宽 240），WebView 回落 content-box（外宽 280）",
+        target: "#target",
+    },
+    VisualCase {
+        wxml: r#"<view class="card" id="target">内容</view>"#,
+        wxss: ".card { width: 240px; padding: 20px; background: #4caf50; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "未写 box-sizing：Skyline 默认 border-box（外宽 240），WebView 默认 content-box（外宽 280）",
+        target: "#target",
+    },
+];
 
 impl Rule for BoxSizing {
     fn meta(&self) -> RuleMeta {
@@ -43,6 +71,10 @@ impl Rule for BoxSizing {
             severity: Severity::Error,
             description: "box-sizing 两端不一致：非法取值/initial 的回落值不同，或未开 defaultContentBox 时默认值不同",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -102,8 +134,8 @@ impl Rule for BoxSizing {
 ///
 /// 工程级一条告警只说「多少元素不同」，落到代码还得自己找。真正有可见后果的是
 /// 「某一轴写了尺寸 + 同一轴有非零 padding」的组合：border-box 会把 padding 挤进
-/// 尺寸里（`width:750rpx; padding:0 36rpx` 就是 `address/pages/index-v3` 骨架屏
-/// 那一次）。这类点比全部漂移元素少一个量级，按元素报得动。
+/// 尺寸里（`width:750rpx; padding:0 36rpx` 就是某页面骨架屏那一次）。这类点比全部
+/// 漂移元素少一个量级，按元素报得动。
 fn drift_elements(project: &Project, out: &mut Vec<Diagnostic>) {
     for_each_element(project, Target::Skyline, |site| {
         // 元素所在单元的开关已开时两端默认值一致，这个元素没有漂移。
@@ -384,6 +416,20 @@ mod tests {
     use crate::{Project, rules::Rule};
 
     use super::BoxSizing;
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture =
+                crate::rules::testutil::Fixture::page("box-sizing-visual", case.wxml, case.wxss);
+            let hits = crate::rules::testutil::check_rule(&fixture, &BoxSizing)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == BoxSizing::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     /// 声明级诊断（`app.json` 上的工程级默认值告警不算）。
     fn declarations(project: &Project) -> Vec<String> {

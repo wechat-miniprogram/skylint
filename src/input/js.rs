@@ -77,6 +77,12 @@ pub struct JsDoc {
     /// 运行时挂到 `this` 上的属性（`this.onTap = ...`）。
     this_binds: Vec<MemberBinding>,
     literals: BTreeMap<String, Lit>,
+    /// 模块顶层单元对象（`Page` / `Component` 及其工厂包装）的 `data` 初始字面量。
+    /// 与 [`Self::literals`] 分开：`data` 会被 `setData` 改写，不能参与常量折叠。
+    /// 值为 `None` 表示同一个键出现过非字面量或互相矛盾的值，初始值不可信。
+    data_literals: BTreeMap<String, Option<Lit>>,
+    /// 同一批对象的 `properties` 默认值；运行时属性值覆盖 `data` 的同名键。
+    property_literals: BTreeMap<String, Option<Lit>>,
     dirty_data: BTreeSet<String>,
     dirty_all: bool,
 }
@@ -131,6 +137,8 @@ impl JsDoc {
             requires: collector.requires,
             this_binds: collector.this_binds,
             literals: collector.literals,
+            data_literals: collector.data_literals,
+            property_literals: collector.property_literals,
             dirty_data: collector.dirty_data,
             dirty_all: collector.dirty_all,
         })
@@ -158,6 +166,22 @@ impl JsDoc {
                 continue;
             }
             env.insert(name.clone(), value.clone());
+        }
+        env
+    }
+
+    /// `data` / `properties` 的初始字面量（只用来判断「初始类型」）。
+    ///
+    /// 这里刻意**不**因为键被 `setData` 写过就丢弃：本接口只回答「声明时的初始值是
+    /// 不是字符串」，与 [`Self::constants`] 的常量折叠口径不同。同一个键出现互相矛盾
+    /// 的取值时按不可信处理（`None`）；属性默认值覆盖同名 `data` 键。
+    pub fn initial_values(&self) -> Env {
+        let mut env = Env::default();
+        for (name, value) in self.data_literals.iter().chain(&self.property_literals) {
+            match value {
+                Some(value) => env.insert(name.clone(), value.clone()),
+                None => env.remove(name),
+            }
         }
         env
     }
@@ -468,8 +492,11 @@ struct Collector {
     members: Vec<MemberBinding>,
     requires: Vec<RequireBinding>,
     this_binds: Vec<MemberBinding>,
-    /// `Page({data})` / `Component({data, properties})` 里的字面量取值。
+    /// `Page({data})` / `Component({data, properties})` 里的字面量取值（只收 `properties`）。
     literals: BTreeMap<String, Lit>,
+    /// 模块顶层单元对象的 `data` / `properties` 初始字面量，单独存放以免参与常量折叠。
+    data_literals: BTreeMap<String, Option<Lit>>,
+    property_literals: BTreeMap<String, Option<Lit>>,
     /// 已经带上下文收录的字面量起点：父节点先收，通用字符串遍历后到时跳过。
     claimed_strings: BTreeSet<u32>,
     /// 被动态写入过的 data 键：`setData({k: 变量})` 或 `setData` 里出现动态键。
@@ -810,6 +837,14 @@ impl<'a> Visit<'a> for Collector {
     }
 
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        // 顶层调用实参里的 `{data, properties}`：直接写 `Page` / `Component`，或经
+        // `Base({..})` / `fstComponent({..})` 这类工厂包装，配置对象都在这一层。
+        if self.worklet_stack.is_empty()
+            && let Some(Expression::ObjectExpression(object)) =
+                it.arguments.first().and_then(arg_expression)
+        {
+            self.collect_initial(object);
+        }
         let callee = callee_name(&it.callee).unwrap_or_default();
         // 单元方法表三种写法：`Page/Component({ .. })`、链式 `.methods({ .. })`、
         // 链式 `.init(({..}) => { .. return { .. } })`。
@@ -943,12 +978,43 @@ impl Collector {
             if property.computed {
                 continue;
             }
-            // `data` 刻意不参与：它是初始化值，页面/组件随后会反复 `setData`，
-            // 只有 `properties` 的默认值在没有被写入时才是稳定的。
-            if key_name(&property.key).as_deref() == Some("properties")
+            let Some(key) = key_name(&property.key) else {
+                continue;
+            };
+            // `data` 刻意不参与常量折叠：它是初始化值，页面/组件随后会反复 `setData`。
+            // 初始字面量另由 [`Collector::collect_initial`] 收一份，不喂给 `env`。
+            if key == "properties"
                 && let Expression::ObjectExpression(properties) = &property.value
             {
                 self.collect_properties(properties);
+            }
+        }
+    }
+
+    /// 模块顶层单元对象（`Page` / `Component` 及其工厂包装）的 `data` / `properties`
+    /// 初始字面量。
+    ///
+    /// 只收顶层：包装工厂（`Base({..})`、`fstComponent({..})`）与直接的 `Page` / `Component`
+    /// 都写在这一层；函数体里的 `wx.request({data})` 之类同名键不算单元数据。
+    fn collect_initial<'b>(&mut self, object: &ObjectExpression<'b>) {
+        for property in &object.properties {
+            let ObjectPropertyKind::ObjectProperty(property) = property else {
+                continue;
+            };
+            if property.computed {
+                continue;
+            }
+            let Some(key) = key_name(&property.key) else {
+                continue;
+            };
+            match (key.as_str(), &property.value) {
+                ("data", Expression::ObjectExpression(data)) => {
+                    record_data_literals(data, &mut self.data_literals);
+                }
+                ("properties", Expression::ObjectExpression(definitions)) => {
+                    record_property_defaults(definitions, &mut self.property_literals);
+                }
+                _ => {}
             }
         }
     }
@@ -997,6 +1063,65 @@ impl Collector {
                 }
                 _ => self.dirty_all = true,
             }
+        }
+    }
+}
+
+/// `data: { title: '', list: [] }`：只留字面量；同一个键取值矛盾或不是字面量时记为不可信。
+fn record_data_literals(object: &ObjectExpression<'_>, out: &mut BTreeMap<String, Option<Lit>>) {
+    for property in &object.properties {
+        let ObjectPropertyKind::ObjectProperty(property) = property else {
+            continue;
+        };
+        if property.computed {
+            continue;
+        }
+        let Some(key) = key_name(&property.key) else {
+            continue;
+        };
+        record_initial(out, key, literal(&property.value));
+    }
+}
+
+/// `properties: { renderer: { type: String, value: 'skyline' } }`：只收 `value` 字面量。
+fn record_property_defaults(
+    object: &ObjectExpression<'_>,
+    out: &mut BTreeMap<String, Option<Lit>>,
+) {
+    for property in &object.properties {
+        let ObjectPropertyKind::ObjectProperty(property) = property else {
+            continue;
+        };
+        if property.computed {
+            continue;
+        }
+        let Some(key) = key_name(&property.key) else {
+            continue;
+        };
+        let Expression::ObjectExpression(definition) = &property.value else {
+            continue;
+        };
+        let value = definition.properties.iter().find_map(|field| {
+            let ObjectPropertyKind::ObjectProperty(field) = field else {
+                return None;
+            };
+            (!field.computed && key_name(&field.key).as_deref() == Some("value"))
+                .then(|| literal(&field.value))
+                .flatten()
+        });
+        record_initial(out, key, value);
+    }
+}
+
+/// 同一个键只接受一致的字面量；出现不同取值或非字面量时记为 `None`（不可信）。
+fn record_initial(out: &mut BTreeMap<String, Option<Lit>>, key: String, value: Option<Lit>) {
+    match out.get(&key) {
+        Some(existing) if *existing != value => {
+            out.insert(key, None);
+        }
+        Some(_) => {}
+        None => {
+            out.insert(key, value);
         }
     }
 }

@@ -8,7 +8,7 @@
 
 use crate::input::wxss::{ValueToken, WxssDeclaration, WxssDoc};
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::dict_table::normalize_value;
@@ -34,6 +34,16 @@ impl ValueDegraded {
     pub const ID: &'static str = "skyline/value-degraded";
 }
 
+/// 视觉用例：`word-break: keep-all` 被映射成 normal 后中文不再整体折行。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="box" id="target">这段很长的中文标题在窄容器里需要换行显示</view>"#,
+    wxss: ".box { width: 96px; font-size: 16px; line-height: 20px; background: #eef; color: #223; word-break: keep-all; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`word-break: keep-all` 被 Skyline 映射成 normal：WebView 不拆开中文、只有一行，Skyline 按 normal 逐字换行成多行",
+    target: "#target",
+}];
+
 impl Rule for ValueDegraded {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -41,6 +51,10 @@ impl Rule for ValueDegraded {
             severity: Severity::Warning,
             description: "属性在 Skyline 下可用，但该值的表现与 WebView 不同（被降级 / 映射 / 无效果）",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -394,6 +408,23 @@ mod tests {
 
     use super::ValueDegraded;
     use crate::rules::testutil::wxss::{Fixture, messages, page};
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture = crate::rules::testutil::Fixture::page(
+                "value-degraded-visual",
+                case.wxml,
+                case.wxss,
+            );
+            let hits = crate::rules::testutil::check_rule(&fixture, &ValueDegraded)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == ValueDegraded::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     #[test]
     fn exact_values_report_the_actual_behaviour() {
