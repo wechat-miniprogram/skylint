@@ -106,6 +106,10 @@ impl Rule for UnsupportedApi {
         let mut out = Vec::new();
         for file in &project.scripts {
             for call in file.doc.calls() {
+                // 只在 WebView 分支里执行的调用：Skyline 根本不走这段，报了是误报。
+                if call.webview_only {
+                    continue;
+                }
                 for entry in ENTRIES {
                     // `this.animate` 只在 Skyline 下失效：纯 WebView 页面照常可用。
                     let span = match entry {
@@ -114,6 +118,7 @@ impl Rule for UnsupportedApi {
                             skyline_only,
                             ..
                         } => (Callee::Exact(callee).matches(&call.callee)
+                            && !shadows_with_own_method(&file.doc, callee)
                             && (!skyline_only || renders_in_skyline(project, &file.scope)))
                         .then_some((call.start, call.end)),
                         Entry::PluginCall { prefix, .. } => (in_plugin(project, &file.path)
@@ -134,6 +139,22 @@ impl Rule for UnsupportedApi {
         }
         out
     }
+}
+
+/// `this.xxx(...)` 是不是调本单元自己声明的方法（`methods: { xxx() {} }`、`this.xxx = ...`）。
+///
+/// 内置的 `this.animate` 同名方法会被单元自己定义的同名方法遮住（组件里 `methods: { animate() {} }`
+/// 写好后调 `this.animate(...)` 就是调自己那个），这种调用不受 Skyline 限制，报了是误报。
+fn shadows_with_own_method(doc: &crate::input::js::JsDoc, callee: &str) -> bool {
+    let Some(name) = callee.strip_prefix("this.") else {
+        return false;
+    };
+    if name.contains('.') {
+        return false;
+    }
+    doc.members().iter().any(|member| member.key == name)
+        || doc.object_fns().iter().any(|function| function.key == name)
+        || doc.this_binds().iter().any(|binding| binding.key == name)
 }
 
 #[cfg(test)]
@@ -247,6 +268,128 @@ mod tests {
             Some("this.animate('.a', [], 1);"),
         );
         let diagnostics = UnsupportedApi.check(&project);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].path, "pages/index/index.js");
+    }
+
+    /// 单元自己定义了同名方法（`methods: { animate() {} }`）时，`this.animate(...)` 调的是它，
+    /// 不是内置动画 API，报出来是误报。
+    #[test]
+    fn own_method_with_the_same_name_shadows_the_builtin() {
+        let f = Fixture::new("unsupported-shadowed");
+        f.write(
+            "project.config.json",
+            r#"{"miniprogramRoot":"","compileType":"miniprogram"}"#,
+        )
+        .write(
+            "app.json",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+        )
+        .write("pages/index/index.json", "{}")
+        .write("pages/index/index.wxml", "<view/>")
+        .write(
+            "pages/index/index.js",
+            r#"Component({ methods: { animate(name) { this[name](); }, open() { this.animate('showIn'); } } });"#,
+        );
+        assert!(UnsupportedApi.check(&f.project()).is_empty());
+    }
+
+    /// 老写法把方法直接挂在 `Page` / `Component` 选项对象上，同样遮住同名内置 API。
+    #[test]
+    fn top_level_methods_shadow_the_builtin() {
+        for js in [
+            "Page({ animate(name) {}, open() { this.animate('showIn'); } });",
+            "Component({ animate(name) {}, open() { this.animate('showIn'); } });",
+        ] {
+            let (_f, project) = single("unsupported-shadowed-top-level", js);
+            assert_eq!(
+                messages(&UnsupportedApi, &project),
+                Vec::<String>::new(),
+                "{js}"
+            );
+        }
+    }
+
+    /// `key: function () {}` 与对象方法简写是同一种方法表，两种都要认。
+    #[test]
+    fn function_property_methods_shadow_the_builtin() {
+        let (_f, project) = single(
+            "unsupported-shadowed-fn-property",
+            "Component({ methods: { animate: function (name) { this[name](); }, open: function () { this.animate('showIn'); } } });",
+        );
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
+
+    /// 运行时挂到 `this` 上的同名方法同样遮住内置 API。
+    #[test]
+    fn this_binding_shadows_the_builtin() {
+        let (_f, project) = single(
+            "unsupported-shadowed-this-bind",
+            "Page({ onLoad() { this.animate = function (name) { this[name](); }; this.animate('showIn'); } });",
+        );
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
+
+    /// 只在 WebView 分支里调的 API 不报：`renderer` 直接比较的 then / else 都要认。
+    #[test]
+    fn webview_only_branches_are_skipped() {
+        for js in [
+            "Page({ open() { if (this.renderer === 'webview') { this.animate('showIn'); } } });",
+            "Page({ open() { if (getApp().renderer !== 'skyline') { this.animate('showIn'); } } });",
+            "Page({ open() { if (this.renderer === 'skyline') { return 1; } else { this.animate('showIn'); } } });",
+        ] {
+            let (_f, project) = single("unsupported-webview-branch", js);
+            assert_eq!(
+                messages(&UnsupportedApi, &project),
+                Vec::<String>::new(),
+                "{js}"
+            );
+        }
+    }
+
+    /// 反过来：Skyline 分支里的调用仍然要报。
+    #[test]
+    fn skyline_branch_is_still_reported() {
+        let (_f, project) = single(
+            "unsupported-skyline-branch",
+            "Page({ open() { if (this.renderer === 'skyline') { this.animate('showIn'); } } });",
+        );
+        assert_eq!(messages(&UnsupportedApi, &project).len(), 1);
+    }
+
+    /// `Behavior` 的方法表与 `Page` / `Component` 同形。
+    #[test]
+    fn behavior_methods_shadow_the_builtin() {
+        let (_f, project) = single(
+            "unsupported-shadowed-behavior",
+            "Behavior({ methods: { animate(name) { this[name](); }, open() { this.animate('showIn'); } } });",
+        );
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
+
+    /// 同名方法定义在别的文件里不算遮住：过滤只看同一文件。
+    #[test]
+    fn method_in_another_file_does_not_shadow() {
+        let f = Fixture::new("unsupported-shadowed-cross-file");
+        f.write(
+            "project.config.json",
+            r#"{"miniprogramRoot":"","compileType":"miniprogram"}"#,
+        )
+        .write(
+            "app.json",
+            r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+        )
+        .write("pages/index/index.json", "{}")
+        .write("pages/index/index.wxml", "<view/>")
+        .write(
+            "pages/index/index.js",
+            "Page({ open() { this.animate('showIn'); } });",
+        )
+        .write(
+            "pages/other/other.js",
+            "Component({ methods: { animate() {} } });",
+        );
+        let diagnostics = UnsupportedApi.check(&f.project());
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert_eq!(diagnostics[0].path, "pages/index/index.js");
     }

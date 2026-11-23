@@ -349,6 +349,20 @@ impl WxmlDoc {
         &self.path
     }
 
+    /// 源码里的一段（左闭右开）。区间来自元素 / 属性的 `start` 与 `end`。
+    ///
+    /// 动态属性（`style="… background: {{x}}"`）的 `value` 是 `None`，要判原文只能
+    /// 回到源码，这是唯一入口。
+    pub fn slice(&self, start: Position, end: Position) -> &str {
+        match (
+            byte_offset(&self.source, start),
+            byte_offset(&self.source, end),
+        ) {
+            (Some(from), Some(to)) if from <= to => &self.source[from..to],
+            _ => "",
+        }
+    }
+
     /// `parse::Position`（0-based 行、UTF-16 列）→ 诊断位置（1-based 行、字符列）。
     pub fn position(&self, pos: Position) -> (u32, u32) {
         (pos.line + 1, column_at(&self.source, pos))

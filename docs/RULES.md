@@ -3,13 +3,19 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 65 条：error 18 条、warning 42 条、info 5 条。
+共 72 条：error 19 条、warning 48 条、info 5 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
 | 规则 | 级别 | 方向 | 说明 |
 |---|---|---|---|
 | `skyline/no-inline-text` | warning | skyline | Skyline 下文本与元素混排会变成独立 flex item，需用 `<text>` 包裹 |
+| `skyline/nested-text-block` | warning | skyline | 嵌套 `<text>` 上的 `display: block` 只在 WebView 生效：Skyline 的文本内部只走 inline 流 |
+| `skyline/inline-display-ignored` | warning | skyline | 非文本元素上的 `display: inline` 在 Skyline 被忽略，元素仍按块级盒布局 |
+| `skyline/text-box-property` | warning | skyline | 顶层 `<text>` / `<span>` 上写了宽高或垂直间距：Skyline 会按块级盒应用，WebView 把这些声明当 inline 忽略 |
+| `skyline/image-block-layout` | warning | skyline | `<image>` 在 Skyline 是块级盒、WebView 是 inline-block：靠行内对齐居中、单侧 auto 外边距、`vertical-align`、祖先的 `text-indent` 在 Skyline 下都不再生效 |
+| `general/transparent-background` | info | both | 组件把背景色绑在属性上，调用处没传该属性：背景取默认值，为空时透明 |
+| `skyline/unregistered-tag` | error | skyline | 未注册的标签：WebView 不渲染其子树，Skyline 按普通元素渲染 |
 | `skyline/unsupported-component` | error | skyline | Skyline 下不可用的组件（如 web-view / movable-view / editor） |
 | `skyline/scroll-gesture-conflict` | warning | skyline | 滚动容器上的滑动会冒泡触发祖先的 touchmove 手势（拖拽收起等） |
 | `skyline/scroll-view-type` | info | skyline | `<scroll-view>` 建议显式指定 type：省略 type 走传统滚动（没有按需渲染），`default` 与未知值会被 JS 层回退成 `list` 并告警 |
@@ -22,7 +28,7 @@
 | `skyline/inline-run` | warning | skyline | 并列的文本级元素在 WebView 下排在同一行，在 Skyline 下各自占一行 |
 | `skyline/no-pseudo` | warning | skyline | Skyline 不支持该伪类/伪元素：条件被丢弃（命中范围变大）或整条规则被跳过（声明不生效） |
 | `skyline/pseudo-inline-layout` | warning | skyline | 伪元素与文本并排时 Skyline 下会换行：伪元素是块级盒，WebView 下是 inline |
-| `skyline/box-sizing` | error | skyline | box-sizing 的值在两端都非法，Skyline 与 WebView 的回落值不同 |
+| `skyline/box-sizing` | error | skyline | box-sizing 两端不一致：非法取值/initial 的回落值不同，或未开 defaultContentBox 时默认值不同 |
 | `skyline/flex-direction` | warning | skyline | display: flex 未声明 flex-direction，迁移后默认方向会从 row 变为 column |
 | `skyline/fixed-layer` | warning | skyline | `position: fixed` 在 Skyline 下被提到页面根，祖先的包含块不再约束它（WebView 下相对该祖先定位），两端位置不同 |
 | `skyline/fixed-offset-missing` | warning | skyline | `position: fixed` 元素没写某轴偏移：Skyline 下按页面根起点定位，WebView 下按它在原容器里的位置 |
@@ -56,13 +62,14 @@
 | `skyline/worklet-directive` | error | skyline | worklet: 绑定、applyAnimatedStyle 与路由动画处理函数缺少 'worklet' 指令（回调不会注册） |
 | `skyline/worklet-data-freeze` | error | skyline | worklet 内解构 this.data 会冻结 this.data，导致 setData 失效 |
 | `skyline/worklet-compile-setting` | warning | skyline | 工程使用了 worklet，但 project.config.json 没有开启 setting.compileWorklet |
+| `skyline/scroll-context-enhanced` | warning | skyline | 用 ScrollViewContext 控制滚动 / 刷新前，`<scroll-view>` 必须开启 `enhanced` |
 | `skyline/scroll-context-ref` | warning | skyline | 用 scrollViewContext.scrollTo 前没有通过 NodesRef.ref 拿到 scroll-view 引用 |
 | `skyline/draggable-sheet-scroll-to` | warning | skyline | DraggableSheetContext.scrollTo 同时传 size 与 pixels 时 pixels 被忽略 |
 | `skyline/route-type` | warning | skyline | routeType 必须是 wx.router.addRouteBuilder 注册过的类型或 wx:// 预设 |
 | `skyline/dynamic-style-value` | warning | skyline | JS 字符串里的内联样式用了 Skyline 不支持的写法（前缀渐变、老式弹性盒、不可解析的 display、-webkit-line-clamp、会回落初始值的取值） |
 | `skyline/autoprefix-build` | info | skyline | prod 构建的 autoprefixer 会给样式注入 `-webkit-` 前缀，Skyline 不认 |
 | `skyline/config-ignored` | warning | skyline | 配置写在不被读取的位置或类型上，静默无效 |
-| `skyline/default-layout-drift` | info | skyline | app.json 未开启 defaultDisplayBlock / defaultContentBox，Skyline 的默认布局与盒模型仍与 WebView 不同 |
+| `skyline/default-layout-drift` | warning | skyline | app.json 未开启 defaultDisplayBlock / defaultContentBox，Skyline 的默认布局与盒模型仍与 WebView 不同 |
 | `skyline/lib-version` | error | skyline | 项目配置的 libVersion 低于所用 Skyline 特性的最低要求 |
 | `skyline/renderer-options` | warning | skyline | rendererOptions 的写法或类型不会被运行时读取，配置静默失效 |
 | `webview/text-truncation` | warning | webview | `<text>` 的 max-lines / overflow 在 WebView 下被忽略，截断与省略失效 |

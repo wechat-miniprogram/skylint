@@ -19,7 +19,7 @@ use oxc_allocator::Allocator;
 use oxc_ast::ast::{
     Argument, ArrayExpressionElement, ArrowFunctionBody, ArrowFunctionExpression,
     AssignmentExpression, AssignmentTarget, BindingPattern, CallExpression, ChainElement,
-    Expression, Function, FunctionBody, ImportDeclaration, ImportDeclarationSpecifier,
+    Expression, Function, FunctionBody, IfStatement, ImportDeclaration, ImportDeclarationSpecifier,
     MethodDefinition, ObjectExpression, ObjectProperty, ObjectPropertyKind, PropertyDefinition,
     PropertyKey, Statement, StringLiteral, TemplateLiteral, VariableDeclarator,
 };
@@ -109,7 +109,10 @@ impl JsDoc {
             return Err(ParseError::Empty);
         }
 
-        let mut collector = Collector::default();
+        let mut collector = Collector {
+            source: owned.clone(),
+            ..Default::default()
+        };
         collector.visit_program(&ret.program);
 
         Ok(Self {
@@ -277,6 +280,10 @@ pub struct CallInfo {
     pub args: Vec<ArgInfo>,
     /// 最近的外层函数是否 `has_worklet`；不在任何函数内为 `false`。
     pub worklet_scope: bool,
+    /// 调用点是否落在「只在 WebView 走的分支」里：外层 `if` 的条件直接比较
+    /// `renderer`（`=== 'webview'` 的 then 分支、`=== 'skyline'` 的 else 分支）。
+    /// 这类调用在 Skyline 下根本不执行，按不支持 API 报就是误报。
+    pub webview_only: bool,
 }
 
 /// 一次调用的实参。
@@ -374,6 +381,39 @@ struct OwnedFunction {
     body_directives: Vec<String>,
 }
 
+/// 一条 `if` 语句的分支区间：命中区间时按「只在 WebView」处理。
+#[derive(Debug, Clone, Copy)]
+struct RendererGuard {
+    cons: (u32, u32),
+    alt: Option<(u32, u32)>,
+    /// 条件直接判 `'webview'` 时 then 分支只在 WebView 走。
+    cons_webview: bool,
+    /// 条件判 `'skyline'` 时 else 分支只在 WebView 走。
+    alt_webview: bool,
+}
+
+/// `if` 条件里两个分支各属哪个渲染器：`(then 是否只属于 WebView, else 是否只属于 WebView)`。
+///
+/// 认 `renderer` 与 `'webview'` / `'skyline'` 的字面量比较，并按运算符方向分：
+/// `=== 'webview'` 的 then 是 WebView 分支，`!== 'skyline'` 的 then 同样是 WebView 分支。
+/// 条件里同时比对两个取值（`a === 'skyline' || b === 'webview'`）时无法简单归属，按不加守卫处理。
+fn renderer_branches(test: &str) -> (bool, bool) {
+    let test = test.to_ascii_lowercase();
+    // 取值前一个运算符是不是 `!=`：是则 then 分支不属这个取值。
+    let negated = |value: &str| -> Option<bool> {
+        let index = test
+            .find(&format!("'{value}'"))
+            .or_else(|| test.find(&format!("\"{value}\"")))?;
+        let prefix = test[..index].trim_end();
+        Some(prefix.ends_with("!==") || prefix.ends_with("!="))
+    };
+    match (negated("webview"), negated("skyline")) {
+        (Some(negated), None) => (!negated, negated),
+        (None, Some(negated)) => (negated, !negated),
+        _ => (false, false),
+    }
+}
+
 #[derive(Default)]
 struct Collector {
     functions: Vec<OwnedFunction>,
@@ -396,6 +436,10 @@ struct Collector {
     pending: Option<String>,
     /// 外层函数栈，值为该函数是否 `has_worklet`。取最近的一层。
     worklet_stack: Vec<bool>,
+    /// 已经过的 `if` 语句分支区间与「该分支是否只属于 WebView」。
+    renderer_guards: Vec<RendererGuard>,
+    /// 原始源码：守卫判定要读 `if` 条件的原文。
+    source: String,
 }
 
 impl Collector {
@@ -672,6 +716,23 @@ impl<'a> Visit<'a> for Collector {
         walk::walk_assignment_expression(self, it);
     }
 
+    fn visit_if_statement(&mut self, it: &IfStatement<'a>) {
+        let test = &self.source[it.test.span().start as usize..it.test.span().end as usize];
+        let (cons_webview, alt_webview) = renderer_branches(test);
+        let cons = it.consequent.span();
+        self.renderer_guards.push(RendererGuard {
+            cons: (cons.start, cons.end),
+            alt: it.alternate.as_ref().map(|alt| {
+                let span = alt.span();
+                (span.start, span.end)
+            }),
+            cons_webview,
+            alt_webview,
+        });
+        walk::walk_if_statement(self, it);
+        self.renderer_guards.pop();
+    }
+
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
         let callee = callee_name(&it.callee).unwrap_or_default();
         // 单元方法表三种写法：`Page/Component({ .. })`、链式 `.methods({ .. })`、
@@ -715,18 +776,38 @@ impl<'a> Visit<'a> for Collector {
             // `Object.assign(this.data, …)` 拿不到键名，按整份 data 不可信处理。
             self.dirty_all = true;
         }
+        let start = it.span.start;
+        let end = it.span.end;
         self.calls.push(CallInfo {
             callee: callee_name(&it.callee).unwrap_or_default(),
-            start: it.span.start,
-            end: it.span.end,
+            start,
+            end,
             args: it.arguments.iter().map(arg_info).collect(),
             worklet_scope: self.worklet_scope(),
+            webview_only: self.renderer_guarded(start),
         });
         walk::walk_call_expression(self, it);
     }
 }
 
 impl Collector {
+    /// 调用点是否落在「只在 WebView 执行」的分支里。
+    ///
+    /// 只认条件里**直接**比较 `renderer` 的形态；`const isSkyline = this.renderer === 'skyline'`
+    /// 这类再经变量间接判断的解不了（那需要把常量传播回来），按未加守卫处理。
+    fn renderer_guarded(&self, offset: u32) -> bool {
+        self.renderer_guards.iter().any(|guard| {
+            let in_cons = offset >= guard.cons.0 && offset < guard.cons.1;
+            if in_cons {
+                return guard.cons_webview;
+            }
+            match guard.alt {
+                Some(alt) if offset >= alt.0 && offset < alt.1 => guard.alt_webview,
+                _ => false,
+            }
+        })
+    }
+
     /// `Component({..})` 顶层与 `methods` 里的属性：键 → 值指向。
     ///
     /// 只从单元方法表收，不从任意对象字面量里造数据：同一文件里 `{ onTap: ... }`
@@ -1513,5 +1594,34 @@ mod tests {
             [false, false, true, false]
         );
         assert_eq!(doc.position(found[2].0 as usize), (4, 52));
+    }
+}
+
+#[cfg(test)]
+mod renderer_guard_tests {
+    use super::renderer_branches;
+
+    #[test]
+    fn branches_follow_the_operator() {
+        assert_eq!(
+            renderer_branches("this.renderer === 'webview'"),
+            (true, false),
+            "eq webview"
+        );
+        assert_eq!(
+            renderer_branches("this.renderer !== 'webview'"),
+            (false, true),
+            "neq webview"
+        );
+        assert_eq!(
+            renderer_branches("this.renderer === 'skyline'"),
+            (false, true),
+            "eq skyline"
+        );
+        assert_eq!(
+            renderer_branches("getApp().renderer !== \"skyline\""),
+            (true, false)
+        );
+        assert_eq!(renderer_branches("a === 1"), (false, false));
     }
 }

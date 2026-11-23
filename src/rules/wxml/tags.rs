@@ -89,16 +89,18 @@ const UNSUPPORTED_COMPONENTS: &[(&str, &str)] = &[
     ("xr-frame", "该组件在 Skyline 下不可用"),
 ];
 
-/// 组件是否属于内置组件（用于区分自定义组件）。
+/// 组件是否属于平台内置组件（含 Skyline 下不可用的那些）。
+///
+/// 「是内置组件」与「Skyline 能渲染」是两件事：`web-view` / `movable-view` 这类
+/// 仍是平台组件，只是 Skyline 不支持。判「未注册标签」看前者，判「不可用」看
+/// [`unsupported_replacement`]。
 pub(crate) fn is_builtin(tag: &str) -> bool {
     SUPPORTED_COMPONENTS.contains(&tag)
+        || UNSUPPORTED_COMPONENTS.iter().any(|(name, _)| *name == tag)
 }
 
-/// 黑名单命中才返回替代方案；白名单与未知自定义组件都不报。
+/// 黑名单命中才返回替代方案；其余内置组件与未知自定义组件都不报。
 pub(crate) fn unsupported_replacement(tag: &str) -> Option<&'static str> {
-    if is_builtin(tag) {
-        return None;
-    }
     UNSUPPORTED_COMPONENTS
         .iter()
         .find(|(name, _)| *name == tag)

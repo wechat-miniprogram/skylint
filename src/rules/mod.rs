@@ -9,6 +9,7 @@
 //! - 自动修复（旧实现的 patch 层同起点 insert 顺序未定义，没有原文校验）。
 
 pub mod config;
+pub mod general;
 pub mod js;
 #[cfg(test)]
 pub(crate) mod testutil;
@@ -92,6 +93,12 @@ impl Registry {
     pub fn builtin() -> Self {
         Self::from_rules(vec![
             Box::new(wxml::NoInlineText),
+            Box::new(wxml::NestedTextBlock),
+            Box::new(wxml::InlineDisplayIgnored),
+            Box::new(wxml::TextBoxProperty),
+            Box::new(wxml::ImageBlockLayout),
+            Box::new(general::TransparentBackground),
+            Box::new(wxml::UnregisteredTag),
             Box::new(wxml::UnsupportedComponent),
             Box::new(wxml::ScrollGestureConflict),
             Box::new(wxml::ScrollViewType),
@@ -142,6 +149,7 @@ impl Registry {
             Box::new(js::WorkletDirective),
             Box::new(js::WorkletDataFreeze),
             Box::new(js::WorkletCompileSetting),
+            Box::new(js::ScrollContextEnhanced),
             Box::new(js::ScrollContextRef),
             Box::new(js::DraggableSheetScrollTo),
             Box::new(js::RouteType),

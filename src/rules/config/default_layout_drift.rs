@@ -1,12 +1,14 @@
-//! `skyline/default-layout-drift`：工程没开 `defaultDisplayBlock` / `defaultContentBox`
-//! 时，Skyline 的默认布局与盒模型仍然和 WebView 不一样。
+//! `skyline/default-layout-drift`：工程没开 `defaultDisplayBlock` 时，Skyline 的默认布局
+//! 仍然和 WebView 不一样。
 //!
-//! 这两个开关是**工程级**的迁移决定：`defaultDisplayBlock` 让 `display`（flex→block）、
-//! `flex-direction`（column→row）、`align-items`（stretch→normal）对齐 WebView，
-//! `defaultContentBox` 让 `box-sizing`（border-box→content-box）对齐 WebView。迁移中的
-//! 工程整体还按 WebView 的默认值写样式，所以按工程报一条 info，而不是逐个元素/逐条声明报。
+//! 这个开关是**工程级**的迁移决定：`defaultDisplayBlock` 让 `display`（flex→block）、
+//! `flex-direction`（column→row）、`align-items`（stretch→normal）对齐 WebView。迁移中的
+//! 工程整体还按 WebView 的默认值写样式，所以按工程报一条 warning，而不是逐个元素报。
 //!
-//! 两个刻意的取舍：
+//! `box-sizing` 的默认值差异不在本规则里：它和「声明了非法值 / `initial` 的回落值不同」
+//! 是同一个修法与同一个属性，统一在 `skyline/box-sizing` 报（那里同样带热点文档列表）。
+//!
+//! 一个刻意的取舍：
 //! - 工程里存在 Skyline 页面、或**根本没有声明 renderer**（工具按 Skyline 默认口径检查）时判。
 //!   后者是「准备迁移」的工程：97 条 `flex-direction` 之类的告警全都由这一处配置引起，
 //!   不在这里说一句，报告里就只剩逐条改样式的建议。显式声明 WebView 的工程不判；
@@ -28,32 +30,13 @@ impl Rule for DefaultLayoutDrift {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
             id: Self::ID,
-            severity: Severity::Info,
+            severity: Severity::Warning,
             description: "app.json 未开启 defaultDisplayBlock / defaultContentBox，Skyline 的默认布局与盒模型仍与 WebView 不同",
         }
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        if !super::applicable_project_level(project) {
-            return Vec::new();
-        }
-        // 显式声明了 renderer 却没有任何 Skyline 页面：纯 WebView 工程，还没开始迁移。
-        // 没声明 renderer 时工具按 Skyline 默认口径检查（报告末尾有那句 note），照报。
-        if project.declares_renderer() && !project.pages.iter().any(|page| page.is_skyline) {
-            return Vec::new();
-        }
-        // `rendererOptions` 或它下面 `skyline` 写成非对象时静默：那是
-        // `skyline/renderer-options` 的职责，本规则不重复报同一份写坏的配置。
-        if project
-            .app_json
-            .get("rendererOptions")
-            .is_some_and(|options| {
-                !options.is_object()
-                    || options
-                        .get("skyline")
-                        .is_some_and(|skyline| !skyline.is_object())
-            })
-        {
+        if !super::applicable_renderer_options(project) {
             return Vec::new();
         }
 
@@ -68,7 +51,7 @@ impl Rule for DefaultLayoutDrift {
         // 复杂化。因此口径固定为「app 级未开启就报」，消息里也写「app 级未开启」——命中本身
         // 意味着这个工程还没做整体决定。
         if !project.app_display_block() {
-            out.push(info(
+            out.push(warning(
                 "app.json",
                 line,
                 column,
@@ -77,21 +60,11 @@ impl Rule for DefaultLayoutDrift {
                 "在 app.json 的 rendererOptions.skyline 里开启 defaultDisplayBlock: true 可让这三项对齐 WebView",
             ));
         }
-        if !project.app_content_box() {
-            out.push(info(
-                "app.json",
-                line,
-                column,
-                "/rendererOptions/skyline/defaultContentBox",
-                "app 级未开启 defaultContentBox：Skyline 下 box-sizing 默认 border-box（WebView 默认 content-box），显式声明 width 的元素实际内容盒会比 WebView 中小（少掉 padding 与 border）",
-                "开启 rendererOptions.skyline.defaultContentBox: true 对齐 WebView，或显式写 box-sizing: content-box",
-            ));
-        }
         out
     }
 }
 
-fn info(
+fn warning(
     path: &str,
     line: u32,
     column: u32,
@@ -101,7 +74,7 @@ fn info(
 ) -> Diagnostic {
     Diagnostic::new(
         DefaultLayoutDrift::ID,
-        Severity::Info,
+        Severity::Warning,
         message,
         path,
         line,
@@ -126,43 +99,38 @@ mod tests {
     }
 
     #[test]
-    fn reports_both_switches_when_none_is_enabled() {
+    fn reports_display_switch_when_none_is_enabled() {
         let (_f, project) = project(
             "drift-both-off",
             r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
             "{}",
         );
         let diags = DefaultLayoutDrift.check(&project);
-        assert_eq!(diags.len(), 2);
-        assert!(diags.iter().all(|d| d.severity == Severity::Info));
+        assert_eq!(diags.len(), 1);
+        assert!(diags.iter().all(|d| d.severity == Severity::Warning));
         assert!(diags.iter().all(|d| d.path == "app.json"));
         // 没有 rendererOptions 键：落在文件开头。
         assert!(diags.iter().all(|d| (d.line, d.column) == (1, 1)));
         assert!(diags[0].message.contains("defaultDisplayBlock"));
         assert!(diags[0].message.contains("flex-direction 默认 column"));
         assert!(diags[0].message.contains("align-items 默认 stretch"));
-        // `position` 没有开关（Skyline 初值 relative、CSS 初值 static），并进第一条消息；
+        // `position` 没有开关（Skyline 初值 relative、CSS 初值 static），并进这条消息；
         // `text-align` 两边初值都是 start，不构成差异。
         assert!(diags[0].message.contains("position 默认 relative"));
         assert!(!diags[0].message.contains("text-align"));
-        assert!(diags[1].message.contains("defaultContentBox"));
-        assert!(diags[1].message.contains("border-box"));
+        // `box-sizing` 的默认值差异归 `skyline/box-sizing`。
+        assert!(!diags[0].message.contains("defaultContentBox"));
     }
 
     #[test]
-    fn reports_only_content_box_when_display_block_is_on() {
+    fn accepts_display_block_only() {
         let (_f, project) = project(
             "drift-display-block-on",
             r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultDisplayBlock":true}}}"#,
             "{}",
         );
-        let diags = DefaultLayoutDrift.check(&project);
-        assert_eq!(diags.len(), 1);
-        assert!(
-            diags[0].message.contains("defaultContentBox"),
-            "{}",
-            diags[0].message
-        );
+        // box-sizing 的默认值差异已划归 `skyline/box-sizing`，这条规则只管 display 一族。
+        assert!(DefaultLayoutDrift.check(&project).is_empty());
     }
 
     #[test]
@@ -173,7 +141,7 @@ mod tests {
             r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
             r#"{"rendererOptions":{"skyline":{"defaultDisplayBlock":true,"defaultContentBox":true}}}"#,
         );
-        assert_eq!(DefaultLayoutDrift.check(&project).len(), 2);
+        assert_eq!(DefaultLayoutDrift.check(&project).len(), 1);
     }
 
     #[test]
@@ -189,14 +157,14 @@ mod tests {
 
     #[test]
     fn reports_when_the_project_declares_no_renderer() {
-        // 没声明 renderer：工具按 Skyline 默认口径检查，这两个默认值差异同样成立，
+        // 没声明 renderer：工具按 Skyline 默认口径检查，这个默认值差异同样成立，
         // 而且报告里 90% 的告警都由这一处配置引起，必须说出来。
         let (_f, project) = project(
             "drift-undeclared",
             r#"{"pages":["pages/index/index"]}"#,
             "{}",
         );
-        assert_eq!(DefaultLayoutDrift.check(&project).len(), 2);
+        assert_eq!(DefaultLayoutDrift.check(&project).len(), 1);
     }
 
     #[test]

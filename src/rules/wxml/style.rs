@@ -6,7 +6,7 @@ use crate::input::wxml::WxmlElement;
 use crate::matcher::Tree;
 use crate::project::Project;
 
-use super::cascade::resolved_property;
+use super::cascade::{resolved_property, resolved_property_with};
 
 /// 元素是否脱离文档流（`position: absolute | fixed`）。
 pub(crate) fn is_out_of_flow(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
@@ -75,6 +75,97 @@ pub(crate) fn flex_container(project: &Project, tree: &Tree<'_>, element: &WxmlE
 pub(crate) fn is_flex_value(value: &str) -> bool {
     let value = value.trim();
     value.eq_ignore_ascii_case("flex") || value.eq_ignore_ascii_case("inline-flex")
+}
+
+/// 显式成块（或非行内）的 `display` 取值：两端都按块级盒排。
+pub(crate) const NON_INLINE_DISPLAY: [&str; 8] = [
+    "block",
+    "inline-block",
+    "flex",
+    "inline-flex",
+    "grid",
+    "inline-grid",
+    "flow-root",
+    "none",
+];
+
+/// 元素在 Skyline 下是否仍按**行内盒**参与排版（没被显式改成块级）。
+///
+/// `display: inline` 不算例外：Skyline 忽略它，`<text>` / `<image>` 依旧是块级盒。
+/// 取值判不出时按 `false` 处理——宁可漏报也不猜。
+pub(crate) fn inline_box_in_skyline(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+) -> bool {
+    match resolved_property_with(project, tree, element, "display") {
+        (_, true) => false,
+        (Some(resolved), false) => {
+            !NON_INLINE_DISPLAY.contains(&resolved.value.trim().to_ascii_lowercase().as_str())
+        }
+        (None, false) => true,
+    }
+}
+
+/// 元素或祖先声明了 RTL / 竖排：`text-align` 的 `left` / `right` / `start` 在两端到
+/// 物理方向的映射未实测，这类上下文不判对齐。
+pub(crate) fn has_exotic_flow(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
+    let mut current = Some(element);
+    while let Some(node) = current {
+        let exotic = |property: &str| match resolved_property_with(project, tree, node, property) {
+            (Some(resolved), false) => {
+                let value = resolved.value.trim().to_ascii_lowercase();
+                match property {
+                    "direction" => value == "rtl",
+                    _ => !matches!(value.as_str(), "horizontal-tb" | "initial" | "normal"),
+                }
+            }
+            _ => false,
+        };
+        if exotic("direction") || exotic("writing-mode") {
+            return true;
+        }
+        current = tree.parent_of(node);
+    }
+    false
+}
+
+/// 沿祖先链找最近一条 `text-align`——`text-align` 可继承，WebView 下行内盒子用的
+/// 就是它。默认 `left`。
+pub(crate) fn inherited_text_align(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+) -> String {
+    let mut current = tree.parent_of(element);
+    while let Some(node) = current {
+        match resolved_property_with(project, tree, node, "text-align") {
+            (Some(resolved), false) => return resolved.value.trim().to_ascii_lowercase(),
+            (_, true) => return "left".to_string(),
+            (None, false) => current = tree.parent_of(node),
+        }
+    }
+    "left".to_string()
+}
+
+/// 取值是不是「写了就等于没写」：初始值 / `auto` / 不改变渲染的零值。
+pub(crate) fn is_initial_value(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "" | "auto" | "none" | "initial" | "unset" | "inherit" | "revert"
+    )
+}
+
+/// 间距值是否为零（`0`、`0px`、`0rpx`…）。
+pub(crate) fn is_zero(value: &str) -> bool {
+    let value = value.trim().to_ascii_lowercase();
+    let number: String = value
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || matches!(c, '.' | '-'))
+        .collect();
+    let unit = value[number.len()..].trim();
+    let known_unit = matches!(unit, "" | "px" | "rpx" | "%" | "em" | "rem" | "vw" | "vh");
+    known_unit && !number.is_empty() && number.chars().all(|c| matches!(c, '0' | '.' | '-'))
 }
 
 #[cfg(test)]
