@@ -137,6 +137,85 @@ impl VisualExpect {
     }
 }
 
+/// 规则的证据用例：一份完整最小工程，加一条「构建/运行 → 断言」的采集链。
+///
+/// 与 [`VisualCase`] 的分工：`VisualCase` 证明「同一份源码在两端渲染结果不同」；
+/// `EvidenceCase` 证明「构建产物、构建日志或运行期取值符合/违反规则主张」。两端本来
+/// 就不该有视觉差异的规则（构建期校验、运行期告警、产物改写）只能走这条。
+///
+/// 用例自带完整工程而不是复用视觉生成器：后者会强制写 `renderer` /
+/// `componentFramework` / `lazyCodeLoading`，并对 `rendererOptions` 断言，而证据用例
+/// 恰恰需要逐条控制这些键（缺一个键就是用例本身）。
+pub struct EvidenceCase {
+    /// 用例名；同一规则内唯一，同时是目录名（只允许 `[a-z0-9-]`）。
+    pub name: &'static str,
+    /// 完整最小工程文件，路径相对工程根。
+    pub files: &'static [VisualFile],
+    /// `project.config.json` 的内容；`None` 写默认的
+    /// `{"miniprogramRoot":"","appid":"touristappid"}`。
+    pub project_config: Option<&'static str>,
+    pub run: EvidenceRun,
+    pub expect: EvidenceExpect,
+    /// 这条用例证明什么，一句话；报告里直接展示。
+    pub note: &'static str,
+}
+
+/// 证据用例的采集方式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceRun {
+    /// 只构建：`sim build --project <case> --out <case>/dist`。
+    Build,
+    /// 构建后起 serve 并加载页面：收集 console，或执行 evaluate。
+    Serve { page: &'static str },
+}
+
+impl EvidenceRun {
+    /// `Serve` 要加载的页面路由；`Build` 没有页面。
+    pub fn page(self) -> Option<&'static str> {
+        match self {
+            Self::Build => None,
+            Self::Serve { page } => Some(page),
+        }
+    }
+}
+
+/// 证据用例的断言。
+///
+/// 所有 `must` / `must_not` 都是**字面子串**，不是正则：规则与文案要能逐字对照，
+/// 正则会把「文案改了但断言还能过」变成静默失效。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceExpect {
+    /// 构建成功（exit 0）且产出 `dist/`。
+    BuildOk,
+    /// 构建必须失败（exit ≠ 0），且 stderr 含全部片段。
+    BuildFails {
+        stderr_contains: &'static [&'static str],
+    },
+    /// 构建成功，且构建日志（stdout + stderr）含 `must`、不含 `must_not`。
+    BuildLog {
+        must: &'static [&'static str],
+        must_not: &'static [&'static str],
+    },
+    /// 构建成功，且 `dist/<path>` 含 `must`、不含 `must_not`。
+    Artifact {
+        path: &'static str,
+        must: &'static [&'static str],
+        must_not: &'static [&'static str],
+    },
+    /// 页面加载后收集的 console 日志含 `must`、不含 `must_not`。
+    Console {
+        must: &'static [&'static str],
+        must_not: &'static [&'static str],
+    },
+    /// 页面上下文 `evaluate(expr)` 的结果等于 `equals`。
+    ///
+    /// 字符串结果直接比较，其余按 `JSON.stringify` 比较（`true` / `3` / `{}`）。
+    Runtime {
+        expr: &'static str,
+        equals: &'static str,
+    },
+}
+
 /// 检查方向。
 ///
 /// - `Skyline`：WebView 代码迁到 Skyline 时哪里会坏（默认方向）。
@@ -197,6 +276,14 @@ pub trait Rule {
         &[]
     }
 
+    /// 构建产物/日志/运行期取值的证据用例；空表示还没补。
+    ///
+    /// 生成器 `examples/rule_evidence_cases.rs` 与 `tools/evidence/run.sh` 消费它。
+    /// 两端没有视觉差异、只能产物或日志取证的规则用这条。
+    fn evidence_cases(&self) -> &'static [EvidenceCase] {
+        &[]
+    }
+
     /// 本规则所有视觉用例共用的组件夹具；空表示页面不引用自定义组件。
     ///
     /// 刻意不放进 [`VisualCase`]：组件是规则级的，且给结构体加字段会让所有既有
@@ -240,6 +327,9 @@ pub type VisualEntry = (
     &'static [VisualFile],
     &'static [VisualAction],
 );
+
+/// 证据用例生成器用的规则条目：元数据与用例列表。
+pub type EvidenceEntry = (RuleMeta, &'static [EvidenceCase]);
 
 #[derive(Default)]
 pub struct Registry {
@@ -382,6 +472,15 @@ impl Registry {
             .collect()
     }
 
+    /// 有证据用例的规则：id 与用例列表。生成器把每条用例写成一个完整工程。
+    pub fn evidence_cases(&self) -> Vec<EvidenceEntry> {
+        self.rules
+            .iter()
+            .map(|rule| (rule.meta(), rule.evidence_cases()))
+            .filter(|(_, cases)| !cases.is_empty())
+            .collect()
+    }
+
     /// 规则文档的唯一来源：`docs/RULES.md` 由它生成，不手写。
     ///
     /// 刷新方式：`cargo run --example rules_doc`。
@@ -471,18 +570,136 @@ fn escape_cell(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+    use std::path::{Component, Path};
+
     use super::{Registry, Target};
+
+    /// 证据用例的静态约束：名字能当目录名、工程非空且没有越界路径、`project_config` 是
+    /// JSON 对象、`Serve` 指定的页面 json 确实在 `files` 里。生成器写盘前会再校验一次，
+    /// 这里提前在单测里失败。
+    #[test]
+    fn evidence_cases_are_well_formed() {
+        let registry = Registry::builtin();
+        let entries = registry.evidence_cases();
+        assert!(!entries.is_empty(), "至少应有一组证据用例");
+
+        for (meta, cases) in entries {
+            let mut names = HashSet::new();
+            for case in cases {
+                assert!(
+                    names.insert(case.name),
+                    "规则 `{}` 的用例名重复：{}",
+                    meta.id,
+                    case.name
+                );
+                assert!(
+                    !case.name.is_empty()
+                        && case
+                            .name
+                            .chars()
+                            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-'),
+                    "规则 `{}` 的用例名必须是 [a-z0-9-]：{:?}",
+                    meta.id,
+                    case.name
+                );
+                assert!(
+                    !case.note.trim().is_empty(),
+                    "规则 `{}` 的 {} 缺 note",
+                    meta.id,
+                    case.name
+                );
+                assert!(
+                    !case.files.is_empty(),
+                    "规则 `{}` 的 {} 没有工程文件",
+                    meta.id,
+                    case.name
+                );
+
+                let mut paths = HashSet::new();
+                for file in case.files {
+                    let path = Path::new(file.path);
+                    let safe = !file.path.is_empty()
+                        && !path.is_absolute()
+                        && path
+                            .components()
+                            .all(|part| matches!(part, Component::Normal(_)));
+                    assert!(
+                        safe,
+                        "规则 `{}` 的 {} 含越界路径：{:?}",
+                        meta.id, case.name, file.path
+                    );
+                    assert!(
+                        paths.insert(file.path),
+                        "规则 `{}` 的 {} 重复写了 {}：后写的会覆盖前面的",
+                        meta.id,
+                        case.name,
+                        file.path
+                    );
+                }
+
+                if let Some(text) = case.project_config {
+                    let value: serde_json::Value =
+                        serde_json::from_str(text).unwrap_or_else(|error| {
+                            panic!(
+                                "规则 `{}` 的 {} project_config 不是 JSON：{error}",
+                                meta.id, case.name
+                            )
+                        });
+                    assert!(
+                        value.is_object(),
+                        "规则 `{}` 的 {} project_config 必须是 JSON 对象",
+                        meta.id,
+                        case.name
+                    );
+                }
+
+                if let Some(page) = case.run.page() {
+                    assert!(
+                        !page.starts_with('/') && !page.ends_with(".json"),
+                        "规则 `{}` 的 {} 的 page 应写成 `pages/x/index`：{:?}",
+                        meta.id,
+                        case.name,
+                        page
+                    );
+                    let page_json = format!("{page}.json");
+                    assert!(
+                        paths.contains(page_json.as_str()),
+                        "规则 `{}` 的 {} 要加载 {page_json}，但 files 里没有",
+                        meta.id,
+                        case.name
+                    );
+                }
+            }
+        }
+    }
 
     /// 视觉用例覆盖率门禁：`Target::Skyline` 的规则必须至少有一条 [`super::VisualCase`]。
     ///
-    /// 这一轮只有 `skyline/text-box-property` 落了样例，其余规则尚未批量补齐，所以
-    /// 先标 `#[ignore]`；批量补齐后删掉这一行即可生效。白名单给「差异无法用静态页面
-    /// 截图复现」的规则留出口，每条必须写清理由，不允许无理由豁免。
+    /// 白名单给「差异无法用静态页面截图或产物/日志复现」的规则留出口，每条必须写清理由，
+    /// 不允许无理由豁免。
     #[test]
-    #[ignore = "视觉用例批量补齐后启用；当前只有 text-box-property 一条样例"]
-    fn skyline_rules_have_visual_cases() {
-        /// (规则 id, 为什么没有截图用例)。
-        const WHITELIST: &[(&str, &str)] = &[];
+    fn skyline_rules_have_cases() {
+        /// (规则 id, 为什么没有任何自动用例)。
+        /// 用例包含截图证据（`VisualCase`）与产物/日志证据（`EvidenceCase`）。
+        const WHITELIST: &[(&str, &str)] = &[
+            (
+                "skyline/route-type",
+                "差异只在跨页转场的过渡帧上，单页 reLaunch 表达不了；需要两页导航 + 过渡中取图",
+            ),
+            (
+                "skyline/share-element-key",
+                "共享元素转场同样跨页，且转场结束态两端一致，只有中间帧不同",
+            ),
+            (
+                "skyline/scroll-context-enhanced",
+                "模拟器不实现「未开 enhanced → 告警并返回 false」，两种配置的返回值、告警与滚动行为都没有差异",
+            ),
+            (
+                "skyline/draggable-sheet-scroll-to",
+                "模拟器里 sheet 几何不随 scrollTo({size|pixels}) 变化，且传 pixels 会把 appservice 事件循环卡死",
+            ),
+        ];
         assert!(
             WHITELIST
                 .iter()
@@ -495,14 +712,14 @@ mod tests {
             .rules
             .iter()
             .filter(|rule| rule.target() == Target::Skyline)
-            .filter(|rule| rule.visual_cases().is_empty())
+            .filter(|rule| rule.visual_cases().is_empty() && rule.evidence_cases().is_empty())
             .map(|rule| rule.meta().id)
             .filter(|id| !WHITELIST.iter().any(|(allowed, _)| allowed == id))
             .collect();
 
         assert!(
             missing.is_empty(),
-            "以下 skyline 规则缺少 VisualCase（批量补齐后应删除 #[ignore]）：\n{}",
+            "以下 skyline 规则没有任何自动用例（截图或产物证据），补完后或写进白名单：\n{}",
             missing.join("\n")
         );
     }

@@ -111,21 +111,29 @@ serve 的端点分层（旧版本只有 `/cdp`）：`/automator` 是协议层、
 
 ## 覆盖现状
 
-70 个用例覆盖 55 条规则：66 条 `Differ`（其中 60 条像素差 ≥1%、6 条完全靠 bbox 边差）+ 4 条阴性对照；
+两套用例合计：**70 个截图用例覆盖 55 条规则 + 27 个证据用例覆盖 11 条规则**。
+
+截图部分：66 条 `Differ`（其中 60 条像素差 ≥1%、6 条完全靠 bbox 边差）+ 4 条阴性对照；
 其中 1 条是对照里**故意失败**的（`skyline/text-box-property` 的第二条：实测两端宽度必然不同，
 用它标注「这类阴性对照不成立」）。
 
-尚未覆盖的 15 条：
+证据部分（产物 / 构建日志 / 运行期取值）：`component-framework`、`navigation-style`、
+`lazy-code-loading`、`worklet-compile-setting`、`worklet-directive`、`autoprefix-build`、
+`scroll-view-type`、`config-ignored`、`scroll-context-ref`、`worklet-api-scope`、`lib-version`。
 
-- **只能产物/日志取证**（`worklet-api-scope`、`worklet-directive`、`worklet-compile-setting`、
-  `scroll-context-enhanced`、`scroll-context-ref`、`draggable-sheet-scroll-to`、`autoprefix-build`、
-  `config-ignored`、`lib-version`、`lazy-code-loading`、`component-framework`、`navigation-style`、
-  `route-type`、`scroll-view-type`）：两端本来就该没有视觉差异，「截图一致」不是证据。
-  这类需要另一套证据形式（产物文件、运行日志、配置回执），不在本框架内。
-- **跨页共享元素转场**（`share-element-key`）：需要两个页面之间的转场，单页截图表达不了。
-- **会被编译器直接拒绝**：`universal-selector` 的用例 WXSS 写 `*` 时，WXSS 编译器报
-  `unexpected token '*'` 并让整个工程构建失败（不是这条规则不生效，是一份 WXSS 编不出来）。
-  全批默认 `--skip universal-selector`；这条本身待确认「生产构建是否同样拒绝」，结论未定前不进报告。
+覆盖率门禁 `skyline_rules_have_cases` 已启用（不再 `#[ignore]`）：skyline 规则必须至少有一条
+截图用例或证据用例，否则测试失败。目前只豁免 4 条，每条都带实测理由：
+
+| 规则 | 为什么无可自动用例 |
+|---|---|
+| `route-type` | 差异只在跨页转场的过渡帧上，单页 `reLaunch` 表达不了 |
+| `share-element-key` | 共享元素转场同样跨页，且转场结束态两端一致，只有中间帧不同 |
+| `scroll-context-enhanced` | 模拟器不实现「未开 enhanced → 告警并返回 false」：两种配置的返回值、告警、滚动行为都没差异 |
+| `draggable-sheet-scroll-to` | sheet 几何不随 `scrollTo({size|pixels})` 变化，且传 `pixels` 会把 appservice 事件循环卡死 |
+
+另有一条**用例存在但默认跳过**：`universal-selector` 的 WXSS 写 `*` 时编译器报
+`unexpected token '*'` 并让整个工程构建失败（不是规则不生效，是一份 WXSS 编不出来）。
+全批默认 `--skip universal-selector`；「生产构建是否同样拒绝」尚未确认，结论未定前不进报告。
 
 ## 口径与局限
 
@@ -144,11 +152,71 @@ serve 的端点分层（旧版本只有 `/cdp`）：`/automator` 是协议层、
   控件不消费这串序列（列表 `top` 不动、事件照常冒泡给祖先），而 WebView 的 `scroll-view` 会滚动并
   阻止冒泡。`scroll-gesture-conflict` 的 Differ 正是这个终态差，它证明的是「两端对同一串触摸的反应不同」，
   不等于真机上「原生滚动与 JS `touchmove` 并行」的手感；真机结论仍需单独验证。
+- **证据用例证明的是「事实成立」，不等于「后果成立」。** 例如 `worklet-compile-setting` 只能证明
+  `compileWorklet` 开关决定产物里有没有 `__workletHash`，不能证明动画在运行期真的生效；
+  `autoprefix-build` 只能证明「该配置下构建会注入前缀」，而规则主张里的「dev 构建跳过」在本工具链
+  上无法验证（`sim build` 没有 dev/prod 开关）。
+- **模拟器自身的实现缺口会让「无差异」变成假结论。** 已确认三处：`disableScroll` 在本机 WebView 上
+  根本不实现（app 级与页面级都一样能滚，因此 `config-ignored` 的证据只能证明「写不写都没差异」）；
+  工程 `libVersion` 不参与选库（运行时恒为 vendor 版本）；给 `scroll-view` 一份有效 ref 后调
+  `scrollTo` 会把 appservice 事件循环卡死。凡指望这些行为出差异的断言，都要先确认模拟器实现了它。
 - 视觉用例证明的是「两端在这份最小源码上不同」，不证明「真实工程里一定出现」。规则在真实工程
   是否命中、命中后修法是否两端一致，仍按原有流程验证。
 
 ## 覆盖率门禁
 
-`rules::tests::skyline_rules_have_visual_cases` 列出所有还没有用例的 skyline 规则，当前是
-`#[ignore]`。启用前需要先给「只能产物/日志取证」的那批建白名单，每条写明豁免理由；
-否则门禁会把「本来就不该用截图证明」的规则判成缺失。
+`rules::tests::skyline_rules_have_cases`（已启用）要求每条 skyline 规则至少有一条截图用例
+或证据用例，否则测试失败。无法自动证的规则必须写进白名单并附实测理由——理由为空同样失败，
+不允许无理由豁免。
+
+## 证据用例（构建 / 日志 / 运行期）
+
+两端本来就没有视觉差异的规则（构建期校验、产物改写、运行期告警）不能靠截图证明。
+它们用 `EvidenceCase`：一份完整最小工程 + 一次构建或一次页面加载 + 一组字面断言。
+
+```text
+cargo run --example rule_evidence_cases -- --out .tmp/evidence-run   # 只生成工程与清单
+MINIDEV_BIN=<已构建二进制> MINIDEV_SDK=<sdk/minidev-automator> tools/evidence/run.sh
+open .tmp/evidence-run/report.html
+```
+
+`MINIDEV_BIN` 同样必须指向已构建二进制，理由见上一节。serve 类用例每条一个独立工程、
+一个独立 serve（默认端口 9791），串行执行；端口先确认空闲，清理只 kill 自己记录的 pid。
+
+用例与规则源码同文件（`fn evidence_cases`），接口见 `src/rules/mod.rs`：
+
+| `run` | 做什么 | 可配的 `expect` |
+|---|---|---|
+| `Build` | `sim build --project <case> --out <case>/dist` | `BuildOk` / `BuildFails` / `BuildLog` / `Artifact` |
+| `Serve { page }` | 构建 → 起 serve → reLaunch 页面 | `Console` / `Runtime` |
+
+判定口径：
+
+- 所有 `must` / `must_not` 是字面子串，不是正则；文案改了断言必须跟着改，避免静默通过。
+- `pass` = 全部断言成立；`fail` = 证据取到了但断言不成立（exit 码不对、文案不匹配、
+  不该出现的日志出现了）；`error` = 证据取不到（构建没跑、dist 文件缺失、serve 连不上、
+  console 通道不通、evaluate 抛错）。`error` 不是 `fail`，不能当结论。
+- `Console` 在 reLaunch 后先注入一条 `__EVIDENCE_READY_*__` 握手日志：没收到它说明
+  `App.logAdded` 通道不可用，直接 `error`——否则「日志为空」会被误判成「没有告警」。
+- 每条规则至少一条阴性对照：构建类用「只补缺键即构建通过」，运行期类用「不写触发值
+  即不出现该日志」。
+
+当前覆盖（M0）：
+
+- `skyline/lazy-code-loading`：缺 `lazyCodeLoading` 时构建 exit 1、stderr 含
+  `lazyCodeLoading` 与 `requiredComponents`；补齐后 `BuildOk`。
+- `skyline/scroll-view-type`：`type="default"` 的页面日志出现
+  `Do not support the attribute default in scroll-view`；不写 `type` 的对照页不出现。
+- `skyline/config-ignored`：app.json `window.disableScroll: true` 时
+  `wx.pageScrollTo({scrollTop:200})` 仍把页面滚到 200；不写该键的对照页同样 200。
+- `skyline/scroll-context-ref`：不 `.ref()` 时同一调用打
+  `scrollTo: fail invalid parameter ref` 且 `scrollTop` 保持 0；拿到 ref 的对照页不再打这行。
+- `skyline/worklet-api-scope`：worklet 内 `wx.getStorageSync` 静默返回 `undefined`，
+  JS 线程读同一 key 得到 `probe-value`（证据强度低于报错类：没有崩溃，只有返回值失效）。
+- `skyline/lib-version`：`libVersion: "2.20.0"` 构建 exit 0；运行时 `SDKVersion` 与
+  `3.3.0` 的对照工程同为 vendor `3.17.3`。
+
+尚未迁移：`scroll-context-enhanced`、`draggable-sheet-scroll-to` 与 `route-type`。
+前两条在本机模拟器上取不到能归因的读数：前者不产生规则主张的 warning（开/未开 `enhanced`
+无差异），后者 `scrollTo` 不影响页面侧几何、`pixels` 还会卡死 appservice；两条都在规则源码里
+写明了不可自动证的结论。`route-type` 仍需要跨页转场。
