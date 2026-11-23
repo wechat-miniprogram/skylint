@@ -43,6 +43,11 @@ const ENTRIES: &[Entry] = &[
         message: "Skyline 不支持 `this.animate`，动画不会执行；改用 worklet（wx.worklet.shared + applyAnimatedStyle）",
         skyline_only: true,
     },
+    Entry::Call {
+        callee: "wx.pageScrollTo",
+        message: "Skyline 下页面根不是滚动容器，`wx.pageScrollTo` 没有消费者、滚动不会发生；把内容搬进 `<scroll-view>`，用 `ScrollViewContext.scrollTo`（先 `createSelectorQuery().select().ref()` 拿引用）",
+        skyline_only: true,
+    },
     Entry::PluginCall {
         prefix: "wx.router",
         message: "小程序插件不支持 wx.router.*（自定义路由），插件页内调用无效",
