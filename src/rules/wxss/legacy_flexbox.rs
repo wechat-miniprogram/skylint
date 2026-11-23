@@ -19,7 +19,7 @@
 //! 无害的兜底（`-webkit-box-flex` 与 `flex:1` 并存、或父级才是老式容器），按「宁可漏报」跳过。
 
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use std::collections::HashMap;
@@ -59,6 +59,23 @@ impl LegacyFlexbox {
     pub const ID: &'static str = "skyline/legacy-flexbox";
 }
 
+/// 视觉用例：老式弹性盒在 Skyline 下整块失效。
+///
+/// WebView 认 `display: -webkit-box`，三格横排；Skyline 丢掉整套声明后回落到
+/// 默认 flex 列布局，三格竖排。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="row">
+  <view class="cell a">1</view>
+  <view class="cell b" id="target">2</view>
+  <view class="cell c">3</view>
+</view>"#,
+    wxss: ".row { display: -webkit-box; -webkit-box-orient: horizontal; width: 300px; padding: 8px; background: #eee; }\n.cell { width: 80px; height: 40px; line-height: 40px; text-align: center; color: #fff; }\n.a { background: #e54d42; }\n.b { background: #4caf50; }\n.c { background: #2196f3; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`display: -webkit-box` 整套老式弹性盒在 Skyline 被丢弃、退回默认 flex 列：WebView 三格横排，Skyline 竖排",
+    target: "#target",
+}];
+
 impl Rule for LegacyFlexbox {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -66,6 +83,10 @@ impl Rule for LegacyFlexbox {
             severity: Severity::Error,
             description: "规则块用了老式 `-webkit-box` 弹性盒，Skyline 不认识这些声明，整块布局会退回默认 display",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -212,6 +233,23 @@ mod tests {
     use crate::rules::testutil::wxss::{messages, page};
 
     use super::LegacyFlexbox;
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture = crate::rules::testutil::Fixture::page(
+                "legacy-flexbox-visual",
+                case.wxml,
+                case.wxss,
+            );
+            let hits = crate::rules::testutil::check_rule(&fixture, &LegacyFlexbox)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == LegacyFlexbox::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     #[test]
     fn one_rule_block_reports_once_with_every_declaration() {

@@ -2,7 +2,7 @@
 
 use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 use super::{element_diagnostic, for_each_element, unsupported_replacement};
 
@@ -12,13 +12,30 @@ impl UnsupportedComponent {
     pub const ID: &'static str = "skyline/unsupported-component";
 }
 
+/// 视觉用例：同一段 WXML/WXSS 两端各渲一次，看 `#target` 的几何与像素。
+///
+/// `<progress>` 在 Skyline 下没有原生实现：盒子仍在（`height` / `background` 生效），
+/// 占位高度与 WebView 一致，只是不画原生进度条填充。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="wrap"><view class="head">标题</view><progress class="bar" id="target" percent="60"/><view class="tail">尾部</view></view>"#,
+    wxss: ".wrap { padding: 10px; }\n.bar { height: 20px; background: #cde; }\n.tail { height: 20px; background: #edc; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "两端的 <progress> 都占 20px 高度、尾部位置一致；差异只在 WebView 画出原生进度条填充（绿色，60% 宽），Skyline 只保留 CSS 底色、丢失原生绘制",
+    target: "#target",
+}];
+
 impl Rule for UnsupportedComponent {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Error,
-            description: "Skyline 下不可用的组件（如 web-view / movable-view / editor）",
+            description: "Skyline 下不可用的组件（如 web-view / movable-view / editor）：部分组件仍保留盒子，但缺少原生能力或绘制",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -58,7 +75,7 @@ impl Rule for UnsupportedComponent {
 
 #[cfg(test)]
 mod tests {
-    use super::UnsupportedComponent;
+    use super::{UnsupportedComponent, VISUAL_CASES};
     use crate::rules::testutil::wxml::{Fixture, check_rule, project};
 
     /// 页面 json 显式 `"renderer": "webview"`：这页不迁 Skyline，整页跳过。
@@ -305,5 +322,19 @@ mod tests {
             .write("tpl/x.wxml", r#"<web-view src="https://x"/>"#);
         let diagnostics = check_rule(&fixture, &UnsupportedComponent);
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    }
+
+    /// 视觉用例的同一份 WXML/WXSS 必须真的能触发本规则。
+    #[test]
+    fn visual_case_triggers_rule() {
+        let case = &VISUAL_CASES[0];
+        let fixture = Fixture::page("unsupported-visual", case.wxml, case.wxss);
+        let diagnostics = check_rule(&fixture, &UnsupportedComponent);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.rule == UnsupportedComponent::ID),
+            "视觉用例未触发规则"
+        );
     }
 }

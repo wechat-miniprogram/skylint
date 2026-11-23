@@ -1,15 +1,20 @@
 //! WXML 里既不是内置组件、也没有在 `usingComponents` 里声明的标签。
 //!
-//! 两个渲染器对这类标签的处理完全不同：WebView（exparser）查不到定义时落到默认组件，
-//! 默认组件没有模板、没有 `<slot>`，子节点无处投影，整块不渲染；Skyline（glass-easel）
-//! 把标签名当 native node 交给渲染层，按普通元素建盒子，子节点照常渲染。迁移后原本
-//! 「静默消失」的子树会突然进入布局，这是本规则成立的依据。
+//! 两端都不会把它解析成组件，兜底结果取决于 WebView 的组件框架：
+//!
+//! - WebView（glass-easel）：退化为原生元素，基础样式里没有它的规则，按 CSS 初始值
+//!   `display: inline` 排版——盒子收缩到内容宽度，`height` 等块级属性被忽略（实测 32×22 CSS）；
+//! - WebView（旧 exparser）：退化为无模板的默认组件，没有 `<slot>` 可投影，子树不显示；
+//! - Skyline：同样退化为引擎的通用元素，默认 `display: flex` + `column` + `stretch`，
+//!   即块级 flex 容器——宽度撑满、`height` 生效（实测 355×40 CSS）。
+//!
+//! 这样写出来的标签在两端都不是你想要的组件，布局不可控，还会在旧框架下整块消失。
 
 use std::collections::BTreeSet;
 
 use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 use super::{element_diagnostic, for_each_element, is_builtin};
 
@@ -21,15 +26,35 @@ impl UnregisteredTag {
     /// WXML 语法构造不是组件。`template` / `import` / `include` / `wxs` / `block` 由
     /// 解析器摊平，本来就不作为元素出现；`<slot>` 会作为元素出现，但它不是组件。
     const NOT_COMPONENTS: &[&str] = &["template", "import", "include", "wxs", "slot", "block"];
+
+    const HELP: &str = "在页面或组件的 usingComponents 里注册该组件；若本来就不该渲染，改成真实组件或加 wx:if。两端都不会把它当成组件：WebView 退化为未知行内元素，旧组件框架下退化为无模板默认组件、子树不显示；Skyline 退化为块级 flex 容器";
 }
+
+/// 视觉用例：同一段 WXML/WXSS 两端各渲一次，整页比对。
+///
+/// `my-modal` 未在 `usingComponents` 里注册：WebView 把它当行内元素，背景只包住「内容」
+/// （32×22 CSS，`height` 被忽略）；Skyline 当普通块级元素，背景铺满 355×40 CSS，后面的
+/// 兄弟被推下 18 CSS。差异主体是这块 355×40 的背景，而不是尾部的位移。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="wrap"><view class="head">标题</view><my-modal class="ghost">内容</my-modal><view class="tail" id="target">尾部</view></view>"#,
+    wxss: ".wrap { padding: 10px; }\n.ghost { height: 40px; background: #cde; }\n.tail { height: 20px; background: #edc; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "未注册的 <my-modal>：WebView 按行内元素收缩到内容尺寸（背景 32×22，`height` 被忽略）；Skyline 按块级元素铺满 355×40，尾部只差 18px——差异主体是这块 40px 高的背景",
+    target: "",
+}];
 
 impl Rule for UnregisteredTag {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Error,
-            description: "未注册的标签：WebView 不渲染其子树，Skyline 按普通元素渲染",
+            description: "未注册的标签：WebView 只当未知行内元素（块级属性被忽略；旧组件框架下退化为无模板默认组件、子树不显示），Skyline 当块级 flex 容器（宽度撑满）",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -63,11 +88,11 @@ impl Rule for UnregisteredTag {
                     doc.path(),
                     Severity::Error,
                     format!(
-                        "未注册标签 `<{}>`：WebView 不渲染其子树，Skyline 会按普通元素渲染",
+                        "未注册标签 `<{}>`：WebView 只当未知行内元素（收缩到内容宽度、`height` 等块级属性被忽略），Skyline 当块级 flex 容器（宽度撑满、`height` 生效），两端布局不同",
                         element.tag
                     ),
                 )
-                .help("在页面或组件的 usingComponents 里注册该组件；若本来就不该渲染，改成真实组件或加 wx:if"),
+                .help(Self::HELP),
             );
         });
         out
@@ -76,7 +101,7 @@ impl Rule for UnregisteredTag {
 
 #[cfg(test)]
 mod tests {
-    use super::UnregisteredTag;
+    use super::{UnregisteredTag, VISUAL_CASES};
     use crate::rules::testutil::wxml::{Fixture, check_rule, project};
 
     #[test]
@@ -265,5 +290,19 @@ mod tests {
     fn tag_names_are_matched_case_insensitively() {
         let diagnostics = check_rule(&project("case", "<Page-Meta/>"), &UnregisteredTag);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    /// 视觉用例的同一份 WXML/WXSS 必须真的能触发本规则。
+    #[test]
+    fn visual_case_triggers_rule() {
+        let case = &VISUAL_CASES[0];
+        let fixture = Fixture::page("unregistered-visual", case.wxml, case.wxss);
+        let diagnostics = check_rule(&fixture, &UnregisteredTag);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.rule == UnregisteredTag::ID),
+            "视觉用例未触发规则"
+        );
     }
 }

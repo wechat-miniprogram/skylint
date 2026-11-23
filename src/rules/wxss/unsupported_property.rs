@@ -1,7 +1,7 @@
 //! Skyline 下完全不生效的属性。
 
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::dict_table::table;
@@ -17,6 +17,37 @@ impl UnsupportedProperty {
     pub const ID: &'static str = "skyline/unsupported-property";
 }
 
+/// 视觉用例：Skyline 完全不存在的属性被整条丢弃。
+static VISUAL_CASES: &[VisualCase] = &[
+    VisualCase {
+        wxml: r#"<view class="title" id="target">hello world</view>"#,
+        wxss: ".title { font-size: 24px; line-height: 32px; color: #223; text-transform: uppercase; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "`text-transform: uppercase` 在 WebView 把文字变大写，Skyline 丢弃该属性、保持原样",
+        target: "#target",
+    },
+    VisualCase {
+        wxml: r#"<view class="wrap">
+  <view class="pic">图片</view>
+  <view class="text" id="target">这段文字在 WebView 里环绕在浮动元素右侧，在 Skyline 里落到它下面。</view>
+</view>"#,
+        wxss: ".wrap { display: block; width: 300px; background: #f5f5f5; }\n.pic { float: left; width: 80px; height: 80px; margin-right: 8px; background: #f0a020; }\n.text { font-size: 14px; line-height: 22px; color: #222; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "`float: left` 在 WebView 让文字环绕图片，Skyline 丢弃 float 后图片独占一行、文字下移",
+        target: "#target",
+    },
+    VisualCase {
+        wxml: r#"<view class="para" id="target">首行缩进两字，后续行正常排列。</view>"#,
+        wxss: ".para { display: block; width: 220px; font-size: 14px; line-height: 22px; color: #222; text-indent: 2em; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "`text-indent: 2em` 在 WebView 缩进首行，Skyline 丢弃该属性后首行从左边缘开始",
+        target: "#target",
+    },
+];
+
 impl Rule for UnsupportedProperty {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -24,6 +55,10 @@ impl Rule for UnsupportedProperty {
             severity: Severity::Error,
             description: "声明了 Skyline 完全不支持的属性，该属性不会生效",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -123,6 +158,18 @@ mod tests {
 
     use super::UnsupportedProperty;
     use crate::rules::testutil::wxss::{messages, page};
+
+    #[test]
+    fn visual_case_unsupported_properties_are_reported() {
+        let (_f, project) = page(
+            "property-visual",
+            r#"<view class="title" id="target">hello world</view>"#,
+            ".title { font-size: 24px; line-height: 32px; color: #223; text-transform: uppercase; }",
+        );
+        let diags = UnsupportedProperty.check(&project);
+        assert!(!diags.is_empty(), "{diags:#?}");
+        assert!(diags.iter().any(|d| d.message.contains("`text-transform`")));
+    }
 
     #[test]
     fn property_reports_unsupported_properties() {

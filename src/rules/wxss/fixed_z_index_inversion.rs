@@ -2,7 +2,7 @@
 //! 祖先的层叠上下文失效，两个 fixed 元素的上下顺序可能与 WebView 相反。
 //!
 //! 引擎把 fixed 节点提到 root container（把节点 `AppendChild` 到页面根），而 Skyline 的 `z-index` 只在
-//! 同一父节点的兄弟之间排序（`package/skyline/lib/rendering/stacking.dart:19-56`），
+//! 同一父节点的兄弟之间排序（Skyline 引擎的层叠排序实现），
 //! 没有 CSS 的层叠上下文概念。
 //!
 //! 于是同一份 CSS 在两端的绘制顺序不同：
@@ -23,7 +23,7 @@ use std::collections::HashSet;
 use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::wxml::{for_each_element, resolved_property_with};
-use crate::rules::{Rule, RuleMeta, Target};
+use crate::rules::{Rule, RuleMeta, Target, VisualCase, VisualExpect};
 use crate::wxml_graph::WxmlGraph;
 use crate::{Diagnostic, Severity};
 
@@ -40,6 +40,23 @@ struct Layer {
     flat: i64,
 }
 
+/// 视觉用例：祖先的层叠上下文在 Skyline 下失效。
+///
+/// WebView 里 `.sheet` 被 `.wrap` 的 `z-index: 0` 关住，`z-index: 4000` 的输入层
+/// 盖在它上面；Skyline 把 fixed 的 `.sheet` 提到页面根，自己的 `5000` 反超。
+/// 两层大幅重叠，`#target`（输入层）区域的颜色在两端的绘制顺序下不同。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="wrap">
+  <view class="sheet">面板</view>
+</view>
+<view class="input" id="target">输入区</view>"#,
+    wxss: ".wrap { position: relative; z-index: 0; height: 320px; background: #e0e0e0; }\n.sheet { position: fixed; z-index: 5000; top: 40px; left: 20px; width: 200px; height: 140px; background: #2196f3; color: #fff; }\n.input { position: fixed; z-index: 4000; top: 100px; left: 60px; width: 180px; height: 140px; background: #e54d42; color: #fff; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "fixed 面板被祖先 z-index: 0 关住时 WebView 让 z-index: 4000 的输入层盖住它；Skyline 把它提到页面根，5000 反超",
+    target: "#target",
+}];
+
 impl Rule for FixedZIndexInversion {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -47,6 +64,10 @@ impl Rule for FixedZIndexInversion {
             severity: Severity::Warning,
             description: "`position: fixed` 在 Skyline 下跳出祖先的层叠上下文，上下顺序可能与 WebView 相反",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -266,6 +287,20 @@ mod tests {
     use crate::rules::testutil::Fixture;
 
     use super::FixedZIndexInversion;
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture =
+                crate::rules::testutil::Fixture::page("fixed-zindex-visual", case.wxml, case.wxss);
+            let hits = crate::rules::testutil::check_rule(&fixture, &FixedZIndexInversion)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == FixedZIndexInversion::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     fn check(
         name: &str,

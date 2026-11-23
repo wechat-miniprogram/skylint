@@ -14,7 +14,7 @@
 
 use crate::matcher::subject;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta, Target};
+use crate::rules::{Rule, RuleMeta, Target, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::visit_matching_rules;
@@ -24,6 +24,16 @@ pub struct UniversalSelector;
 impl UniversalSelector {
     pub const ID: &'static str = "skyline/universal-selector";
 }
+
+/// 视觉用例：`*` 规则在 Skyline 里不进规则集，文字保持默认颜色。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<text class="label" id="target">标记文字</text>"#,
+    wxss: "* { color: #e00; }\n.label { font-size: 24px; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`* { color: #e00 }` 在 WebView 命中文字显示红色，Skyline 没有 id / 标签 / 类桶，整条规则不进规则集，文字保持默认黑色",
+    target: "#target",
+}];
 
 impl Rule for UniversalSelector {
     fn meta(&self) -> RuleMeta {
@@ -36,6 +46,10 @@ impl Rule for UniversalSelector {
 
     fn target(&self) -> Target {
         Target::Skyline
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -76,9 +90,23 @@ const HELP: &str = "换成具体标签（如 `view`）或类名；确实需要�
 
 #[cfg(test)]
 mod tests {
-    use crate::rules::testutil::wxss::{messages, page};
+    use crate::rules::testutil::check_rule;
+    use crate::rules::testutil::wxss::{Fixture, messages, page};
 
     use super::UniversalSelector;
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture = Fixture::page("universal-visual", case.wxml, case.wxss);
+            let hits = check_rule(&fixture, &UniversalSelector)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == UniversalSelector::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     fn report(name: &str, wxss: &str) -> Vec<String> {
         let (_fixture, project) = page(name, r#"<view class="a"><view/></view>"#, wxss);

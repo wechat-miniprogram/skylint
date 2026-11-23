@@ -26,7 +26,7 @@ use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::matcher::Tree;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 use super::branch::exclusive;
 use super::structure::attr_is_off;
@@ -45,6 +45,19 @@ const TEXT_HOSTS: [&str; 3] = ["text", "span", "navigator"];
 
 pub struct InlineRun;
 
+/// 视觉用例：父级是普通 `<view>`，两个 `<text>` 并列。
+///
+/// WebView 的两个 `<text>` 都是 inline，走同一个行内流（父级高一行）；
+/// Skyline 默认 block，各自占一行（父级高两行）。`#target` 的 height 直接不同。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="row" id="target"><text class="tag">标签一</text><text class="tag">标签二</text></view>"#,
+    wxss: ".row { padding: 10px; background: #f4f4f4; }\n.tag { font-size: 16px; background: #ccd; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "并列的两个 `<text>`：WebView 排在同一行（父级高一行），Skyline 各自占一行（父级高两行）",
+    target: "#target",
+}];
+
 impl Rule for InlineRun {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -52,6 +65,10 @@ impl Rule for InlineRun {
             severity: Severity::Warning,
             description: "并列的文本级元素在 WebView 下排在同一行，在 Skyline 下各自占一行",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -273,6 +290,19 @@ mod tests {
         assert_eq!(diagnostics.len(), 1);
     }
 
+    /// 视觉用例同源的页面：两个并列 `<text>` 在两端行数不同。
+    #[test]
+    fn visual_case_adjacent_texts_are_reported() {
+        let fixture = Fixture::page(
+            "inline-run/visual",
+            r#"<view class="row" id="target"><text class="tag">标签一</text><text class="tag">标签二</text></view>"#,
+            ".row { padding: 10px; }\n.tag { font-size: 16px; }\n",
+        );
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("并列"));
+    }
+
     #[test]
     fn text_and_image_siblings() {
         let diagnostics = check(&project(
@@ -402,7 +432,7 @@ mod tests {
 
     // ---- 模板定义体：样式按引用它的单元求值 ----
 
-    /// 模板定义体：cinema 价格区的真实写法（`tpls/cinema-new/_cinema-item.wxml`）。
+    /// 模板定义体：某价格区模板的真实写法。
     fn template(body: &str) -> Fixture {
         let fixture = Fixture::new("inline-run/template");
         fixture

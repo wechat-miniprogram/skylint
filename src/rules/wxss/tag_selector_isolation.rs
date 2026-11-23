@@ -16,7 +16,7 @@ use serde_json::{Map, Value};
 
 use crate::input::wxml::WxmlDoc;
 use crate::project::{Project, Scope, StyleIsolation};
-use crate::rules::RuleMeta;
+use crate::rules::{RuleMeta, VisualCase, VisualComponent, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::visit_rules;
@@ -46,6 +46,29 @@ impl TagSelectorIsolation {
             .unwrap_or(false)
     }
 }
+
+/// 视觉用例：页面的 `view` 标签选择器穿透到组件内部的 `<view>`。
+///
+/// 组件内部的 `#target` 从页面层查不到（选择器不跨组件边界），所以用 `target: ""`
+/// 整页比对：两端页面结构相同，只有组件内 `<view>` 是否吃到页面样式不同。
+static VISUAL_COMPONENTS: &[VisualComponent] = &[VisualComponent {
+    name: "c",
+    wxml: r#"<view class="inner">组件内容</view>"#,
+    wxss: ".inner { width: 120px; height: 48px; }\n",
+    js: None,
+}];
+
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="page">
+  <view class="spacer"/>
+  <c/>
+</view>"#,
+    wxss: "view { padding: 12px; background: #e33; }\n.spacer { height: 240px; background: #fff; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "页面 wxss 的 `view` 标签选择器命中了组件内的 `<view>`：WebView 下组件内多出红底内边距，Skyline 不跨组件匹配（整页比对）",
+    target: "",
+}];
 
 /// 一条命中记录，用来去重（同一选择器可能被多个 scope 各判一次）。
 struct Hit {
@@ -147,6 +170,14 @@ impl crate::rules::Rule for TagSelectorIsolation {
             severity: Severity::Warning,
             description: "标签 / id 选择器在 Skyline 下不跨组件匹配，WebView 上生效的样式会静默失效",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
+    }
+
+    fn visual_components(&self) -> &'static [VisualComponent] {
+        VISUAL_COMPONENTS
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -310,6 +341,13 @@ mod tests {
     }
 
     // ---- positive ----
+
+    #[test]
+    fn visual_case_page_tag_selector_hits_component_node() {
+        let fixture = fixture("tag-visual", "view { padding: 12px; background: #e33; }");
+        let diagnostics = check(&fixture);
+        assert!(!diagnostics.is_empty(), "{diagnostics:?}");
+    }
 
     #[test]
     fn preprocessor_style_source_is_checked_too() {

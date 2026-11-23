@@ -19,10 +19,9 @@ use crate::input::wxml::WxmlElement;
 use crate::input::wxss::{ValueToken, WxssDeclaration};
 use crate::matcher::Tree;
 use crate::project::Project;
-use crate::rules::Rule;
-use crate::rules::RuleMeta;
 use crate::rules::wxml::{for_each_element, resolved_property_with};
 use crate::rules::wxss::value_util::at_declaration;
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 /// 省略颜色会退回黑色的属性。
@@ -69,6 +68,26 @@ impl ImplicitColor {
     pub const ID: &'static str = "skyline/implicit-color";
 }
 
+/// 视觉用例：省略颜色的边框与文字阴影，Skyline 默认黑色、WebView 取元素 `color`。
+static VISUAL_CASES: &[VisualCase] = &[
+    VisualCase {
+        wxml: r#"<view class="tag" id="target">标签</view>"#,
+        wxss: ".tag { display: inline-block; padding: 8px 16px; font-size: 20px; color: #e33; border: 4px solid; background: #fff; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "`border: 4px solid` 省略颜色：WebView 画成 `color` 的红色，Skyline 默认黑色",
+        target: "#target",
+    },
+    VisualCase {
+        wxml: r#"<text class="price" id="target">¥99</text>"#,
+        wxss: "page { background: #fff; }\n.price { font-size: 32px; color: #e33; text-shadow: 2px 2px; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "`text-shadow: 2px 2px` 省略颜色：WebView 用元素 `color` 的红色阴影，Skyline 用黑色",
+        target: "#target",
+    },
+];
+
 impl Rule for ImplicitColor {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -76,6 +95,10 @@ impl Rule for ImplicitColor {
             severity: Severity::Info,
             description: "省略颜色时 Skyline 用黑色而不是元素自身的 color（受实验开关影响）",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -292,6 +315,16 @@ mod tests {
             ".a { color: #000; } .b { color: inherit; border: 1px solid; }",
         );
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
+    fn visual_case_border_without_color_is_reported() {
+        let diagnostics = check(
+            "implicit-color-visual",
+            r#"<view class="tag" id="target">标签</view>"#,
+            ".tag { display: inline-block; padding: 8px 16px; font-size: 20px; color: #e33; border: 4px solid; background: #fff; }",
+        );
+        assert!(!diagnostics.is_empty(), "{diagnostics:?}");
     }
 
     #[test]

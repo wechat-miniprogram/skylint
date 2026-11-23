@@ -44,7 +44,7 @@ use crate::input::wxml::{WxmlDoc, WxmlNode};
 use crate::input::wxss::WxssSelector;
 use crate::matcher::{Dialect, Tree, Tri};
 use crate::project::{Project, StyleSheet};
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 use super::scope_wxml;
 use crate::rules::wxml::inline_run::is_inline_member;
@@ -54,6 +54,19 @@ pub const ID: &str = "skyline/pseudo-inline-layout";
 
 pub struct PseudoInlineLayout;
 
+/// 视觉用例：伪元素与宿主里的文本并排。
+///
+/// WebView 下 `::before` 是 inline 盒，和文本同一行；Skyline 下非文本宿主的伪节点
+/// 是块级 / flex 子盒，独占一行，宿主因此高出一行。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="tip" id="target">提交后不可取消</view>"#,
+    wxss: ".tip { width: 240px; padding: 10px; background: #f5f5f5; color: #333; font-size: 14px; line-height: 20px; }\n.tip::before { content: \"!\"; color: #e54d42; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "伪元素与文本并排：WebView 同一行，Skyline 下伪元素是块级盒、会多占一行（宿主高度不同）",
+    target: "#target",
+}];
+
 impl Rule for PseudoInlineLayout {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -61,6 +74,10 @@ impl Rule for PseudoInlineLayout {
             severity: Severity::Warning,
             description: "伪元素与文本并排时 Skyline 下会换行：伪元素是块级盒，WebView 下是 inline",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -278,6 +295,19 @@ mod tests {
     use super::PseudoInlineLayout;
     use crate::rules::Rule;
     use crate::rules::testutil::wxml::Fixture;
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture = Fixture::page("pseudo-inline-visual", case.wxml, case.wxss);
+            let hits = crate::rules::testutil::check_rule(&fixture, &PseudoInlineLayout)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == super::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     fn check(fixture: &Fixture) -> Vec<crate::Diagnostic> {
         PseudoInlineLayout.check(&fixture.project())

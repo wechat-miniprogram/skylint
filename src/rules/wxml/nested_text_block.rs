@@ -14,7 +14,7 @@ use crate::project::Project;
 use crate::rules::wxml::{
     ElementSite, element_diagnostic, for_each_element, resolved_property_with,
 };
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 pub const ID: &str = "skyline/nested-text-block";
 
@@ -28,6 +28,19 @@ const TEXT_CONTAINERS: [&str; 2] = ["text", "span"];
 
 pub struct NestedTextBlock;
 
+/// 视觉用例：同一段 WXML/WXSS 两端各渲一次，看 `#target` 的几何与像素。
+///
+/// 内层 `<text>` 写 `display: block`：WebView 里在文本内部真的断行，
+/// Skyline 的文本内部只走 inline 流，把三行挤回一行。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="wrap" id="target"><text class="outer">上层<text class="inner">下层</text>继续</text></view>"#,
+    wxss: ".wrap { padding: 10px; font-size: 16px; }\n.inner { display: block; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "WebView 里嵌套 <text> 的 display:block 会断成独立一行；Skyline 忽略该声明，仍与前后文字同排",
+    target: "#target",
+}];
+
 impl Rule for NestedTextBlock {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -35,6 +48,10 @@ impl Rule for NestedTextBlock {
             severity: Severity::Warning,
             description: "嵌套 `<text>` 上的 `display: block` 只在 WebView 生效：Skyline 的文本内部只走 inline 流",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -74,7 +91,7 @@ fn check_element(site: &ElementSite<'_, '_>, out: &mut Vec<Diagnostic>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{ID, NestedTextBlock};
+    use super::{ID, NestedTextBlock, VISUAL_CASES};
     use crate::rules::testutil::wxml::{Fixture, check_rule};
 
     fn count(wxml: &str, wxss: &str) -> usize {
@@ -116,5 +133,12 @@ mod tests {
             ),
             0
         );
+    }
+
+    /// 视觉用例的同一份 WXML/WXSS 必须真的能触发本规则。
+    #[test]
+    fn visual_case_triggers_rule() {
+        let case = &VISUAL_CASES[0];
+        assert!(count(case.wxml, case.wxss) >= 1, "视觉用例未触发规则");
     }
 }

@@ -22,10 +22,9 @@
 use crate::input::wxml::WxmlElement;
 use crate::matcher::Tree;
 use crate::project::Project;
-use crate::rules::Rule;
-use crate::rules::RuleMeta;
 use crate::rules::wxml::structure::find_attr;
 use crate::rules::wxml::{Resolved, element_diagnostic, for_each_element, resolved_property};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 pub struct ScrollViewHeight;
@@ -43,6 +42,22 @@ impl ScrollViewHeight {
     const AUTO_SIZE_HELP: &'static str = "补 `height: 0`（flex 简写已含 `flex-basis: 0%`）：显式高度 + `flex: 1` 才会按剩余空间分配；`min-height: 0` 不解决";
 }
 
+/// 视觉用例：`scroll-view` 不写高度，WebView 由内容撑开，Skyline 塌成 0。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="wrap">
+  <scroll-view class="list" id="target">
+    <view class="item">第一行</view>
+    <view class="item">第二行</view>
+    <view class="item">第三行</view>
+  </scroll-view>
+</view>"#,
+    wxss: ".wrap { padding: 8px; background: #fff; }\n.list { width: 300px; background: #e8e8e8; }\n.item { height: 60px; background: #cfe3ff; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`scroll-view` 没有确定高度：WebView 由三行内容撑到 180px，Skyline 的高度只来自 CSS，塌成 0",
+    target: "#target",
+}];
+
 impl Rule for ScrollViewHeight {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -50,6 +65,10 @@ impl Rule for ScrollViewHeight {
             severity: Severity::Warning,
             description: "scroll-view 没有确定高度，Skyline 下内容不会撑开它，会塌成 0",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -424,6 +443,17 @@ mod tests {
     }
 
     const SKYLINE_APP: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#;
+
+    #[test]
+    fn visual_case_without_height_is_reported() {
+        let diagnostics = check_wxml(
+            "svh-visual",
+            SKYLINE_APP,
+            ".wrap { padding: 8px; background: #fff; }\n.list { width: 300px; background: #e8e8e8; }\n.item { height: 60px; background: #cfe3ff; }\n",
+            r#"<view class="wrap"><scroll-view class="list" id="target"><view class="item">第一行</view><view class="item">第二行</view><view class="item">第三行</view></scroll-view></view>"#,
+        );
+        assert!(!diagnostics.is_empty(), "{diagnostics:?}");
+    }
 
     #[test]
     fn aspect_ratio_with_definite_width_is_a_height() {

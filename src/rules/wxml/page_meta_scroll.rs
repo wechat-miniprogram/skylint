@@ -19,7 +19,7 @@ use crate::input::wxml::WxmlElement;
 use crate::project::Project;
 use crate::rules::wxml::structure::find_attr;
 use crate::rules::wxml::{for_each_element, span_diagnostic};
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 const TAG: &str = "page-meta";
 
@@ -27,6 +27,26 @@ const TAG: &str = "page-meta";
 const SCROLL_DONE: &[&str] = &["bindscrolldone", "bind:scrolldone", "catchscrolldone"];
 
 pub struct PageMetaScroll;
+
+/// 视觉用例：`scroll-top` 写在模板里，首帧就生效。
+///
+/// WebView 的 `<page-meta>` 走 `onPageScrollTo`，页面直接滚到 600px，`#target`（第四个
+/// 200px 高的块）顶到视口；Skyline 的这条路径被注释掉了，页面停在顶端，`#target` 仍在
+/// 600px 处。两端 bbox 的 top 相差约 600 CSS px。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<page-meta scroll-top="600"/>
+<view class="block a">一</view>
+<view class="block b">二</view>
+<view class="block c">三</view>
+<view class="block d" id="target">四</view>
+<view class="block e">五</view>
+<view class="block f">六</view>"#,
+    wxss: ".block { height: 200px; font-size: 20px; }\n.a { background: #eee; }\n.b { background: #ddd; }\n.c { background: #ccc; }\n.d { background: #f66; }\n.e { background: #bbb; }\n.f { background: #aaa; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "首帧 `<page-meta scroll-top=\"600\">`：WebView 已滚到 600px（`#target` 在视口顶部），Skyline 不滚（`#target` 仍在 600px 处）",
+    target: "#target",
+}];
 
 impl PageMetaScroll {
     pub const ID: &'static str = "skyline/page-meta-scroll";
@@ -41,6 +61,10 @@ impl Rule for PageMetaScroll {
             severity: Severity::Warning,
             description: "`<page-meta>` 的 scroll-top / scrolldone 在 Skyline 下没有实现：页面根不是滚动容器",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -89,6 +113,21 @@ mod tests {
 
     fn check(fixture: &Fixture) -> Vec<crate::Diagnostic> {
         check_rule(fixture, &PageMetaScroll)
+    }
+
+    /// 视觉用例同源的页面：静态 `scroll-top` 首帧就应该有差异。
+    #[test]
+    fn visual_case_scroll_top_is_reported() {
+        let fixture = Fixture::page(
+            "pms-visual",
+            r#"<page-meta scroll-top="600"/>
+<view class="block">一</view>
+<view class="block d" id="target">四</view>"#,
+            ".block { height: 200px; }\n",
+        );
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("scroll-top"));
     }
 
     #[test]

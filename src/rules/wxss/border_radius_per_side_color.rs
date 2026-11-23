@@ -20,7 +20,7 @@ use crate::{Diagnostic, Severity};
 
 use super::value_util::{at_value_with, is_dynamic};
 use super::visit_declarations;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 pub struct BorderRadiusPerSideColor;
 
@@ -30,6 +30,21 @@ impl BorderRadiusPerSideColor {
 
 const HELP: &str = "把各边 border 颜色统一后圆角即可正常绘制；需要高亮某一边时，用独立元素（或背景色块）叠在该边上，不要靠单边 border-color 区分";
 
+/// 视觉用例：单边 border 颜色与圆角在同一块里。
+///
+/// WebView 只给一条边换色、圆角照常绘制；Skyline 检测到各边颜色不一致后直接
+/// 画成方角，四个角从「弧外露出背景」变成「直角填满」。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="wrap">
+  <view class="ring" id="target"></view>
+</view>"#,
+    wxss: ".wrap { padding: 20px; background: #333; }\n.ring { width: 140px; height: 140px; background: #fff; border: 10px solid #ddd; border-top-color: #e54d42; border-radius: 40px; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "单边 border 颜色 + border-radius：WebView 画圆角，Skyline 丢弃圆角画成方角（四角像素不同）",
+    target: "#target",
+}];
+
 impl Rule for BorderRadiusPerSideColor {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -37,6 +52,10 @@ impl Rule for BorderRadiusPerSideColor {
             severity: Severity::Warning,
             description: "各边颜色不同的 border 与 border-radius 同时出现时，Skyline 忽略圆角",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -114,6 +133,20 @@ mod tests {
     use crate::rules::testutil::wxss::{messages, page};
 
     use super::BorderRadiusPerSideColor;
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture =
+                crate::rules::testutil::Fixture::page("radius-visual", case.wxml, case.wxss);
+            let hits = crate::rules::testutil::check_rule(&fixture, &BorderRadiusPerSideColor)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == BorderRadiusPerSideColor::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     fn report(name: &str, wxss: &str) -> Vec<String> {
         let (_fixture, project) = page(name, r#"<view class="a"/><view class="b"/>"#, wxss);

@@ -12,7 +12,7 @@
 
 use crate::input::wxss::ValueToken;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{all_calls, at_value, is_dynamic};
@@ -48,6 +48,18 @@ impl CalcMinMax {
     pub const ID: &'static str = "skyline/calc-min-max";
 }
 
+/// 视觉用例：`min()` 求值为 0，元素宽从 300px 塌成 0。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="wrap">
+  <view class="box" id="target"></view>
+</view>"#,
+    wxss: ".wrap { width: 400px; padding: 10px; background: #eee; }\n.box { width: min(100%, 300px); height: 40px; background: #e53935; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`width: min(100%, 300px)` 在 WebView 取 300px，Skyline 的数学表达式是空分支、整个求值为 0，元素没有宽度",
+    target: "#target",
+}];
+
 impl Rule for CalcMinMax {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -55,6 +67,10 @@ impl Rule for CalcMinMax {
             severity: Severity::Warning,
             description: "min() / max() / clamp() 在 Skyline 下求值为 0，整个表达式失效",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -202,7 +218,21 @@ mod tests {
     use crate::rules::Rule;
 
     use super::CalcMinMax;
-    use crate::rules::testutil::wxss::{messages, page};
+    use crate::rules::testutil::check_rule;
+    use crate::rules::testutil::wxss::{Fixture, messages, page};
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture = Fixture::page("calc-min-max-visual", case.wxml, case.wxss);
+            let hits = check_rule(&fixture, &CalcMinMax)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == CalcMinMax::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     #[test]
     fn dynamic_arguments_are_reported() {

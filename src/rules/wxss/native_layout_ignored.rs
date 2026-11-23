@@ -11,10 +11,9 @@
 //! WebView 里这些组件的内部是普通 DOM，布局属性照常生效，属于渲染器差异。
 
 use crate::project::Project;
-use crate::rules::Rule;
-use crate::rules::RuleMeta;
 use crate::rules::wxml::{Reach, element_diagnostic, for_each_element};
 use crate::rules::wxss::natives::{self, NATIVES, Native, NativeKind};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 pub struct NativeLayoutIgnored;
@@ -76,6 +75,21 @@ impl NativeLayoutIgnored {
     }
 }
 
+/// 视觉用例：`list-view` 上的尺寸与间距在 WebView 生效，Skyline 因为没有 CSS 盒而忽略。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="wrap">
+  <view class="head">上方的标题</view>
+  <list-view class="list" id="target">
+    <list-item class="row">列表项</list-item>
+  </list-view>
+</view>"#,
+    wxss: ".wrap { background: #fff; }\n.head { height: 30px; background: #4a4a68; color: #fff; }\n.list { width: 300px; height: 120px; margin-top: 16px; background: #d9f2d9; }\n.row { height: 40px; background: #9ad0f5; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`list-view` 在 Skyline 下没有 CSS 盒：声明的 300×120 尺寸与 `margin-top` 都不进布局，WebView 按普通 DOM 排",
+    target: "#target",
+}];
+
 impl Rule for NativeLayoutIgnored {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -83,6 +97,10 @@ impl Rule for NativeLayoutIgnored {
             severity: Severity::Warning,
             description: "没有 CSS 盒的内置组件上，布局类声明在 Skyline 下不生效",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -175,6 +193,16 @@ mod tests {
 
     fn check(name: &str, wxml: &str, wxss: &str) -> Vec<Diagnostic> {
         wxss::check(&NativeLayoutIgnored, name, wxml, wxss)
+    }
+
+    #[test]
+    fn visual_case_list_view_layout_is_reported() {
+        let diagnostics = check(
+            "layout-visual",
+            r#"<view class="wrap"><view class="head">标题</view><list-view class="list" id="target"><list-item class="row">列表项</list-item></list-view></view>"#,
+            ".head { height: 30px; }\n.list { width: 300px; height: 120px; margin-top: 16px; }\n.row { height: 40px; }",
+        );
+        assert!(!diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     #[test]

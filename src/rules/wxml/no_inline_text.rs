@@ -8,7 +8,7 @@
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlElement, WxmlNode};
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 use crate::wxml_graph::SlotHost;
 
@@ -25,6 +25,19 @@ const TEXT_TAGS: [&str; 3] = ["text", "span", "navigator"];
 
 pub struct NoInlineText;
 
+/// 视觉用例：同一段 WXML/WXSS 两端各渲一次，看 `#target` 的几何与像素。
+///
+/// 父级是普通块级 `<view>`：WebView 里裸文本与 `<image>` 在同一条行内流上，
+/// Skyline 里裸文本是独立 flex item，图片另起一行。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="tip">限时优惠<image class="icon" id="target"/></view>"#,
+    wxss: ".tip { padding: 10px; font-size: 16px; }\n.icon { width: 60px; height: 60px; background: #cde; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "WebView 把裸文本与 <image> 排在同一行；Skyline 把裸文本当成独立 flex item，图片另起一行",
+    target: "",
+}];
+
 impl Rule for NoInlineText {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -32,6 +45,10 @@ impl Rule for NoInlineText {
             severity: Severity::Warning,
             description: "Skyline 下文本与元素混排会变成独立 flex item，需用 `<text>` 包裹",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -106,11 +123,19 @@ fn check_element(site: &ElementSite<'_, '_>, out: &mut Vec<Diagnostic>) {
 
 #[cfg(test)]
 mod tests {
-    use super::NoInlineText;
+    use super::{NoInlineText, VISUAL_CASES};
     use crate::rules::testutil::wxml::{Fixture, check_rule, project};
 
     fn check(fixture: &Fixture) -> Vec<crate::Diagnostic> {
         check_rule(fixture, &NoInlineText)
+    }
+
+    /// 视觉用例的同一份 WXML/WXSS 必须真的能触发本规则（否则截图对比没有意义）。
+    #[test]
+    fn visual_case_triggers_rule() {
+        let case = &VISUAL_CASES[0];
+        let fixture = Fixture::page("no-inline-text-visual", case.wxml, case.wxss);
+        assert!(!check(&fixture).is_empty(), "视觉用例未触发规则");
     }
 
     /// 片段被投影进组件的 `<text>`：运行时文本落在 TextShadowNode 里，两端都不换行。
@@ -199,7 +224,7 @@ mod tests {
         assert_eq!(diagnostics[0].end_column, 12);
     }
 
-    /// 裸文本 + **单个** `<text>` 兄弟（movie `_detail.wxml` 的「客服电话」行）。
+    /// 裸文本 + **单个** `<text>` 兄弟（某模板文件里「客服电话」那一行）。
     /// 只有 1 个文本级元素，`inline-run` 不报；但它是「文本与元素混排」，本规则必须报。
     #[test]
     fn bare_text_and_single_text_sibling_is_reported() {

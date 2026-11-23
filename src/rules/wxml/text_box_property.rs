@@ -28,7 +28,7 @@ use crate::rules::wxml::style::{
 use crate::rules::wxml::{
     ElementSite, element_diagnostic, flex_container, for_each_element, resolved_property_with,
 };
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 pub const ID: &str = "skyline/text-box-property";
 
@@ -51,6 +51,52 @@ const BOX_PROPERTIES: [&str; 10] = [
     "padding-bottom",
 ];
 
+/// 视觉用例：同一段 WXML/WXSS 在两端各渲一次，看 `#target` 的几何与像素。
+///
+/// 正例复刻真实工程实测：WebView 里 `<text>` 是 inline（宽度只包文字、`margin-top`
+/// 不参与布局）；Skyline 里是块级盒（占满父宽、`margin-top: 8px` 生效）。
+///
+/// 负例有两个：按原方案只删 `margin-top` 的对照实测不成立（两端仍是块级盒 / inline 盒，
+/// 宽度差 275 CSS px）；两端都显式 `display: block` 的对照才是有效阴性对照。
+static VISUAL_CASES: &[VisualCase] = &[
+    VisualCase {
+        wxml: r#"<view class="wrap">
+  <text class="name" id="target">流浪地球3</text>
+  <view class="after">下一块</view>
+</view>"#,
+        wxss: ".wrap { padding: 20px; }\n.name { display: inline; margin-top: 8px; font-size: 13px; line-height: 18px; }\n.after { background: #eee; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "WebView 的 <text> 是 inline（宽度只包文字、margin-top 不生效）；Skyline 是块级盒（占满父宽、margin-top 生效）",
+        target: "#target",
+    },
+    VisualCase {
+        wxml: r#"<view class="wrap">
+  <text class="name" id="target">流浪地球3</text>
+  <view class="after">下一块</view>
+</view>"#,
+        wxss: ".wrap { padding: 20px; }\n.name { display: inline; font-size: 13px; line-height: 18px; }\n.after { background: #eee; }\n",
+        js: None,
+        expect: VisualExpect::Same,
+        note: "按原方案只删 margin-top：期望一致，但 Skyline 仍是块级盒、WebView 仍是 inline，宽度必然不同（实测不成立）",
+        target: "#target",
+    },
+    // 上面那条按「只删 margin-top」写的阴性对照实测不成立：Skyline 的 `<text>` 是块级盒
+    // （宽 335），WebView 是 inline（宽 59.8），宽度本身就不同。这条把两端都显式设成
+    // block，才是真正同构的阴性对照：bbox 与像素都应一致。
+    VisualCase {
+        wxml: r#"<view class="wrap">
+  <text class="name" id="target">流浪地球3</text>
+  <view class="after">下一块</view>
+</view>"#,
+        wxss: ".wrap { padding: 20px; }\n.name { display: block; font-size: 13px; line-height: 18px; }\n.after { background: #eee; }\n",
+        js: None,
+        expect: VisualExpect::Same,
+        note: "两端都把 <text> 显式设为 block 且去掉 margin-top：bbox 与像素应一致（有效阴性对照）",
+        target: "#target",
+    },
+];
+
 pub struct TextBoxProperty;
 
 impl Rule for TextBoxProperty {
@@ -60,6 +106,10 @@ impl Rule for TextBoxProperty {
             severity: Severity::Warning,
             description: "顶层 `<text>` / `<span>` 上写了宽高或垂直间距：Skyline 会按块级盒应用，WebView 把这些声明当 inline 忽略",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {

@@ -20,10 +20,10 @@ use std::collections::HashMap;
 use crate::input::wxml::{self, WxmlElement, WxmlNode};
 use crate::matcher::Tree;
 use crate::project::Project;
-use crate::rules::RuleMeta;
 use crate::rules::wxml::clips_overflow;
 use crate::rules::wxml::is_builtin;
 use crate::rules::wxml::resolved_property;
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::visit_matching_rules;
@@ -36,13 +36,29 @@ impl TextOverflowEllipsis {
     pub const ID: &'static str = ID;
 }
 
-impl crate::rules::Rule for TextOverflowEllipsis {
+/// 视觉用例：`<view>` 上声明省略，WebView 在右端画出省略号，Skyline 只裁切。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="wrap">
+  <view class="title" id="target">流浪地球计划要延续两千五百年，这段标题故意写得足够长</view>
+</view>"#,
+    wxss: ".wrap { width: 200px; padding: 8px; background: #fff; }\n.title { font-size: 16px; line-height: 24px; color: #222; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "WebView 在 200px 宽的 `<view>` 末尾画出省略号，Skyline 的 text-overflow 只对 `<text>` 生效，文本被直接裁断",
+    target: "#target",
+}];
+
+impl Rule for TextOverflowEllipsis {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
             id: ID,
             severity: Severity::Warning,
             description: "text-overflow: ellipsis 在 Skyline 下只对 `<text>` 生效",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -164,6 +180,17 @@ mod tests {
         let diagnostics = TextOverflowEllipsis.check(&fixture.project());
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
         assert_eq!(diagnostics[0].path, "pages/index/index.scss");
+    }
+
+    #[test]
+    fn visual_case_view_ellipsis_is_reported() {
+        let diagnostics = check(
+            "visual-case",
+            r#"<view class="wrap"><view class="title" id="target">流浪地球计划要延续两千五百年，这段标题故意写得足够长</view></view>"#,
+            ".wrap { width: 200px; padding: 8px; background: #fff; }\n.title { font-size: 16px; line-height: 24px; color: #222; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }\n",
+        );
+        assert!(!diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(diagnostics[0].rule, ID);
     }
 
     #[test]

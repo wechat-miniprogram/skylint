@@ -15,8 +15,8 @@
 | `skyline/text-box-property` | warning | skyline | 顶层 `<text>` / `<span>` 上写了宽高或垂直间距：Skyline 会按块级盒应用，WebView 把这些声明当 inline 忽略 |
 | `skyline/image-block-layout` | warning | skyline | `<image>` 在 Skyline 是块级盒、WebView 是 inline-block：靠行内对齐居中、单侧 auto 外边距、`vertical-align`、祖先的 `text-indent` 在 Skyline 下都不再生效 |
 | `general/transparent-background` | info | both | 组件把背景色绑在属性上，调用处没传该属性：背景取默认值，为空时透明 |
-| `skyline/unregistered-tag` | error | skyline | 未注册的标签：WebView 不渲染其子树，Skyline 按普通元素渲染 |
-| `skyline/unsupported-component` | error | skyline | Skyline 下不可用的组件（如 web-view / movable-view / editor） |
+| `skyline/unregistered-tag` | error | skyline | 未注册的标签：WebView 只当未知行内元素（块级属性被忽略；旧组件框架下退化为无模板默认组件、子树不显示），Skyline 当块级 flex 容器（宽度撑满） |
+| `skyline/unsupported-component` | error | skyline | Skyline 下不可用的组件（如 web-view / movable-view / editor）：部分组件仍保留盒子，但缺少原生能力或绘制 |
 | `skyline/scroll-gesture-conflict` | warning | skyline | 滚动容器上的滑动会冒泡触发祖先的 touchmove 手势（拖拽收起等） |
 | `skyline/scroll-view-type` | info | skyline | `<scroll-view>` 建议显式指定 type：省略 type 走传统滚动（没有按需渲染），`default` 与未知值会被 JS 层回退成 `list` 并告警 |
 | `skyline/component-attribute` | warning | skyline | Skyline 会静默忽略的组件属性取值与组合（枚举白名单 / 不支持的属性 / 数值范围 / 跨属性条件） |
