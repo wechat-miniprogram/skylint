@@ -3,7 +3,7 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 74 条：error 19 条、warning 50 条、info 5 条。
+共 75 条：error 19 条、warning 51 条、info 5 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
@@ -22,15 +22,16 @@
 | `skyline/component-attribute` | warning | skyline | Skyline 会静默忽略的组件属性取值与组合（枚举白名单 / 不支持的属性 / 数值范围 / 跨属性条件） |
 | `skyline/scroll-view-family` | error | skyline | scroll-view 家族组件的结构约束（挂载位置 / 顺序 / 唯一性 / 必需属性 / 关联容器） |
 | `skyline/component-children` | error | skyline | 组件对直接子节点的结构约束（只允许某类子节点 / 必须唯一子节点 / 条件必需的子节点） |
+| `skyline/fixed-in-lazy-scroll` | warning | skyline | `type="list"` 的 scroll-view 里用 position: fixed 做吸顶：滚动后会随列表项卸载消失 |
 | `skyline/share-element-key` | error | skyline | `<share-element>` 的 key 必填且同一文件内唯一 |
 | `skyline/horizontal-scroll-enable-flex` | warning | skyline | 横向滚动的 `<scroll-view>` 需开启 `enable-flex` 以兼容 WebView |
 | `skyline/text-hard-break-ellipsis` | info | skyline | 多行省略里含硬换行时，Skyline 默认不给末行省略号 |
 | `skyline/inline-run` | warning | skyline | 并列的文本级元素在 WebView 下排在同一行，在 Skyline 下各自占一行 |
+| `skyline/page-scroll-api` | warning | skyline | 页面级滚动生命周期 / 配置在 Skyline 下不生效：页面根不是滚动容器，改用 scroll-view |
 | `skyline/no-pseudo` | warning | skyline | Skyline 不支持该伪类/伪元素：条件被丢弃（命中范围变大）或整条规则被跳过（声明不生效） |
 | `skyline/pseudo-inline-layout` | warning | skyline | 伪元素与文本并排时 Skyline 下会换行：伪元素是块级盒，WebView 下是 inline |
 | `skyline/box-sizing` | error | skyline | box-sizing 两端不一致：非法取值/initial 的回落值不同，或未开 defaultContentBox 时默认值不同 |
 | `skyline/border-radius-per-side-color` | warning | skyline | 各边颜色不同的 border 与 border-radius 同时出现时，Skyline 忽略圆角 |
-| `skyline/button-after-reset` | warning | skyline | `button::after` 上的边框/背景重置在 Skyline 下不生效，按钮默认描边/背景仍在 |
 | `skyline/flex-direction` | warning | skyline | display: flex 未声明 flex-direction，迁移后默认方向会从 row 变为 column |
 | `skyline/fixed-layer` | warning | skyline | `position: fixed` 在 Skyline 下被提到页面根，祖先的包含块不再约束它（WebView 下相对该祖先定位），两端位置不同 |
 | `skyline/fixed-offset-missing` | warning | skyline | `position: fixed` 元素没写某轴偏移：Skyline 下按页面根起点定位，WebView 下按它在原容器里的位置 |
