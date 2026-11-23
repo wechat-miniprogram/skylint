@@ -105,7 +105,7 @@ impl Registry {
             Box::new(wxml::ComponentAttribute),
             Box::new(wxml::ScrollViewFamily),
             Box::new(wxml::ComponentChildren),
-            Box::new(wxml::FixedInLazyScroll),
+            Box::new(wxml::PageMetaScroll),
             Box::new(wxml::ShareElementKey),
             // 已停用：模板数据作用域是框架语义，两个渲染器一致，不是迁移差异（源码保留）
             // Box::new(wxml::TemplateDataScope),

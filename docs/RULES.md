@@ -22,7 +22,7 @@
 | `skyline/component-attribute` | warning | skyline | Skyline 会静默忽略的组件属性取值与组合（枚举白名单 / 不支持的属性 / 数值范围 / 跨属性条件） |
 | `skyline/scroll-view-family` | error | skyline | scroll-view 家族组件的结构约束（挂载位置 / 顺序 / 唯一性 / 必需属性 / 关联容器） |
 | `skyline/component-children` | error | skyline | 组件对直接子节点的结构约束（只允许某类子节点 / 必须唯一子节点 / 条件必需的子节点） |
-| `skyline/fixed-in-lazy-scroll` | warning | skyline | `type="list"` 的 scroll-view 里用 position: fixed 做吸顶：滚动后会随列表项卸载消失 |
+| `skyline/page-meta-scroll` | warning | skyline | `<page-meta>` 的 scroll-top / scrolldone 在 Skyline 下没有实现：页面根不是滚动容器 |
 | `skyline/share-element-key` | error | skyline | `<share-element>` 的 key 必填且同一文件内唯一 |
 | `skyline/horizontal-scroll-enable-flex` | warning | skyline | 横向滚动的 `<scroll-view>` 需开启 `enable-flex` 以兼容 WebView |
 | `skyline/text-hard-break-ellipsis` | info | skyline | 多行省略里含硬换行时，Skyline 默认不给末行省略号 |
