@@ -326,7 +326,7 @@ fn included_template_diagnostics_belong_to_the_page() {
         .iter()
         .filter(|diagnostic| diagnostic.path == "tpl/item.wxml")
         .collect();
-    assert_eq!(template.len(), 1, "模板上只有一条 no-inline-text");
+    assert_eq!(template.len(), 1, "模板上只有一条 inline-run");
 
     let (project, rel) = migrate::find_view(&projects, &unit.path).expect("view");
     let job = migrate::job(project, rel, &plan, unit, &diagnostics, None);
@@ -616,8 +616,8 @@ fn finding_id_survives_line_shift() {
     let finding = before
         .findings
         .iter()
-        .find(|finding| finding.rule == "skyline/no-inline-text")
-        .expect("no-inline-text");
+        .find(|finding| finding.rule == "skyline/inline-run")
+        .expect("inline-run");
     assert_eq!(finding.span.line, 1);
     assert_eq!(finding.path, "pages/index/index.wxml");
     assert_eq!(
@@ -634,8 +634,8 @@ fn finding_id_survives_line_shift() {
     let moved = after
         .findings
         .iter()
-        .find(|finding| finding.rule == "skyline/no-inline-text")
-        .expect("no-inline-text");
+        .find(|finding| finding.rule == "skyline/inline-run")
+        .expect("inline-run");
 
     assert_eq!(moved.span.line, 2, "行号应该跟着移动");
     assert_eq!(moved.id, finding.id, "id 不该随行号变化");
@@ -652,14 +652,14 @@ fn cascade_only_carries_declared_properties() {
     let finding = job
         .findings
         .iter()
-        .find(|finding| finding.rule == "skyline/no-inline-text")
-        .expect("no-inline-text");
+        .find(|finding| finding.rule == "skyline/inline-run")
+        .expect("inline-run");
     let cascade = &finding.facts.as_ref().expect("facts").cascade;
 
     assert!(cascade.contains_key("display"));
     assert!(
         !cascade.contains_key("z-index"),
-        "no-inline-text 没声明 z-index，不该内联"
+        "inline-run 没声明 z-index，不该内联"
     );
     assert!(!cascade.contains_key("color"));
     assert!(
@@ -732,7 +732,7 @@ fn verify_reports_fixed_finding() {
     let f = inline_text_fixture("verify-fixed", ".box { display: block; }");
     let baseline = baseline_of(f.path());
 
-    // 去掉文本，只剩元素：no-inline-text 不再成立。
+    // 去掉文本，只剩元素：inline-run 不再成立。
     f.write(
         "miniprogram/pages/index/index.wxml",
         "<view class=\"box\"><view class=\"inner\">x</view></view>",
@@ -1240,12 +1240,7 @@ fn baseline_load_rejects_old_formats() {
 // ---------------------------------------------------------------- 输出语义
 
 fn identified(id: &str, severity: Severity) -> migrate::Identified {
-    identified_with(
-        id,
-        "skyline/no-inline-text",
-        "pages/index/index.wxml",
-        severity,
-    )
+    identified_with(id, "skyline/inline-run", "pages/index/index.wxml", severity)
 }
 
 fn identified_with(id: &str, rule: &str, path: &str, severity: Severity) -> migrate::Identified {
@@ -1447,7 +1442,7 @@ fn baseline_records_rule_set() {
     assert!(!rules.is_empty());
     assert!(rules.windows(2).all(|pair| pair[0] < pair[1]), "{rules:?}");
     assert!(
-        rules.iter().any(|id| id == "skyline/no-inline-text"),
+        rules.iter().any(|id| id == "skyline/inline-run"),
         "规则 id 应来自当前 Registry"
     );
     assert_eq!(rules.len(), rules.iter().collect::<HashSet<_>>().len());
@@ -1459,7 +1454,7 @@ fn baseline_records_rule_set() {
 fn augment_appends_only_new_rule_findings() {
     let old = identified("old", Severity::Warning);
     let mut baseline = migrate::baseline(std::slice::from_ref(&old));
-    baseline.rules = vec!["skyline/no-inline-text".to_string()];
+    baseline.rules = vec!["skyline/inline-run".to_string()];
     baseline.findings.retain(|finding| finding.id == old.id);
     let before = migrate::to_json(&baseline.findings[0]);
 
@@ -1512,7 +1507,7 @@ fn augment_appends_only_new_rule_findings() {
 fn augment_then_verify_is_clean() {
     let old = identified("old", Severity::Warning);
     let mut baseline = migrate::baseline(std::slice::from_ref(&old));
-    baseline.rules = vec!["skyline/no-inline-text".to_string()];
+    baseline.rules = vec!["skyline/inline-run".to_string()];
     let current = vec![
         old.clone(),
         identified_with(
@@ -1537,7 +1532,7 @@ fn augment_then_verify_is_clean() {
 #[test]
 fn augment_report_lists_first_five_files() {
     let mut baseline = migrate::baseline(&[identified("old", Severity::Warning)]);
-    baseline.rules = vec!["skyline/no-inline-text".to_string()];
+    baseline.rules = vec!["skyline/inline-run".to_string()];
     let current: Vec<_> = (0..7)
         .map(|index| {
             identified_with(
@@ -1560,9 +1555,9 @@ fn augment_report_lists_first_five_files() {
 #[test]
 fn unknown_rules_lists_only_rules_missing_from_baseline() {
     let mut baseline = migrate::baseline(&[]);
-    baseline.rules = vec!["skyline/no-inline-text".to_string()];
+    baseline.rules = vec!["skyline/inline-run".to_string()];
     let current = vec![
-        "skyline/no-inline-text".to_string(),
+        "skyline/inline-run".to_string(),
         "skyline/pseudo-inline-layout".to_string(),
     ];
     assert_eq!(
@@ -1606,8 +1601,8 @@ fn waived_finding_is_neither_new_nor_fixed() {
     let current = migrate::identify(&projects, &plan, &report);
     let id = current
         .iter()
-        .find(|finding| finding.rule == "skyline/no-inline-text")
-        .expect("夹具应有一条 no-inline-text")
+        .find(|finding| finding.rule == "skyline/inline-run")
+        .expect("夹具应有一条 inline-run")
         .id
         .clone();
 
@@ -1631,10 +1626,10 @@ fn waived_finding_removed_from_code_is_not_counted_as_fixed() {
     let current = migrate::identify(&projects, &plan, &report);
     let waived: BTreeSet<&str> = current
         .iter()
-        .filter(|finding| finding.rule == "skyline/no-inline-text")
+        .filter(|finding| finding.rule == "skyline/inline-run")
         .map(|finding| finding.id.as_str())
         .collect();
-    assert_eq!(waived.len(), 1, "夹具应有一条 no-inline-text");
+    assert_eq!(waived.len(), 1, "夹具应有一条 inline-run");
 
     // 代码里真的修掉了：只剩元素，不再混排。
     f.write(
@@ -1686,7 +1681,7 @@ fn ledger_keeps_waivers_with_their_reasons() {
         "unit:pages/index/index",
         migrate::Waiver {
             id: "rule|path|anchor".to_string(),
-            rule: "skyline/no-inline-text".to_string(),
+            rule: "skyline/inline-run".to_string(),
             path: "pages/index/index.wxml".to_string(),
             reason: "预加载容器，静态不可见，不影响渲染".to_string(),
         },

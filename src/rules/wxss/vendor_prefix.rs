@@ -17,7 +17,7 @@ use std::collections::HashSet;
 
 use crate::input::wxss::WxssDoc;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::keyframes;
@@ -44,6 +44,37 @@ const ANIMATION_FAMILY: &[&str] = &[
     "transition-delay",
 ];
 
+/// 视觉用例：两种前缀形态各一例，例外一例阴性对照。
+///
+/// 关键帧与动画都在首帧开始、300ms 内结束且带 `forwards`，8s 截图取到的是各自的终态；
+/// Skyline 不解析带前缀的 at-rule / 属性名，停在基础样式，WebView 停在关键帧终态。
+static VISUAL_CASES: &[VisualCase] = &[
+    VisualCase {
+        wxml: r#"<view class="box" id="target"></view>"#,
+        wxss: "@-webkit-keyframes fade { from { opacity: 0.15; } to { opacity: 1; } }\n.box { width: 200px; height: 120px; background-color: #1e6fd9; opacity: 0.15; animation: fade 300ms ease forwards; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "`@-webkit-keyframes fade` 只在带前缀的形式里定义：WebView 把 `animation: fade` 别名到它，300ms 后稳定在 opacity 1（实心蓝）；Skyline 不解析带前缀 at-rule，稳定在基础 opacity 0.15（淡蓝）",
+        target: "#target",
+    },
+    VisualCase {
+        wxml: r#"<view class="box" id="target"></view>"#,
+        wxss: "@keyframes pop { from { transform: scale(0.6); background-color: #1e6fd9; } to { transform: scale(1); background-color: #f07b24; } }\n.box { width: 160px; height: 100px; background-color: #1e6fd9; transform: scale(0.6); -webkit-animation: pop 300ms ease forwards; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "`-webkit-animation` 的整条声明在 Skyline 被丢弃，300ms 后稳定在 scale 0.6、蓝色；WebView 认它，稳定在 scale 1、橙色：bbox 与颜色都不同",
+        target: "#target",
+    },
+    VisualCase {
+        wxml: r#"<view class="pair" id="target">成对关键帧</view>"#,
+        wxss: "@-webkit-keyframes fade-in { from { opacity: 0.2; } to { opacity: 1; } }\n@keyframes fade-in { from { opacity: 0.2; } to { opacity: 1; } }\n.pair { padding: 8px; font-size: 16px; line-height: 24px; color: #1e6fd9; opacity: 0.2; animation: fade-in 300ms ease forwards; }\n",
+        js: None,
+        expect: VisualExpect::Same,
+        note: "同一名字有无前缀与带前缀两份关键帧：两端 300ms 后都停在 opacity 1，静态渲染一致（阴性对照）",
+        target: "#target",
+    },
+];
+
 pub struct VendorPrefix;
 
 impl VendorPrefix {
@@ -57,6 +88,10 @@ impl Rule for VendorPrefix {
             severity: Severity::Warning,
             description: "带 `-webkit-` 前缀的关键帧块 / 动画属性在 Skyline 下被丢弃，WebView 认得",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -133,7 +168,9 @@ fn orphan_prefixed_keyframes(doc: &WxssDoc, out: &mut Vec<Diagnostic>) {
 mod tests {
     use super::VendorPrefix;
     use crate::rules::Rule;
+    use crate::rules::VisualExpect;
     use crate::rules::testutil::wxss::{messages, page};
+    use crate::rules::testutil::{Fixture, check_rule};
 
     #[test]
     fn orphan_prefixed_keyframes_is_reported() {
@@ -193,5 +230,21 @@ mod tests {
             "@-moz-keyframes fade { from { opacity: 0 } }\n.a { -moz-animation: fade .3s; }",
         );
         assert_eq!(messages(&VendorPrefix, &project), Vec::<String>::new());
+    }
+
+    /// 视觉用例里期望两端不同的那几条，同一份页面源码必须真的命中本规则。
+    #[test]
+    fn visual_cases_trigger_the_rule() {
+        for (index, case) in super::VISUAL_CASES.iter().enumerate() {
+            if case.expect != VisualExpect::Differ {
+                continue;
+            }
+            let fixture = Fixture::page(&format!("prefix-visual-{index}"), case.wxml, case.wxss);
+            if let Some(js) = case.js {
+                fixture.write("pages/index/index.js", js);
+            }
+            let diagnostics = check_rule(&fixture, &VendorPrefix);
+            assert_eq!(diagnostics.len(), 1, "case {index}: {diagnostics:#?}");
+        }
     }
 }

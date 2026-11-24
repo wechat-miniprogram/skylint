@@ -24,7 +24,7 @@ pub(crate) type Reading = Option<(String, bool)>;
 /// 把「某个元素上某属性」包成读取器。
 ///
 /// `legacy` 为真时忽略「判不了」位（历史口径）：`inspect` 的事实输出与
-/// `text-overflow-ellipsis` 的裁切判定都用 Skyline 方言取值，行为与拆分前一致。
+/// `text-only-property` 的裁切判定都用 Skyline 方言取值，行为与拆分前一致。
 fn resolved_reader<'a>(
     project: &'a Project,
     tree: &'a Tree<'_>,

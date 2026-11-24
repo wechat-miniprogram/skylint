@@ -6,10 +6,12 @@
 //! wxLoginStyle: 'background-image: -webkit-linear-gradient(left top, #FFD000, #FFBD00)'
 //! ```
 //!
-//! 这类值不在任何 WXSS 文件里，`skyline/gradient-unsupported` 等规则扫不到。
-//! 判据全部复用 WXSS 侧的常量与表格，不另写一份：
-//! - 渐变函数名与 `skyline/gradient-unsupported`（`rules/wxss/gradient_unsupported.rs`）
-//!   一致：float-pigment 只认 linear / radial / conic 三个标准名
+//! 这类值不在任何 WXSS 文件里，`skyline/gradient-support` 等规则扫不到 WXSS 之外的
+//! 写法，本规则补这一层。判据与解析全部复用 WXSS 侧，不另写一份：
+//! - 声明块由 `rules/wxss/inline::parse_block` 交给 `input::wxss` 的解析器切成声明，
+//!   属性名、取值、词元与样式表里同源；
+//! - 渐变函数名取自 `skyline/gradient-support` 的矩阵（`rules/wxss/gradient_support.rs`）：
+//!   float-pigment 只认 linear / radial / conic 三个标准名
 //!   （`float-pigment-css/src/parser/property_value/gradient.rs:376-438`），厂商前缀名
 //!   与 repeating-* 整条声明不生效；mask 的 SetMaskImage 只分派 linear / radial。
 //! - 老式 `-webkit-box` 属性名取自 `skyline/legacy-flexbox` 的 `LEGACY_PROPERTIES`，
@@ -23,14 +25,16 @@
 //! 非可用 display、`-webkit-line-clamp`、前缀渐变），再报「回落初始值」类。前者是
 //! 整块布局失效，后者只是一条属性的取值变了；一条 style 字符串报五条只是噪音。
 //!
-//! 判不了的写法一律不报：含插值的模板串拼不出结果，属性名 / 取值结构不完整的段
-//! （日志文案、URL、`url(data:image/png;base64,…)` 被 `;` 切开的半截）直接跳过。
+//! 判不了的写法一律不报：含插值的模板串拼不出结果；取值以 `-` 结尾的拼接半截
+//! （`";display:table-" + cell`）不是完整取值。字符串里内联的 HTML 片段
+//! （`"<span style='…'>" + text`）不是声明块，解析器直接把它挡在外面。
 //!
-//! 入口有硬门禁——先确认这条字符串真的是内联样式，再判取值：
-//! - 字面量必须挂在 `…Style` 名字下（对象属性键 / 变量名 / 赋值目标），
-//!   `style`、`wxLoginStyle`、`loginActiveStyle` 都算；第三方样式生成器、
-//!   HTML→富文本的映射表里的普通字符串不算。
-//! - 跳过 `npm/**` 构建产物与 `.wxs`（另一套方言）。
+//! 入口门禁看**内容**、不看名字：字面量里同时有 `;` 与 `:` 才当成声明块。
+//! `style` / `wxLoginStyle` 这类名字只是「常常是样式」，`cssText` / `styles` 与
+//! 富文本映射表里的键都反例——按名字放行会漏判，按内容判定则由 CSS 语法兜底，
+//! 普通文案解析不出声明。
+//!
+//! 跳过 `npm/**` 构建产物与 `.wxs`（另一套方言）。
 //!
 //! 已知边界：`*.attrs = { style: … }` 这类把 HTML 属性映射成节点属性的写法会被报
 //! （mp-html 就是这种）。机制上是真差异（生成出来的 `<div style="overflow-x:auto">`
@@ -42,28 +46,21 @@
 //! 规则的 `unit_wxml` 口径）；`app.js` / `utils/` 这类没有单元归属的脚本判不了归属，
 //! 照查。
 
+use crate::input::wxss::{WxssDeclaration, WxssRule};
 use crate::project::{Project, Scope};
 use crate::rules::wxss::dict_table::{normalize_value, table};
+use crate::rules::wxss::gradient_support;
+use crate::rules::wxss::inline::parse_block;
 use crate::rules::wxss::is_css_wide_keyword;
 use crate::rules::wxss::legacy_flexbox::{LEGACY_PROPERTIES, PARSEABLE_DISPLAY};
 use crate::rules::wxss::unsupported_value::initial_value;
+use crate::rules::wxss::value_util::all_calls;
 use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::at_span;
 
 pub struct DynamicStyleValue;
-
-/// 只存在于 WebView 的旧式渐变函数名，与 `skyline/gradient-unsupported` 的
-/// `PREFIXED_GRADIENTS` 保持一致。
-const PREFIXED_GRADIENTS: [&str; 4] = [
-    "-webkit-linear-gradient",
-    "-webkit-radial-gradient",
-    "-webkit-repeating-linear-gradient",
-    "-webkit-gradient",
-];
-
-const STANDARD_GRADIENTS: [&str; 3] = ["linear-gradient", "radial-gradient", "conic-gradient"];
 
 /// 可能承载渐变的属性。其余属性上的渐变函数不判——`content: "-webkit-gradient(…)"`
 /// 这类写法不在迁移检查的范围内。
@@ -95,30 +92,18 @@ static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     target: "#target",
 }];
 
-/// 声明块里的一段：属性名与取值原文（均已 trim）。
-struct Declaration<'a> {
-    name: &'a str,
-    value: &'a str,
-}
-
-impl Declaration<'_> {
-    fn is(&self, property: &str) -> bool {
-        self.name.eq_ignore_ascii_case(property)
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Problem<'a> {
+#[derive(Clone)]
+enum Problem {
     /// 整条声明被丢弃：前缀渐变 / repeating 渐变 / mask 的 conic。
-    Prefixed(&'a str),
-    Repeating(&'a str),
-    MaskConic(&'a str),
+    Prefixed(String),
+    Repeating(String),
+    MaskConic(String),
     /// 老式 `-webkit-box` 弹性盒属性：引擎里没有这个属性名。
     LegacyProperty,
     /// `display` 的取值 fp 解析不了（`-webkit-box` / `-webkit-flex` / `box` …）。
     /// `clamp` 是同一块里的 `-webkit-line-clamp` 原值，修法要一起说。
     DisplayValue {
-        clamp: Option<&'a str>,
+        clamp: Option<String>,
     },
     /// `-webkit-line-clamp`：引擎把它映射成 kInvalid。
     LineClamp,
@@ -132,8 +117,8 @@ enum Problem<'a> {
 
 /// 一次命中：哪条声明、什么问题。
 struct Finding<'a> {
-    decl: &'a Declaration<'a>,
-    problem: Problem<'a>,
+    decl: &'a WxssDeclaration,
+    problem: Problem,
 }
 
 impl Rule for DynamicStyleValue {
@@ -160,13 +145,15 @@ impl Rule for DynamicStyleValue {
                 continue;
             }
             for literal in file.doc.strings() {
-                // 只有「某个 `…Style` 名字的值」才可能被绑到 `style` 上。
-                if !literal.context.as_deref().is_some_and(is_style_name) {
+                // 门禁看内容不看名字：`cssText` / `styles` 同样是内联样式的常见载体。
+                if !looks_like_declarations(&literal.value) {
                     continue;
                 }
-                let block: Vec<Declaration<'_>> = declarations(&literal.value).collect();
+                let Some(block) = parse_block(&file.path, &literal.value) else {
+                    continue;
+                };
                 // 同一个字符串只报一次：诊断都落在字面量起点，重复报只是噪音。
-                let Some(finding) = find(&block) else {
+                let Some(finding) = find(&block.rules[0]) else {
                     continue;
                 };
                 out.push(
@@ -176,9 +163,9 @@ impl Rule for DynamicStyleValue {
                         file,
                         literal.start,
                         literal.start,
-                        message(finding.decl, finding.problem),
+                        message(finding.decl, &finding.problem),
                     )
-                    .help(help(finding.decl, finding.problem)),
+                    .help(help(finding.decl, &finding.problem)),
                 );
             }
         }
@@ -186,34 +173,61 @@ impl Rule for DynamicStyleValue {
     }
 }
 
+/// 字面量内容像不像声明块：至少一段 `<属性名>: <取值>`。
+///
+/// 属性名必须是 CSS 标识符（字母 / `-`），普通文案（`request failed: timeout`）挡在
+/// 这里；取值不能为空，拼接半截留下的空段也不算。分号不是必要条件：单条声明
+/// （`'display: grid'`、`'background-image: -webkit-linear-gradient(…)'`）在工程里
+/// 同样常见，要求分号会把它们全漏掉。
+fn looks_like_declarations(value: &str) -> bool {
+    value.split(';').any(|segment| {
+        let Some((name, value)) = segment.split_once(':') else {
+            return false;
+        };
+        let name = name.trim();
+        !name.is_empty()
+            && name.chars().all(|c| c.is_ascii_alphabetic() || c == '-')
+            && !value.trim().is_empty()
+    })
+}
+
 /// 一段声明里第一个要报的问题：先找「整条声明被丢弃」类，再找「回落初始值」类。
-fn find<'a>(block: &'a [Declaration<'a>]) -> Option<Finding<'a>> {
+fn find(rule: &WxssRule) -> Option<Finding<'_>> {
+    let block = &rule.declarations;
+    let complete = |decl: &&WxssDeclaration| {
+        // 拼接出来的半截（`";display:table-" + cell`）判不了；
+        // 字符串里内联的 HTML 会把引号带进取值（`display:inline-block'`），也跳过。
+        !decl.value.ends_with('-') && !decl.value.contains(['"', '\''])
+    };
     block
         .iter()
+        .filter(complete)
         .find_map(|decl| dropped(decl, block).map(|problem| Finding { decl, problem }))
         .or_else(|| {
             block
                 .iter()
+                .filter(complete)
                 .find_map(|decl| initial(decl).map(|problem| Finding { decl, problem }))
         })
 }
 
 /// 整条声明会被丢弃的问题：引擎不认识属性名或取值，级联里更早的值继续生效。
-fn dropped<'a>(decl: &Declaration<'a>, block: &[Declaration<'a>]) -> Option<Problem<'a>> {
-    if LEGACY_PROPERTIES.iter().any(|property| decl.is(property)) {
+fn dropped(decl: &WxssDeclaration, block: &[WxssDeclaration]) -> Option<Problem> {
+    if LEGACY_PROPERTIES.iter().any(|property| is(decl, property)) {
         // `unset` 是迁移工程关掉 WebView 写法的手段，不是「用了不支持的属性」。
-        return (!is_css_wide_keyword(decl.value)).then_some(Problem::LegacyProperty);
+        return (!is_css_wide_keyword(&decl.value)).then_some(Problem::LegacyProperty);
     }
-    if decl.is("-webkit-line-clamp") {
+    if is(decl, "-webkit-line-clamp") {
         // `unset` 是迁移工程关掉 WebView 写法的手段；`0` 在 WebView 里也不截断
         // （Chromium 只接受正整数），两端一致。
-        if is_css_wide_keyword(decl.value) || normalized(decl.value).as_deref() == Some("0") {
+        if is_css_wide_keyword(&decl.value) || normalize_value(&decl.value).as_deref() == Some("0")
+        {
             return None;
         }
         return Some(Problem::LineClamp);
     }
-    if decl.is("display") {
-        let value = normalized(decl.value)?;
+    if is(decl, "display") {
+        let value = normalize_value(&decl.value)?;
         if PARSEABLE_DISPLAY.contains(&value.as_str()) {
             return None;
         }
@@ -225,26 +239,23 @@ fn dropped<'a>(decl: &Declaration<'a>, block: &[Declaration<'a>]) -> Option<Prob
             .map_or(&[][..], |index| &block[index + 1..])
             .iter()
             .any(|other| {
-                other.is("display")
-                    && normalized(other.value)
+                is(other, "display")
+                    && normalize_value(other.value.as_str())
                         .is_some_and(|value| PARSEABLE_DISPLAY.contains(&value.as_str()))
             });
         return (!later).then_some(Problem::DisplayValue {
             clamp: block
                 .iter()
-                .find(|other| other.is("-webkit-line-clamp"))
-                .map(|other| other.value),
+                .find(|other| is(other, "-webkit-line-clamp"))
+                .map(|other| other.value.clone()),
         });
-    }
-    if !GRADIENT_PROPERTIES.iter().any(|property| decl.is(property)) {
-        return None;
     }
     gradient_problem(decl, block)
 }
 
 /// 取值不受支持、按 unset 回落到初始值的问题；判据与文案都复用 `skyline/unsupported-value`。
-fn initial<'a>(decl: &Declaration<'a>) -> Option<Problem<'a>> {
-    let value = normalized(decl.value)?;
+fn initial(decl: &WxssDeclaration) -> Option<Problem> {
+    let value = normalize_value(&decl.value)?;
     let name = decl.name.to_ascii_lowercase();
     let (initial, note) = initial_value(&name, &value)?;
     Some(Problem::InitialValue {
@@ -256,23 +267,9 @@ fn initial<'a>(decl: &Declaration<'a>) -> Option<Problem<'a>> {
     })
 }
 
-/// 取值归一：去掉 `!important`、trim + 小写；`var()` / `env()` / `{{…}}` 这类动态值
-/// 判不了，返回 `None`（与 WXSS 侧 `normalize_value` 同一口径）。
-fn normalized(value: &str) -> Option<String> {
-    let value = value.trim();
-    let stripped = value
-        .len()
-        .checked_sub("!important".len())
-        .filter(|index| value.is_char_boundary(*index))
-        .filter(|index| value[*index..].eq_ignore_ascii_case("!important"))
-        .map_or(value, |index| value[..index].trim_end());
-    normalize_value(stripped)
-}
-
-/// 字面量挂的名字是否像「样式值」：`style` / `wxLoginStyle` / `loginActiveStyle`
-/// （即 `/(^|[_-])?style$/i`）。
-fn is_style_name(name: &str) -> bool {
-    name.to_ascii_lowercase().ends_with("style")
+/// 声明的属性名是否等于 `property`（ASCII 大小写不敏感）。
+fn is(decl: &WxssDeclaration, property: &str) -> bool {
+    decl.name.eq_ignore_ascii_case(property)
 }
 
 /// 这个脚本是否只会跑在 WebView 里。
@@ -297,55 +294,18 @@ fn webview_only(project: &Project, scope: &Scope) -> bool {
     }
 }
 
-/// 把字符串当声明块解析：按 `;` 切段，第一个 `:` 分属性与取值。
-fn declarations(block: &str) -> impl Iterator<Item = Declaration<'_>> {
-    block.split(';').filter_map(|segment| {
-        let (name, value) = segment.split_once(':')?;
-        let (name, value) = (name.trim(), value.trim());
-        // 字符串里内联的 HTML（`"<span style='…display:inline-block'>"`）会把引号、
-        // `>` 带进取值；引号之后的部分不再属于这条声明。
-        let value = value
-            .find(['\'', '"'])
-            .map_or(value, |index| value[..index].trim());
-        // 属性名只认 CSS 标识符（`[A-Za-z-]`）：被 `;` 切开的 URL 半截、以及
-        // 「登录失败: 网络错误」这类文案在这里被排除。
-        let name_ok = !name.is_empty() && name.chars().all(|c| c.is_ascii_alphabetic() || c == '-');
-        // 拼接出来的半截（`";display:table-" + …`）不是完整取值，判不了。
-        (name_ok && !value.is_empty() && !value.ends_with('-'))
-            .then_some(Declaration { name, value })
-    })
-}
-
-/// 取值里出现的函数名（`-webkit-linear-gradient(…)` → `-webkit-linear-gradient`）。
-fn function_names(value: &str) -> Vec<&str> {
-    value
-        .match_indices('(')
-        .filter_map(|(paren, _)| {
-            let start = value[..paren]
-                .char_indices()
-                .rev()
-                .take_while(|(_, c)| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
-                .last()
-                .map(|(index, _)| index)?;
-            let name = &value[start..paren];
-            name.chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_alphabetic() || c == '-')
-                .then_some(name)
-        })
+/// 调用名（已小写）：`background: url(a.png), -webkit-linear-gradient(...)` 给出两个。
+fn calls(decl: &WxssDeclaration) -> Vec<String> {
+    all_calls(&decl.tokens)
+        .into_iter()
+        .map(|call| call.name)
         .collect()
 }
 
-fn is_standard(name: &str) -> bool {
-    STANDARD_GRADIENTS
-        .iter()
-        .any(|gradient| name.eq_ignore_ascii_case(gradient))
-}
-
+/// 只有 WebView 认的厂商前缀写法。`-moz-` / `-ms-` 两端都不认，不算迁移差异。
 fn is_prefixed(name: &str) -> bool {
-    PREFIXED_GRADIENTS
-        .iter()
-        .any(|gradient| name.eq_ignore_ascii_case(gradient))
+    let name = name.to_ascii_lowercase();
+    name.starts_with("-webkit-") && name.ends_with("-gradient")
 }
 
 fn is_repeating(name: &str) -> bool {
@@ -354,20 +314,27 @@ fn is_repeating(name: &str) -> bool {
 }
 
 /// 这段声明里第一个不受支持的渐变调用。
-fn gradient_problem<'a>(decl: &Declaration<'a>, block: &[Declaration<'a>]) -> Option<Problem<'a>> {
-    let mask = decl.is("mask") || decl.is("mask-image") || decl.is("-webkit-mask-image");
+fn gradient_problem(decl: &WxssDeclaration, block: &[WxssDeclaration]) -> Option<Problem> {
+    if !GRADIENT_PROPERTIES
+        .iter()
+        .any(|property| is(decl, property))
+    {
+        return None;
+    }
+    let mask = is(decl, "mask") || is(decl, "mask-image") || is(decl, "-webkit-mask-image");
     // 前缀写法常和标准写法成对出现（autoprefixer 产物）：同一条声明块里已经有该
-    // 属性的标准渐变兜底时，两端渲染一致，不必报。
+    // 属性的标准渐变兜底时，两端渲染一致，不必报。标准名以 gradient-support 的
+    // 矩阵为准，本规则不再自带名单。
     let has_fallback = block.iter().any(|other| {
-        other.is(decl.name)
-            && function_names(other.value)
+        is(other, &decl.name)
+            && calls(other)
                 .iter()
-                .any(|call| is_standard(call))
+                .any(|call| gradient_support::parses(call))
     });
-    function_names(decl.value).into_iter().find_map(|call| {
-        if is_repeating(call) {
+    calls(decl).into_iter().find_map(|call| {
+        if is_repeating(&call) {
             Some(Problem::Repeating(call))
-        } else if is_prefixed(call) {
+        } else if is_prefixed(&call) {
             (!has_fallback).then_some(Problem::Prefixed(call))
         } else if mask && call.eq_ignore_ascii_case("conic-gradient") {
             Some(Problem::MaskConic(call))
@@ -377,8 +344,8 @@ fn gradient_problem<'a>(decl: &Declaration<'a>, block: &[Declaration<'a>]) -> Op
     })
 }
 
-fn message(decl: &Declaration<'_>, problem: Problem<'_>) -> String {
-    let (name, value) = (decl.name, truncate(decl.value, 120));
+fn message(decl: &WxssDeclaration, problem: &Problem) -> String {
+    let (name, value) = (decl.name.as_str(), truncate(&decl.value, 120));
     match problem {
         Problem::Prefixed(call) => format!(
             "内联样式 `{name}` 的取值 `{value}` 用了 `{call}()`；Skyline 只认标准渐变函数名，整条声明会被丢弃"
@@ -404,13 +371,13 @@ fn message(decl: &Declaration<'_>, problem: Problem<'_>) -> String {
     }
 }
 
-fn help(decl: &Declaration<'_>, problem: Problem<'_>) -> String {
+fn help(decl: &WxssDeclaration, problem: &Problem) -> String {
     match problem {
         Problem::Prefixed(call) => {
             // 两端颜色相同就等价于纯色，比换标准渐变更简单。
-            let color = arguments(decl.value, call)
+            let color = arguments(&decl.value, call)
                 .and_then(two_same_stops)
-                .filter(|_| decl.is("background") || decl.is("background-image"));
+                .filter(|_| is(decl, "background") || is(decl, "background-image"));
             match color {
                 Some(color) => format!(
                     "改用标准语法 `linear-gradient(...)`；两端颜色相同（`{color}`），也可以直接写成 `background-color: {color}`"
@@ -433,7 +400,7 @@ fn help(decl: &Declaration<'_>, problem: Problem<'_>) -> String {
             line_count(lines)
         ),
         Problem::DisplayValue { clamp: None } => {
-            let value = normalized(decl.value).unwrap_or_default();
+            let value = normalize_value(&decl.value).unwrap_or_default();
             match value.as_str() {
                 "-webkit-flex" => "改用标准写法 `display: flex`".to_string(),
                 "-webkit-box" => "改用 `display: flex`；配套的 `-webkit-box-*` 属性分别换成 flex-direction / align-items / justify-content / flex".to_string(),
@@ -442,7 +409,7 @@ fn help(decl: &Declaration<'_>, problem: Problem<'_>) -> String {
         }
         Problem::LineClamp => format!(
             "多行省略改用 `<text max-lines=\"{}\" overflow=\"ellipsis\">`",
-            line_count(decl.value)
+            line_count(&decl.value)
         ),
         Problem::InitialValue { advice, .. } => advice.to_string(),
     }
@@ -450,7 +417,7 @@ fn help(decl: &Declaration<'_>, problem: Problem<'_>) -> String {
 
 /// `-webkit-line-clamp` 的行数；不是纯数字时用 `N` 占位（修法仍然成立）。
 fn line_count(value: &str) -> String {
-    normalized(value)
+    normalize_value(value)
         .filter(|value| value.chars().all(|c| c.is_ascii_digit()))
         .unwrap_or_else(|| "N".to_string())
 }
@@ -600,15 +567,17 @@ mod tests {
         assert_eq!(messages(&DynamicStyleValue, &project), Vec::<String>::new());
     }
 
+    /// 普通文案 / URL 没有 `<属性名>: <取值>` 形状，门禁直接挡住。
     #[test]
     fn plain_text_strings_are_ignored() {
         let (_f, project) = single(
             "dynamic-style-text",
             r#"Page({ data: {
                 style: '网络异常，请稍后重试',
-                tip: '网络异常，请稍后重试',
-                log: 'request failed: timeout',
+                tip: 'request failed: timeout',
+                log: '找不到页面: 404',
                 link: 'https://example.com/a:b',
+                ratio: '16:9',
             } });"#,
         );
         assert_eq!(messages(&DynamicStyleValue, &project), Vec::<String>::new());
@@ -791,8 +760,8 @@ mod tests {
         assert_eq!(messages(&DynamicStyleValue, &project), Vec::<String>::new());
     }
 
-    /// 字符串里内联的 HTML 片段：引号后的内容不是取值，拼接出来的 `display:table-`
-    /// 半截判不了，`-webkit-line-clamp: 0` 在 WebView 里也不截断。
+    /// 字符串里内联的 HTML 片段不是声明块；拼接出来的 `display:table-` 半截判不了；
+    /// `-webkit-line-clamp: 0` 在 WebView 里也不截断。
     #[test]
     fn html_fragments_and_concatenation_halves_are_ignored() {
         let (_f, project) = single(
@@ -866,42 +835,52 @@ mod tests {
         assert!(diagnostics[1].message.contains("display: -webkit-box"));
     }
 
-    /// 入口门禁：名字不像 `…Style` 的字符串不判——第三方样式生成器、映射表都长这样。
+    /// 门禁按内容判：名字不像 `…Style` 也照查（`cssText` / `styles` 是常见载体）。
     #[test]
-    fn strings_not_named_like_styles_are_ignored() {
+    fn declaration_blocks_are_judged_by_content_not_by_name() {
+        let (_f, project) = single(
+            "dynamic-style-content-gate",
+            r#"Page({ data: {
+                cssText: 'display: -webkit-box;',
+                styles: 'position: sticky; top: 0;',
+            }, methods: { render() { return { caption: 'display:table-caption;text-align:center' }; } } });"#,
+        );
+        let diagnostics = DynamicStyleValue.check(&project);
+        assert_eq!(diagnostics.len(), 3, "{diagnostics:#?}");
+        assert!(diagnostics.iter().all(|d| d.rule == DynamicStyleValue::ID));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("display: table-caption"))
+        );
+    }
+
+    /// 单条声明没有分号也算（工程里很常见）；名字不像 `…Style` 也照查。
+    #[test]
+    fn single_declaration_strings_are_judged_by_content() {
         let (_f, project) = single(
             "dynamic-style-name-gate",
             r#"Page({ data: {
                 tip: 'display: -webkit-box',
-                caption: 'display:table-caption;text-align:center',
                 label: '-webkit-box-orient: vertical',
-            } });"#,
+            }, methods: { render() { return { style: format('display: -webkit-box') }; } } });"#,
         );
-        assert_eq!(messages(&DynamicStyleValue, &project), Vec::<String>::new());
+        let diagnostics = DynamicStyleValue.check(&project);
+        assert_eq!(diagnostics.len(), 3, "{diagnostics:#?}");
     }
 
-    /// 变量声明与赋值目标上的 `…Style` 名字同样算上下文。
+    /// 变量声明与赋值目标上的字符串同样只看内容，不看名字。
     #[test]
     fn declarator_and_assignment_contexts_are_judged() {
         let (_f, project) = single(
             "dynamic-style-contexts",
-            r#"const cardStyle = 'display: -webkit-box';
-            Page({ data: {}, onLoad() { this.loginStyle = 'display: -webkit-flex'; } });"#,
+            r#"const card = 'display: -webkit-box';
+            Page({ data: {}, onLoad() { this.login = 'display: -webkit-flex'; } });"#,
         );
         let diagnostics = DynamicStyleValue.check(&project);
         assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
         assert!(diagnostics[0].message.contains("display: -webkit-box"));
         assert!(diagnostics[1].message.contains("display: -webkit-flex"));
-    }
-
-    /// 名字像样式、但值是调用结果时，字符串是实参，不继承外层名字。
-    #[test]
-    fn style_named_call_arguments_are_ignored() {
-        let (_f, project) = single(
-            "dynamic-style-call-arg",
-            r#"Page({ data: { style: format('display: -webkit-box') } });"#,
-        );
-        assert_eq!(messages(&DynamicStyleValue, &project), Vec::<String>::new());
     }
 
     /// 构建产物里的样式生成器不是内联样式。[`Fixture::write`] 的 `npm/` 路径。
@@ -918,7 +897,7 @@ mod tests {
             .write("pages/index/index.js", "Page({});")
             .write(
                 "npm/foo/index.js",
-                "var cardStyle = 'display: -webkit-box';\n",
+                "var cardStyle = 'display: -webkit-box;';\n",
             );
         assert!(DynamicStyleValue.check(&f.project()).is_empty());
     }
@@ -940,7 +919,7 @@ mod tests {
             .write("pages/index/index.js", "Page({});")
             .write(
                 "pages/index/index.wxs",
-                "var cardStyle = 'display: -webkit-box';\nmodule.exports = { cardStyle: cardStyle };\n",
+                "var cardStyle = 'display: -webkit-box;';\nmodule.exports = { cardStyle: cardStyle };\n",
             );
         assert!(DynamicStyleValue.check(&f.project()).is_empty());
     }

@@ -4,7 +4,8 @@
 //!
 //! - `disableScroll` 是页面级配置（`skyline-config/references/page-config.md:49`：
 //!   「此配置只在页面 json 中有效，无法在 `app.json` 中设置」）。写进 app.json 的
-//!   `window` 不会被任何页面读取，minidev 也不校验 app.json（实测静默通过）。
+//!   `window` 不会被任何页面读取；这是配置被忽略，不是构建校验——该键不触发构建
+//!   错误，`minidev build` 实测静默通过，所以只能靠这条规则提示。
 //! - `setting.skylineRenderEnable` 的类型是 Boolean（`skyline-config/references/
 //!   project-config.md:18-29`，开发者工具里开启 Skyline 渲染调试）。开发者工具按
 //!   真值判断，字符串 `"false"` 在 JS 里是真值，反而会把调试渲染器打开。
@@ -15,12 +16,113 @@ use serde_json::Value;
 
 use crate::input::json::JsonPositions;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{EvidenceCase, EvidenceExpect, EvidenceRun, Rule, RuleMeta, VisualFile};
 use crate::{Diagnostic, Severity};
 
 use super::{anchor, warn};
 
 pub struct ConfigIgnored;
+
+/// 两个 WebView 工程：app.json 的 `window` 里分别有 / 没有 `disableScroll: true`。
+///
+/// 页面 2000px 高，`onReady` 后调 `wx.pageScrollTo({ scrollTop: 200 })` 再读
+/// `selectViewport().scrollOffset()`：两页都必须滚到 200，说明 app.json 里这行
+/// 配置没有任何读者（页面 json 才是它唯一有效的位置）。
+///
+/// 局限：本模拟器的 WebView 连页面 json 里的 `disableScroll: true` 也拦不住
+/// `pageScrollTo`（实测同样滚到 200），所以这里证明的是「app.json 写不写都一样」，
+/// 「页面 json 才是有效位置」仍以文档为准，不在本机运行时验证。
+const APP_JS: &str = "App({})\n";
+const PAGE_JSON: &str = r#"{"renderer":"webview"}"#;
+const PAGE_JS: &str = r#"
+Page({
+  onReady() {
+    setTimeout(() => {
+      wx.pageScrollTo({ scrollTop: 200, duration: 0 });
+      setTimeout(() => {
+        wx.createSelectorQuery()
+          .selectViewport()
+          .scrollOffset((r) => {
+            globalThis.__evidence_scroll_top = r && r.scrollTop;
+          })
+          .exec();
+      }, 600);
+    }, 300);
+  },
+});
+"#;
+const PAGE_WXML: &str = r#"<view style="height: 200px;">top</view><view style="height: 1600px;">fill</view><view style="height: 200px;">bottom</view>"#;
+
+static EVIDENCE_CASES: &[EvidenceCase] = &[
+    EvidenceCase {
+        name: "app-window-disable-scroll-ignored",
+        files: &[
+            VisualFile {
+                path: "app.json",
+                content: r#"{"pages":["pages/index/index"],"renderer":"webview","window":{"disableScroll":true}}"#,
+            },
+            VisualFile {
+                path: "app.js",
+                content: APP_JS,
+            },
+            VisualFile {
+                path: "pages/index/index.json",
+                content: PAGE_JSON,
+            },
+            VisualFile {
+                path: "pages/index/index.wxml",
+                content: PAGE_WXML,
+            },
+            VisualFile {
+                path: "pages/index/index.js",
+                content: PAGE_JS,
+            },
+        ],
+        project_config: None,
+        run: EvidenceRun::Serve {
+            page: "pages/index/index",
+        },
+        expect: EvidenceExpect::Runtime {
+            expr: "globalThis.__evidence_scroll_top",
+            equals: "200",
+        },
+        note: "app.json 的 window.disableScroll: true 没有读者：pageScrollTo 仍把页面滚到 200",
+    },
+    EvidenceCase {
+        name: "app-window-without-disable-scroll",
+        files: &[
+            VisualFile {
+                path: "app.json",
+                content: r#"{"pages":["pages/index/index"],"renderer":"webview","window":{}}"#,
+            },
+            VisualFile {
+                path: "app.js",
+                content: APP_JS,
+            },
+            VisualFile {
+                path: "pages/index/index.json",
+                content: PAGE_JSON,
+            },
+            VisualFile {
+                path: "pages/index/index.wxml",
+                content: PAGE_WXML,
+            },
+            VisualFile {
+                path: "pages/index/index.js",
+                content: PAGE_JS,
+            },
+        ],
+        project_config: None,
+        run: EvidenceRun::Serve {
+            page: "pages/index/index",
+        },
+        expect: EvidenceExpect::Runtime {
+            expr: "globalThis.__evidence_scroll_top",
+            equals: "200",
+        },
+        note: "阴性对照：不写 disableScroll 时同样滚到 200——两次一致才说明上面的配置被忽略",
+    },
+];
 
 impl ConfigIgnored {
     pub const ID: &'static str = "skyline/config-ignored";
@@ -33,6 +135,10 @@ impl Rule for ConfigIgnored {
             severity: Severity::Warning,
             description: "配置写在不被读取的位置或类型上，静默无效",
         }
+    }
+
+    fn evidence_cases(&self) -> &'static [EvidenceCase] {
+        EVIDENCE_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {

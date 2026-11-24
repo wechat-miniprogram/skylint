@@ -356,7 +356,7 @@ fn single_file_wxml_is_lintable_without_a_project() {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.rule == "skyline/no-inline-text"),
+            .any(|diagnostic| diagnostic.rule == "skyline/inline-run"),
         "单文件也该跑单文件规则：{diagnostics:?}"
     );
     // 没有真工程就没有配置可判：不能对着不存在的 app.json 报 defaultDisplayBlock。

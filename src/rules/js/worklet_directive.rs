@@ -31,7 +31,7 @@
 use crate::input::js::CallInfo;
 use crate::project::{JsFile, Project};
 use crate::rules::wxml::{load_doc, span_diagnostic};
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{EvidenceCase, EvidenceExpect, EvidenceRun, Rule, RuleMeta, VisualFile};
 use crate::{Diagnostic, Severity};
 
 use super::{Callee, at_span, scope_script, unit_wxml};
@@ -41,6 +41,91 @@ const ADD_ROUTE_BUILDER: Callee = Callee::Qualified("addRouteBuilder");
 const WORKLET_PREFIX: &str = "worklet:";
 
 pub struct WorkletDirective;
+
+/// 同一份 `worklet:` 绑定，唯一差异是处理器有没有 `'worklet'` 指令。
+/// `compileWorklet` 在两边都开启，所以转换只由指令触发。
+const APP_JS: &str = "App({})\n";
+const APP_JSON: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","componentFramework":"glass-easel","lazyCodeLoading":"requiredComponents"}"#;
+const PAGE_JSON: &str = r#"{"renderer":"skyline","navigationStyle":"custom"}"#;
+const PAGE_WXML: &str = "<view><pan-gesture-handler worklet:ongesture=\"onPan\"/></view>\n";
+const PAGE_JS_WITH: &str = "function onPan(e) { 'worklet'; return e.absoluteX; }\nPage({});\n";
+const PAGE_JS_WITHOUT: &str = "function onPan(e) { return e.absoluteX; }\nPage({});\n";
+const CONFIG: &str =
+    r#"{"miniprogramRoot":"","appid":"touristappid","setting":{"compileWorklet":true}}"#;
+const ARTIFACT: &str = "js/pages/index/index.js";
+
+const FILES_WITH: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS_WITH,
+    },
+];
+
+const FILES_WITHOUT: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS_WITHOUT,
+    },
+];
+
+static EVIDENCE_CASES: &[EvidenceCase] = &[
+    EvidenceCase {
+        name: "directive-worklet-transformed",
+        files: FILES_WITH,
+        project_config: Some(CONFIG),
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::Artifact {
+            path: ARTIFACT,
+            must: &["__workletHash"],
+            must_not: &[],
+        },
+        note: "worklet:ongesture 绑到带 'worklet' 的处理器：产物里被改写成带 __workletHash 的 worklet 函数",
+    },
+    EvidenceCase {
+        name: "directive-missing-not-transformed",
+        files: FILES_WITHOUT,
+        project_config: Some(CONFIG),
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::Artifact {
+            path: ARTIFACT,
+            must: &[],
+            must_not: &["__workletHash"],
+        },
+        note: "阴性对照：同一绑定、同一开关，处理器没有 'worklet' 时产物保持普通函数",
+    },
+];
 
 impl WorkletDirective {
     pub const ID: &'static str = "skyline/worklet-directive";
@@ -53,6 +138,10 @@ impl Rule for WorkletDirective {
             severity: Severity::Error,
             description: "worklet: 绑定、applyAnimatedStyle 与路由动画处理函数缺少 'worklet' 指令（回调不会注册）",
         }
+    }
+
+    fn evidence_cases(&self) -> &'static [EvidenceCase] {
+        EVIDENCE_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {

@@ -40,7 +40,7 @@ static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxss: ".box { width: 96px; font-size: 16px; line-height: 20px; background: #eef; color: #223; word-break: keep-all; }\n",
     js: None,
     expect: VisualExpect::Differ,
-    note: "`word-break: keep-all` 被 Skyline 映射成 normal：WebView 不拆开中文、只有一行，Skyline 按 normal 逐字换行成多行",
+    note: "`word-break: keep-all` 被 Skyline 映射成 normal：WebView 不拆开中文、只有一行，Skyline 按 normal 逐字换行成多行。证据看 bbox 高度差（4 行 80 CSS vs 1 行 20 CSS，120 device px）；两端 bbox 交集只覆盖首行前 6 个字、逐字相同，0.195% 的像素差不可用",
     target: "#target",
 }];
 
@@ -227,9 +227,12 @@ fn check_will_change(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagno
     ));
 }
 
-/// font-weight 的数值：Skyline 先四舍五入到百位，再按百位选字重，落不到 100–900 时
-/// 回落 normal。
+/// font-weight 的数值：Skyline 先四舍五入到百位，再按 switch 选字重，落不到 100–900 时回落 normal。
 ///
+/// 源码：`skyline/css/css_properties/font_weight.cc` 的 `FontWeight::ApplyValue`
+/// 里 `round_num = std::round(num / 100)` 后 `SetFontWeight(round_num * 100)`；
+/// `skyline/style/computed_style.h` 的 `SetFontWeight(int)` 只映射 100/200/…/900，
+/// `default` 分支取 `FontWeight::kNormal`（= kW400，见 `common/dart_definitions.h`）。
 /// 「四舍五入 + 越界回落」是两段语义，数据表表达不了，所以按属性特化判定。
 fn check_font_weight(doc: &WxssDoc, decl: &WxssDeclaration, out: &mut Vec<Diagnostic>) {
     if !decl.name.eq_ignore_ascii_case("font-weight") {

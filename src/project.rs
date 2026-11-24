@@ -76,6 +76,33 @@ pub struct JsFile {
     pub doc: JsDoc,
 }
 
+/// 一份内联 `<wxs module="m">…</wxs>` 的模块体。
+///
+/// 内联模块没有独立文件，诊断落在所在的 WXML 上；`doc` 的行列相对模块体，
+/// 由 [`Self::start`] 换算成 WXML 里的位置。
+#[derive(Debug)]
+pub struct InlineWxs {
+    /// 模块体所在的 WXML 文件（项目相对）。
+    pub path: String,
+    /// 这份 WXML 属于哪些单元；模板文件可能被多个单元引用。
+    pub scopes: Vec<Scope>,
+    pub doc: JsDoc,
+    /// 模块体首字符在 WXML 里的位置（1-based 行、字符列）。
+    pub start: (u32, u32),
+}
+
+impl InlineWxs {
+    /// 模块体内的偏移 → 诊断位置（1-based 行、字符列）。
+    pub fn position(&self, offset: u32) -> (u32, u32) {
+        let (line, column) = self.doc.position(offset as usize);
+        if line == 1 {
+            (self.start.0, self.start.1 + column - 1)
+        } else {
+            (self.start.0 + line - 1, column)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PageUnit {
     /// 页面路由（app.json 里的原始写法，分包页已带 root 前缀）。
@@ -179,6 +206,11 @@ pub struct Project {
     /// 源文件一律记为 [`Scope::Loose`]。因此 `utils/` 里的实现也会被 JS 规则看到。
     /// 解析失败静默跳过：JS 语法错误由构建阶段拦截，linter 不另造诊断。
     pub scripts: Vec<JsFile>,
+    /// 内联 `<wxs module>` 的模块体（按所在 WXML 路径排序）。
+    ///
+    /// 这类模块不在 [`Self::scripts`] 里：它们没有独立文件，行列要落回 WXML，
+    /// 作用域也可能来自多个引用模板的单元。
+    pub inline_wxs: Vec<InlineWxs>,
     /// 被 `<import>` / `<include>` 引入的模板（项目相对，去重排序）。
     ///
     /// 模板没有自己的四件套，但单文件结构规则（不支持组件、内联文本等）仍应检查它。
@@ -636,8 +668,8 @@ impl Project {
         renderer_flag(&self.renderer_options, "defaultDisplayBlock")
     }
 
-    /// app 级 `defaultContentBox` 是否开启。运行时只读 `rendererOptions.skyline` 这一层，
-    /// 写在顶层的同名单键不生效，所以这里也只认嵌套写法。
+    /// app 级 `defaultContentBox` 是否开启。运行时只读 `rendererOptions.skyline` 这一层
+    /// （`runtime/index.ts:145`），写在顶层的同名单键不生效，所以这里也只认嵌套写法。
     ///
     /// 这只是回落值：页面 / 组件 json 可以各自覆盖，见 [`Self::content_box`]。
     pub fn app_content_box(&self) -> bool {
@@ -718,7 +750,7 @@ impl Project {
     }
 
     /// 页面级覆盖；`None` 表示这一页没写，回落到 app 级。运行时只认
-    /// `rendererOptions.skyline.*` 这一层。
+    /// `rendererOptions.skyline.*` 这一层（`skyline.js:428-431`）。
     fn page_display_block(&self, route: &str) -> Option<bool> {
         self.page_json
             .get(route)
@@ -814,6 +846,7 @@ impl Project {
             page_json_source: BTreeMap::new(),
             styles: Vec::new(),
             scripts: Vec::new(),
+            inline_wxs: Vec::new(),
             template_files: Vec::new(),
             template_scopes: BTreeMap::new(),
             warnings: Vec::new(),
@@ -825,16 +858,34 @@ impl Project {
         };
 
         match ext {
-            "wxml" => project.pages.push(PageUnit {
-                route: name.trim_end_matches(".wxml").to_string(),
-                is_skyline: true,
-                declares_renderer: true,
-                opted_out: false,
-                files: UnitFiles {
-                    wxml: Some(name),
-                    ..UnitFiles::default()
-                },
-            }),
+            "wxml" => {
+                let route = name.trim_end_matches(".wxml").to_string();
+                project.pages.push(PageUnit {
+                    route: route.clone(),
+                    is_skyline: true,
+                    declares_renderer: true,
+                    opted_out: false,
+                    files: UnitFiles {
+                        wxml: Some(name.clone()),
+                        ..UnitFiles::default()
+                    },
+                });
+                if let Ok(doc) = wxml::parse(&name, &source, &Env::default()) {
+                    for module in doc.wxs_modules() {
+                        let Ok(parsed) =
+                            JsDoc::parse(&format!("{name}#{}.wxs", module.name), &module.content)
+                        else {
+                            continue;
+                        };
+                        project.inline_wxs.push(InlineWxs {
+                            path: name.clone(),
+                            scopes: vec![Scope::Page(route.clone())],
+                            doc: parsed,
+                            start: doc.position(module.content_start),
+                        });
+                    }
+                }
+            }
             "wxss" | "less" | "scss" | "sass" => match wxss::parse(&name, &source) {
                 Ok(doc) => project.styles.push(StyleSheet {
                     doc,
@@ -926,7 +977,8 @@ mod tests {
         assert!(project.scroll_view_auto_size());
     }
 
-    /// 运行时只读 `rendererOptions.skyline.enableScrollViewAutoSize`；顶层的同名单键不生效，认了它会让
+    /// 运行时只读 `rendererOptions.skyline.enableScrollViewAutoSize`
+    /// （`runtime/index.ts:148`）；顶层的同名单键不生效，认了它会让
     /// `scroll-view-height` 整条规则静默（全工程漏报）。
     #[test]
     fn scroll_view_auto_size_ignores_the_top_level_key() {

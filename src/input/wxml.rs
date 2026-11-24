@@ -24,6 +24,17 @@ pub fn parse(path: &str, source: &str, env: &Env) -> Result<WxmlDoc, String> {
     WxmlDoc::parse(path, source, env)
 }
 
+/// 一个内联 `<wxs module="m">…</wxs>` 的模块体。
+#[derive(Debug, Clone)]
+pub struct WxsModule {
+    /// `module` 属性声明的模块名。
+    pub name: String,
+    /// 模块体原文（`<wxs>` 与 `</wxs>` 之间的内容）。
+    pub content: String,
+    /// 模块体首字符在 WXML 源码中的位置（`WxmlDoc::position` 可换算成诊断坐标）。
+    pub content_start: Position,
+}
+
 /// 一个 `<template is="x" data="…">` 调用点。
 ///
 /// 模板被摊平后调用元素不在 `nodes` 里（展开内容静态不可知），需要这份单独记录才能
@@ -54,6 +65,8 @@ pub struct WxmlDoc {
     imports: Vec<String>,
     /// `<wxs src>` 的原始值（`Script::GlobalRef`）。
     wxs_refs: Vec<String>,
+    /// 内联 `<wxs module>` 的模块体（`Script::Inline`）。
+    wxs_modules: Vec<WxsModule>,
     /// `<template is="x" data="…">` 调用点（按源码顺序）。
     pub template_calls: Vec<TemplateCall>,
     /// 这份文件不是单元本身，而是被 `<import>` / `<include>` 引用的片段：
@@ -318,18 +331,28 @@ impl WxmlDoc {
             .map(|element| element.src.name.to_string())
             .filter(|name| !name.is_empty())
             .collect();
-        let wxs_refs = template
-            .globals
-            .scripts
-            .iter()
-            .filter_map(|script| match script {
+        let mut wxs_refs = Vec::new();
+        let mut wxs_modules = Vec::new();
+        for script in &template.globals.scripts {
+            match script {
                 glass_easel_template_compiler::parse::tag::Script::GlobalRef { src, .. } => {
-                    Some(src.name.to_string())
+                    if !src.name.is_empty() {
+                        wxs_refs.push(src.name.to_string());
+                    }
                 }
-                glass_easel_template_compiler::parse::tag::Script::Inline { .. } | &_ => None,
-            })
-            .filter(|name| !name.is_empty())
-            .collect();
+                glass_easel_template_compiler::parse::tag::Script::Inline {
+                    module_name,
+                    content,
+                    content_location,
+                    ..
+                } => wxs_modules.push(WxsModule {
+                    name: module_name.name.to_string(),
+                    content: content.clone(),
+                    content_start: content_location.start,
+                }),
+                _ => {}
+            }
+        }
         Ok(Self {
             path: path.to_string(),
             source: source.to_string(),
@@ -338,6 +361,7 @@ impl WxmlDoc {
             includes,
             imports,
             wxs_refs,
+            wxs_modules,
             template_calls,
             // 由调用方（`load_doc`）按工程视图补上。
             fragment: false,
@@ -420,6 +444,11 @@ impl WxmlDoc {
     /// 本文件通过 `<wxs src>` 引入的脚本路径（编译器已补 `.wxs` 后缀）。
     pub fn wxs_refs(&self) -> &[String] {
         &self.wxs_refs
+    }
+
+    /// 本文件里的内联 `<wxs module>` 模块体。
+    pub fn wxs_modules(&self) -> &[WxsModule] {
+        &self.wxs_modules
     }
 
     /// 深度优先遍历全部元素节点。

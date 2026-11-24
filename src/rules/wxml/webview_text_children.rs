@@ -27,13 +27,14 @@ pub struct TextChildren;
 /// 视觉用例：`<text>` 里放一个 `<input>`。
 ///
 /// Skyline 的 TextShadowNode 把非文本子节点转成 WidgetSpan，输入框照常渲染；WebView 的
-/// `wx-text` 伪 slot 只保留文本与嵌套 `text`，输入框整块丢弃（只剩文字）。
+/// `wx-text` 伪 slot 只保留文本与嵌套 `text`，输入框整块丢弃（只剩文字）。实测 `#target`
+/// 高度 65px 对 42px。
 static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxml: r#"<view class="wrap" id="target"><text class="t">提示<input class="field"/></text></view>"#,
     wxss: ".wrap { padding: 10px; background: #fafafa; }\n.t { font-size: 16px; }\n.field { width: 120px; height: 40px; background: #36c; }\n",
     js: None,
     expect: VisualExpect::Differ,
-    note: "`<text>` 里的 `<input>`：Skyline 当作行内 widget 渲染，WebView 的 text 伪 slot 直接丢弃（只剩文字）",
+    note: "`<text>` 里的 `<input>`：Skyline 的 `#target` 高 65px（文字旁有 120×40 的输入框），WebView 高 42px（只剩一行文字）",
     target: "#target",
 }];
 

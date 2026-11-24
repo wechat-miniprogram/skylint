@@ -1,45 +1,15 @@
-//! 内置组件在 Skyline 里「有没有 CSS 盒」的分类表，`native-padding` 与
-//! `native-layout-ignored` 共用同一份事实。
+//! `native-*` 两条规则共用的属性求值：哪些声明真的写了。
 //!
-//! 判据：子节点是否被当作独立布局根。
+//! 组件能力表（[`crate::rules::wxml::tags::CssBox`] / `padding_attr`）在 `wxml::tags`，
+//! 这里不再存第二份标签表。
 //!
-//! - 父 widget 链尾不是 yoga 连接器就 `SetAsRoot()`；
-//! - `CreateConcreteWidget()` 返回空才建 yoga 连接器；
-//! - 全仓只有一处把子 yoga 节点挂进父树；
-//! - `InflateNaked()` 只塞 concrete widget，连 yoga 节点都不建；
-//! - concrete widget 拿到的约束是 border box，padding 没有扣减机会。
-//!
-//! 排除 `swiper-item`：它 `CreateConcreteWidget()` 返回空 → 走 yoga 连接器，子节点进它
-//! 自己的布局树，CSS 正常生效。
+//! 判据：`CssBox::None` 的组件连布局节点都不建，CSS 盒属性整体失效；
+//! `CssBox::BorderBoxTail` 有布局节点、padding 也写进去了，但子节点是独立布局根，
+//! padding / border / gap 没有扣减机会。
 
 use crate::input::wxml::WxmlElement;
 use crate::matcher::Tree;
 use crate::project::Project;
-
-/// 组件自身还有多少 CSS 能用。
-pub(crate) enum NativeKind {
-    /// 没有 CSS 盒（`InflateNaked` / `SetSkipStyleBuild`）。`background` 表示背景色是否
-    /// 还能画出来：list/grid 四件套在 style builder 的白名单里只剩背景色，sticky/nested-scroll 连
-    /// computed style 都不建。
-    NoCssBox { background: bool },
-    /// 有 yoga 节点、padding 也写进去了，但 concrete
-    /// widget 是 widget 链尾，子节点仍是独立布局根。
-    BorderBoxTail,
-}
-
-pub(crate) struct Native {
-    pub tag: &'static str,
-    pub kind: NativeKind,
-    /// 组件是否暴露 `padding` 属性：Skyline 内置组件实现
-    pub padding_attr: bool,
-}
-
-impl NativeKind {
-    /// 这个组件连 yoga 节点都没有：CSS 布局属性整体失效。
-    pub fn ignores_layout(&self) -> bool {
-        matches!(self, Self::NoCssBox { .. })
-    }
-}
 
 /// 这些属性里哪些写了「非初值」，且全部可判定。
 ///
@@ -65,66 +35,3 @@ pub(crate) fn declared<'a>(
     }
     Some(hit)
 }
-
-pub(crate) const NATIVES: &[Native] = &[
-    Native {
-        tag: "list-view",
-        kind: NativeKind::NoCssBox { background: true },
-        padding_attr: true,
-    },
-    Native {
-        tag: "grid-view",
-        kind: NativeKind::NoCssBox { background: true },
-        padding_attr: true,
-    },
-    Native {
-        tag: "list-builder",
-        kind: NativeKind::NoCssBox { background: true },
-        padding_attr: true,
-    },
-    Native {
-        tag: "grid-builder",
-        kind: NativeKind::NoCssBox { background: true },
-        padding_attr: true,
-    },
-    Native {
-        tag: "sticky-section",
-        kind: NativeKind::NoCssBox { background: false },
-        padding_attr: true,
-    },
-    Native {
-        tag: "sticky-header",
-        kind: NativeKind::NoCssBox { background: false },
-        padding_attr: true,
-    },
-    Native {
-        tag: "nested-scroll-header",
-        kind: NativeKind::NoCssBox { background: false },
-        padding_attr: false,
-    },
-    Native {
-        tag: "nested-scroll-body",
-        kind: NativeKind::NoCssBox { background: false },
-        padding_attr: false,
-    },
-    Native {
-        tag: "scroll-view",
-        kind: NativeKind::BorderBoxTail,
-        padding_attr: true,
-    },
-    Native {
-        tag: "swiper",
-        kind: NativeKind::BorderBoxTail,
-        padding_attr: false,
-    },
-    Native {
-        tag: "draggable-sheet",
-        kind: NativeKind::BorderBoxTail,
-        padding_attr: false,
-    },
-    Native {
-        tag: "picker-view-column",
-        kind: NativeKind::BorderBoxTail,
-        padding_attr: false,
-    },
-];

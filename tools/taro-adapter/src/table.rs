@@ -83,7 +83,7 @@ pub const TAGS: &[(&str, &str)] = &[
 /// 组件 → 运行时一定会写进 WXML 的默认属性（`base.wxml` 里是
 /// `type="{{i.p37||'list'}}"` 这种形式）。只收规则会据此下结论的项：
 /// `scroll-view` 没写 `type` 时 Taro 运行时按 `list` 渲染，若合成树不补，
-/// `skyline/scroll-view-type` 会对每个 scroll-view 误报。
+/// 规则会把容器当作缺省 type 判（`skyline/scroll-view-family` 里每条 `type` 分支都走错）。
 pub const DEFAULTS: &[(&str, &[(&str, &str)])] =
     &[("scroll-view", &[("type", "list")])];
 

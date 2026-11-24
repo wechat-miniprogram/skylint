@@ -35,7 +35,7 @@ impl fmt::Display for Severity {
 /// `end_line`/`end_column` 表达区间，跨行时 `end_column` 为结束行内的列。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostic {
-    /// 规则 id，如 `skyline/unsupported-component`。
+    /// 规则 id，如 `skyline/component-support`。
     pub rule: String,
     pub severity: Severity,
     pub message: String,

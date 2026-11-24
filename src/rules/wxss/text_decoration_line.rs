@@ -6,8 +6,7 @@
 //! 返回 `CSSUnsetValue`，非继承属性回落到初始值 `none`，
 //! 多值 `List` 也只 `Diag` 后返回 `CSSUnsetValue`）。
 //!
-//! `text-decoration` 简写会展开到四个长写，
-//! 所以简写里的线型丢失只影响 line，color / style / thickness 仍然生效。
+//! `text-decoration` 简写会展开到四个长写，所以简写同样要按 line 检查。
 
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
@@ -43,7 +42,7 @@ static VISUAL_CASES: &[VisualCase] = &[
         wxss: ".label { font-size: 20px; color: #222; text-decoration: underline line-through; }\n",
         js: None,
         expect: VisualExpect::Differ,
-        note: "简写里的多线型同样让 line 失效：WebView 画出两种线，Skyline 不画线（简写其它子属性仍生效）",
+        note: "简写里的多线型同样让 line 失效：WebView 画出两种线，Skyline 不画线",
         target: "#target",
     },
 ];
@@ -53,7 +52,7 @@ impl Rule for TextDecorationLine {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Warning,
-            description: "text-decoration-line 只支持单值；多值或特殊线型会让 line 回落到 none（简写里其它子属性仍生效）",
+            description: "text-decoration-line 只支持单值；多值或特殊线型会让 line 回落到 none",
         }
     }
 
@@ -94,18 +93,13 @@ impl Rule for TextDecorationLine {
             if !invalid && lines <= 1 {
                 return;
             }
-            let suffix = if name == "text-decoration" {
-                "；简写里只有线型失效，color / style / thickness 仍然生效"
-            } else {
-                ""
-            };
             let message = if invalid {
                 format!(
-                    "`{name}: {value}` 里的线型在 Skyline 下不被支持（fp 能解析 spelling-error / grammar-error，但 C++ 映射层没有对应分支），line 会回落到初始值 `none`{suffix}"
+                    "`{name}: {value}` 里的线型在 Skyline 下不被支持（fp 能解析 spelling-error / grammar-error，但 C++ 映射层没有对应分支），line 会回落到初始值 `none`"
                 )
             } else {
                 format!(
-                    "`{name}: {value}` 一次声明了 {lines} 种线型，Skyline 只支持单值，line 会回落到初始值 `none`{suffix}"
+                    "`{name}: {value}` 一次声明了 {lines} 种线型，Skyline 只支持单值，line 会回落到初始值 `none`"
                 )
             };
             out.push(at_value(
@@ -173,17 +167,6 @@ mod tests {
         assert_eq!(diags.len(), 2, "{diags:#?}");
         assert!(diags[0].message.contains("2 种线型"));
         assert!(diags[1].message.contains("不被支持"));
-        // 简写里丢的只有 line，其它长写仍生效。
-        assert!(
-            diags[0]
-                .message
-                .contains("color / style / thickness 仍然生效")
-        );
-        assert!(
-            diags[1]
-                .message
-                .contains("color / style / thickness 仍然生效")
-        );
     }
 
     #[test]

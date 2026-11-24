@@ -39,7 +39,11 @@ fn run(root: &Path) -> Value {
 #[test]
 fn diagnostics_are_remapped_to_tsx() {
     let root = project("remap");
-    write(&root, "project.config.json", r#"{"miniprogramRoot":"dist/"}"#);
+    write(
+        &root,
+        "project.config.json",
+        r#"{"miniprogramRoot":"dist/"}"#,
+    );
     write(
         &root,
         "dist/app.json",
@@ -69,15 +73,15 @@ export default function Page() {
     let diagnostics = report["diagnostics"].as_array().unwrap();
     let webview = diagnostics
         .iter()
-        .find(|item| item["rule"] == "skyline/unsupported-component")
+        .find(|item| item["rule"] == "skyline/component-support")
         .expect("WebView 应被报出来");
     assert_eq!(webview["path"], "src/pages/index/index.tsx");
     assert_eq!(webview["line"], 7);
-    // Taro 运行时给 scroll-view 补了 type=list，原生语义下不该再报缺失。
+    // Taro 运行时给 scroll-view 补了 type=list，原生语义下不该再报 type 回退。
     assert!(
         !diagnostics
             .iter()
-            .any(|item| item["rule"] == "skyline/scroll-view-type"),
+            .any(|item| item["rule"] == "skyline/scroll-view-family"),
         "{diagnostics:#?}"
     );
 
@@ -87,7 +91,11 @@ export default function Page() {
 #[test]
 fn inlined_component_diagnostics_point_at_the_component() {
     let root = project("inline-remap");
-    write(&root, "project.config.json", r#"{"miniprogramRoot":"dist/"}"#);
+    write(
+        &root,
+        "project.config.json",
+        r#"{"miniprogramRoot":"dist/"}"#,
+    );
     write(
         &root,
         "dist/app.json",
@@ -126,7 +134,7 @@ export default function Card() {
     let diagnostics = report["diagnostics"].as_array().unwrap();
     let mixed = diagnostics
         .iter()
-        .find(|item| item["rule"] == "skyline/no-inline-text")
+        .find(|item| item["rule"] == "skyline/inline-run")
         .unwrap_or_else(|| panic!("组件里的文本混排应被报出来：{diagnostics:#?}"));
     assert_eq!(mixed["path"], "src/components/Card.tsx");
     assert_eq!(mixed["line"], 5);

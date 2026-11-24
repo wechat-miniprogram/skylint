@@ -10,9 +10,9 @@
 //! （`.x{white-space:nowrap}` 后面再写 `.x{white-space:pre}`，最终是 `normal`）。
 //!
 //! `position: sticky` 属于第二类：引擎只映射 static/relative/absolute/fixed，`sticky`
-//! 解析成「未设置」后回落到初始值 **relative**，不是退回上一条声明。若同时声明了
-//! `top`/`right`/`bottom`/`left`，元素会以原位置为基准偏移且不占位，直接盖住后面的内容
-//! （实测某电商工程详情页的吸顶筛选条压住首行）。
+//! 解析成「未设置」后按 Skyline 的默认值回落成 **relative**，不是退回上一条声明。若同时声明了
+//! `top`/`right`/`bottom`/`left`，元素会以原位置为基准偏移且不占位；它排在后续内容之前时
+//! 会被那些块盖住，排在之后时才可能盖住内容（实测某电商工程详情页的吸顶筛选条压住首行）。
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -67,11 +67,11 @@ pub(crate) fn initial_value(name: &str, value: &str) -> Option<(&'static str, &'
     Some(match (name, value) {
         // display 的初始值：默认 flex，开启默认块级布局时为 block。
         ("display", "grid" | "flow-root" | "inline-grid") => ("`display: flex`", ""),
-        // position 的初始值硬编码为 relative（属性自身的初值也是 relative）。
+        // Skyline 把 `sticky` 映射为 relative。
         // 相对偏移不占兄弟布局，所以带 top/left 时会压住后面的内容。
         ("position", "sticky") => (
             "`position: relative`",
-            "；若同时声明了 top/right/bottom/left，元素会以原位置为基准偏移且不占位，可能遮住后面的内容",
+            "；若同时声明了 top/right/bottom/left，元素会以原位置为基准偏移且不占位，位于后续内容之前时可能被后续块遮住",
         ),
         // overflow 的初始值是 visible；两轴同构，
         // 解析失败后把 kOverflow 设成 unset，最终落到 Overflow::ApplyInitial。
@@ -114,7 +114,8 @@ impl UnsupportedValue {
 /// 视觉用例：两种「值不支持」的落点。
 ///
 /// - `display: grid` 回落到初始的 flex（Skyline 默认列向），网格变竖排。
-/// - `position: sticky` 回落到 relative，`top` 立即生效、元素下移并盖住内容。
+/// - `position: sticky` 回落到 relative，`top` 立即生效、元素下移但不占位；它排在
+///   `.content` 之后，下移到的位置落在内容下方，两端红条都可见（WebView 的 sticky 在未滚动时留在原位）。
 static VISUAL_CASES: &[VisualCase] = &[
     VisualCase {
         wxml: r#"<view class="grid">
@@ -131,13 +132,13 @@ static VISUAL_CASES: &[VisualCase] = &[
     },
     VisualCase {
         wxml: r#"<view class="page">
-  <view class="bar" id="target">吸顶筛选</view>
   <view class="content">内容</view>
+  <view class="bar" id="target">吸顶筛选</view>
 </view>"#,
         wxss: ".page { padding: 16px; background: #f5f5f5; }\n.bar { position: sticky; top: 88px; height: 44px; line-height: 44px; text-align: center; background: #e54d42; color: #fff; }\n.content { height: 220px; background: #4caf50; }\n",
         js: None,
         expect: VisualExpect::Differ,
-        note: "`position: sticky` 在 Skyline 回落成 relative：`top: 88px` 立即生效，筛选条下移并盖住内容，WebView 未滚动时仍在原位",
+        note: "`position: sticky` 在 Skyline 回落成 relative：`top: 88px` 让筛选条从原位（内容之后 236px）下移到 324px、不占位；WebView 的 sticky 未滚动时留在原位 236px。两端红条都可见，bbox 顶部差 88px",
         target: "#target",
     },
 ];
@@ -767,5 +768,31 @@ mod tests {
             "#,
         );
         assert_eq!(messages(&UnsupportedValue, &project), Vec::<String>::new());
+    }
+
+    /// WXML 静态 `style` 属性里的声明同样要查，诊断落在属性值上。
+    #[test]
+    fn inline_style_attribute_is_reported_on_the_attribute_value() {
+        let fixture = crate::rules::testutil::Fixture::wxml(
+            "value-inline-style",
+            r#"<view style="display: grid; color: red"/>"#,
+        );
+        let diagnostics = UnsupportedValue.check(&fixture.project());
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("display: grid"));
+        assert_eq!(diagnostics[0].path, "pages/index/index.wxml");
+        // `<view style="` 之后第 1 列，指向 `display` 的属性名。
+        assert_eq!((diagnostics[0].line, diagnostics[0].column), (1, 14));
+        assert!(diagnostics[0].end_column > diagnostics[0].column);
+    }
+
+    /// 动态绑定的 `style`（`{{}}`）整段判不了，不报。
+    #[test]
+    fn dynamic_style_attribute_is_ignored() {
+        let fixture = crate::rules::testutil::Fixture::wxml(
+            "value-inline-style-dynamic",
+            r#"<view style="display: {{d}}"/><view style="display:grid;color:{{c}}"/>"#,
+        );
+        assert!(UnsupportedValue.check(&fixture.project()).is_empty());
     }
 }

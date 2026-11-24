@@ -13,6 +13,9 @@
 //!   `(attr, v)` 时，自身 `<attr>=<v>` 不再要求（典型：list-builder 的 child-height
 //!   只在定高模式必填）
 //! - `AllowedValues`：子标签该属性只能取这些静态值；未声明不报
+//! - `FallsBack { name, values, fallback }`：非法静态值不是「不生效」，而是被运行时
+//!   静默回退成 `fallback`（典型：scroll-view 的 `type="default"` 回退成 `list`）；
+//!   空值与未声明一样按缺省处理，不报
 //! - `Within`：最近的该容器祖先下，子标签必须声明 `name=value`
 //! - `ChildrenOnly`：直接元素子节点只能是这些标签。`text` 是特殊值，表示文本节点也允许
 //! - `ChildrenOnlyUnmounted`：同上，但文本节点与非白名单元素一律违规（运行时不挂载它们）
@@ -78,6 +81,13 @@ pub(crate) enum Relation {
     AllowedValues {
         name: &'static str,
         values: &'static [&'static str],
+    },
+    /// 子节点自身的该属性只能取这些静态值；其它静态值在运行时被静默回退成 `fallback`
+    /// （与 [`Relation::AllowedValues`] 的区别：非法值不是「不生效」，而是换了一种模式）。
+    FallsBack {
+        name: &'static str,
+        values: &'static [&'static str],
+        fallback: &'static str,
     },
     /// 最近的该容器祖先下，子节点必须声明 `name="value"`。
     Within {
@@ -502,6 +512,36 @@ fn allowed_values_violation(element: &WxmlElement, name: &str, values: &[&str]) 
     ))
 }
 
+/// 非法枚举值会被运行时回退成另一个值：省略属性与空串都是「按缺省处理」，不算非法。
+fn falls_back_violation(
+    element: &WxmlElement,
+    name: &str,
+    values: &[&str],
+    fallback: &str,
+) -> Option<String> {
+    let attr = find_attr(element, name)?;
+    if !attr.is_static {
+        return None;
+    }
+    let actual = attr.value.as_deref().unwrap_or("").trim();
+    if actual.is_empty()
+        || values
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case(actual))
+    {
+        return None;
+    }
+    let allowed = values
+        .iter()
+        .map(|value| format!("`{value}`"))
+        .collect::<Vec<_>>()
+        .join(" 或 ");
+    Some(format!(
+        "`<{} {name}=\"{actual}\">` 的 `{name}` 不是支持的值（只有 {allowed}），运行时回退成 `{fallback}` 并在控制台告警",
+        element.tag
+    ))
+}
+
 fn within_violation(
     element: &WxmlElement,
     ancestors: &[Ancestor<'_>],
@@ -801,6 +841,11 @@ pub(crate) fn check_element(
             Relation::AllowedValues { name, values } => {
                 allowed_values_violation(element, name, values)
             }
+            Relation::FallsBack {
+                name,
+                values,
+                fallback,
+            } => falls_back_violation(element, name, values, fallback),
             Relation::Within {
                 container,
                 name,

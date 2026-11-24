@@ -70,8 +70,6 @@ const BOX_PROPERTIES: [&str; 10] = [
     "padding-bottom",
 ];
 
-pub struct TextBoxProperty;
-
 /// 视觉用例：同一段 WXML/WXSS 在两端各渲一次，看 `#target` 的几何与像素。
 ///
 /// 正例复刻真实工程实测：WebView 里 `<text>` 是 inline（宽度只包文字、`margin-top`
@@ -88,7 +86,7 @@ static VISUAL_CASES: &[VisualCase] = &[
         wxss: ".wrap { padding: 20px; }\n.name { display: inline; margin-top: 8px; font-size: 13px; line-height: 18px; }\n.after { background: #eee; }\n",
         js: None,
         expect: VisualExpect::Differ,
-        note: "WebView 的 <text> 是 inline（宽度只包文字、margin-top 不生效）；Skyline 是块级盒（占满父宽、margin-top 生效）",
+        note: "WebView 的 <text> 是 inline（宽度只包文字、margin-top 不生效）；Skyline 是块级盒（占满父宽），margin-top: 8px 生效但下一块实际只比 WebView 低 4 CSS px——WebView 的 inline 行盒更高，抵掉了另外 4px",
         target: "#target",
     },
     VisualCase {
@@ -117,6 +115,8 @@ static VISUAL_CASES: &[VisualCase] = &[
         target: "#target",
     },
 ];
+
+pub struct TextBoxProperty;
 
 impl Rule for TextBoxProperty {
     fn meta(&self) -> RuleMeta {

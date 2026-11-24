@@ -1,7 +1,7 @@
 //! 渲染树 → WXML 文本 + 字节偏移映射。
 //!
 //! 输出是紧凑格式（子节点之间不换行）：原生 WXML 与 Taro 产物都不含
-//! 「格式化空白」，合成树里也不该凭空多出文本节点——`no-inline-text`
+//! 「格式化空白」，合成树里也不该凭空多出文本节点——`inline-run`
 //! 这类规则会把文本节点算进去。
 //!
 //! 映射只记「合成文件里的字节偏移 → 源文件里的字节偏移」，由 [`crate::remap`]
@@ -98,7 +98,7 @@ enum Run<'a> {
 /// 相邻的文本 / 插值合并成一个文本节点。
 ///
 /// JSX 的 `{a}{b}` 在 WXML 里等价于 `{{a}}{{b}}`——一个文本节点里的两个插值；
-/// 拆成两个文本节点会让 `inline-run` / `no-inline-text` 把同一段文字当成并列元素。
+/// 拆成两个文本节点会让 `inline-run` 把同一段文字当成并列元素。
 fn merge_runs(children: &[Child]) -> Vec<Run<'_>> {
     let mut runs: Vec<Run> = Vec::new();
     for child in children {
@@ -121,9 +121,7 @@ fn merge_runs(children: &[Child]) -> Vec<Run<'_>> {
                 }),
             },
             Child::Dynamic { file, span } => match runs.last_mut() {
-                Some(Run::Text {
-                    dynamic: true, ..
-                }) => {}
+                Some(Run::Text { dynamic: true, .. }) => {}
                 Some(Run::Text { dynamic, .. }) => {
                     *dynamic = true;
                 }

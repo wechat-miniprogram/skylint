@@ -1,21 +1,30 @@
-//! 并列的文本级元素在 WebView 下排在同一行，在 Skyline 下各自换行。
+//! Skyline 没有**元素级行内格式化上下文（IFC）**：WebView 会把裸文本与行内元素
+//! 排进同一个行盒，Skyline 只有 flex / block 容器与 TextShadowNode 内部的行内流。
+//! 下面三种写法都依赖前者，迁到 Skyline 后会静默变成块级堆叠：
 //!
-//! WebView 里 `<text>` 是 inline（WebView 组件实现
-//! 只设 cursor，没有 `display`，自定义元素按浏览器默认的 `inline`；对比 `wx-view.less`
-//! 显式写了 `display: block`），`<image>` / `<span>` 是 inline-block，block 容器里几个
-//! 并列的文本级元素走**同一个行内流**；Skyline 里它们默认是 block（引擎默认 display 是 block，
-//! 默认 block 或 flex），各自占一行。
+//! 1. **裸文本与元素混排**：WebView 把裸文本排进容器行内流（`文案<image/>` 同一行），
+//!    Skyline 的裸文本是独立块级项，元素另起一行；
+//! 2. **非文本元素静态 `display: inline` / `inline-block`**：WebView 按行内级盒排
+//!    （收缩到内容宽、可与兄弟并排），Skyline 忽略声明、仍按块级盒排；
+//! 3. **≥2 个没写 `display` 的文本级元素并列**：WebView 下 `<text>` 是 inline、
+//!    `<image>` / `<span>` 是 inline-block，兄弟共享一个行内流；Skyline 下各自占一行。
+//!
+//! `display: inline-block` 的口径（实测，同页两端各跑一次）：WebView 真的按行内块排——
+//! 盒子收缩到内容宽、与兄弟同排；Skyline 把它当块级，盒子撑满父宽、独占一行。
+//! 所以它和 `inline` 一样必须覆盖；「两端都按块级」是错误口径。
+//!
+//! 根因相同，修法也只有一条：把要并排的内容放进 `display: flex; flex-direction: row`
+//! 的容器；如果本来就要各占一行，就给两端都显式写 `display: block`，让两端一致。
+//! **不要建议「包进 `<text>`」**：Skyline 里 `<text>` 作为 `<view>` 的子项仍是块级项，
+//! 包完还是各自换行，只是把形态 1 变成了形态 3。
 //!
 //! 想要「一段共享排版的文本流」只能让 TextShadowNode 当最近容器：文本子节点变
 //! `TextSpan`、非文本子节点变 `WidgetSpan`，全部 `BuildInlineSpan` 进同一个段落
 //! （引擎按节点类型分派、文本与 inline 元素各自成段）。
-//! 只想「横向排列」就显式 `display: flex`——两种渲染器都按 flex 排，天然一致。
 //!
-//! 裸文本与元素混排归 `no-inline-text`（「裸文本 + **单个** `<text>` 兄弟」也在
-//! 那里，比如 `<view>客服电话：<text>1010-5335</text></view>`）；这里只补「没有
-//! 裸文本」的那一半：兄弟全是被当成 inline 的元素。父级是 flex/grid 时不报（两边
-//! 都按 flex item 排，无差异）；元素显式写了非 inline 的 `display` 时也不报
-//! （作者已经明确要块级）。
+//! 不报的情况：父级是 flex（两端都按 flex item 排）；元素已显式写非行内的
+//! `display`（形态 3 的成员）；脱离文档流；作者已用固定宽度 / 纵向 margin 表达
+//! 「各占一行」；成员分属互斥 `wx:if` 分支。
 //!
 //! 模板定义体与 `<include>` 片段同样适用：样式按引用它们的单元求值，祖先链按
 //! **真实实例化路径**匹配（[`super::cascade_entries`] 是唯一口径），所以模板里
@@ -27,12 +36,13 @@ use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
+use crate::wxml_graph::SlotHost;
 
-use super::branch::exclusive;
+use super::branch::{exclusive, exclusive_branches};
 use super::structure::attr_is_off;
 use super::{
-    ElementSite, cascade_entries_with, element_diagnostic, for_each_element, is_flex_value,
-    resolved_property,
+    ElementSite, cascade_entries_with, element_diagnostic, flex_container, for_each_element,
+    is_flex_value, resolved_property, resolved_property_with, span_diagnostic,
 };
 
 pub const ID: &str = "skyline/inline-run";
@@ -43,27 +53,59 @@ const INLINE_TAGS: [&str; 3] = ["text", "image", "span"];
 /// TextShadowNode：它们内部的子节点本来就共用一个段落。
 const TEXT_HOSTS: [&str; 3] = ["text", "span", "navigator"];
 
+/// 三种形态共用的修法：显式 flex，或两端都写成块级。
+const HELP: &str = "把要并排的内容放进 `display: flex; flex-direction: row` 的容器；如果本来就要各占一行，给两端都显式写 `display: block`。不要靠包 `<text>` 修：Skyline 下它仍是块级项，会各自换行";
+
 pub struct InlineRun;
 
 /// 视觉用例：父级是普通 `<view>`，两个 `<text>` 并列。
 ///
 /// WebView 的两个 `<text>` 都是 inline，走同一个行内流（父级高一行）；
 /// Skyline 默认 block，各自占一行（父级高两行）。`#target` 的 height 直接不同。
-static VISUAL_CASES: &[VisualCase] = &[VisualCase {
-    wxml: r#"<view class="row" id="target"><text class="tag">标签一</text><text class="tag">标签二</text></view>"#,
-    wxss: ".row { padding: 10px; background: #f4f4f4; }\n.tag { font-size: 16px; background: #ccd; }\n",
-    js: None,
-    expect: VisualExpect::Differ,
-    note: "并列的两个 `<text>`：WebView 排在同一行（父级高一行），Skyline 各自占一行（父级高两行）",
-    target: "#target",
-}];
+static VISUAL_CASES: &[VisualCase] = &[
+    VisualCase {
+        wxml: r#"<view class="row" id="target"><text class="tag">标签一</text><text class="tag">标签二</text></view>"#,
+        wxss: ".row { padding: 10px; background: #f4f4f4; }\n.tag { font-size: 16px; background: #ccd; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "并列的两个 `<text>`：WebView 排在同一行（父级高一行），Skyline 各自占一行（父级高两行）；`.tag` 的底色把这件事画得更清楚：Skyline 每行都撑满父宽（10–364.5），WebView 只包住文字（10–105.5）",
+        target: "#target",
+    },
+    // 形态 1：裸文本与 `<image>`（WebView 的 inline-block）混排。整页模式。
+    VisualCase {
+        wxml: r#"<view class="tip">限时优惠<image class="icon" id="target"/></view>"#,
+        wxss: ".tip { padding: 10px; font-size: 16px; }\n.icon { width: 60px; height: 60px; background: #cde; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "WebView 把裸文本与 <image> 排进同一个行盒：图片紧接文字右侧（x 74 CSS），行盒被 60px 图片撑高，文字按基线落到行盒底部、比 Skyline 低约 21.5 CSS；Skyline 没有元素级行内流，裸文本是独立块级项，图片另起一行（y 从 10 到 32 CSS）。整页模式，证据强度弱于元素模式（无 bbox 兜底）",
+        target: "",
+    },
+    // 形态 2：两个静态 `display: inline` 的非文本元素。整页模式。
+    VisualCase {
+        wxml: r#"<view class="row"><view class="a" id="target">甲</view><view class="b">乙</view></view>"#,
+        wxss: ".row { padding: 10px; }\n.a { display: inline; background: #cde; }\n.b { display: inline; background: #edc; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "WebView 的 `display: inline` 让 `.a`、`.b` 都收缩成文字宽并排在同一行；Skyline 忽略它，两个都撑满父宽、各占一行。规则对 `.a`、`.b` 各报一条，属预期。整页模式，证据强度弱于元素模式",
+        target: "",
+    },
+    // 形态 2 的 `inline-block` 版：与上一条同构，只换声明。整页模式。
+    VisualCase {
+        wxml: r#"<view class="row"><view class="a" id="target">甲</view><view class="b">乙</view></view>"#,
+        wxss: ".row { padding: 10px; }\n.a { display: inline-block; background: #cde; }\n.b { display: inline-block; background: #edc; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "`display: inline-block`：WebView 真按行内块排——`.a`、`.b` 各自收缩到文字宽并排在同一行；Skyline 忽略声明、仍按块级盒排，两个都撑满父宽、各占一行。规则对 `.a`、`.b` 各报一条，属预期。整页模式，证据强度弱于元素模式（无 bbox 兜底）",
+        target: "",
+    },
+];
 
 impl Rule for InlineRun {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
             id: ID,
             severity: Severity::Warning,
-            description: "并列的文本级元素在 WebView 下排在同一行，在 Skyline 下各自占一行",
+            description: "Skyline 没有元素级行内格式化上下文：裸文本与元素混排、非文本元素上的 `display: inline` / `inline-block`、并列的文本级元素都会变成块级堆叠",
         }
     }
 
@@ -74,6 +116,8 @@ impl Rule for InlineRun {
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut out = Vec::new();
         for_each_element(project, self.target(), |site| {
+            // 形态 2 只看元素自己的声明，与它有几个兄弟无关。
+            check_inline_display(site, &mut out);
             check_element(site, &mut out);
         });
         out
@@ -96,24 +140,40 @@ fn check_element(site: &ElementSite<'_, '_>, out: &mut Vec<Diagnostic>) {
     if TEXT_HOSTS.contains(&element.tag.as_str()) {
         return;
     }
+    // 子节点被投影进组件的 `<text>`（或没有匹配的槽位、不渲染）时，这些内容运行时
+    // 在 TextShadowNode 里，两端都按行内流排；按本元素判定会误报。槽位解析在图上做。
+    match site.projected_parent() {
+        Some(SlotHost::NotRendered) => return,
+        Some(SlotHost::Element(tag)) if TEXT_HOSTS.contains(&tag) => return,
+        _ => {}
+    }
     // 内联 `style` 是动态值时 display 未知，宁可漏报。
     if has_dynamic_style(element) {
         return;
     }
     // 横向滚动的 scroll-view 在 Skyline 下是行向 flex 容器
-    // （`horizontal-scroll-enable-flex`），子节点本来就是 flex item，与 WebView 一致。
+    // （`component-attribute`），子节点本来就是 flex item，与 WebView 一致。
     if element.tag == "scroll-view" && !attr_is_off(element, "scroll-x") {
         return;
     }
-    // 结构上凑不出两个文本级孩子就不可能成串：先不付样式求值的代价。
-    let candidates = element
+    // 结构上凑不出差异：形态 1 要裸文本 + 元素，形态 3 要 ≥2 个文本级元素。
+    let element_children: Vec<&WxmlElement> = element
         .children
         .iter()
-        .filter(|child| {
-            matches!(child, WxmlNode::Element(child) if INLINE_TAGS.contains(&child.tag.as_str()))
+        .filter_map(|child| match child {
+            WxmlNode::Element(child) => Some(child),
+            _ => None,
         })
+        .collect();
+    let has_meaningful_text = element
+        .children
+        .iter()
+        .any(|child| matches!(child, WxmlNode::Text(text) if text.is_meaningful()));
+    let inline_candidates = element_children
+        .iter()
+        .filter(|child| INLINE_TAGS.contains(&child.tag.as_str()))
         .count();
-    if candidates < 2 {
+    if !(has_meaningful_text && !element_children.is_empty()) && inline_candidates < 2 {
         return;
     }
     // 看不见的容器里「同行还是分行」没有视觉差异：`display: none` 让整棵子树不渲染；
@@ -139,19 +199,129 @@ fn check_element(site: &ElementSite<'_, '_>, out: &mut Vec<Diagnostic>) {
     if varies_by_renderer(element) {
         return;
     }
+    // 形态 1：裸文本与元素混排。报出后不再叠加形态 3，同一根因只留一条。
+    if report_mixed_text(project, tree, element, doc, out) {
+        return;
+    }
     let mut run: Vec<&WxmlElement> = Vec::new();
-    let mut has_bare_text = false;
     for child in &element.children {
         match child {
-            // 裸文本本身就是行内内容，不打断序列；但它出现时整段交给 `no-inline-text`。
-            WxmlNode::Text(text) if text.is_meaningful() => has_bare_text = true,
             WxmlNode::Element(child) if is_inline_member(project, tree, child) => {
                 run.push(child);
             }
-            _ => flush(doc, &mut run, &mut has_bare_text, out),
+            _ => flush(doc, &mut run, out),
         }
     }
-    flush(doc, &mut run, &mut has_bare_text, out);
+    flush(doc, &mut run, out);
+}
+
+/// 形态 2：非文本元素自己静态声明了 `display: inline` / `inline-block`。
+///
+/// Skyline 对元素级 `display` 只认 block / flex 一类，`inline` 与 `inline-block` 都
+/// 退回块级盒；WebView 两种都按行内级盒排（实测 `inline-block` 收缩到内容宽，
+/// 在 Skyline 里却撑满父宽）。TextShadowNode 宿主、flex 子项与脱流元素除外。
+fn check_inline_display(site: &ElementSite<'_, '_>, out: &mut Vec<Diagnostic>) {
+    let (project, doc, tree, element) = (site.project, site.doc, site.tree, site.element);
+    if TEXT_HOSTS.contains(&element.tag.as_str()) || has_dynamic_style(element) {
+        return;
+    }
+    let Some(value) = static_inline_display(project, tree, element) else {
+        return;
+    };
+    if super::is_out_of_flow(project, tree, element)
+        || is_invisible(project, tree, element, site.ancestors)
+    {
+        return;
+    }
+    let Some(parent) = tree.parent_of(element) else {
+        return;
+    };
+    if TEXT_HOSTS.contains(&parent.tag.as_str()) || flex_container(project, tree, parent) {
+        return;
+    }
+    out.push(
+        element_diagnostic(
+            ID,
+            doc,
+            element,
+            doc.path(),
+            Severity::Warning,
+            format!(
+                "`<{}>` 上静态 `display: {value}` 在 Skyline 下不生效：WebView 按行内级盒排（收缩到内容宽、可与兄弟并排），Skyline 仍按块级盒（独占一行、撑满父宽）",
+                element.tag
+            ),
+        )
+        .help(HELP),
+    );
+}
+
+/// 元素自己静态声明的行内级 `display`；判不了或不是行内级时返回 `None`。
+fn static_inline_display(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+) -> Option<String> {
+    match resolved_property_with(project, tree, element, "display") {
+        (Some(resolved), false) => {
+            let value = resolved.value.trim().to_ascii_lowercase();
+            matches!(value.as_str(), "inline" | "inline-block").then_some(value)
+        }
+        _ => None,
+    }
+}
+
+/// 形态 1：裸文本与元素混排（「裸文本 + 单个元素」也算，比如客服电话那一行）。
+///
+/// 报在文本节点上：要改的是这段文本所在的排版容器。分属互斥 `wx:if` 分支的文本与
+/// 元素不会同时渲染，不算混排。只要报出至少一条就返回 `true`，调用方据此跳过形态 3。
+fn report_mixed_text(
+    project: &Project,
+    tree: &Tree<'_>,
+    element: &WxmlElement,
+    doc: &WxmlDoc,
+    out: &mut Vec<Diagnostic>,
+) -> bool {
+    let elements: Vec<&WxmlElement> = element
+        .children
+        .iter()
+        .filter_map(|child| match child {
+            WxmlNode::Element(child) => Some(child),
+            _ => None,
+        })
+        .filter(|child| !super::is_out_of_flow(project, tree, child))
+        .collect();
+    if elements.is_empty() {
+        return false;
+    }
+    let mut reported = false;
+    for text in element.children.iter().filter_map(|child| match child {
+        WxmlNode::Text(text) if text.is_meaningful() => Some(text),
+        _ => None,
+    }) {
+        if elements
+            .iter()
+            .all(|element| exclusive_branches(&text.branches, &element.branches))
+        {
+            continue;
+        }
+        out.push(
+            span_diagnostic(
+                ID,
+                doc,
+                text.start,
+                text.end,
+                doc.path(),
+                Severity::Warning,
+                format!(
+                    "`<{}>` 内裸文本与元素混排：WebView 把裸文本排进元素级行内流，Skyline 没有元素级行内格式化上下文，裸文本会成为独立块级项",
+                    element.tag
+                ),
+            )
+            .help(HELP),
+        );
+        reported = true;
+    }
+    reported
 }
 
 /// 这个元素在级联后确定不渲染：自己或任一祖先 `display: none`。
@@ -195,10 +365,10 @@ pub(crate) fn stacks_vertically(project: &Project, tree: &Tree<'_>, element: &Wx
 
 /// 文本级成员：标签在内，且靠**默认 layout** 参与行内流。
 ///
-/// 显式写 inline / inline-block 的不算：两种渲染器都会把它们排进行内行，
-/// 不写才依赖默认值（Skyline 默认 block / flex，WebView 默认 inline）。
-/// 绝对定位、占满整行、带纵向外边距的成员也不是行内内容：前两者两端都脱离
-/// 行内流，后者作者已经用纵向间距表达「各占一行」。
+/// 显式写 inline / inline-block 的不算：判据只看「没写 `display`、靠两端默认值参与
+/// 行内流」的成员；非文本元素的显式声明由 [`check_inline_display`] 单独处理。
+/// 绝对定位、占满整行、带纵向外边距的成员也不是行内内容：前两者两端都脱离行内流，
+/// 后者作者已经用纵向间距表达「各占一行」。
 pub(crate) fn is_inline_member(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
     if !INLINE_TAGS.contains(&element.tag.as_str()) {
         return false;
@@ -232,12 +402,7 @@ fn has_dynamic_style(element: &WxmlElement) -> bool {
 }
 
 /// 一段并列的文本级成员；分属互斥 `wx:if` 分支的成员不会同时渲染，整段跳过。
-fn flush(
-    doc: &WxmlDoc,
-    run: &mut Vec<&WxmlElement>,
-    has_bare_text: &mut bool,
-    out: &mut Vec<Diagnostic>,
-) {
+fn flush(doc: &WxmlDoc, run: &mut Vec<&WxmlElement>, out: &mut Vec<Diagnostic>) {
     // 任一两个成员分属互斥分支就无法证明它们同时渲染，整段跳过。
     let mut coexists = true;
     for (index, left) in run.iter().enumerate() {
@@ -245,14 +410,7 @@ fn flush(
             coexists = false;
         }
     }
-    if run.len() >= 2 && !*has_bare_text && coexists {
-        // `image` 塞不进 `<text>`（WebView 只保留文本与嵌套 text，节点会丢），
-        // 所以含图片时只有 flex 一种修法。
-        let help = if run.iter().any(|element| element.tag == "image") {
-            "父级写 `display: flex; flex-direction: row` 让它们横向排列；不要把 `image` 塞进 `<text>`——WebView 只保留文本与嵌套 text，节点会丢"
-        } else {
-            "把这一串包进同一个 `<text>`（保留各自的 class）"
-        };
+    if run.len() >= 2 && coexists {
         out.push(
             element_diagnostic(
                 ID,
@@ -261,15 +419,14 @@ fn flush(
                 doc.path(),
                 Severity::Warning,
                 format!(
-                    "{} 个文本级元素并列：WebView 下排在同一行，Skyline 下各自占一行",
+                    "{} 个文本级元素并列且都没写 `display`：WebView 按 inline / inline-block 排在同一行，Skyline 下各自占一行",
                     run.len()
                 ),
             )
-            .help(help),
+            .help(HELP),
         );
     }
     run.clear();
-    *has_bare_text = false;
 }
 
 #[cfg(test)]
@@ -303,6 +460,96 @@ mod tests {
         assert!(diagnostics[0].message.contains("并列"));
     }
 
+    /// 三种形态的视觉用例都必须真的能触发本规则。
+    #[test]
+    fn every_visual_case_triggers_the_rule() {
+        for case in super::VISUAL_CASES {
+            let fixture = Fixture::page("inline-run/visual", case.wxml, case.wxss);
+            let diagnostics = check(&fixture);
+            assert!(!diagnostics.is_empty(), "视觉用例未触发规则：{}", case.wxml);
+        }
+    }
+
+    // ---- 三种形态 ----
+
+    /// 形态 1：裸文本 + **单个** 元素（客服电话那一行）也要报。
+    #[test]
+    fn bare_text_with_a_single_element_is_reported() {
+        let fixture = Fixture::wxml(
+            "inline-run/mixed-single",
+            r#"<view class="memo">客服电话：<text class="phone">1010-5335</text></view>"#,
+        );
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("裸文本与元素混排"));
+    }
+
+    /// 形态 2：非文本元素上的静态 `display: inline`。
+    #[test]
+    fn static_inline_display_is_reported() {
+        let fixture = Fixture::wxml(
+            "inline-run/inline-decl",
+            r#"<view class="row"><view class="a">甲</view></view>"#,
+        );
+        fixture.write("pages/index/index.wxss", ".a { display: inline; }");
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0].message.contains("display: inline"),
+            "{diagnostics:#?}"
+        );
+    }
+
+    /// 形态 2：`display: inline-block` 在 WebView 是行内块，Skyline 也按块级 —— 必须覆盖。
+    #[test]
+    fn static_inline_block_display_is_reported() {
+        let fixture = Fixture::wxml(
+            "inline-run/inline-block",
+            r#"<view class="row"><view class="a">甲</view></view>"#,
+        );
+        fixture.write("pages/index/index.wxss", ".a { display: inline-block; }");
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0].message.contains("display: inline-block"),
+            "{diagnostics:#?}"
+        );
+    }
+
+    /// 把裸文本包进 `<text>` 仍然是两个块级项 —— 规则必须继续报，不能给错误建议。
+    #[test]
+    fn wrapping_bare_text_in_a_text_tag_is_still_reported() {
+        let diagnostics = check(&project(
+            "inline-run/wrapped-text",
+            "<view><text>说明</text><text>1010-5335</text></view>",
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("都没写 `display`"));
+    }
+
+    /// 形态 2 的视觉用例：两个 `display: inline` 的 `<view>` 各报一条。
+    #[test]
+    fn visual_case_inline_display_reports_each_element() {
+        let case = &super::VISUAL_CASES[2];
+        let fixture = Fixture::page("inline-run/visual-inline", case.wxml, case.wxss);
+        assert_eq!(check(&fixture).len(), 2);
+    }
+
+    /// 形态 2 的 `inline-block` 视觉用例与 `inline` 版同源：两个 `<view>` 各报一条。
+    #[test]
+    fn visual_case_inline_block_reports_each_element() {
+        let case = &super::VISUAL_CASES[3];
+        let fixture = Fixture::page("inline-run/visual-inline-block", case.wxml, case.wxss);
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.message.contains("display: inline-block")),
+            "{diagnostics:#?}"
+        );
+    }
+
     #[test]
     fn text_and_image_siblings() {
         let diagnostics = check(&project(
@@ -325,17 +572,19 @@ mod tests {
         assert!(!help.contains("包进同一个"), "{help}");
     }
 
-    /// 全是文本级标签时唯一修法是包进同一个 `<text>`。
+    /// 三种形态用同一条修法：显式 flex，或两端都写成块级；不再建议包 `<text>`。
     #[test]
-    fn text_only_members_get_the_text_help() {
+    fn text_only_members_get_the_flex_help() {
         let diagnostics = check(&project(
             "inline-run/text-help",
             "<view><text>a</text><span>b</span></view>",
         ));
         assert_eq!(diagnostics.len(), 1);
         let help = diagnostics[0].help.as_deref().unwrap_or_default();
-        assert!(help.contains("包进同一个 `<text>`"), "{help}");
-        assert!(!help.contains("display: flex"), "{help}");
+        assert!(help.contains("display: flex"), "{help}");
+        assert!(help.contains("display: block"), "{help}");
+        assert!(!help.contains("包进同一个"), "{help}");
+        assert!(help.contains("不要靠包 `<text>` 修"), "{help}");
     }
 
     #[test]
@@ -357,13 +606,42 @@ mod tests {
         assert!(diagnostics.is_empty());
     }
 
+    /// 片段被投影进组件的 `<text>`：运行时文本落在 TextShadowNode 里，两端都不换行。
     #[test]
-    fn bare_text_is_left_to_no_inline_text() {
+    fn text_projected_into_a_text_slot_is_exempt() {
+        let fixture = Fixture::new("inline-run/slot-text");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"pill":"/components/pill/pill"}}"#,
+            )
+            .write(
+                "pages/index/index.wxml",
+                r#"<pill>共 {{n}} 条<image src="x"/></pill>"#,
+            )
+            .write("pages/index/index.js", "Page({});")
+            .write("components/pill/pill.json", r#"{"component":true}"#)
+            .write("components/pill/pill.wxml", "<text><slot/></text>")
+            .write("components/pill/pill.js", "Component({});");
+        assert!(check(&fixture).is_empty());
+    }
+
+    #[test]
+    fn bare_text_mixed_with_element_is_reported() {
         let diagnostics = check(&project(
             "inline-run/bare",
             "<view>说明<text>a</text><text>b</text></view>",
         ));
-        assert!(diagnostics.is_empty());
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0].message.contains("裸文本"),
+            "{diagnostics:#?}"
+        );
     }
 
     #[test]
@@ -524,9 +802,10 @@ mod tests {
     }
 
     #[test]
-    fn template_bare_text_is_left_to_no_inline_text() {
+    fn template_bare_text_is_reported_as_mixed() {
         let diagnostics = check(&template("<view>说明<text>a</text><text>b</text></view>"));
-        assert!(diagnostics.is_empty());
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("裸文本"));
     }
 
     #[test]

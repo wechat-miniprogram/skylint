@@ -2,12 +2,12 @@
 //!
 //! 这是**源码级**判定，和渲染器差异无关：用 WebView 方言求值——迁移前用户看到的
 //! 正是 WebView 的结果，写错的类名 / 标签在两端都不命中。Skyline 特有的
-//! 「属性条件被丢弃 / 整条不进规则集」由 `attribute-selector` 负责，这里不重复。
+//! 「属性条件被丢弃 / 整条不进规则集」由 `selector-subset` 负责，这里不重复。
 //!
 //! 判据分三层，全部满足才报：
 //!
 //! 1. 主体带 class（`matcher::subject().has_class`）。纯标签 / 纯属性主体要么是
-//!    没用到的通用样式（dead code，#1443 排除），要么由 `attribute-selector` 负责。
+//!    没用到的通用样式（dead code，#1443 排除），要么由 `selector-subset` 负责。
 //! 2. 选择器里的每个 class 名都在这些文档里**确定出现**（`absorb_classes`）。只在
 //!    动态 `class` / `hover-class` 里可能出现的类不算；完全不出现的类属于未使用
 //!    CSS——实测工程 A 的 vendored weui 会凭空多出 879 条，全是这类噪音。
@@ -145,7 +145,6 @@ impl Rule for DeadSelector {
 /// 小程序组件的、或工程里声明过的自定义组件。
 fn is_wxml_tag(project: &Project, tag: &str) -> bool {
     crate::rules::wxml::is_builtin(tag)
-        || crate::rules::wxml::unsupported_replacement(tag).is_some()
         || project
             .declared_components
             .values()
@@ -170,7 +169,7 @@ fn dead(
     }
     let classes = matcher::class_names(selector)?;
     // 纯标签 / 纯属性主体不在这里判：要么是完全没用到的通用样式（dead code，
-    // #1443 排除），要么由 `attribute-selector` 负责。只有主体带 class 时，
+    // #1443 排除），要么由 `selector-subset` 负责。只有主体带 class 时，
     // 「类名都在、关系对不上」才等价于选择器写错。
     if !matcher::subject(selector)?.has_class {
         return None;
@@ -520,7 +519,7 @@ mod tests {
     #[test]
     fn tag_subject_is_not_checked() {
         // 主体没有 class：要么是没用到的通用样式（dead code），要么由
-        // `attribute-selector` 负责。
+        // `selector-subset` 负责。
         let (_f, project) = page(
             "dead-tag-subject",
             r#"<view class="svg"/>"#,

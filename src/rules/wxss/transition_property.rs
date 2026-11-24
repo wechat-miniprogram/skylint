@@ -16,7 +16,7 @@
 
 use crate::input::wxss::{ValueToken, WxssDeclaration, WxssRule};
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{at_value, is_dynamic};
@@ -26,7 +26,9 @@ use super::visit_declarations;
 ///
 /// 文本/字体类、`visibility`、`pointer-events` 不在表内（同文档 :60-64）。
 /// 一行一个属性名（小写），按白名单匹配。
-const ANIMATABLE_PROPERTIES: &[&str] = &[
+///
+/// 引擎不渲染的属性不收录：`unsupported-property` 已判它整条不生效，不存在过渡。
+pub(crate) const ANIMATABLE_PROPERTIES: &[&str] = &[
     "all",
     "none",
     "transform",
@@ -74,7 +76,9 @@ const ANIMATABLE_PROPERTIES: &[&str] = &[
     "box-shadow",
     "z-index",
     "text-decoration-color",
-    "text-decoration-thickness",
+    // `text-decoration-thickness` 不在此表：它被 `dict_table` 判为整条不生效，
+    // 不生效的属性谈不上过渡。fp 仍认这个名字，所以它留在下面的解析闭集里，
+    // 写进 transition 只丢该项、不回滚整条声明。
     "color",
     "font-size",
     "font-weight",
@@ -112,6 +116,8 @@ const BEHAVIOR_KEYWORDS: [&str; 2] = ["allow-discrete", "normal"];
 /// float-pigment 的 `TransitionPropertyItem` 是闭集
 /// （`float-pigment-css/src/property.rs:1028-1101`，需跟 fp 版本同步）。闭集之外的
 /// 属性名（含所有 `-` 前缀名）会让整条 `transition` 在解析层就失败。
+///
+/// 闭集只说明 fp 认这个名字、整条声明不会回滚，不代表渲染层会画出该属性。
 const TRANSITION_PROPERTY_ITEMS: &[&str] = &[
     "none",
     "transform",
@@ -252,6 +258,22 @@ fn has_standard_sibling(rule: &WxssRule, decl: &WxssDeclaration, name: &str) -> 
     })
 }
 
+/// 视觉用例：`visibility` 不在 fp 的属性名闭集里，整条 `transition` 在解析层就失败，
+/// 同一行里的 `background-color` 也一起失去过渡。
+///
+/// 页面 JS 在 1.2s 把内联 `background-color` 改成橙色；transition 上 600s 的延迟远大于
+/// 采集窗口，所以 8s 截图取到的是稳定的「延迟未到」颜色，而不是过渡的中间帧。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="box" id="target" style="{{s}}">过渡</view>"#,
+    wxss: ".box { width: 200px; height: 120px; color: #fff; font-size: 16px; background-color: #1e6fd9; transition: background-color 200ms linear 600s, visibility 200ms linear 600s; }\n",
+    js: Some(
+        "Page({\n  data: { s: '' },\n  onReady() {\n    setTimeout(() => this.setData({ s: 'background-color: #f07b24;' }), 1200)\n  },\n})\n",
+    ),
+    expect: VisualExpect::Differ,
+    note: "`visibility` 让整条 transition 在 Skyline 解析失败：1.2s 改内联 style 后立即变橙；WebView 认这条 transition，600s 延迟远大于采集窗口，8s 时仍是蓝色——两端都是稳定终态",
+    target: "#target",
+}];
+
 pub struct TransitionProperty;
 
 impl TransitionProperty {
@@ -263,8 +285,12 @@ impl Rule for TransitionProperty {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Warning,
-            description: "transition 里的属性名不在 Skyline 的可动画属性白名单内，该段过渡不生效",
+            description: "transition 里的属性名不受支持：闭集外（如 `visibility`、厂商前缀名）会让整条声明被丢弃；闭集内但引擎没有实现（如 `margin`、`background`）只丢该属性",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -318,6 +344,7 @@ mod tests {
 
     use super::TransitionProperty;
     use crate::rules::testutil::wxss::{messages, page};
+    use crate::rules::testutil::{Fixture, check_rule};
 
     #[test]
     fn properties_outside_the_whitelist_are_reported() {
@@ -557,5 +584,24 @@ mod tests {
             messages(&TransitionProperty, &project),
             Vec::<String>::new()
         );
+    }
+
+    /// 视觉用例的同一份页面源码必须真的命中本规则。
+    #[test]
+    fn visual_cases_trigger_the_rule() {
+        for (index, case) in super::VISUAL_CASES.iter().enumerate() {
+            let fixture =
+                Fixture::page(&format!("transition-visual-{index}"), case.wxml, case.wxss);
+            if let Some(js) = case.js {
+                fixture.write("pages/index/index.js", js);
+            }
+            let diagnostics = check_rule(&fixture, &TransitionProperty);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.rule == TransitionProperty::ID),
+                "case {index}: {diagnostics:#?}"
+            );
+        }
     }
 }
