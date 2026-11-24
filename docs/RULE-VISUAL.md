@@ -111,34 +111,45 @@ serve 的端点分层（旧版本只有 `/cdp`）：`/automator` 是协议层、
 
 ## 覆盖现状
 
-两套用例合计：**69 个截图用例覆盖 54 条规则 + 32 个证据用例覆盖 13 条规则**。
+两套用例合计：**75 个截图用例覆盖 50 条规则 + 32 个证据用例覆盖 13 条规则**（`scroll-view-family`、
+`worklet-data-freeze` 两类都有），合计覆盖 61 条；注册表共 65 条，其余 4 条进白名单。
 
-截图部分：65 条 `Differ`（其中 60 条像素差 ≥1%、5 条完全靠 bbox 边差）+ 4 条阴性对照；
-其中 1 条是对照里**故意失败**的（`skyline/text-box-property` 的第二条：实测两端宽度必然不同，
-用它标注「这类阴性对照不成立」）。
+截图部分（已采 74 条，另 1 条编译失败默认跳过）：67 条 `Differ`（其中 62 条像素差 ≥1%、
+5 条完全靠 bbox 边差）+ 7 条阴性对照；其中 1 条是对照里**故意失败**的
+（`skyline/text-box-property` 的第二条：实测两端宽度必然不同，用它标注「这类阴性对照不成立」）。
 
 证据部分（产物 / 构建日志 / 运行期取值）：`component-framework`、`navigation-style`、
 `lazy-code-loading`、`worklet-compile-setting`、`worklet-directive`、`autoprefix-build`、
-`scroll-view-type`、`config-ignored`、`scroll-context-ref`、`worklet-api-scope`、`lib-version`、
+`scroll-view-family`、`config-ignored`、`scroll-context`、`worklet-api-scope`、`lib-version`、
 `renderer-options`、`worklet-data-freeze`。
 
-覆盖率门禁 `skyline_rules_have_cases` 已启用（不再 `#[ignore]`）：skyline 规则必须至少有一条
-截图用例或证据用例，否则测试失败。目前只豁免 4 条，每条都带实测理由：
+覆盖率门禁 `rules_have_cases` 已启用（不再 `#[ignore]`）：每条规则无论检查方向是
+`Skyline`、`Webview` 还是 `Both`，都必须至少有一条截图用例或证据用例，否则测试失败。
+目前只豁免 4 条，每条都带实测理由：
 
 | 规则 | 为什么无可自动用例 |
 |---|---|
 | `route-type` | 差异只在跨页转场的过渡帧上，单页 `reLaunch` 表达不了 |
 | `share-element-key` | 共享元素转场同样跨页，且转场结束态两端一致，只有中间帧不同 |
-| `scroll-context-enhanced` | 模拟器不实现「未开 enhanced → 告警并返回 false」：两种配置的返回值、告警、滚动行为都没差异 |
 | `draggable-sheet-scroll-to` | sheet 几何不随 `scrollTo({size|pixels})` 变化，且传 `pixels` 会把 appservice 事件循环卡死 |
+| `webview/tabbar-renderer` | 存在 custom tabBar 时 automator 的 `App.callFunction` / `evaluate` 都不返回，Runtime 与 Console 两条取证通道都采不到样；非法 renderer 又直接让首页路由抛错，截图也归因不到 |
 
-另有一条**用例存在但默认跳过**：`universal-selector` 的 WXSS 写 `*` 时编译器报
-`unexpected token '*'` 并让整个工程构建失败（不是规则不生效，是一份 WXSS 编不出来）。
-全批默认 `--skip universal-selector`；「生产构建是否同样拒绝」尚未确认，结论未定前不进报告。
+`skyline/scroll-context` 的 `enhanced` / `refresher-*` 分支同样不可观测：模拟器不实现「未开
+`enhanced` → 告警并返回 false」，两种配置的返回值、告警与滚动行为都没差异。这条规则因此**不**进
+白名单——它靠 ref 那三条证据用例过门禁，`enhanced` 分支只有文档 / 源码级判定，规则源码里写明了
+证据边界，不要给它补截图用例。
+
+另有一条**用例存在但默认跳过**：`skyline/selector-subset` 的第三条用例（slug
+`skyline-selector-subset-3`）在 WXSS 里写 `*`，编译器报 `unexpected token '*'` 并让
+整个工程构建失败（不是规则不生效，是一份 WXSS 编不出来）。全批默认
+`--skip skyline-selector-subset-3`；只跳过编译失败的那一页，同规则前两条属性选择器
+用例照常采集。「生产构建是否同样拒绝」尚未确认，结论未定前不进报告。
 
 ## 读图复核
 
-自动判定只能证明「两端不一样」，不能证明「是它声称的那种不一样」。所以全部 70 对截图被逐张读过一遍
+自动判定只能证明「两端不一样」，不能证明「是它声称的那种不一样」。合并前那批 70 对截图已逐张读过一遍；
+合并后新产生 / 改名的 20 对（九组合并与 `transparent-background`、三条 `webview/*` 新用例）也逐对读过，
+结论是 16 A / 4 B / 0 C / 0 D，四条 B 的（文案与画面错位）已按实测改写。
 （按 slug 分五组，每组由独立审计写 `.tmp/visual/audit-L*.md`），对每一对判定：差异是否存在、位置与形态
 是否就是规则主张。结果：**56 条可信、10 条描述与像素不符、3 条机制不成立、1 条差异不可判读**——
 自动口径当时是「全绿」。
@@ -147,7 +158,7 @@ serve 的端点分层（旧版本只有 `/cdp`）：`/automator` 是协议层、
 
 - **描述不准**：按实测改写。例如 `filter-limit` 不是「两端颜色不同」，而是两端都变灰、Skyline 只应用
   第一个滤镜函数；`calc-min-max` 不是「求值为 0」，而是整条 `width` 失效、回落 `auto`（反而更宽）；
-  `page-meta-scroll` 的三个数字全错（滚动被钳到 533、`#target` 在 67／333.5）。
+  `page-scroll-api` 的 `<page-meta>` 用例三个数字全错（滚动被钳到 533、`#target` 在 67／333.5）。
 - **机制不成立**：改用例或换证据形式。`renderer-options` 与 `worklet-data-freeze` 改成证据用例
   （前者截图批次做不到两臂——app.json 是规则级共享、页面 json 又被 schema 拒绝 `null`；
   后者原先两端都在 worklet 里抛 TypeError，`setData` 根本没执行）；`transition-animation-conflict`
@@ -194,9 +205,9 @@ serve 的端点分层（旧版本只有 `/cdp`）：`/automator` 是协议层、
 
 ## 覆盖率门禁
 
-`rules::tests::skyline_rules_have_cases`（已启用）要求每条 skyline 规则至少有一条截图用例
-或证据用例，否则测试失败。无法自动证的规则必须写进白名单并附实测理由——理由为空同样失败，
-不允许无理由豁免。
+`rules::tests::rules_have_cases`（已启用）要求每条规则（`Skyline` / `Webview` / `Both`）
+至少有一条截图用例或证据用例，否则测试失败。无法自动证的规则必须写进白名单并附实测理由——
+理由为空同样失败，不允许无理由豁免。
 
 ## 证据用例（构建 / 日志 / 运行期）
 
@@ -234,18 +245,18 @@ open .tmp/evidence-run/report.html
 
 - `skyline/lazy-code-loading`：缺 `lazyCodeLoading` 时构建 exit 1、stderr 含
   `lazyCodeLoading` 与 `requiredComponents`；补齐后 `BuildOk`。
-- `skyline/scroll-view-type`：`type="default"` 的页面日志出现
+- `skyline/scroll-view-family`：`type="default"` 的页面日志出现
   `Do not support the attribute default in scroll-view`；不写 `type` 的对照页不出现。
 - `skyline/config-ignored`：app.json `window.disableScroll: true` 时
   `wx.pageScrollTo({scrollTop:200})` 仍把页面滚到 200；不写该键的对照页同样 200。
-- `skyline/scroll-context-ref`：不 `.ref()` 时同一调用打
+- `skyline/scroll-context`：不 `.ref()` 时同一调用打
   `scrollTo: fail invalid parameter ref` 且 `scrollTop` 保持 0；拿到 ref 的对照页不再打这行。
 - `skyline/worklet-api-scope`：worklet 内 `wx.getStorageSync` 静默返回 `undefined`，
   JS 线程读同一 key 得到 `probe-value`（证据强度低于报错类：没有崩溃，只有返回值失效）。
 - `skyline/lib-version`：`libVersion: "2.20.0"` 构建 exit 0；运行时 `SDKVersion` 与
   `3.3.0` 的对照工程同为 vendor `3.17.3`。
 
-尚未迁移：`scroll-context-enhanced`、`draggable-sheet-scroll-to` 与 `route-type`。
-前两条在本机模拟器上取不到能归因的读数：前者不产生规则主张的 warning（开/未开 `enhanced`
-无差异），后者 `scrollTo` 不影响页面侧几何、`pixels` 还会卡死 appservice；两条都在规则源码里
-写明了不可自动证的结论。`route-type` 仍需要跨页转场。
+尚未迁移：`draggable-sheet-scroll-to` 与 `route-type`。前者在本机模拟器上取不到能归因的读数：
+`scrollTo` 不影响页面侧几何、`pixels` 还会卡死 appservice；两条都在规则源码里写明了不可自动证的
+结论。`skyline/scroll-context` 的 `enhanced` 分支同一原因没有用例（见上文豁免表后的说明）。
+`route-type` 仍需要跨页转场。
