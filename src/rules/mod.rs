@@ -209,6 +209,31 @@ pub struct Registry {
     rules: Vec<Box<dyn Rule>>,
 }
 
+/// 这次要跑哪些规则。
+///
+/// `ignore` 是排除集（`--ignore`），`only` 是白名单（`--only`）；两者同时给时取交集，
+/// 所以「只跑 A 规则」写 `--only A` 就够，不需要再把其它规则逐个排除。
+pub struct RuleFilter<'a> {
+    ignore: &'a HashSet<String>,
+    only: Option<&'a HashSet<String>>,
+}
+
+impl<'a> RuleFilter<'a> {
+    pub fn new(ignore: &'a HashSet<String>, only: Option<&'a HashSet<String>>) -> Self {
+        Self { ignore, only }
+    }
+
+    fn allows(&self, id: &str) -> bool {
+        !self.ignore.contains(id) && self.only.is_none_or(|only| only.contains(id))
+    }
+}
+
+impl<'a> From<&'a HashSet<String>> for RuleFilter<'a> {
+    fn from(ignore: &'a HashSet<String>) -> Self {
+        Self { ignore, only: None }
+    }
+}
+
 impl Registry {
     /// 全部内置规则。新增规则只改这里一处。
     pub fn builtin() -> Self {
@@ -382,11 +407,13 @@ impl Registry {
         out
     }
 
-    /// `ignored` 里的 id 整条规则跳过。
-    pub fn run(&self, project: &Project, ignored: &HashSet<String>) -> Vec<Diagnostic> {
+    /// `filter` 决定跑哪些规则：`ignore` 里的 id 整条跳过，`only` 给了就只跑它列出的
+    /// （两者同时给等于「交集」）。
+    pub fn run<'a>(&self, project: &Project, filter: impl Into<RuleFilter<'a>>) -> Vec<Diagnostic> {
+        let filter = filter.into();
         self.rules
             .iter()
-            .filter(|rule| !ignored.contains(rule.meta().id))
+            .filter(|rule| filter.allows(rule.meta().id))
             .flat_map(|rule| rule.check(project))
             .collect()
     }
@@ -395,10 +422,21 @@ impl Registry {
     ///
     /// 视图内的诊断路径相对该视图自己的根，这里补上 [`Project::report_prefix`]
     /// 变成项目相对路径；工程视图产出的 warning 也一并计入。
-    pub fn run_views(&self, projects: &[&Project], ignored: &HashSet<String>) -> Vec<Diagnostic> {
+    pub fn run_views<'a>(
+        &self,
+        projects: &[&Project],
+        filter: impl Into<RuleFilter<'a>>,
+    ) -> Vec<Diagnostic> {
+        let filter = filter.into();
         let mut diagnostics = Vec::new();
         for project in projects {
-            let mut view = crate::suppress::apply(project, self.run(project, ignored));
+            let view: Vec<Diagnostic> = self
+                .rules
+                .iter()
+                .filter(|rule| filter.allows(rule.meta().id))
+                .flat_map(|rule| rule.check(project))
+                .collect();
+            let mut view = crate::suppress::apply(project, view);
             view.extend(project.warnings.iter().cloned());
             if !project.report_prefix.is_empty() {
                 for diagnostic in &mut view {
@@ -433,7 +471,9 @@ fn escape_cell(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Registry, Target};
+    use std::collections::HashSet;
+
+    use super::{Registry, RuleFilter, Target};
 
     /// 视觉用例覆盖率门禁：`Target::Skyline` 的规则必须至少有一条 [`super::VisualCase`]。
     ///
@@ -467,5 +507,21 @@ mod tests {
             "以下 skyline 规则缺少 VisualCase（批量补齐后应删除 #[ignore]）：\n{}",
             missing.join("\n")
         );
+    }
+
+    /// `--only` 是白名单、`--ignore` 是排除集，同时给时取交集。
+    #[test]
+    fn rule_filter_combines_only_and_ignore() {
+        let ignore: HashSet<String> = ["skyline/b".to_string()].into();
+        let only: HashSet<String> = ["skyline/a".to_string(), "skyline/b".to_string()].into();
+
+        let all = RuleFilter::from(&ignore);
+        assert!(all.allows("skyline/a"));
+        assert!(!all.allows("skyline/b"));
+
+        let narrowed = RuleFilter::new(&ignore, Some(&only));
+        assert!(narrowed.allows("skyline/a"));
+        assert!(!narrowed.allows("skyline/b"), "--ignore 优先");
+        assert!(!narrowed.allows("skyline/c"), "不在 --only 里就不跑");
     }
 }
