@@ -12,16 +12,18 @@
 //! 所以高度只能来自 CSS：[`definite_height`] 逐条覆盖「自身 `height`、百分比沿父链、
 //! 绝对定位上下拉伸、flex 主轴 grow、交叉轴 stretch」，全都不成立就是 0。
 //!
-//! 工程级 `rendererOptions.skyline.enableScrollViewAutoSize` 开启时整条规则跳过：
-//! 那时 scroll-view 变 measurable，尺寸来自内容（`ScrollView::MeasureContent`）。
+//! 工程级 `rendererOptions.skyline.enableScrollViewAutoSize` 开启时是另一种失效：
+//! scroll-view 变成 measurable 节点，高度来自纵向滚动容器把子节点高度累加成的
+//! 内容高。于是 `flex: 1` 的 scroll-view 会被内容
+//! 高度顶开，撑破父容器；页面根默认不滚动，超出的部分就看不到了。
+//! 修法是显式写 `height: 0`：显式高度 + `flex: 1` 才会走 flex 分配剩余空间。
 
 use crate::input::wxml::WxmlElement;
 use crate::matcher::Tree;
 use crate::project::Project;
-use crate::rules::Rule;
-use crate::rules::RuleMeta;
 use crate::rules::wxml::structure::find_attr;
 use crate::rules::wxml::{Resolved, element_diagnostic, for_each_element, resolved_property};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 pub struct ScrollViewHeight;
@@ -32,7 +34,28 @@ impl ScrollViewHeight {
     const MESSAGE: &'static str = "`scroll-view` 没有确定高度：Skyline 默认不开 `enableScrollViewAutoSize`，高度只来自 CSS，内容再多也撑不开，会塌成 0";
 
     const HELP: &'static str = "给它确定高度：`height` / 定高父级下的 `height: 100%` / 定高容器里的 `flex: 1`；只写 `max-height` 不产生高度（WebView 靠内容撑开，Skyline 不会），要配合 `height` 或打开 `app.json` 的 `rendererOptions.skyline.enableScrollViewAutoSize`";
+
+    /// 开了 autoSize 时的问题：measurable 节点按内容测量，`flex: 1` 分不到剩余空间。
+    const AUTO_SIZE_MESSAGE: &'static str = "开了 `enableScrollViewAutoSize` 时 `scroll-view` 按内容测量高度：`flex: 1` 会被内容高度顶开、撑破父容器，页面不再滚动";
+
+    const AUTO_SIZE_HELP: &'static str = "补 `height: 0`（flex 简写已含 `flex-basis: 0%`）：显式高度 + `flex: 1` 才会按剩余空间分配；`min-height: 0` 不解决";
 }
+
+/// 视觉用例：`scroll-view` 不写高度，WebView 由内容撑开，Skyline 塌成 0。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="wrap">
+  <scroll-view class="list" id="target">
+    <view class="item">第一行</view>
+    <view class="item">第二行</view>
+    <view class="item">第三行</view>
+  </scroll-view>
+</view>"#,
+    wxss: ".wrap { padding: 8px; background: #fff; }\n.list { width: 300px; background: #e8e8e8; }\n.item { height: 60px; background: #cfe3ff; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`scroll-view` 没有确定高度：WebView 由三行内容撑到 180px，Skyline 的高度只来自 CSS，塌成 0",
+    target: "#target",
+}];
 
 impl Rule for ScrollViewHeight {
     fn meta(&self) -> RuleMeta {
@@ -43,22 +66,41 @@ impl Rule for ScrollViewHeight {
         }
     }
 
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
+    }
+
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
-        if project.scroll_view_auto_size() {
-            return Vec::new();
-        }
         let mut out = Vec::new();
 
         for_each_element(project, self.target(), |site| {
             let (doc, tree, element) = (site.doc, site.tree, site.element);
             let reach = site.reach;
+            if element.tag != "scroll-view" {
+                return;
+            }
+            if project.renderer_option(doc.path(), "enableScrollViewAutoSize") {
+                // measurable 节点：只有「flex 主轴上的 grow」会撞上内容测量。
+                if auto_size_starved_by_content(project, tree, element) {
+                    out.push(
+                        element_diagnostic(
+                            Self::ID,
+                            doc,
+                            element,
+                            doc.path(),
+                            Severity::Warning,
+                            Self::AUTO_SIZE_MESSAGE,
+                        )
+                        .help(reach.help(Self::AUTO_SIZE_HELP)),
+                    );
+                }
+                return;
+            }
             let default_block = project.scope_of(doc.path()).map_or_else(
                 || project.app_display_block(),
                 |scope| project.renders_as_block(&scope),
             );
-            if element.tag != "scroll-view"
-                || definite_height(project, tree, element, default_block, 0)
-            {
+            if definite_height(project, tree, element, default_block, 0) {
                 return;
             }
             out.push(
@@ -75,6 +117,33 @@ impl Rule for ScrollViewHeight {
         });
         out
     }
+}
+
+/// 开了 `enableScrollViewAutoSize` 时，scroll-view 被内容高度顶着走：
+///
+/// - 自己写了非 `auto` 的 `height`：显式高度优先，flex 分配剩余空间，正常；
+/// - 父容器主轴不是高度（横向 flex / 块级）：高度不靠 flex 分配，不受影响；
+/// - 自己没有 grow：本来就是内容高度，符合预期。
+///
+/// 三条都不成立才是「`flex: 1` 被内容顶开」。
+fn auto_size_starved_by_content(project: &Project, tree: &Tree<'_>, element: &WxmlElement) -> bool {
+    if length_value(project, tree, element, "height").is_some() {
+        return false;
+    }
+    let Some(parent) = tree.parent_of(element) else {
+        return false;
+    };
+    let default_block = project.scope_of(tree.path()).map_or_else(
+        || project.app_display_block(),
+        |scope| project.renders_as_block(&scope),
+    );
+    if flex_axis(project, tree, parent, default_block) != Some(false) {
+        return false;
+    }
+    grows(
+        resolved_property(project, tree, element, "flex-grow").as_ref(),
+        resolved_property(project, tree, element, "flex").as_ref(),
+    )
 }
 
 /// 高度结论用到的属性：任一条判不了，`definite_height` 就无从断言。
@@ -375,6 +444,17 @@ mod tests {
     const SKYLINE_APP: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#;
 
     #[test]
+    fn visual_case_without_height_is_reported() {
+        let diagnostics = check_wxml(
+            "svh-visual",
+            SKYLINE_APP,
+            ".wrap { padding: 8px; background: #fff; }\n.list { width: 300px; background: #e8e8e8; }\n.item { height: 60px; background: #cfe3ff; }\n",
+            r#"<view class="wrap"><scroll-view class="list" id="target"><view class="item">第一行</view><view class="item">第二行</view><view class="item">第三行</view></scroll-view></view>"#,
+        );
+        assert!(!diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    #[test]
     fn aspect_ratio_with_definite_width_is_a_height() {
         let diagnostics = check_wxml(
             "svh-aspect",
@@ -584,13 +664,97 @@ mod tests {
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
+    /// 开了 autoSize 时 scroll-view 变 measurable：`flex: 1` 会被内容高度顶开，
+    /// 必须显式写 `height: 0` 才能按剩余空间分配。
+    const AUTO_SIZE_APP: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"enableScrollViewAutoSize":true}}}"#;
+
     #[test]
-    fn auto_size_flag_skips_the_rule() {
+    fn auto_size_flex_one_without_zero_height_is_reported() {
         let diagnostics = check(
-            "svh-flag",
-            r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"enableScrollViewAutoSize":true}}}"#,
-            ".panel { display: flex; flex-direction: column; }\n.list { flex: 1; }",
+            "svh-asize-flex",
+            AUTO_SIZE_APP,
+            ".panel { display: flex; flex-direction: column; height: 100vh; }\n.list { flex: 1; }",
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("顶开"), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn auto_size_with_zero_height_is_not_reported() {
+        let diagnostics = check(
+            "svh-asize-zero",
+            AUTO_SIZE_APP,
+            ".panel { display: flex; flex-direction: column; height: 100vh; }\n.list { flex: 1; height: 0; }",
         );
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 没有 grow 时内容高度就是预期高度，不是缺陷。
+    #[test]
+    fn auto_size_without_grow_is_not_reported() {
+        let diagnostics = check(
+            "svh-asize-plain",
+            AUTO_SIZE_APP,
+            ".panel { display: flex; flex-direction: column; height: 100vh; }\n.list { margin: 8px; }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 横向容器里高度不走 flex 分配，不受内容测量影响。
+    #[test]
+    fn auto_size_row_parent_is_not_reported() {
+        let diagnostics = check(
+            "svh-asize-row",
+            AUTO_SIZE_APP,
+            ".panel { display: flex; flex-direction: row; height: 100vh; }\n.list { flex: 1; }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 开关也能写在页面 json 里：这一页按 measurable 节点判，别的页仍按默认判。
+    #[test]
+    fn page_level_auto_size_is_honoured() {
+        let fixture = Fixture::new("svh-asize-page");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index","pages/plain/plain"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"rendererOptions":{"skyline":{"enableScrollViewAutoSize":true}}}"#,
+            )
+            .write(
+                "pages/index/index.wxml",
+                r#"<view class="panel"><scroll-view class="list"/></view>"#,
+            )
+            .write(
+                "pages/index/index.wxss",
+                ".panel { display: flex; flex-direction: column; height: 100vh; }\n.list { flex: 1; }",
+            )
+            .write("pages/plain/plain.json", "{}")
+            .write(
+                "pages/plain/plain.wxml",
+                r#"<view class="panel"><scroll-view class="list"/></view>"#,
+            )
+            .write(
+                "pages/plain/plain.wxss",
+                ".panel { display: flex; flex-direction: column; }\n.list { flex: 1; }",
+            );
+        let diagnostics = ScrollViewHeight.check(&fixture.project());
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("顶开") && d.path.ends_with("pages/index/index.wxml")),
+            "autoSize 页走 measurable 分支: {diagnostics:#?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.message.contains("塌成 0") && d.path.ends_with("pages/plain/plain.wxml")),
+            "未开的页仍按默认分支: {diagnostics:#?}"
+        );
     }
 }

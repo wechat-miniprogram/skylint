@@ -29,6 +29,93 @@ pub struct RuleMeta {
     pub description: &'static str,
 }
 
+/// 规则级自定义组件夹具，生成器写成 `components/<name>/index.*`。
+///
+/// 由 [`Rule::visual_components`] 返回，生成器会把它挂到**该规则的每个**用例页面上。
+/// 组件内部节点从页面层查不到（选择器不跨组件边界），所以需要观察组件内部时
+/// 只能用 [`VisualMode::Page`] 的整页比对。
+pub struct VisualComponent {
+    /// 标签名，如 `"c"`；页面 WXML 用 `<c>` 引用。
+    pub name: &'static str,
+    pub wxml: &'static str,
+    pub wxss: &'static str,
+    /// 缺省写 `Component({})`。
+    pub js: Option<&'static str>,
+}
+
+/// 规则的两端渲染差异用例：一个小程序页面，证明这条规则描述的现象在 Skyline 与
+/// WebView 里真的不同（或是阴性对照，证明两端确实一致）。
+///
+/// 用例只描述「页面内容 + 期望」，采集与判定由 `tools/visual/run.sh` 负责。
+pub struct VisualCase {
+    pub wxml: &'static str,
+    pub wxss: &'static str,
+    pub js: Option<&'static str>,
+    pub expect: VisualExpect,
+    /// 证明什么，一句话。
+    pub note: &'static str,
+    /// 页内关键元素选择器。`""` 表示整页比对；其它值按元素比对。
+    pub target: &'static str,
+}
+
+/// 采集脚本的比对范围。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisualMode {
+    /// 取 `target` 选择器的 bbox，按 bbox 与元素区域像素判定。
+    Element,
+    /// 整页比对：bbox 视为整张截图，按整页像素差判定。
+    Page,
+}
+
+impl VisualMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Element => "element",
+            Self::Page => "page",
+        }
+    }
+}
+
+impl VisualCase {
+    /// `target == ""` 走整页比对；其余按元素比对。
+    ///
+    /// 旧实现把空串隐式当成 `"#target"`；现在两者语义分开，元素比对必须显式写
+    /// `"#target"`（或其它选择器）。
+    pub fn mode(&self) -> VisualMode {
+        if self.target.is_empty() {
+            VisualMode::Page
+        } else {
+            VisualMode::Element
+        }
+    }
+
+    /// 采集脚本要取 bbox 的选择器；整页模式没有选择器。
+    pub fn selector(&self) -> Option<&'static str> {
+        match self.mode() {
+            VisualMode::Element => Some(self.target),
+            VisualMode::Page => None,
+        }
+    }
+}
+
+/// 用例期望的比对结论。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisualExpect {
+    /// 两端该元素几何不同（bbox 任一边差 ≥4 设备 px）或元素区域内像素差 ≥1%。
+    Differ,
+    /// 两端该元素几何相同且区域内像素几乎一致。
+    Same,
+}
+
+impl VisualExpect {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Differ => "differ",
+            Self::Same => "same",
+        }
+    }
+}
+
 /// 检查方向。
 ///
 /// - `Skyline`：WebView 代码迁到 Skyline 时哪里会坏（默认方向）。
@@ -81,11 +168,70 @@ pub trait Rule {
 
     /// 检查整个工程。返回的诊断按文件/位置自治，排序由 `Report` 负责。
     fn check(&self, project: &Project) -> Vec<Diagnostic>;
+
+    /// 两端渲染差异用例；空表示还没补。
+    ///
+    /// 生成器 `examples/rule_visual_cases.rs` 与覆盖率门禁消费它。
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        &[]
+    }
+
+    /// 本规则所有视觉用例共用的组件夹具；空表示页面不引用自定义组件。
+    ///
+    /// 刻意不放进 [`VisualCase`]：组件是规则级的，且给结构体加字段会让所有既有
+    /// 用例字面量都要同步补齐。
+    fn visual_components(&self) -> &'static [VisualComponent] {
+        &[]
+    }
+
+    /// 规则级 app.json 覆盖夹具，写成 JSON 对象；生成器把它合并进整批工程的
+    /// app.json。默认 `None`。
+    ///
+    /// 只在规则必须改 app 级配置才能复现现象时使用（例如 `rendererOptions`）。
+    /// 生成器最后才写 `pages` / `renderer` / `componentFramework` /
+    /// `lazyCodeLoading`，覆盖里不要写这几个键；覆盖作用于**整批**用例，因此值
+    /// 必须是行为中性的，不能让依赖 app 级缺省配置的用例失效。
+    fn visual_app_json(&self) -> Option<&'static str> {
+        None
+    }
 }
+
+/// 视觉用例生成器用的规则条目：元数据、用例、组件夹具、app.json 覆盖。
+pub type VisualEntry = (
+    RuleMeta,
+    &'static [VisualCase],
+    &'static [VisualComponent],
+    Option<&'static str>,
+);
 
 #[derive(Default)]
 pub struct Registry {
     rules: Vec<Box<dyn Rule>>,
+}
+
+/// 这次要跑哪些规则。
+///
+/// `ignore` 是排除集（`--ignore`），`only` 是白名单（`--only`）；两者同时给时取交集，
+/// 所以「只跑 A 规则」写 `--only A` 就够，不需要再把其它规则逐个排除。
+pub struct RuleFilter<'a> {
+    ignore: &'a HashSet<String>,
+    only: Option<&'a HashSet<String>>,
+}
+
+impl<'a> RuleFilter<'a> {
+    pub fn new(ignore: &'a HashSet<String>, only: Option<&'a HashSet<String>>) -> Self {
+        Self { ignore, only }
+    }
+
+    fn allows(&self, id: &str) -> bool {
+        !self.ignore.contains(id) && self.only.is_none_or(|only| only.contains(id))
+    }
+}
+
+impl<'a> From<&'a HashSet<String>> for RuleFilter<'a> {
+    fn from(ignore: &'a HashSet<String>) -> Self {
+        Self { ignore, only: None }
+    }
 }
 
 impl Registry {
@@ -105,15 +251,21 @@ impl Registry {
             Box::new(wxml::ComponentAttribute),
             Box::new(wxml::ScrollViewFamily),
             Box::new(wxml::ComponentChildren),
+            Box::new(wxml::PageMetaScroll),
             Box::new(wxml::ShareElementKey),
             // 已停用：模板数据作用域是框架语义，两个渲染器一致，不是迁移差异（源码保留）
             // Box::new(wxml::TemplateDataScope),
             Box::new(wxml::HorizontalScrollEnableFlex),
             Box::new(wxml::TextHardBreakEllipsis),
             Box::new(wxml::InlineRun),
+            Box::new(wxml::HiddenBinding),
+            Box::new(js::PageScrollApi),
             Box::new(wxss::NoPseudo),
             Box::new(wxss::PseudoInlineLayout),
             Box::new(wxss::BoxSizing),
+            Box::new(wxss::BorderRadiusPerSideColor),
+            // FIXME: 待确认规则通用性
+            // Box::new(wxss::ButtonAfterReset),
             Box::new(wxss::FlexDirection),
             Box::new(wxss::FixedLayer),
             Box::new(wxss::FixedOffsetMissing),
@@ -200,6 +352,23 @@ impl Registry {
             .collect()
     }
 
+    /// 有视觉用例的规则：id、用例列表、规则级组件夹具与 app.json 覆盖。
+    /// 生成器把它写成可运行的小程序工程。
+    pub fn visual_cases(&self) -> Vec<VisualEntry> {
+        self.rules
+            .iter()
+            .map(|rule| {
+                (
+                    rule.meta(),
+                    rule.visual_cases(),
+                    rule.visual_components(),
+                    rule.visual_app_json(),
+                )
+            })
+            .filter(|(_, cases, _, _)| !cases.is_empty())
+            .collect()
+    }
+
     /// 规则文档的唯一来源：`docs/RULES.md` 由它生成，不手写。
     ///
     /// 刷新方式：`cargo run --example rules_doc`。
@@ -238,11 +407,13 @@ impl Registry {
         out
     }
 
-    /// `ignored` 里的 id 整条规则跳过。
-    pub fn run(&self, project: &Project, ignored: &HashSet<String>) -> Vec<Diagnostic> {
+    /// `filter` 决定跑哪些规则：`ignore` 里的 id 整条跳过，`only` 给了就只跑它列出的
+    /// （两者同时给等于「交集」）。
+    pub fn run<'a>(&self, project: &Project, filter: impl Into<RuleFilter<'a>>) -> Vec<Diagnostic> {
+        let filter = filter.into();
         self.rules
             .iter()
-            .filter(|rule| !ignored.contains(rule.meta().id))
+            .filter(|rule| filter.allows(rule.meta().id))
             .flat_map(|rule| rule.check(project))
             .collect()
     }
@@ -251,10 +422,21 @@ impl Registry {
     ///
     /// 视图内的诊断路径相对该视图自己的根，这里补上 [`Project::report_prefix`]
     /// 变成项目相对路径；工程视图产出的 warning 也一并计入。
-    pub fn run_views(&self, projects: &[&Project], ignored: &HashSet<String>) -> Vec<Diagnostic> {
+    pub fn run_views<'a>(
+        &self,
+        projects: &[&Project],
+        filter: impl Into<RuleFilter<'a>>,
+    ) -> Vec<Diagnostic> {
+        let filter = filter.into();
         let mut diagnostics = Vec::new();
         for project in projects {
-            let mut view = crate::suppress::apply(project, self.run(project, ignored));
+            let view: Vec<Diagnostic> = self
+                .rules
+                .iter()
+                .filter(|rule| filter.allows(rule.meta().id))
+                .flat_map(|rule| rule.check(project))
+                .collect();
+            let mut view = crate::suppress::apply(project, view);
             view.extend(project.warnings.iter().cloned());
             if !project.report_prefix.is_empty() {
                 for diagnostic in &mut view {
@@ -285,4 +467,61 @@ fn escape_cell(text: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::{Registry, RuleFilter, Target};
+
+    /// 视觉用例覆盖率门禁：`Target::Skyline` 的规则必须至少有一条 [`super::VisualCase`]。
+    ///
+    /// 这一轮只有 `skyline/text-box-property` 落了样例，其余规则尚未批量补齐，所以
+    /// 先标 `#[ignore]`；批量补齐后删掉这一行即可生效。白名单给「差异无法用静态页面
+    /// 截图复现」的规则留出口，每条必须写清理由，不允许无理由豁免。
+    #[test]
+    #[ignore = "视觉用例批量补齐后启用；当前只有 text-box-property 一条样例"]
+    fn skyline_rules_have_visual_cases() {
+        /// (规则 id, 为什么没有截图用例)。
+        const WHITELIST: &[(&str, &str)] = &[];
+        assert!(
+            WHITELIST
+                .iter()
+                .all(|(_, reason)| !reason.trim().is_empty()),
+            "白名单必须写清豁免理由"
+        );
+
+        let registry = Registry::builtin();
+        let missing: Vec<&str> = registry
+            .rules
+            .iter()
+            .filter(|rule| rule.target() == Target::Skyline)
+            .filter(|rule| rule.visual_cases().is_empty())
+            .map(|rule| rule.meta().id)
+            .filter(|id| !WHITELIST.iter().any(|(allowed, _)| allowed == id))
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "以下 skyline 规则缺少 VisualCase（批量补齐后应删除 #[ignore]）：\n{}",
+            missing.join("\n")
+        );
+    }
+
+    /// `--only` 是白名单、`--ignore` 是排除集，同时给时取交集。
+    #[test]
+    fn rule_filter_combines_only_and_ignore() {
+        let ignore: HashSet<String> = ["skyline/b".to_string()].into();
+        let only: HashSet<String> = ["skyline/a".to_string(), "skyline/b".to_string()].into();
+
+        let all = RuleFilter::from(&ignore);
+        assert!(all.allows("skyline/a"));
+        assert!(!all.allows("skyline/b"));
+
+        let narrowed = RuleFilter::new(&ignore, Some(&only));
+        assert!(narrowed.allows("skyline/a"));
+        assert!(!narrowed.allows("skyline/b"), "--ignore 优先");
+        assert!(!narrowed.allows("skyline/c"), "不在 --only 里就不跑");
+    }
 }

@@ -18,9 +18,13 @@ use crate::project::Project;
 
 const DIRECTIVE: &str = "skylint-disable-next-line";
 
-/// 规则 id 形如 `skyline/<name>`；只认这个前缀，避免把注释里的普通单词当成规则。
+/// 规则 id 形如 `<命名空间>/<名字>`（`skyline/` 与 `general/` 两类）。
+/// 只认带斜杠且有名字的 token，避免把注释里的普通单词（`TODO/note`、`a/b`）当成规则。
 fn is_rule_id(token: &str) -> bool {
-    token.starts_with("skyline/") && token.len() > "skyline/".len()
+    let Some((namespace, name)) = token.split_once('/') else {
+        return false;
+    };
+    !namespace.is_empty() && !name.is_empty() && !name.contains('/')
 }
 
 /// 丢弃被抑制的诊断。读取失败的文件原样保留，宁可多报也不静默丢。
@@ -162,6 +166,24 @@ mod tests {
             &project,
             vec![
                 diag("skyline/no-pseudo", 2),
+                diag("skyline/no-inline-text", 2),
+            ],
+        );
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].rule, "skyline/no-inline-text");
+    }
+
+    #[test]
+    fn general_namespace_rule_can_be_suppressed() {
+        // `general/` 规则与 `skyline/` 同一套写法，抑制注释不能只认后者。
+        let f = Fixture::new("general");
+        let project = f.wxml(
+            "<!-- skylint-disable-next-line general/transparent-background -->\n<view>a</view>",
+        );
+        let kept = apply(
+            &project,
+            vec![
+                diag("general/transparent-background", 2),
                 diag("skyline/no-inline-text", 2),
             ],
         );

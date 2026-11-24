@@ -17,7 +17,7 @@
 
 - 微信开发者工具 `36.6.0`（macOS, arm64，模拟器）
 - 工程 `app.json`：`rendererOptions.skyline = { defaultDisplayBlock: true, tagNameStyleIsolation: "legacy" }`
-- 页面：`movie/pages/cinema/*`（movie 分包的影院三页）
+- 页面：某分包下的三个相关页面（列表 / 详情 / 座位）
 - 复现方式：`minidev build --no-pack` 通过（exit 0），构建期与静态 lint 都**看不到任何异常**；
   只有模拟器运行时卡死。
 
@@ -27,7 +27,7 @@
 
 ## B1. `filter: blur()` 让 appservice 卡死
 
-**位置**：`movie/pages/cinema/cinema.wxss`，轮播背景 `.mt-bg { filter: blur(10px) }`。
+**位置**：该页样式里的轮播背景，`filter: blur(10px)`。
 
 **症状**：进入该页后 `navigateTo` 的 success/fail 都不回调；`console` 停在
 `onLoad` / `onReady` 之后；此后所有 `automator.navigateTo` 都超时，截图返回上一页画面。
@@ -48,7 +48,7 @@
 
 ## B2. 轮播卡内加「绝对定位子元素」或伪元素让同一页卡死
 
-**位置**：`movie/pages/cinema/cinema.wxml`，轮播卡 `.mt-movie-list-conn` 下方那个
+**位置**：该页 WXML 里，轮播卡下方那个
 白色小尖角（基线里是 `border` 三角 / 伪元素做的 10px 装饰）。
 
 **症状**：与 B1 完全相同的卡死形态（`navigateTo` 不回调、日志停在 `onReady` 之后）。
@@ -72,7 +72,7 @@
 **当前规避**：这个 10px 装饰尖角直接去掉，页面其余部分与基线一致。
 
 **为什么可疑**：卡死与「加了一个子元素」强相关，而同一个绝对定位写法在别的页面
-（`cinema/index` 的 `.label-container`、`seat` 的座位图）都是正常的。
+（另一个列表页的标签容器、以及座位图的绝对定位块）都是正常的。
 说明触发条件与这个卡本身的布局状态有关（轮播 + 缩放 + 相对定位 + 子元素重排），
 不是「Skyline 不支持 absolute」这种通用结论。`box-sizing` 也能触发，进一步说明
 问题更像布局重算进入了不可恢复状态，而不是某个 CSS 属性没实现。
@@ -84,7 +84,7 @@
 
 ## B3. 横向 `scroll-view` 放进 `sticky-header` 也会卡死（关联项）
 
-**位置**：`movie/pages/cinema/movie.wxml` 的日期 tab 条——原实现是
+**位置**：该页 WXML 的日期 tab 条——原实现是
 `<scroll-view scroll-x>`，为了吸顶把它放进了 `<sticky-section>` / `<sticky-header>`。
 
 **症状**：同上。删除横向 scroll-view、改成 `display: flex; flex-wrap: wrap` 之后正常。
@@ -98,11 +98,11 @@
 
 不是卡死，是布局语义差异，但同一次迁移里也花了很久才定位，记在一起：
 
-`movie/pages/cinema/seat.wxml` 的座位图：`scroll-view` 里全是 `position: absolute`
+座位图页面的 `scroll-view` 里全是 `position: absolute`
 的座位块。Skyline 下 `scroll-view` 用「有布局的子节点」决定内容尺寸，结果内容高度为 0，
 整个座位图被裁成只剩左侧排号；WebView 里绝对定位同样不参与文档流，但滚动容器高度由
 显式高度给出，所以看不出来。**规避**：内容外包一层定尺寸 `view`
-（`width: {{seatWidth}}px; height: {{seatHeight + 225}}px; position: relative`）。
+（定宽定高 + `position: relative`）。
 
 ---
 

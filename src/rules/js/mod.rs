@@ -7,6 +7,7 @@
 pub mod callee;
 pub mod draggable_sheet_scroll_to;
 pub mod dynamic_style_value;
+pub mod page_scroll_api;
 pub mod route_type;
 pub mod scroll_context_enhanced;
 pub mod scroll_context_ref;
@@ -20,6 +21,7 @@ pub mod wxs_sync_query;
 pub(crate) use callee::Callee;
 pub use draggable_sheet_scroll_to::DraggableSheetScrollTo;
 pub use dynamic_style_value::DynamicStyleValue;
+pub use page_scroll_api::PageScrollApi;
 pub use route_type::RouteType;
 pub use scroll_context_enhanced::ScrollContextEnhanced;
 pub use scroll_context_ref::ScrollContextRef;

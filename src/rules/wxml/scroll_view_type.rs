@@ -1,13 +1,13 @@
 //! `<scroll-view>` 应显式指定合法 type。
 //!
 //! `type` 缺失 / 空值时，glass-easel 的 `<scrollview>` 宿主只有一个直接子节点——
-//! 兼容 wrapper `<view wx:if="{{ type === '' }}">`（`wx-scroll-view/index.ts:73-83`），
-//! 用户写的子节点都在 wrapper 内部，因此内容**全部照常渲染**，只是没有按需渲染。
-//! `skyline_scroll_view.dart:1645-1673` 里的 `children: [firstChild]` 取的正是这个 wrapper。
+//! 兼容 wrapper `<view wx:if="{{ type === '' }}">`，用户写的子节点都在 wrapper 内部，
+//! 因此内容**全部照常渲染**，只是没有按需渲染。引擎取第一个子节点时拿到的正是这个
+//! wrapper。
 //!
-//! 公开标签的 JS 白名单是 `['', 'list', 'custom', 'nested']`（`index.ts:18`）；
-//! `type="default"` 或其它未知静态值会被 observer 回退成 `'list'` 并打印 `console.warn`
-//! （`index.ts:119-137`）。C++ 的 `default -> kFlex` 只在直接用内部 `<scrollview>` 宿主时可达。
+//! 公开标签的 JS 白名单是 `['', 'list', 'custom', 'nested']`；`type="default"` 或其它
+//! 未知静态值会被 observer 回退成 `'list'` 并打印 `console.warn`。内部 `<scrollview>`
+//! 宿主上 `default` 才映射到 flex 布局，公开标签走不到那条分支。
 
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlAttribute, WxmlDoc, WxmlElement};

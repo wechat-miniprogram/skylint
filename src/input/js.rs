@@ -21,13 +21,15 @@ use oxc_ast::ast::{
     AssignmentExpression, AssignmentTarget, BindingPattern, CallExpression, ChainElement,
     Expression, Function, FunctionBody, IfStatement, ImportDeclaration, ImportDeclarationSpecifier,
     MethodDefinition, ObjectExpression, ObjectProperty, ObjectPropertyKind, PropertyDefinition,
-    PropertyKey, Statement, StringLiteral, TemplateLiteral, VariableDeclarator,
+    PropertyKey, Statement, StringLiteral, TemplateLiteral, VariableDeclaration,
+    VariableDeclarationKind, VariableDeclarator,
 };
 use oxc_ast_visit::{Visit, walk};
 use std::collections::{BTreeMap, BTreeSet};
 
 use oxc_parser::{ParseOptions, Parser};
 use oxc_span::{GetSpan, SourceType, Span};
+use oxc_syntax::operator::{BinaryOperator, UnaryOperator};
 use oxc_syntax::scope::ScopeFlags;
 
 use crate::input::env::{Env, Lit};
@@ -75,6 +77,12 @@ pub struct JsDoc {
     /// 运行时挂到 `this` 上的属性（`this.onTap = ...`）。
     this_binds: Vec<MemberBinding>,
     literals: BTreeMap<String, Lit>,
+    /// 模块顶层单元对象（`Page` / `Component` 及其工厂包装）的 `data` 初始字面量。
+    /// 与 [`Self::literals`] 分开：`data` 会被 `setData` 改写，不能参与常量折叠。
+    /// 值为 `None` 表示同一个键出现过非字面量或互相矛盾的值，初始值不可信。
+    data_literals: BTreeMap<String, Option<Lit>>,
+    /// 同一批对象的 `properties` 默认值；运行时属性值覆盖 `data` 的同名键。
+    property_literals: BTreeMap<String, Option<Lit>>,
     dirty_data: BTreeSet<String>,
     dirty_all: bool,
 }
@@ -111,6 +119,8 @@ impl JsDoc {
 
         let mut collector = Collector {
             source: owned.clone(),
+            // 顶层也是一个作用域：模块级 `const isSkyline = ...` 同样要能解析。
+            renderer_aliases: vec![BTreeMap::new()],
             ..Default::default()
         };
         collector.visit_program(&ret.program);
@@ -127,6 +137,8 @@ impl JsDoc {
             requires: collector.requires,
             this_binds: collector.this_binds,
             literals: collector.literals,
+            data_literals: collector.data_literals,
+            property_literals: collector.property_literals,
             dirty_data: collector.dirty_data,
             dirty_all: collector.dirty_all,
         })
@@ -154,6 +166,22 @@ impl JsDoc {
                 continue;
             }
             env.insert(name.clone(), value.clone());
+        }
+        env
+    }
+
+    /// `data` / `properties` 的初始字面量（只用来判断「初始类型」）。
+    ///
+    /// 这里刻意**不**因为键被 `setData` 写过就丢弃：本接口只回答「声明时的初始值是
+    /// 不是字符串」，与 [`Self::constants`] 的常量折叠口径不同。同一个键出现互相矛盾
+    /// 的取值时按不可信处理（`None`）；属性默认值覆盖同名 `data` 键。
+    pub fn initial_values(&self) -> Env {
+        let mut env = Env::default();
+        for (name, value) in self.data_literals.iter().chain(&self.property_literals) {
+            match value {
+                Some(value) => env.insert(name.clone(), value.clone()),
+                None => env.remove(name),
+            }
         }
         env
     }
@@ -348,6 +376,9 @@ pub enum ValueShape {
 pub struct MemberBinding {
     pub key: String,
     pub value: ValueShape,
+    /// 属性在源码里的范围（键到值），用于把诊断落在声明处。
+    pub start: u32,
+    pub end: u32,
 }
 
 /// 一次模块引用：本地名指向哪个文件的什么导出。
@@ -414,6 +445,43 @@ fn renderer_branches(test: &str) -> (bool, bool) {
     }
 }
 
+/// `X.renderer === 'webview'` 这类单个比较的两个分支归属，供常量别名使用。
+///
+/// 与 [`renderer_branches`] 同一套归属规则，但要求表达式本身就是一次比较、
+/// 两侧至少一侧是 `renderer` 成员访问：`a === 'skyline' && b === 'webview'` 这种
+/// 组合表达式不归属，宁可不加守卫。
+fn renderer_comparison_branches(expr: &Expression) -> Option<(bool, bool)> {
+    let Expression::BinaryExpression(binary) = expr else {
+        return None;
+    };
+    let negated = match binary.operator {
+        BinaryOperator::Equality | BinaryOperator::StrictEquality => false,
+        BinaryOperator::Inequality | BinaryOperator::StrictInequality => true,
+        _ => return None,
+    };
+    let (literal, reference) = match (&binary.left, &binary.right) {
+        (Expression::StringLiteral(literal), reference) => (literal, reference),
+        (reference, Expression::StringLiteral(literal)) => (literal, reference),
+        _ => return None,
+    };
+    match literal.value.as_str()?.to_ascii_lowercase().as_str() {
+        value @ ("webview" | "skyline") if is_renderer_reference(reference) => {
+            let cons_webview = (value == "webview") != negated;
+            Some((cons_webview, !cons_webview))
+        }
+        _ => None,
+    }
+}
+
+/// `renderer` / `this.renderer` / `info.renderer`：比较的另一侧要是取渲染器。
+fn is_renderer_reference(expr: &Expression) -> bool {
+    match expr {
+        Expression::StaticMemberExpression(member) => member.property.name == "renderer",
+        Expression::Identifier(id) => id.name == "renderer",
+        _ => false,
+    }
+}
+
 #[derive(Default)]
 struct Collector {
     functions: Vec<OwnedFunction>,
@@ -424,8 +492,11 @@ struct Collector {
     members: Vec<MemberBinding>,
     requires: Vec<RequireBinding>,
     this_binds: Vec<MemberBinding>,
-    /// `Page({data})` / `Component({data, properties})` 里的字面量取值。
+    /// `Page({data})` / `Component({data, properties})` 里的字面量取值（只收 `properties`）。
     literals: BTreeMap<String, Lit>,
+    /// 模块顶层单元对象的 `data` / `properties` 初始字面量，单独存放以免参与常量折叠。
+    data_literals: BTreeMap<String, Option<Lit>>,
+    property_literals: BTreeMap<String, Option<Lit>>,
     /// 已经带上下文收录的字面量起点：父节点先收，通用字符串遍历后到时跳过。
     claimed_strings: BTreeSet<u32>,
     /// 被动态写入过的 data 键：`setData({k: 变量})` 或 `setData` 里出现动态键。
@@ -438,6 +509,11 @@ struct Collector {
     worklet_stack: Vec<bool>,
     /// 已经过的 `if` 语句分支区间与「该分支是否只属于 WebView」。
     renderer_guards: Vec<RendererGuard>,
+    /// 每个函数作用域里的渲染器常量：
+    /// `const isSkyline = this.renderer === 'skyline'` 的名字 →
+    /// `(条件成立时是否只在 WebView, 条件不成立时是否只在 WebView)`。
+    /// 函数进出时压栈/出栈，跨作用域的同名常量互不影响。
+    renderer_aliases: Vec<BTreeMap<String, (bool, bool)>>,
     /// 原始源码：守卫判定要读 `if` 条件的原文。
     source: String,
 }
@@ -469,6 +545,7 @@ impl Collector {
             body_directives,
         });
         self.worklet_stack.push(has_worklet);
+        self.renderer_aliases.push(BTreeMap::new());
     }
 
     fn worklet_scope(&self) -> bool {
@@ -516,6 +593,7 @@ impl<'a> Visit<'a> for Collector {
         self.push_function(name, it.span, body, body_span);
         walk::walk_function(self, it, flags);
         self.worklet_stack.pop();
+        self.renderer_aliases.pop();
     }
 
     fn visit_arrow_function_expression(&mut self, it: &ArrowFunctionExpression<'a>) {
@@ -530,6 +608,7 @@ impl<'a> Visit<'a> for Collector {
         self.push_function(name, it.span, body, body_span);
         walk::walk_arrow_function_expression(self, it);
         self.worklet_stack.pop();
+        self.renderer_aliases.pop();
     }
 
     fn visit_string_literal(&mut self, it: &StringLiteral<'a>) {
@@ -559,6 +638,24 @@ impl<'a> Visit<'a> for Collector {
             });
         }
         walk::walk_template_literal(self, it);
+    }
+
+    fn visit_variable_declaration(&mut self, it: &VariableDeclaration<'a>) {
+        // 只看 `const`：`let` / `var` 可能被重新赋值，不能当稳定常量。
+        if it.kind == VariableDeclarationKind::Const {
+            for declarator in &it.declarations {
+                let (Some(name), Some(init)) = (binding_name(&declarator.id), &declarator.init)
+                else {
+                    continue;
+                };
+                if let Some(branches) = renderer_comparison_branches(init)
+                    && let Some(scope) = self.renderer_aliases.last_mut()
+                {
+                    scope.insert(name, branches);
+                }
+            }
+        }
+        walk::walk_variable_declaration(self, it);
     }
 
     fn visit_variable_declarator(&mut self, it: &VariableDeclarator<'a>) {
@@ -708,6 +805,8 @@ impl<'a> Visit<'a> for Collector {
                 self.this_binds.push(MemberBinding {
                     key: member.property.name.to_string(),
                     value: value_shape(&it.right),
+                    start: it.span.start,
+                    end: it.span.end,
                 });
             }
             _ => {}
@@ -717,8 +816,12 @@ impl<'a> Visit<'a> for Collector {
     }
 
     fn visit_if_statement(&mut self, it: &IfStatement<'a>) {
-        let test = &self.source[it.test.span().start as usize..it.test.span().end as usize];
-        let (cons_webview, alt_webview) = renderer_branches(test);
+        // 优先按本地常量别名解析：`const isSkyline = this.renderer === 'skyline'`
+        // 之后的 `if (isSkyline)` / `if (!isSkyline)`。解析不出来再读条件原文。
+        let (cons_webview, alt_webview) = self.alias_branches(&it.test).unwrap_or_else(|| {
+            let span = it.test.span();
+            renderer_branches(&self.source[span.start as usize..span.end as usize])
+        });
         let cons = it.consequent.span();
         self.renderer_guards.push(RendererGuard {
             cons: (cons.start, cons.end),
@@ -734,6 +837,14 @@ impl<'a> Visit<'a> for Collector {
     }
 
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
+        // 顶层调用实参里的 `{data, properties}`：直接写 `Page` / `Component`，或经
+        // `Base({..})` / `fstComponent({..})` 这类工厂包装，配置对象都在这一层。
+        if self.worklet_stack.is_empty()
+            && let Some(Expression::ObjectExpression(object)) =
+                it.arguments.first().and_then(arg_expression)
+        {
+            self.collect_initial(object);
+        }
         let callee = callee_name(&it.callee).unwrap_or_default();
         // 单元方法表三种写法：`Page/Component({ .. })`、链式 `.methods({ .. })`、
         // 链式 `.init(({..}) => { .. return { .. } })`。
@@ -791,10 +902,30 @@ impl<'a> Visit<'a> for Collector {
 }
 
 impl Collector {
+    /// 测试表达式是本地常量别名时的分支归属：`isSkyline` / `!isSkyline`。
+    ///
+    /// 只查当前作用域，不向父作用域找：常量定义在哪个函数里就只在哪个函数里有效，
+    /// 跨函数的同名绑定不能串味。
+    fn alias_branches(&self, test: &Expression) -> Option<(bool, bool)> {
+        let (name, negated) = match test {
+            Expression::Identifier(id) => (id.name.as_str(), false),
+            Expression::UnaryExpression(unary) if unary.operator == UnaryOperator::LogicalNot => {
+                let Expression::Identifier(id) = &unary.argument else {
+                    return None;
+                };
+                (id.name.as_str(), true)
+            }
+            _ => return None,
+        };
+        let &(cons, alt) = self.renderer_aliases.last()?.get(name)?;
+        Some(if negated { (alt, cons) } else { (cons, alt) })
+    }
+
     /// 调用点是否落在「只在 WebView 执行」的分支里。
     ///
-    /// 只认条件里**直接**比较 `renderer` 的形态；`const isSkyline = this.renderer === 'skyline'`
-    /// 这类再经变量间接判断的解不了（那需要把常量传播回来），按未加守卫处理。
+    /// 条件认两种写法：直接比较 `renderer` 的原文，以及指向这种比较的本地
+    /// `const` 别名（`if (isSkyline)` / `if (!isSkyline)`）。两者都解不出来时
+    /// 不加守卫，保持「宁可漏报不要误报」。
     fn renderer_guarded(&self, offset: u32) -> bool {
         self.renderer_guards.iter().any(|guard| {
             let in_cons = offset >= guard.cons.0 && offset < guard.cons.1;
@@ -832,6 +963,8 @@ impl Collector {
             self.members.push(MemberBinding {
                 key,
                 value: value_shape(&property.value),
+                start: property.span.start,
+                end: property.span.end,
             });
         }
     }
@@ -845,12 +978,43 @@ impl Collector {
             if property.computed {
                 continue;
             }
-            // `data` 刻意不参与：它是初始化值，页面/组件随后会反复 `setData`，
-            // 只有 `properties` 的默认值在没有被写入时才是稳定的。
-            if key_name(&property.key).as_deref() == Some("properties")
+            let Some(key) = key_name(&property.key) else {
+                continue;
+            };
+            // `data` 刻意不参与常量折叠：它是初始化值，页面/组件随后会反复 `setData`。
+            // 初始字面量另由 [`Collector::collect_initial`] 收一份，不喂给 `env`。
+            if key == "properties"
                 && let Expression::ObjectExpression(properties) = &property.value
             {
                 self.collect_properties(properties);
+            }
+        }
+    }
+
+    /// 模块顶层单元对象（`Page` / `Component` 及其工厂包装）的 `data` / `properties`
+    /// 初始字面量。
+    ///
+    /// 只收顶层：包装工厂（`Base({..})`、`fstComponent({..})`）与直接的 `Page` / `Component`
+    /// 都写在这一层；函数体里的 `wx.request({data})` 之类同名键不算单元数据。
+    fn collect_initial<'b>(&mut self, object: &ObjectExpression<'b>) {
+        for property in &object.properties {
+            let ObjectPropertyKind::ObjectProperty(property) = property else {
+                continue;
+            };
+            if property.computed {
+                continue;
+            }
+            let Some(key) = key_name(&property.key) else {
+                continue;
+            };
+            match (key.as_str(), &property.value) {
+                ("data", Expression::ObjectExpression(data)) => {
+                    record_data_literals(data, &mut self.data_literals);
+                }
+                ("properties", Expression::ObjectExpression(definitions)) => {
+                    record_property_defaults(definitions, &mut self.property_literals);
+                }
+                _ => {}
             }
         }
     }
@@ -899,6 +1063,65 @@ impl Collector {
                 }
                 _ => self.dirty_all = true,
             }
+        }
+    }
+}
+
+/// `data: { title: '', list: [] }`：只留字面量；同一个键取值矛盾或不是字面量时记为不可信。
+fn record_data_literals(object: &ObjectExpression<'_>, out: &mut BTreeMap<String, Option<Lit>>) {
+    for property in &object.properties {
+        let ObjectPropertyKind::ObjectProperty(property) = property else {
+            continue;
+        };
+        if property.computed {
+            continue;
+        }
+        let Some(key) = key_name(&property.key) else {
+            continue;
+        };
+        record_initial(out, key, literal(&property.value));
+    }
+}
+
+/// `properties: { renderer: { type: String, value: 'skyline' } }`：只收 `value` 字面量。
+fn record_property_defaults(
+    object: &ObjectExpression<'_>,
+    out: &mut BTreeMap<String, Option<Lit>>,
+) {
+    for property in &object.properties {
+        let ObjectPropertyKind::ObjectProperty(property) = property else {
+            continue;
+        };
+        if property.computed {
+            continue;
+        }
+        let Some(key) = key_name(&property.key) else {
+            continue;
+        };
+        let Expression::ObjectExpression(definition) = &property.value else {
+            continue;
+        };
+        let value = definition.properties.iter().find_map(|field| {
+            let ObjectPropertyKind::ObjectProperty(field) = field else {
+                return None;
+            };
+            (!field.computed && key_name(&field.key).as_deref() == Some("value"))
+                .then(|| literal(&field.value))
+                .flatten()
+        });
+        record_initial(out, key, value);
+    }
+}
+
+/// 同一个键只接受一致的字面量；出现不同取值或非字面量时记为 `None`（不可信）。
+fn record_initial(out: &mut BTreeMap<String, Option<Lit>>, key: String, value: Option<Lit>) {
+    match out.get(&key) {
+        Some(existing) if *existing != value => {
+            out.insert(key, None);
+        }
+        Some(_) => {}
+        None => {
+            out.insert(key, value);
         }
     }
 }

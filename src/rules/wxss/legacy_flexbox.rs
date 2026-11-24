@@ -1,7 +1,7 @@
 //! `skyline/legacy-flexbox`：老式 `-webkit-box` 弹性盒按**规则块**合并报告。
 //!
-//! 这一族属性在引擎里全都不存在：`css/css_property_names.h` 的 194 个属性名里没有任何
-//! `-webkit-*`（声明查不到 id、解析阶段整条丢弃），`display` 的取值也只认
+//! 这一族属性在引擎里全都不存在：属性名表里没有任何 `-webkit-*`
+//! （声明查不到 id、解析阶段整条丢弃），`display` 的取值也只认
 //! none/block/inline/inline-block/flex/grid/flow-root/inline-flex
 //! （`float-pigment-css-0.7.0/src/property.rs:193-200`），`-webkit-box` 解析失败同样丢弃。
 //! WebView 认这套老式弹性盒（weui 用它做垂直居中与横排），所以迁移后整块布局会退回
@@ -19,7 +19,7 @@
 //! 无害的兜底（`-webkit-box-flex` 与 `flex:1` 并存、或父级才是老式容器），按「宁可漏报」跳过。
 
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use std::collections::HashMap;
@@ -59,6 +59,23 @@ impl LegacyFlexbox {
     pub const ID: &'static str = "skyline/legacy-flexbox";
 }
 
+/// 视觉用例：老式弹性盒在 Skyline 下整块失效。
+///
+/// WebView 认 `display: -webkit-box`，三格横排；Skyline 丢掉整套声明后回落到
+/// 默认 flex 列布局，三格竖排。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="row">
+  <view class="cell a">1</view>
+  <view class="cell b" id="target">2</view>
+  <view class="cell c">3</view>
+</view>"#,
+    wxss: ".row { display: -webkit-box; -webkit-box-orient: horizontal; width: 300px; padding: 8px; background: #eee; }\n.cell { width: 80px; height: 40px; line-height: 40px; text-align: center; color: #fff; }\n.a { background: #e54d42; }\n.b { background: #4caf50; }\n.c { background: #2196f3; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`display: -webkit-box` 整套老式弹性盒在 Skyline 被丢弃、退回默认 flex 列：WebView 三格横排，Skyline 竖排",
+    target: "#target",
+}];
+
 impl Rule for LegacyFlexbox {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -66,6 +83,10 @@ impl Rule for LegacyFlexbox {
             severity: Severity::Error,
             description: "规则块用了老式 `-webkit-box` 弹性盒，Skyline 不认识这些声明，整块布局会退回默认 display",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -212,6 +233,23 @@ mod tests {
     use crate::rules::testutil::wxss::{messages, page};
 
     use super::LegacyFlexbox;
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture = crate::rules::testutil::Fixture::page(
+                "legacy-flexbox-visual",
+                case.wxml,
+                case.wxss,
+            );
+            let hits = crate::rules::testutil::check_rule(&fixture, &LegacyFlexbox)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == LegacyFlexbox::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     #[test]
     fn one_rule_block_reports_once_with_every_declaration() {

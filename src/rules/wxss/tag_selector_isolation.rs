@@ -1,10 +1,9 @@
 //! 标签 / id 选择器在 Skyline 下不跨组件匹配。
 //!
-//! 引擎侧的证据（`skyline/style/selector_matcher.cc`）：页面/组件样式表走
-//! `MatchScopedRules`，命中前要求 `node.StyleScopeId() == rule_scope_id`；
+//! 引擎侧的证据：页面/组件样式表的规则命中前要求节点的样式作用域与规则作用域一致；
 //! 标签选择器在 `tagNameStyleIsolation: legacy` 下改查全局标签规则表放宽，
-//! id 选择器那段**没有 legacy 分支**——所以 legacy 只救标签，救不了 id。
-//! 而 `app.wxss` 走 `MatchGlobalRules`，本来就不分作用域，不受影响。
+//! id 选择器**没有 legacy 分支**——所以 legacy 只救标签，救不了 id。
+//! 而 `app.wxss` 按全局规则表匹配，本来就不分作用域，不受影响。
 //!
 //! 于是迁移风险只有一类：页面 / 组件的样式表里，纯标签或纯 id 选择器命中了
 //! **别的单元**的节点。WebView 下这层 DOM 是扁平的、能命中；Skyline 下静默不再命中。
@@ -16,7 +15,7 @@ use serde_json::{Map, Value};
 
 use crate::input::wxml::WxmlDoc;
 use crate::project::{Project, Scope, StyleIsolation};
-use crate::rules::RuleMeta;
+use crate::rules::{RuleMeta, VisualCase, VisualComponent, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::visit_rules;
@@ -46,6 +45,29 @@ impl TagSelectorIsolation {
             .unwrap_or(false)
     }
 }
+
+/// 视觉用例：页面的 `view` 标签选择器穿透到组件内部的 `<view>`。
+///
+/// 组件内部的 `#target` 从页面层查不到（选择器不跨组件边界），所以用 `target: ""`
+/// 整页比对：两端页面结构相同，只有组件内 `<view>` 是否吃到页面样式不同。
+static VISUAL_COMPONENTS: &[VisualComponent] = &[VisualComponent {
+    name: "c",
+    wxml: r#"<view class="inner">组件内容</view>"#,
+    wxss: ".inner { width: 120px; height: 48px; }\n",
+    js: None,
+}];
+
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="page">
+  <view class="spacer"/>
+  <c/>
+</view>"#,
+    wxss: "view { padding: 12px; background: #e33; }\n.spacer { height: 240px; background: #fff; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "页面 wxss 的 `view` 标签选择器命中了组件内的 `<view>`：WebView 下组件内多出红底内边距，Skyline 不跨组件匹配（整页比对）",
+    target: "",
+}];
 
 /// 一条命中记录，用来去重（同一选择器可能被多个 scope 各判一次）。
 struct Hit {
@@ -85,7 +107,7 @@ fn foreign_units<'a>(project: &'a Project, scope: &Scope) -> Option<(Vec<&'a str
             // WebView 能命中，Skyline 不跨作用域。
             //
             // `styleIsolation: shared` 是例外：它的规则拿到的是页面那一份
-            // scope（`space.ts:633-636`），页面节点按主 scope 查规则集时
+            // scope（与页面共用一份），页面节点按主 scope 查规则集时
             // 就会命中（匹配用的是节点主 scope），
             // 与 WebView 一致，只剩兄弟组件还会失效。
             let shared = project.style_isolation(path) == StyleIsolation::Shared;
@@ -147,6 +169,14 @@ impl crate::rules::Rule for TagSelectorIsolation {
             severity: Severity::Warning,
             description: "标签 / id 选择器在 Skyline 下不跨组件匹配，WebView 上生效的样式会静默失效",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
+    }
+
+    fn visual_components(&self) -> &'static [VisualComponent] {
+        VISUAL_COMPONENTS
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -310,6 +340,13 @@ mod tests {
     }
 
     // ---- positive ----
+
+    #[test]
+    fn visual_case_page_tag_selector_hits_component_node() {
+        let fixture = fixture("tag-visual", "view { padding: 12px; background: #e33; }");
+        let diagnostics = check(&fixture);
+        assert!(!diagnostics.is_empty(), "{diagnostics:?}");
+    }
 
     #[test]
     fn preprocessor_style_source_is_checked_too() {

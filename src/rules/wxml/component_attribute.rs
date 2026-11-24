@@ -3,7 +3,7 @@
 //! 约束以本文件的常量定义，来源：
 //! - 组件文档（媒体 / 表单 / 布局 / 特殊 / 滚动各组）
 //! - 组件支持总览
-//! - skyline/package/skyline/lib/widgets/{curve,hero}.dart（缓动名全集）
+//! - Skyline 引擎的缓动/hero 组件实现（缓动名全集）
 //!
 //! 同步方式：只收录文档明确写「Skyline 不支持 / 仅 WebView 支持 / 取值范围」的属性取值；
 //!   枚举值以文档表格为准，条目行尾注释写 references 相对路径与行号。组件不能拆成多条规则。
@@ -23,7 +23,7 @@ use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlAttribute, WxmlElement};
 use crate::matcher::Tree;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 use super::ancestry;
 use super::structure::find_attr;
@@ -193,7 +193,7 @@ const ATTRIBUTES: &[AttributeRule] = &[
         attrs: &["confirm-type"],
         constraint: Constraint::Allowed(&["send", "search", "next", "go", "done", "return"]),
         help: Some("合法值：send、search、next、go、done、return"),
-    }, // form/input.md:54-60；input.dart:1121-1122 映射 return
+    }, // form/input.md:54-60；`return` 是引擎侧额外映射的合法值
     AttributeRule {
         tags: &["swiper"],
         attrs: &["layout-type"],
@@ -309,7 +309,7 @@ const ATTRIBUTES: &[AttributeRule] = &[
             "fastOutSlowIn",
         ]),
         help: Some("用 materialRectArc / materialRectCenterArc / linear 或 cubic-bezier(...)"),
-    }, // special/share-element.md:85-98；缓动名全集见 curve.dart:23-70
+    }, // special/share-element.md:85-98
     AttributeRule {
         tags: &["share-element"],
         attrs: &["shuttle-on-push", "shuttle-on-pop"],
@@ -354,7 +354,7 @@ const ATTRIBUTES: &[AttributeRule] = &[
         attrs: &["paging-enabled"],
         constraint: Constraint::Unsupported,
         help: Some("Skyline 没有分页滚动实现，需要分页时改用 swiper"),
-    }, // 引擎 shadow/、widgets/、package/skyline/lib 均无 paging
+    }, // 引擎的 shadow / widgets 层均无 paging
     AttributeRule {
         tags: &["picker-view"],
         attrs: &["indicator-class", "mask-style"],
@@ -446,6 +446,29 @@ fn table() -> &'static Table {
     })
 }
 
+/// 视觉用例：同一段 WXML/WXSS 两端各渲一次，看 `#target` 的几何与像素。
+///
+/// 两条用例分别覆盖数据表里两类「静默忽略」：属性整体不支持（`placeholder-class`），
+/// 以及只在 WebView 生效的枚举值（`<image mode="top">` 裁剪模式）。
+static VISUAL_CASES: &[VisualCase] = &[
+    VisualCase {
+        wxml: r#"<view class="form"><input class="field" id="target" placeholder="请输入手机号码" placeholder-class="hint"/></view>"#,
+        wxss: ".form { padding: 10px; }\n.field { height: 40px; background: #eef; }\n.hint { color: #ff0000; font-size: 20px; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "placeholder-class 只在 WebView 生效：占位文字变成红色大字；Skyline 忽略该属性，占位文字保持默认样式",
+        target: "#target",
+    },
+    VisualCase {
+        wxml: r#"<image class="thumb" id="target" mode="top" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAHgAAAB4CAIAAAC2BqGFAAAAuUlEQVR42u3SgQkAAAjDsP3/tH4xBAO9IDSTqBAC0KAFGjRoBKBBCzRo0AINWqBBgxZo0AINGrRAgxZo0KAFGrRAgwYt0KAFGjRogQYt0KBBCzRogQYNWqBBCzRo0AINWqBBgxZo0AJ9DRqCp0ELNGghAA1aoEGDRgAatECDBi3QoAUaNGiBBi3QoEELNGiBBg1aoEELNGjQAg1aoEGDFmjQAg0atECDFmjQoAUatECDBi3QoAUa9MsWONILCV1q5B0AAAAASUVORK5CYII="/>"#,
+        wxss: ".thumb { width: 120px; height: 400px; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "mode=top 是 WebView 的裁剪模式：图片按原始尺寸贴顶（上半红）；Skyline 忽略该取值，按原始尺寸在盒子里居中（红蓝整体下移）",
+        target: "#target",
+    },
+];
+
 pub struct ComponentAttribute;
 
 impl ComponentAttribute {
@@ -459,6 +482,10 @@ impl Rule for ComponentAttribute {
             severity: Severity::Warning,
             description: "Skyline 会静默忽略的组件属性取值与组合（枚举白名单 / 不支持的属性 / 数值范围 / 跨属性条件）",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -1337,5 +1364,20 @@ mod tests {
         assert!(diagnostics[0].message.contains("placeholder-class"));
         assert!(diagnostics[1].message.contains("safe-password-nonce"));
         assert!(diagnostics[2].message.contains("safe-password-length"));
+    }
+
+    /// 视觉用例的同一份 WXML/WXSS 必须真的能触发本规则。
+    #[test]
+    fn visual_cases_trigger_rule() {
+        for (index, case) in super::VISUAL_CASES.iter().enumerate() {
+            let fixture = Fixture::page(&format!("attr-visual-{index}"), case.wxml, case.wxss);
+            let diagnostics = check_rule(&fixture, &ComponentAttribute);
+            assert!(
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.rule == ComponentAttribute::ID),
+                "视觉用例 {index} 未触发规则"
+            );
+        }
     }
 }

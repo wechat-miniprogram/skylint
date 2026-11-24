@@ -19,6 +19,7 @@ use crate::rules::Rule;
 use crate::rules::RuleMeta;
 use crate::rules::Target;
 use crate::rules::wxml::resolved_property;
+use crate::rules::{VisualCase, VisualExpect};
 
 use super::ancestry;
 use super::{element_diagnostic, for_each_element, structure::find_attr, truncation};
@@ -26,6 +27,19 @@ use super::{element_diagnostic, for_each_element, structure::find_attr, truncati
 pub const ID: &str = "webview/text-truncation";
 
 pub struct TextTruncation;
+
+/// 视觉用例：只有 `max-lines`，没有 WebView 侧的 clamp 兜底。
+///
+/// Skyline 按 `max-lines="2"` 截断；WebView 的 `wx-text` 不认识这个属性，整段多行长文本
+/// 原样铺开。`#target` 的高度相差好几行。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="box"><text max-lines="2" id="target">这段说明文字写得相当长，用来确保在两百像素宽的容器里至少能折出四五行，从而在两端产生明显的高度差。</text></view>"#,
+    wxss: ".box { width: 200px; padding: 10px; background: #f6f6f6; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`max-lines` 只在 Skyline 的 `<text>` 上生效：Skyline 截到两行，WebView 忽略后整段多行铺开（`#target` 高好几行）",
+    target: "#target",
+}];
 
 impl Rule for TextTruncation {
     fn meta(&self) -> RuleMeta {
@@ -38,6 +52,10 @@ impl Rule for TextTruncation {
 
     fn target(&self) -> Target {
         Target::Webview
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -138,6 +156,19 @@ mod tests {
             "<view><text max-lines=\"2\">a</text></view>",
         ));
         assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("max-lines"));
+    }
+
+    /// 视觉用例同源的页面：`max-lines` 没有任何 WebView 侧兜底。
+    #[test]
+    fn visual_case_max_lines_is_reported() {
+        let fixture = Fixture::page(
+            "webview/text-truncation-visual",
+            r#"<view class="box"><text max-lines="2" id="target">这段说明文字写得相当长，用来确保在两百像素宽的容器里至少能折出四五行，从而在两端产生明显的高度差。</text></view>"#,
+            ".box { width: 200px; padding: 10px; }\n",
+        );
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(diagnostics[0].message.contains("max-lines"));
     }
 

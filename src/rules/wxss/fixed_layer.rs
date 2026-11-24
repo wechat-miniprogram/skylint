@@ -19,10 +19,9 @@ use std::collections::HashSet;
 use crate::input::wxml::WxmlElement;
 use crate::matcher::Tree;
 use crate::project::Project;
-use crate::rules::Rule;
-use crate::rules::RuleMeta;
 use crate::rules::wxml::{for_each_element, resolved_property_checked, resolved_property_with};
 use crate::rules::wxss::value_util::at_declaration;
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 const MESSAGE: &str = "`position: fixed` 在 Skyline 下被提到页面根，祖先的包含块不再约束它；这里相对该祖先定位，WebView 与 Skyline 的位置会不同";
@@ -35,6 +34,23 @@ impl FixedLayer {
     pub const ID: &'static str = "skyline/fixed-layer";
 }
 
+/// 视觉用例：fixed 元素的祖先形成包含块。
+///
+/// WebView 里 fixed 被 `.panel` 的 `transform` 抓住，相对它定位（面板整体下移 200px，
+/// fixed 也跟着下移）；Skyline 把它提到页面根，只相对视口。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="header">页面头部</view>
+<view class="panel">
+  <view class="bar" id="target">浮层</view>
+</view>
+<view class="content">页面内容</view>"#,
+    wxss: ".header { height: 80px; background: #333; color: #fff; }\n.panel { transform: translate3d(0, 200px, 0); height: 200px; background: #e0e0e0; }\n.bar { position: fixed; top: 0; left: 0; width: 160px; height: 40px; background: #e54d42; }\n.content { height: 300px; background: #fff; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "祖先有 transform 时 WebView 相对该祖先定位 fixed（下移 200px），Skyline 提到页面根后贴顶",
+    target: "#target",
+}];
+
 impl Rule for FixedLayer {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -42,6 +58,10 @@ impl Rule for FixedLayer {
             severity: Severity::Warning,
             description: "`position: fixed` 在 Skyline 下被提到页面根，祖先的包含块不再约束它（WebView 下相对该祖先定位），两端位置不同",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -184,6 +204,20 @@ mod tests {
     use crate::rules::testutil::wxss::{self, Fixture};
 
     use super::FixedLayer;
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture =
+                crate::rules::testutil::Fixture::page("fixed-layer-visual", case.wxml, case.wxss);
+            let hits = crate::rules::testutil::check_rule(&fixture, &FixedLayer)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == FixedLayer::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     fn check(name: &str, wxml: &str, wxss: &str) -> Vec<Diagnostic> {
         wxss::check(&FixedLayer, name, wxml, wxss)

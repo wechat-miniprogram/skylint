@@ -43,6 +43,11 @@ const ENTRIES: &[Entry] = &[
         message: "Skyline 不支持 `this.animate`，动画不会执行；改用 worklet（wx.worklet.shared + applyAnimatedStyle）",
         skyline_only: true,
     },
+    Entry::Call {
+        callee: "wx.pageScrollTo",
+        message: "Skyline 下页面根不是滚动容器，`wx.pageScrollTo` 没有消费者、滚动不会发生；把内容搬进 `<scroll-view>`，用 `ScrollViewContext.scrollTo`（先 `createSelectorQuery().select().ref()` 拿引用）",
+        skyline_only: true,
+    },
     Entry::PluginCall {
         prefix: "wx.router",
         message: "小程序插件不支持 wx.router.*（自定义路由），插件页内调用无效",
@@ -353,6 +358,45 @@ mod tests {
         let (_f, project) = single(
             "unsupported-skyline-branch",
             "Page({ open() { if (this.renderer === 'skyline') { this.animate('showIn'); } } });",
+        );
+        assert_eq!(messages(&UnsupportedApi, &project).len(), 1);
+    }
+
+    /// 渲染器比较先存进本地常量、再用常量做条件时，同样能辨认 WebView 分支。
+    #[test]
+    fn renderer_aliases_guard_webview_branches() {
+        for js in [
+            "Page({ open() { const isSkyline = this.renderer === 'skyline'; if (isSkyline) {} else { this.animate('showIn'); } } });",
+            "Page({ open() { const isWebview = app.renderer === 'webview'; if (isWebview) { this.animate('showIn'); } } });",
+            "Page({ open() { const isSkyline = this.renderer === 'skyline'; if (!isSkyline) { this.animate('showIn'); } } });",
+        ] {
+            let (_f, project) = single("unsupported-webview-alias", js);
+            assert_eq!(
+                messages(&UnsupportedApi, &project),
+                Vec::<String>::new(),
+                "{js}"
+            );
+        }
+    }
+
+    /// 别名落在 Skyline 分支上、或初始化值判不出来时不能当守卫，照常报。
+    #[test]
+    fn aliases_without_a_webview_branch_are_still_reported() {
+        for js in [
+            "Page({ open() { const isSkyline = this.renderer === 'skyline'; if (isSkyline) { this.animate('showIn'); } } });",
+            "Page({ open() { const flag = foo(); if (flag) { this.animate('showIn'); } } });",
+        ] {
+            let (_f, project) = single("unsupported-alias-not-webview", js);
+            assert_eq!(messages(&UnsupportedApi, &project).len(), 1, "{js}");
+        }
+    }
+
+    /// 别名只在定义它的函数作用域内有效：另一个函数里的同名条件不沿用。
+    #[test]
+    fn renderer_alias_does_not_cross_function_scopes() {
+        let (_f, project) = single(
+            "unsupported-alias-scope",
+            "Page({ a() { const isSkyline = this.renderer === 'skyline'; }, b() { if (isSkyline) { this.animate('showIn'); } } });",
         );
         assert_eq!(messages(&UnsupportedApi, &project).len(), 1);
     }

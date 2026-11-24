@@ -18,7 +18,7 @@ use serde_json::{Map, Value};
 use crate::diag::JsonAnchor;
 use crate::input::json::JsonPositions;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta, Target};
+use crate::rules::{Rule, RuleMeta, Target, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::{anchor, child, warn};
@@ -29,9 +29,29 @@ impl RendererOptions {
     pub const ID: &'static str = "skyline/renderer-options";
 }
 
+/// 视觉用例：`rendererOptions.skyline.defaultDisplayBlock` 写非法值（`null`）时，
+/// 运行时按 `|| false` 取真值、静默退回默认（flex 布局，不折叠外边距），与显式
+/// `true`（运行时切到 block 布局）的行为不同。
+///
+/// 覆盖只能写「运行时等价于缺省」的值：整批工程共用 app.json，`null` 与未设置
+/// 同为 false，不会改变其它用例依赖的默认布局。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="page">
+  <view class="first"></view>
+  <view class="second" id="target"></view>
+</view>"#,
+    wxss: ".page { padding: 20px; background: #f5f5f5; }\n.first { height: 40px; margin-bottom: 20px; background: #e54d42; }\n.second { height: 40px; margin-top: 30px; background: #1e88e5; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "defaultDisplayBlock 写 null 是非法取值，运行时 `|| false` 静默退回默认：Skyline 仍是 flex column，相邻外边距不折叠，间距 50px；WebView 按 block 折叠成 30px，第二个块上移 20px",
+    target: "#target",
+}];
+
+const APP_JSON_OVERRIDE: &str = r#"{"rendererOptions":{"skyline":{"defaultDisplayBlock":null}}}"#;
+
 /// 已知键的期望类型（来源：`skyline-config/references/app-config.md` 的配置项表，
 /// 与运行时的取值方式一一对应）。每个键在 app.json 与页面 json 里都合法：
-/// 布局类的 6 个键由 Skyline 运行时读（`runtime/index.ts:424-449`），版本区间与
+/// 布局类的 6 个键由 Skyline 运行时读，版本区间与
 /// `disableABTest` 由客户端选渲染器时读，官方文档也写明「app.json 或 page.json」
 /// （`skyline-overview/references/migration/release.md:105-145`）。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -63,12 +83,12 @@ const KNOWN: &[(&str, Kind)] = &[
 ];
 
 /// app 级 `rendererOptions` 顶层**不生效**的键：运行时只读
-/// `rendererOptions.skyline.*`（`runtime/index.ts:126-151`）。
+/// `rendererOptions.skyline.*`。
 /// `defaultDisplayBlock` 不在此列——运行时两种写法都认。
 /// app 级 `rendererOptions` 顶层**会**被读取的键。
 ///
-/// 运行时只认这两个（`runtime/index.ts:139` 的 `?.defaultDisplayBlock`、`:126`
-/// 起的 `?.skyline?.`）加上 `__useTextStyle`（`typings/wxConfig.d.ts:92`）。
+/// 运行时只认这两个（顶层的 `defaultDisplayBlock` 与 `skyline.*` 下的键）
+/// 加上 `__useTextStyle`。
 const APP_TOP_READ_KEYS: &[&str] = &["defaultDisplayBlock", "__useTextStyle"];
 
 const SKYLINE_ONLY_TOP: &[&str] = &[
@@ -97,6 +117,14 @@ impl Rule for RendererOptions {
     fn target(&self) -> Target {
         // `rendererOptions.skyline.*` 只有 Skyline 运行时读取；对齐开关对 WebView 无意义。
         Target::Skyline
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
+    }
+
+    fn visual_app_json(&self) -> Option<&'static str> {
+        Some(APP_JSON_OVERRIDE)
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -467,9 +495,9 @@ mod tests {
     use crate::Severity;
     use crate::project::Project;
     use crate::rules::Rule;
-    use crate::rules::testutil::Fixture;
+    use crate::rules::testutil::{Fixture, check_rule};
 
-    use super::RendererOptions;
+    use super::{APP_JSON_OVERRIDE, RendererOptions, VISUAL_CASES};
 
     fn project(name: &str, app: &str, page: &str) -> (Fixture, Project) {
         let fixture = Fixture::new(name);
@@ -813,5 +841,29 @@ mod tests {
             "{}",
         );
         assert!(RendererOptions.check(&project).is_empty());
+    }
+
+    /// 视觉用例的同一份 WXML/WXSS 与覆盖后的 app.json 必须真的触发本规则。
+    #[test]
+    fn visual_case_triggers_rule() {
+        let case = &VISUAL_CASES[0];
+        // 用生成器实际写入的形态：先规则覆盖，再必备键。
+        let mut app: serde_json::Value = serde_json::from_str(APP_JSON_OVERRIDE).unwrap();
+        app["pages"] = serde_json::json!(["pages/index/index"]);
+        app["renderer"] = serde_json::json!("skyline");
+        let fixture = Fixture::new("renderer-options-visual");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write("app.json", &serde_json::to_string(&app).unwrap())
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", case.wxml)
+            .write("pages/index/index.wxss", case.wxss);
+        let diagnostics = check_rule(&fixture, &RendererOptions);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.rule == RendererOptions::ID && d.message.contains("defaultDisplayBlock")),
+            "视觉用例未触发规则：{diagnostics:#?}"
+        );
     }
 }

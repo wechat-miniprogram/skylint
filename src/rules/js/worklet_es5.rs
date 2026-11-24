@@ -1,9 +1,8 @@
 //! 用了 worklet 就必须开 `setting.compileWorklet`（编译 worklet 代码）。
 //!
 //! worklet 代码要被搬到 UI 线程执行，只有显式开启「编译 worklet 代码」时构建才会做
-//! worklet 转换（`minidev compiler-js/src/babel_pipeline.rs:140-142`：
-//! `support_worklet = compile_worklet && 源码含 "worklet"`）。关闭时 worklet 不会被
-//! 转换，运行时表现为动画直接不生效，而构建过程没有任何提示。
+//! worklet 转换（只有 `compileWorklet` 为真且源码里出现 `worklet` 字样时才做）。关闭时
+//! worklet 不会被转换，运行时表现为动画直接不生效，而构建过程没有任何提示。
 //!
 //! 这是工程级判定：只要有一处用到 worklet 就要求开关打开。「用到」包括脚本里任何
 //! 带 `'worklet'` 指令的函数，以及 WXML 上的 `worklet:` 属性——后者在函数定义于

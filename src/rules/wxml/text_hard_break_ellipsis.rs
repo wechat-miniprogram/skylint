@@ -10,7 +10,7 @@
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlDoc, WxmlElement, WxmlNode};
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 use super::structure::find_attr;
 use super::{element_diagnostic, for_each_element};
@@ -19,6 +19,20 @@ pub const ID: &str = "skyline/text-hard-break-ellipsis";
 
 pub struct TextHardBreakEllipsis;
 
+/// 视觉用例：让截断正好落在硬换行的末行。
+///
+/// `max-lines="2"` 的第二行以 `\n` 结束：Skyline 截到两行且这一行不画省略号；
+/// WebView 既没有 WebView 分支的 clamp 兜底、又不认这两个属性，三行原样铺开。
+/// 两端 `#target` 的高度差两行以上。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: "<view class=\"box\" id=\"target\"><text class=\"t\" overflow=\"ellipsis\" max-lines=\"2\">第一行文字\n第二行文字\n第三行文字</text></view>",
+    wxss: ".box { width: 200px; padding: 10px; background: #eef; }\n.t { font-size: 16px; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "硬换行正好落在 `max-lines=\"2\"` 的末行：Skyline 截到两行且该行不给省略号，WebView 不截断、三行原样铺开",
+    target: "#target",
+}];
+
 impl Rule for TextHardBreakEllipsis {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -26,6 +40,10 @@ impl Rule for TextHardBreakEllipsis {
             severity: Severity::Info,
             description: "多行省略里含硬换行时，Skyline 默认不给末行省略号",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -110,6 +128,17 @@ mod tests {
     fn hard_break_inside_ellipsis_is_reported() {
         let source = "<text overflow=\"ellipsis\" max-lines=\"2\">第一行\n第二行</text>";
         assert_eq!(hits(source).len(), 1);
+    }
+
+    /// 视觉用例同源的页面：硬换行落在截断末行。
+    #[test]
+    fn visual_case_hard_break_on_last_line_is_reported() {
+        let fixture = wxml::Fixture::page(
+            "text-hard-break-visual",
+            "<view class=\"box\" id=\"target\"><text class=\"t\" overflow=\"ellipsis\" max-lines=\"2\">第一行文字\n第二行文字\n第三行文字</text></view>",
+            ".box { width: 200px; }\n.t { font-size: 16px; }\n",
+        );
+        assert_eq!(wxml::check_rule(&fixture, &TextHardBreakEllipsis).len(), 1);
     }
 
     #[test]

@@ -33,7 +33,7 @@ skylint/
 
 依赖形态（**已落地**）：不依赖 minidev。工程加载器自建，见 §3。
 
-历史：曾用 `common` / `diag` / `compiler-graph` 三个内网 crate + `.cargo/config.toml` 的
+历史：曾依赖三个内网 crate + `.cargo/config.toml` 的
 `[patch.crates-io]` 指向本地 checkout，代价是外部用户 clone 后无法 `cargo build`。
 实测「只加 feature 门控」并不能解除——Cargo 连 `optional = true` 的依赖也会去索引解析，
 内网 crate 不存在就直接失败。于是按「加载器自有」重写，三个依赖全部删除。
@@ -135,7 +135,7 @@ text-decoration-line 单值、calc 角度、mask-image 渐变。
 里的子属性不判定，整值匹配）；级联。
 
 出口判据「一致性语料」已用**定向核对**代替全量转写：47 条数据逐条对着
-`skyline/css/css_properties/*.cc` 的 `Parse` 与 `css_parser_impl.h` 的属性映射表核了一遍。
+引擎的 CSS 属性解析实现与属性映射表核了一遍。
 
 结论（详见各自 commit）：
 - **删了 3 条错的**：`direction`、`overflow-x`、`overflow-y` 引擎都接受并生效
@@ -146,7 +146,7 @@ text-decoration-line 单值、calc 角度、mask-image 渐变。
 - **修了 1 条建议**：`contain` 的替代方案 `-wx-contain` 本身也是 `kInvalid`，
   文档推荐的替代品同样不可用。
 
-局限：引擎接受 ≠ 能渲染（`skyline/css` 之上还有一层取舍在私有 fork 里），
+局限：引擎接受 ≠ 能渲染（CSS 解析之上还有一层取舍在私有 fork 里），
 所以这套核对只能证伪「不支持」，不能证明「支持」。
 
 ### P2 WXML 结构
@@ -253,10 +253,10 @@ LESS，外加缩进语法）都是同一个 `Syntax` 枚举，差异只剩摊平
   `aria-checked` 判定，Skyline 丢掉条件后勾选样式恒亮），其余三个工程 0 条。
 
 - `skyline/tag-selector-isolation`：标签 / id 选择器在 Skyline 下不跨组件匹配。
-  引擎证据在 `skyline/style/selector_matcher.cc`：页面/组件样式表走 `MatchScopedRules`，
-  命中前要求 `node.StyleScopeId() == rule_scope_id`；`legacy` 只把**标签**选择器改查
-  全局标签规则表，id 选择器那段没有 legacy 分支。`app.wxss` 走 `MatchGlobalRules`，
-  本来就不分作用域，因此不受影响——这正是规则只在 page/component 样式表里判的原因。
+  引擎证据：页面/组件样式表的规则命中前要求节点的样式作用域与规则作用域一致；
+  `legacy` 只把**标签**选择器改查全局标签规则表，id 选择器没有 legacy 分支。
+  `app.wxss` 按全局规则表匹配，本来就不分作用域，因此不受影响——这正是规则只在
+  page/component 样式表里判的原因。
   判定要用「页面用了哪些组件」，为此 `Project` 记下了 `deps`（单元 → 直接引用的组件），
   提供 `page_components()` / `component_pages()` 两个传递闭包。
 
@@ -510,7 +510,7 @@ A 页失效、B 页正常时要报）、`no_pseudo` 的转义冒号（`.hover\:b
    提交，只有 PLAN 文档提过）。依据：fp 的 `display` 取值解析只认
    none/block/inline/inline-block/flex/grid/flow-root/inline-flex
    （`float-pigment-css-0.7.0/src/property.rs:193-200`），`-webkit-box` 解析失败即整条丢弃；
-   `-webkit-box-*` 都不在 `css/css_property_names.h` 的 194 个属性名里。落地成
+   `-webkit-box-*` 都不在引擎属性名表的 194 个属性名里。落地成
    `skyline/legacy-flexbox`，按规则块报一次。
 2. `default-layout-drift` 原来只在「存在 Skyline 页面」时报，而**未声明 renderer** 的工程
    （正是准备迁移的工程）按 Skyline 口径检查时反而不报，导致 97 条 flex-direction 逐条
@@ -699,11 +699,11 @@ WidgetSpan 内部排版。因此原先计划的「`<text>` 子节点 display 收
 | 候选 | 否掉的理由 |
 |---|---|
 | `scroll-view type="list"` | WebView 不读 `type`，但**仍能滚动**（滚动由 `scroll-x/y` 的 CSS `overflow` 决定），只丢虚拟化 |
-| `list-view` / `grid-view` / `sticky-*` / `snapshot` / 手势组件 | 它们**在** WebView 的 `globalUsingComponents` 表里（`render/webview.ts:166-254`），不是未知标签，各有一套 WebView 实现 |
+| `list-view` / `grid-view` / `sticky-*` / `snapshot` / 手势组件 | 它们**在** WebView 的全局组件注册表里，不是未知标签，各有一套 WebView 实现 |
 | `grid-builder` 的 `slot:item` 内容丢失 | 确属丢失（未知标签只保留默认 slot），但两个参考工程都没用，等有真实使用再加 |
 | `<text space>` / `decode` | WebView 真的支持（`_htmlDecode`），两端都有 |
 | `<page-meta>` 全部属性 | 两端都支持；`screen-orientation` 两端都不存在（与 `page-orientation` 混淆） |
-| `wx.worklet.shared` / `timing` / `applyAnimatedStyle` | WebView 有完整实现，不是降级：适配器按渲染器分派到 `createAnimatedStyleForWeb`，计算在逻辑线程 rAF 上跑、结果经 `node.setNodeStyle(..., ANIMATION_EXTRA)` 落到 DOM。注意 `hook/animatedStyle.ts:84` 的 `updateNodeStyle` 那条路径在 WebView 下确实是 `noop`（`worklet-module-web/index.ts:11-14`），但它只服务 `createAnimatedStyle`（原生路径），WebView 走不到。因此只有性能差异 |
+| `wx.worklet.shared` / `timing` / `applyAnimatedStyle` | WebView 有完整实现，不是降级：适配器按渲染器分派到 `createAnimatedStyleForWeb`，计算在逻辑线程 rAF 上跑、计算结果经 `node.setNodeStyle(..., ANIMATION_EXTRA)` 落到 DOM。注意设置节点样式的那条路径在 WebView 下确实是 `noop`，但它只服务 `createAnimatedStyle`（原生路径），WebView 走不到。因此只有性能差异 |
 | Skyline 页被注入的 `disableScroll: true` / `navigationStyle: custom` | 编译器对 Skyline 页总是注入这两项（构建期编译器的页面配置注入），WebView 下仍然生效。但漏子不在源码可写的字段上：页面默认就是可滚动的，而「这个页面依赖页面级滚动」静态判不出，按现状不报 |
 | `this.animate` / `wx.createAnimation` | 方向相反：它们是 **WebView-only**，恰是 worklet 的降级方案（正向 `unsupported-api` 已覆盖） |
 | `fixed` 提升 / `defaultContentBox` | 反向时 WebView 是正常层叠 / 本来就是 content-box |
@@ -849,7 +849,7 @@ autofix；14 条只能运行时判定的条目；`app.json` 自动改写。
 > 就不命中（`matcher/element.rs::has_class` 按原文切词），不需要额外规则。
 > 代价是作者自己写掉的样式会静默失效，但那是工程 bug，不是迁移差异。
 
-`~foo` / `^foo` 是 glass-easel **承认**的作用域类前缀：`~` 登记根作用域、`^` 登记父级作用域（`glass-easel/src/class_list.ts:131-142`，老渲染器同实现 `global-console/src/lib/exparser.js:3008-3023`），用来把节点绑到页面（或父级）的样式表、绕开组件样式隔离。代价是**本单元样式表里的同名规则同时失效**。
+`~foo` / `^foo` 是 glass-easel **承认**的作用域类前缀：`~` 登记根作用域、`^` 登记父级作用域（`glass-easel/src/class_list.ts:131-142`，老渲染器同实现），用来把节点绑到页面（或父级）的样式表、绕开组件样式隔离。代价是**本单元样式表里的同名规则同时失效**。
 
 真实样本：`ad-banner.wxml:2,5` 在迁移提交里被加上 `~<前缀>-bottom-banner-{{…}}`，而组件自己的 `ad-banner.less:16-53` 定义了 `.<前缀>-bottom-banner-0..5 { background-color: … }`——banner 的背景色就这么丢了（页面侧 `skylinenovel/index.less:2349-2415` 只写子节点的文字颜色），v1.1.78 仍在。
 
@@ -912,7 +912,7 @@ autofix；14 条只能运行时判定的条目；`app.json` 自动改写。
 
 **`skyline/component-attribute` 去掉两类「两端同错」**
 
-- `<image mode="aspectFit|aspectFill|widthFix">` 这种管道串：WebView 的 `_checkMode` 是字面量白名单（`wx-image.js:539-564`），未知值直接 return、`backgroundSize` 停在默认，Skyline 未知 mode 走 `kFill`——两端都回退成拉伸，不是迁移差异，整类跳过（原来按 info 报，仍是噪音）。
+- `<image mode="aspectFit|aspectFill|widthFix">` 这种管道串：WebView 的 mode 校验收字面量白名单，未知值直接 return、`backgroundSize` 停在默认，Skyline 未知 mode 走 `kFill`——两端都回退成拉伸，不是迁移差异，整类跳过（原来按 info 报，仍是噪音）。
 - `<text overflow="ellipsis">` 缺 `max-lines`：行内 `<text>` 在 WebView 里没 `nowrap` / clamp 时只换行，两行截断根本不存在。现在走共享的 `wxml::webview_truncates`（自身或任一祖先有 `-webkit-line-clamp` 或单行三件套才算 WebView 真会省略），与 `webview/text-truncation` 用同一份判据。
 
 `text-overflow-ellipsis` 里那个反向职责的闭包同时改名成 `no_divergence`（它返回的是「这个命中不构成差异」，原来叫 `can_host` 会读反）。
@@ -1111,7 +1111,7 @@ worklet」）用一次过滤算出来，不做增量缓存。
 ## 6. 验证
 
 - **规则级**：每条规则 `positive/` + `negative/` fixture，**negative 数量 ≥ positive**；
-- **引擎级**：从 `skyline/css/css_properties/*.cc` 的 130 个 `Parse` switch 整理
+- **引擎级**：从引擎的 130 个属性解析 switch 整理
   `(属性, 值, 支持?)` 一致性语料（约 300-500 条），既是 P1 的数据源也是回归门禁。
   skyline cli 拿不到二进制（GN + 私有 fork），所以只能用源码当规格；
 - **工程级**：纯 webview 老项目 / 混合 / 已迁移，三个真实工程；已迁移项目应接近 0 error。
@@ -1214,7 +1214,7 @@ flex-direction 收成 2 条：源码 `app.json` 4 处、`dist/plugin/app.json` 9
    改成：无原文时读解析期算出的 `candidates`，只有一个候选且为整数才采纳（`{{a ? 2 : 3}}`
    仍判不出）。六工程净效果：工程 C −10、工程 F −2，全部是 `<text max-lines="{{2}}">`
    的真实重复报，其余四工程与反向零变化。
-2. **`word-wrap` 不在属性表**：它是 `overflow-wrap` 的旧名，`css_property_names.h` 里同样没有
+2. **`word-wrap` 不在属性表**：它是 `overflow-wrap` 的旧名，引擎属性名表里同样没有
    属性 id，声明整条丢弃。补进 `UNSUPPORTED_PROPERTIES`（初值 `normal`）。同一块又写了
    `word-break: break-all` 时跳过：断行能力已被覆盖，丢掉 `word-wrap` 没有渲染差异
    （工程 A `receive-flower.scss:19` 就是这种写法）。

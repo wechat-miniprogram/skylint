@@ -47,7 +47,7 @@ use crate::rules::wxss::dict_table::{normalize_value, table};
 use crate::rules::wxss::is_css_wide_keyword;
 use crate::rules::wxss::legacy_flexbox::{LEGACY_PROPERTIES, PARSEABLE_DISPLAY};
 use crate::rules::wxss::unsupported_value::initial_value;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::at_span;
@@ -79,6 +79,21 @@ const GRADIENT_PROPERTIES: [&str; 6] = [
 impl DynamicStyleValue {
     pub const ID: &'static str = "skyline/dynamic-style-value";
 }
+
+/// 视觉用例：样式串写在 JS 里、再通过 `style="{{…}}"` 绑到元素上。
+///
+/// `-webkit-linear-gradient` 整条声明在 Skyline 被丢弃，元素只剩页面底色；
+/// WebView 正常画出黄色渐变。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="login" id="target" style="{{wxLoginStyle}}"></view>"#,
+    wxss: ".login { width: 300px; height: 64px; }\n",
+    js: Some(
+        "Page({ data: { wxLoginStyle: 'background-image: -webkit-linear-gradient(#FFD000, #FFBD00);' } });\n",
+    ),
+    expect: VisualExpect::Differ,
+    note: "style 绑定的 -webkit-linear-gradient：WebView 画出黄色渐变底，Skyline 丢掉整条 background-image，元素只剩页面白底",
+    target: "#target",
+}];
 
 /// 声明块里的一段：属性名与取值原文（均已 trim）。
 struct Declaration<'a> {
@@ -128,6 +143,10 @@ impl Rule for DynamicStyleValue {
             severity: Severity::Warning,
             description: "JS 字符串里的内联样式用了 Skyline 不支持的写法（前缀渐变、老式弹性盒、不可解析的 display、-webkit-line-clamp、会回落初始值的取值）",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -477,7 +496,8 @@ fn truncate(value: &str, limit: usize) -> String {
 mod tests {
     use crate::rules::Rule;
 
-    use super::DynamicStyleValue;
+    use super::{DynamicStyleValue, VISUAL_CASES};
+    use crate::rules::testutil::check_rule;
     use crate::rules::testutil::js::{Fixture, messages, single};
 
     /// 组件工程：页面按 `renderer` 渲染，页面引用 `components/c/c`。
@@ -518,6 +538,30 @@ mod tests {
             );
         let project = f.project();
         (f, project)
+    }
+
+    /// 视觉用例的同一份 WXML/WXSS/JS 必须真的能触发本规则。
+    #[test]
+    fn visual_case_triggers_rule() {
+        let case = &VISUAL_CASES[0];
+        let fixture = Fixture::new("dynamic-style-visual");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", case.wxml)
+            .write("pages/index/index.wxss", case.wxss)
+            .write("pages/index/index.js", case.js.expect("视觉用例需要 JS"));
+        let diagnostics = check_rule(&fixture, &DynamicStyleValue);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.rule == DynamicStyleValue::ID),
+            "视觉用例未触发规则：{diagnostics:#?}"
+        );
     }
 
     #[test]

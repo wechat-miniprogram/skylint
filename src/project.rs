@@ -636,27 +636,80 @@ impl Project {
         renderer_flag(&self.renderer_options, "defaultDisplayBlock")
     }
 
-    /// app 级 `defaultContentBox` 是否开启。运行时只读 `rendererOptions.skyline` 这一层
-    /// （`runtime/index.ts:145`），写在顶层的同名单键不生效，所以这里也只认嵌套写法。
+    /// app 级 `defaultContentBox` 是否开启。运行时只读 `rendererOptions.skyline` 这一层，
+    /// 写在顶层的同名单键不生效，所以这里也只认嵌套写法。
+    ///
+    /// 这只是回落值：页面 / 组件 json 可以各自覆盖，见 [`Self::content_box`]。
     pub fn app_content_box(&self) -> bool {
+        self.app_renderer_option("defaultContentBox")
+    }
+
+    /// app 级 `rendererOptions.skyline.<key>`：只认嵌套这一层。
+    ///
+    /// `defaultContentBox` / `enableScrollViewAutoSize` 两个开关运行时都只读
+    /// `rendererOptions?.skyline?.<key>`；写在 `rendererOptions` 顶层的同名单键
+    /// **不生效**——不像 `defaultDisplayBlock` 走 [`renderer_flag`] 的「顶层 OR 嵌套」。
+    fn app_renderer_option(&self, key: &str) -> bool {
         self.renderer_options
             .get("skyline")
-            .and_then(|skyline| skyline.get("defaultContentBox"))
+            .and_then(|skyline| skyline.get(key))
             .is_some_and(truthy)
     }
 
-    /// app 级 `rendererOptions.skyline.enableScrollViewAutoSize` 是否开启。
-    /// 开启后 scroll-view 变成 measurable 节点，尺寸来自内容而不是 flex 分配。
+    /// 一份 WXML / WXSS 文档所属单元的 `rendererOptions.skyline.<key>` 生效值。
     ///
-    /// 运行时只读嵌套这一层（Skyline 运行时）：
-    /// `rendererOptions?.skyline?.enableScrollViewAutoSize || false`）。写在
-    /// `rendererOptions` 顶层的同名单键**不生效**——不像 `defaultDisplayBlock`
-    /// （`renderer_flag` 那种「顶层 OR 嵌套」），所以这里不能走 [`renderer_flag`]。
+    /// 单元（页面 / 组件）json 里写了就用它，否则回落：页面取 app 级；组件取渲染
+    /// 它的页面（开关是页面级配置，组件元素跟着页面走，与
+    /// [`Self::compute_renders_as_block`] 同一口径）。一份样式被多个单元引入时，
+    /// 全部单元都开了才算开——只要有一个没开，这条声明在它那里就仍与 WebView 不同。
+    /// `app.wxss`、模板片段不属于具体单元，按 app 级回答。
+    pub fn renderer_option(&self, doc_path: &str, key: &str) -> bool {
+        let app = self.app_renderer_option(key);
+        let scopes = match self.scope_of(doc_path) {
+            Some(scope) => vec![scope],
+            None => match self
+                .styles
+                .iter()
+                .find(|sheet| sheet.doc.path() == doc_path)
+            {
+                Some(sheet) => sheet.scopes.clone(),
+                None => return app,
+            },
+        };
+        scopes
+            .iter()
+            .all(|scope| self.scope_renderer_option(scope, app, key))
+    }
+
+    /// 文档所属单元的 `defaultContentBox` 生效值，见 [`Self::renderer_option`]。
+    pub fn content_box(&self, doc_path: &str) -> bool {
+        self.renderer_option(doc_path, "defaultContentBox")
+    }
+
+    /// 单个单元的 `rendererOptions.skyline.<key>` 生效值；`app` 是已算好的 app 级回落。
+    fn scope_renderer_option(&self, scope: &Scope, app: bool, key: &str) -> bool {
+        match scope {
+            Scope::Page(route) => self.page_renderer_option(route, key).unwrap_or(app),
+            Scope::Component(path) => {
+                self.component_renderer_option(path, key)
+                    .unwrap_or_else(|| {
+                        let pages = self.component_pages(path);
+                        pages.is_empty()
+                            || pages
+                                .iter()
+                                .all(|route| self.page_renderer_option(route, key).unwrap_or(app))
+                    })
+            }
+            Scope::Global | Scope::Loose(_) => app,
+        }
+    }
+
+    /// app 级 `rendererOptions.skyline.enableScrollViewAutoSize`。
+    ///
+    /// 开启后 scroll-view 变成 measurable 节点，尺寸来自内容而不是 flex 分配；
+    /// 逐文档的生效值用 [`Self::renderer_option`]（页面 json 也能开这个开关）。
     pub fn scroll_view_auto_size(&self) -> bool {
-        self.renderer_options
-            .get("skyline")
-            .and_then(|skyline| skyline.get("enableScrollViewAutoSize"))
-            .is_some_and(truthy)
+        self.app_renderer_option("enableScrollViewAutoSize")
     }
 
     /// app.json 顶层的开关（JS 真值语义，如 `convertRpxToVw`）。
@@ -665,13 +718,33 @@ impl Project {
     }
 
     /// 页面级覆盖；`None` 表示这一页没写，回落到 app 级。运行时只认
-    /// `rendererOptions.skyline.*` 这一层（`skyline.js:428-431`）。
+    /// `rendererOptions.skyline.*` 这一层。
     fn page_display_block(&self, route: &str) -> Option<bool> {
         self.page_json
             .get(route)
             .and_then(|json| json.get("rendererOptions"))
             .and_then(|options| options.get("skyline"))
             .and_then(|skyline| skyline.get("defaultDisplayBlock"))
+            .map(truthy)
+    }
+
+    /// 页面 json 的 `rendererOptions.skyline.<key>`；`None` 表示没写。
+    fn page_renderer_option(&self, route: &str, key: &str) -> Option<bool> {
+        self.page_json
+            .get(route)
+            .and_then(|json| json.get("rendererOptions"))
+            .and_then(|options| options.get("skyline"))
+            .and_then(|skyline| skyline.get(key))
+            .map(truthy)
+    }
+
+    /// 组件 json 的 `rendererOptions.skyline.<key>`；`None` 表示没写。
+    fn component_renderer_option(&self, path: &str, key: &str) -> Option<bool> {
+        self.component_json
+            .get(path)
+            .and_then(|json| json.get("rendererOptions"))
+            .and_then(|options| options.get("skyline"))
+            .and_then(|skyline| skyline.get(key))
             .map(truthy)
     }
 
@@ -853,8 +926,7 @@ mod tests {
         assert!(project.scroll_view_auto_size());
     }
 
-    /// 运行时只读 `rendererOptions.skyline.enableScrollViewAutoSize`
-    /// （`runtime/index.ts:148`）；顶层的同名单键不生效，认了它会让
+    /// 运行时只读 `rendererOptions.skyline.enableScrollViewAutoSize`；顶层的同名单键不生效，认了它会让
     /// `scroll-view-height` 整条规则静默（全工程漏报）。
     #[test]
     fn scroll_view_auto_size_ignores_the_top_level_key() {

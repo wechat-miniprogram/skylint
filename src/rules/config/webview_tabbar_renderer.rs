@@ -13,7 +13,7 @@
 //! （glass-easel 适配层）
 //!
 //! 只有自定义 tabBar（`tabBar.custom: true`）才会走 `createTabBar`
-//! （`onAppRoute.js:669-671` 的 `isTab && isCustomTabBar`），内置 tabBar 不受影响。
+//! （路由面板只对 `isTab && isCustomTabBar` 的页面创建），内置 tabBar 不受影响。
 
 use serde_json::Value;
 

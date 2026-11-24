@@ -16,6 +16,23 @@ impl WxmlGraph {
         })
     }
 
+    /// 组件模板顶层会渲染的元素标签（内联模板定义体不算，它们只在调用处渲染）。
+    ///
+    /// `virtualHost` 组件在使用处没有宿主元素，模板顶层直接成为使用位置的子节点；
+    /// 判断「使用处的这个直接子节点实际渲染成什么」需要看这一层。文档不在图里返回
+    /// `None`。
+    pub(crate) fn component_top_tags(&self, doc_path: &str) -> Option<Vec<&str>> {
+        let &doc = self.by_path.get(doc_path)?;
+        Some(
+            self.docs[doc]
+                .elements
+                .iter()
+                .filter(|element| element.parent.is_none() && element.template.is_none())
+                .map(|element| element.tag.as_str())
+                .collect(),
+        )
+    }
+
     /// 哪些文档以哪个标签使用了这份组件（反链）。
     ///
     /// `component_options` / `render_docs` 是正向（使用点 → 组件实现），这个方法是反向：

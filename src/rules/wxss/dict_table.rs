@@ -19,23 +19,32 @@ const UNSUPPORTED_PROPERTIES: &[(&str, &str)] = &[
     ("writing-mode", "无替代"),                          // 属性支持表
     ("text-indent", "使用 padding-left 模拟"),           // 属性支持表
     ("overflow-wrap", "使用 word-break"),                // 属性支持表
-    ("word-wrap", "使用 word-break"), // `overflow-wrap` 的旧名，引擎属性表里同样没有（css_property_names.h 无该 id）
+    ("word-wrap", "使用 word-break"), // `overflow-wrap` 的旧名，引擎属性表里同样没有该 id
+    // 属性表（fp 的 `property_list!`）里没有任何 `border-image-*`，声明整条丢弃；
+    // 官方天空属性支持表也未列该项。丢弃后 `border-color` 回落 `currentColor`，
+    // 常见后果是彩色下划线变成当前文字色（往往接近黑色）。
+    ("border-image", "改用叠加的背景色块或独立元素绘制"),
+    ("border-image-source", "改用叠加的背景色块或独立元素绘制"),
+    ("border-image-slice", "无替代"),
+    ("border-image-width", "无替代"),
+    ("border-image-outset", "无替代"),
+    ("border-image-repeat", "无替代"),
     (
         "clip-path",
         "裁切动画改用外层 `overflow: hidden` + 内层 `transform` 位移",
-    ), // css_property_names.h 无该 id，声明整条丢弃
+    ), // 属性名表无该 id，声明整条丢弃
     ("text-decoration-thickness", "无替代"), // 属性支持表
-    ("background-attachment", "无替代"), // 属性支持表
-    ("background-clip", "无替代"),    // 属性支持表
-    ("background-origin", "无替代"),  // 属性支持表
-    ("mask-origin", "无替代"),        // 属性支持表（一格多属性拆分）
-    ("mask-clip", "无替代"),          // 属性支持表（一格多属性拆分）
-    ("mask-mode", "无替代"),          // 属性支持表（一格多属性拆分）
-    ("justify-items", "无替代"),      // 属性支持表
-    ("list-style-type", "无替代"),    // 属性支持表（一格多属性拆分）
-    ("list-style-image", "无替代"),   // 属性支持表（一格多属性拆分）
-    ("list-style-position", "无替代"), // 属性支持表（一格多属性拆分）
-    ("text-transform", "改用 WXML 里预先转换好的文本"), // css_property_names.h 无该属性 id，声明整条丢弃
+    ("background-attachment", "无替代"),     // 属性支持表
+    ("background-clip", "无替代"),           // 属性支持表
+    ("background-origin", "无替代"),         // 属性支持表
+    ("mask-origin", "无替代"),               // 属性支持表（一格多属性拆分）
+    ("mask-clip", "无替代"),                 // 属性支持表（一格多属性拆分）
+    ("mask-mode", "无替代"),                 // 属性支持表（一格多属性拆分）
+    ("justify-items", "无替代"),             // 属性支持表
+    ("list-style-type", "无替代"),           // 属性支持表（一格多属性拆分）
+    ("list-style-image", "无替代"),          // 属性支持表（一格多属性拆分）
+    ("list-style-position", "无替代"),       // 属性支持表（一格多属性拆分）
+    ("text-transform", "改用 WXML 里预先转换好的文本"), // 属性名表无该属性 id，声明整条丢弃
     (
         "user-select",
         "改用 `<text user-select=\"{{false}}\">` 属性",
@@ -51,7 +60,7 @@ const UNSUPPORTED_PROPERTIES: &[(&str, &str)] = &[
     ),
     // 老式 `-webkit-box` 弹性盒（display: -webkit-box 与 -webkit-box-*）按规则块合并，
     // 归 `skyline/legacy-flexbox` 报，避免同一块布局被拆成三、四条 error。
-    // 引擎里没有这两个属性（css/、style/ 零命中），图片裁剪用 <image mode>。
+    // 引擎里没有这两个属性，图片裁剪用 <image mode>。
     (
         "object-fit",
         "图片裁剪改用 `<image mode=\"aspectFill\">` 等属性",
@@ -120,7 +129,7 @@ const OVERFLOW_AXIS_PROPERTIES: &[&str] = &["overflow-x", "overflow-y"];
 const UNSUPPORTED_VALUES: &[(&[&str], &str, &str)] = &[
     (&["display"], "grid", "改用 flex 布局替代 grid"), // 属性表「display」、属性规范示例
     (&["display"], "flow-root", "改用 flex 或 block"), // 属性表「display」
-    (&["display"], "inline-grid", "改用 inline-flex"), // display.cc 无 InlineGrid case（property.rs:213 可解析）
+    (&["display"], "inline-grid", "改用 inline-flex"), // 引擎不认 InlineGrid 这个 case（属性语法可解析）
     (
         &["display"],
         "contents",

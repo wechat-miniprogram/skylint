@@ -4,10 +4,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use skylint::config::glob_match;
 use skylint::migrate::{self, Plan, PlanUnit};
 use skylint::render::{self, Style};
-use skylint::rules::Target;
-use skylint::{Project, Registry, Report};
+use skylint::rules::{RuleFilter, Target};
+use skylint::{Project, Registry, Report, Severity};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum TargetArg {
@@ -46,6 +47,12 @@ struct Cli {
     /// 检查方向
     #[arg(long, value_enum, default_value = "skyline")]
     target: TargetArg,
+
+    #[command(flatten)]
+    scope: ScopeArgs,
+
+    #[command(flatten)]
+    exit: ExitArgs,
 }
 
 // 顶层只有两类命令：不带子命令是 lint，`migration` 下面全是迁移。
@@ -101,6 +108,63 @@ struct IgnoreRules {
     ignore: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SeverityArg {
+    Info,
+    Warning,
+    Error,
+}
+
+impl From<SeverityArg> for Severity {
+    fn from(arg: SeverityArg) -> Self {
+        match arg {
+            SeverityArg::Info => Self::Info,
+            SeverityArg::Warning => Self::Warning,
+            SeverityArg::Error => Self::Error,
+        }
+    }
+}
+
+/// 输出范围的收窄：先跑全量分析，再按这几档条件过滤诊断。
+///
+/// 全部做成过滤而不是「只加载那几页」，因为跨文件规则（组件是否注册、
+/// 样式继承、共享样式）必须看到完整工程才能得出正确结论。
+#[derive(Debug, Args)]
+struct ScopeArgs {
+    /// 只跑这些规则 id（可重复；与 --ignore 同时给时取交集）
+    #[arg(long = "only", value_name = "RULE")]
+    only: Vec<String>,
+    /// 只保留不低于该级别的诊断
+    #[arg(long = "min-severity", value_name = "SEVERITY", value_enum)]
+    min_severity: Option<SeverityArg>,
+    /// 只报告这些单元的诊断；`unit:` 前缀可省，也可写 wxml 路径或目录（可重复）
+    #[arg(long = "unit", value_name = "UNIT")]
+    unit: Vec<String>,
+    /// 只保留匹配该 glob 的诊断路径（可重复）
+    #[arg(long = "include", value_name = "GLOB")]
+    include: Vec<String>,
+    /// 丢掉匹配该 glob 的诊断路径（可重复）
+    #[arg(long = "exclude", value_name = "GLOB")]
+    exclude: Vec<String>,
+    /// 只看 git 里改过的文件所影响的单元（未提交改动）
+    #[arg(long)]
+    changed: bool,
+    /// `--changed` 的对比基准（默认 HEAD）
+    #[arg(long, value_name = "REF")]
+    since: Option<String>,
+}
+
+/// 退出码策略。
+#[derive(Debug, Args)]
+struct ExitArgs {
+    /// 出现该级别及以上的诊断就以非零退出（默认 error）
+    #[arg(long = "fail-on", value_name = "SEVERITY", value_enum)]
+    fail_on: Option<SeverityArg>,
+    /// warning 超过这个数量就失败
+    #[arg(long = "max-warnings", value_name = "N")]
+    max_warnings: Option<usize>,
+}
+
 #[derive(Debug, Args)]
 struct PlanArgs {
     #[command(flatten)]
@@ -111,8 +175,47 @@ struct PlanArgs {
     /// 基线报告，用于对账
     #[arg(long, value_name = "FILE")]
     baseline: Option<PathBuf>,
+    /// 只看这个分包（`root` 或 `name`）
+    #[arg(long, value_name = "PACKAGE")]
+    package: Option<String>,
+    /// 只看页面或只看组件
+    #[arg(long, value_enum)]
+    kind: Option<KindArg>,
+    /// 只看某个渲染器下的单元
+    #[arg(long, value_enum)]
+    renderer: Option<RendererArg>,
     #[command(flatten)]
     ignored: IgnoreRules,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum KindArg {
+    Page,
+    Component,
+}
+
+impl KindArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Page => "page",
+            Self::Component => "component",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum RendererArg {
+    Skyline,
+    Webview,
+}
+
+impl RendererArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Skyline => "skyline",
+            Self::Webview => "webview",
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -339,15 +442,10 @@ struct FactsArgs {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    match cli.command {
+    let mut cli = Cli::parse();
+    match cli.command.take() {
         Some(Command::Migration(command)) => run_migration(command),
-        None => run_check(
-            cli.path.unwrap_or_else(|| PathBuf::from(".")),
-            cli.json,
-            cli.ignored.ignore,
-            cli.target.into(),
-        ),
+        None => run_check(cli),
     }
 }
 
@@ -366,19 +464,27 @@ fn run_migration(command: MigrationCommand) -> ExitCode {
     }
 }
 
-fn run_check(path: PathBuf, json: bool, ignore: Vec<String>, target: Target) -> ExitCode {
-    let registry = Registry::builtin().for_target(target);
+fn run_check(cli: Cli) -> ExitCode {
+    let path = cli.path.unwrap_or_else(|| PathBuf::from("."));
+    let registry = Registry::builtin().for_target(cli.target.into());
     let projects = match load(&path) {
         Ok(projects) => projects,
         Err(code) => return code,
     };
 
-    let ignored: HashSet<String> = ignore.into_iter().collect();
+    let ignored: HashSet<String> = cli.ignored.ignore.into_iter().collect();
+    let only: HashSet<String> = cli.scope.only.iter().cloned().collect();
+    let only = (!only.is_empty()).then_some(&only);
     let views: Vec<&Project> = projects.iter().collect();
-    let diagnostics = registry.run_views(&views, &ignored);
-    let report = Report::from_views(&projects, diagnostics);
+    let diagnostics = registry.run_views(&views, RuleFilter::new(&ignored, only));
+    let mut report = Report::from_views(&projects, diagnostics);
 
-    if json {
+    if let Err(message) = narrow(&projects, &mut report, &cli.scope) {
+        eprintln!("skylint: {message}");
+        return ExitCode::from(2);
+    }
+
+    if cli.json {
         println!("{}", report.to_json());
     } else {
         print!(
@@ -405,7 +511,134 @@ fn run_check(path: PathBuf, json: bool, ignore: Vec<String>, target: Target) -> 
         );
     }
 
-    if report.has_errors() {
+    verdict(&report, &cli.exit)
+}
+
+/// 按 `--include` / `--exclude` / `--unit` / `--changed` / `--min-severity`
+/// 依次收窄报告。顺序无副作用：都是单纯的保留 / 丢弃。
+fn narrow(projects: &[Project], report: &mut Report, scope: &ScopeArgs) -> Result<(), String> {
+    if !scope.exclude.is_empty() {
+        report.retain_diagnostics(|d| !scope.exclude.iter().any(|p| glob_match(p, &d.path)));
+    }
+    if !scope.include.is_empty() {
+        report.retain_diagnostics(|d| scope.include.iter().any(|p| glob_match(p, &d.path)));
+    }
+    if let Some(files) = scope_files(projects, report, scope)? {
+        report.retain_diagnostics(|d| files.contains(&d.path));
+    }
+    if let Some(min) = scope.min_severity {
+        report.retain_diagnostics(|d| d.severity >= Severity::from(min));
+    }
+    Ok(())
+}
+
+/// `--unit` / `--changed` 共同决定了「哪些文件算在范围内」。
+///
+/// 返回 `None` 表示没有限制。两者同时给时取交集（「这几个单元里、又改过的」）。
+fn scope_files(
+    projects: &[Project],
+    report: &Report,
+    scope: &ScopeArgs,
+) -> Result<Option<HashSet<String>>, String> {
+    if scope.unit.is_empty() && !scope.changed {
+        return Ok(None);
+    }
+    let plan = migrate::plan(projects, report, None);
+
+    let mut scope_files: HashSet<String> = HashSet::new();
+    for needle in &scope.unit {
+        let unit = find_unit(&plan, needle).ok_or_else(|| {
+            format!("找不到单元 `{needle}`（先跑 `skylint migration plan` 看清单）")
+        })?;
+        scope_files.extend(unit.files.iter().cloned());
+    }
+
+    if scope.changed {
+        let root = projects
+            .first()
+            .map(|project| project.root.clone())
+            .ok_or("没有可检查的工程")?;
+        let changed = git_changed(&root, scope.since.as_deref())?;
+        let touched: HashSet<String> = plan
+            .units
+            .iter()
+            .filter(|unit| {
+                std::iter::once(&unit.fs_path)
+                    .chain(unit.files.iter())
+                    .any(|path| changed.iter().any(|file| file_ends_with(file, path)))
+            })
+            .flat_map(|unit| unit.files.iter().cloned())
+            .collect();
+        scope_files = if scope.unit.is_empty() {
+            touched
+        } else {
+            scope_files.intersection(&touched).cloned().collect()
+        };
+    }
+
+    Ok(Some(scope_files))
+}
+
+/// `git diff` 的路径相对工程根，诊断路径相对视图根（宿主视图是 `miniprogramRoot`，
+/// 插件视图另带前缀），所以按后缀比：`miniprogram/pages/a/a.wxml` 匹配 `pages/a/a.wxml`。
+fn file_ends_with(changed: &str, path: &str) -> bool {
+    changed == path || changed.ends_with(&format!("/{path}"))
+}
+
+/// 当前（或相对 `since`）改动过的文件，工程根相对、`/` 分隔。
+///
+/// 未给 `since` 时对比 `HEAD`，并把未跟踪的新文件也算上（`git diff HEAD` 不列它们）。
+fn git_changed(root: &Path, since: Option<&str>) -> Result<Vec<String>, String> {
+    let run = |args: &[&str]| -> Result<String, String> {
+        let output = std::process::Command::new("git")
+            .current_dir(root)
+            .args(args)
+            .output()
+            .map_err(|err| format!("跑不了 git（`--changed` 需要 git）：{err}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "git {} 失败：{}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    };
+
+    let mut paths: Vec<String> = match since {
+        Some(reference) => run(&["diff", "--name-only", &format!("{reference}...HEAD")])?,
+        None => run(&["diff", "--name-only", "HEAD"])?,
+    }
+    .lines()
+    .filter(|line| !line.is_empty())
+    .map(str::to_string)
+    .collect();
+
+    if since.is_none() {
+        paths.extend(
+            run(&["ls-files", "--others", "--exclude-standard"])?
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(str::to_string),
+        );
+    }
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+/// 退出码：`--fail-on` 及以上级别有任何一条就失败，`--max-warnings` 超限也失败。
+fn verdict(report: &Report, exit: &ExitArgs) -> ExitCode {
+    let threshold = Severity::from(exit.fail_on.unwrap_or(SeverityArg::Error));
+    let failing = report
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity >= threshold)
+        .count();
+    let too_many = exit
+        .max_warnings
+        .is_some_and(|limit| report.summary.warnings > limit);
+    if failing > 0 || too_many {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
@@ -419,7 +652,11 @@ fn run_plan(args: PlanArgs) -> ExitCode {
     };
     let report = apply_waivers(&projects, report, &waived_ids(&args.project.path));
     let baseline = baseline_ref(args.baseline.as_deref(), report.diagnostics.len());
-    let plan = migrate::plan(&projects, &report, baseline);
+    let mut plan = migrate::plan(&projects, &report, baseline);
+    if let Err(message) = narrow_plan(&mut plan, &args, &projects) {
+        eprintln!("skylint: {message}");
+        return ExitCode::from(2);
+    }
 
     if args.project.json || args.out.is_some() {
         let json = migrate::to_json(&plan);
@@ -436,6 +673,54 @@ fn run_plan(args: PlanArgs) -> ExitCode {
         print_plan(&plan);
     }
     ExitCode::SUCCESS
+}
+
+/// `plan` 的分包 / 类型 / 渲染器过滤。三个维度同时给时取交集。
+fn narrow_plan(plan: &mut Plan, args: &PlanArgs, projects: &[Project]) -> Result<(), String> {
+    if args.package.is_none() && args.kind.is_none() && args.renderer.is_none() {
+        return Ok(());
+    }
+    let root = match args.package.as_deref() {
+        Some(package) => {
+            let project = projects.first().ok_or("没有可检查的工程")?;
+            Some(
+                package_root(project, package)
+                    .ok_or_else(|| format!("app.json 里没有分包 `{package}`"))?,
+            )
+        }
+        None => None,
+    };
+    plan.units.retain(|unit| {
+        let in_package = root.as_ref().is_none_or(|root| {
+            unit.path
+                .starts_with(&format!("{}/", root.trim_end_matches('/')))
+        });
+        in_package
+            && args.kind.is_none_or(|kind| unit.kind == kind.as_str())
+            && args
+                .renderer
+                .is_none_or(|renderer| unit.renderer == renderer.as_str())
+    });
+    plan.rebuild();
+    Ok(())
+}
+
+/// 分包名或 root 都接受：`subPackages[].name` 是可选字段，没写时就是 root。
+/// root 允许带首尾 `/`，与页面路由的口径一致后再比。
+fn package_root(project: &Project, package: &str) -> Option<String> {
+    let wanted = package.trim_matches('/');
+    let packages = ["subPackages", "subpackages"]
+        .iter()
+        .find_map(|key| project.app_json.get(*key)?.as_array())?;
+    packages.iter().find_map(|entry| {
+        let entry = entry.as_object()?;
+        let root = entry.get("root")?.as_str()?.trim_matches('/');
+        let name = entry
+            .get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or(root);
+        (name == wanted || root == wanted).then(|| root.to_string())
+    })
 }
 
 fn run_job(args: JobArgs) -> ExitCode {
@@ -1231,20 +1516,20 @@ fn write_out(path: &Path, json: &str) -> std::io::Result<()> {
     std::fs::write(path, json)
 }
 
+/// 单元定位：`unit:` 前缀与 `.wxml` 后缀都可省，也接受路径尾部（`a/a`）。
+/// 尾部匹配必须落在 `/` 边界上，否则 `a` 会命中 `pages/a/a`。
 fn find_unit<'a>(plan: &'a Plan, needle: &str) -> Option<&'a PlanUnit> {
+    let bare = needle.strip_prefix("unit:").unwrap_or(needle);
+    let base = bare.strip_suffix(".wxml").unwrap_or(bare);
+    let id = format!("unit:{base}");
     plan.units
         .iter()
-        .find(|unit| unit.id == needle)
+        .find(|unit| unit.id == needle || unit.id == id)
         .or_else(|| {
-            let base = needle.strip_suffix(".wxml").unwrap_or(needle);
-            plan.units
-                .iter()
-                .find(|unit| unit.path.strip_suffix(".wxml").unwrap_or(&unit.path) == base)
-                .or_else(|| {
-                    plan.units
-                        .iter()
-                        .find(|unit| !unit.path.is_empty() && unit.path.ends_with(needle))
-                })
+            plan.units.iter().find(|unit| {
+                let path = unit.path.strip_suffix(".wxml").unwrap_or(&unit.path);
+                path == base || path.ends_with(&format!("/{base}"))
+            })
         })
 }
 
@@ -1464,5 +1749,88 @@ mod tests {
 
         let augment = baseline_args(&["--out", "b.json", "--augment"]);
         assert!(augment.augment);
+    }
+
+    fn lint_args(extra: &[&str]) -> Cli {
+        let mut argv = vec!["skylint", "."];
+        argv.extend_from_slice(extra);
+        Cli::try_parse_from(argv).expect("参数应合法")
+    }
+
+    #[test]
+    fn scope_flags_parse() {
+        let cli = lint_args(&[
+            "--only",
+            "skyline/box-sizing",
+            "--only",
+            "skyline/no-pseudo",
+            "--min-severity",
+            "error",
+            "--unit",
+            "pages/a/a",
+            "--include",
+            "**/components/**",
+            "--exclude",
+            "**/vendor/**",
+            "--changed",
+            "--since",
+            "origin/main",
+        ]);
+        assert_eq!(cli.scope.only.len(), 2);
+        assert_eq!(
+            cli.scope.min_severity.map(Severity::from),
+            Some(Severity::Error)
+        );
+        assert_eq!(cli.scope.unit, vec!["pages/a/a".to_string()]);
+        assert!(cli.scope.changed);
+        assert_eq!(cli.scope.since.as_deref(), Some("origin/main"));
+        // 默认仍按 error 判失败，行为与旧版一致。
+        assert!(cli.exit.fail_on.is_none());
+    }
+
+    #[test]
+    fn unit_needle_ignores_prefix_and_suffix() {
+        let mut plan = Plan {
+            schema_version: 1,
+            generator: migrate::Generator::default(),
+            baseline: None,
+            units: vec![unit("pages/a/a"), unit("components/card/card")],
+            batches: Vec::new(),
+            summary: migrate::PlanSummary {
+                units: 2,
+                with_diagnostics: 0,
+                diagnostics: 0,
+            },
+            shared: migrate::SharedFiles::default(),
+        };
+        plan.rebuild();
+
+        for needle in [
+            "pages/a/a",
+            "pages/a/a.wxml",
+            "unit:pages/a/a",
+            "unit:pages/a/a.wxml",
+            "a/a",
+        ] {
+            let found = find_unit(&plan, needle).unwrap_or_else(|| panic!("{needle}"));
+            assert_eq!(found.id, "unit:pages/a/a", "{needle}");
+        }
+        assert!(find_unit(&plan, "pages/b/b").is_none());
+    }
+
+    fn unit(wxml: &str) -> PlanUnit {
+        PlanUnit {
+            id: format!("unit:{wxml}"),
+            path: format!("{wxml}.wxml"),
+            fs_path: format!("{wxml}.wxml"),
+            files: vec![format!("{wxml}.wxml")],
+            kind: "page",
+            renderer: "skyline",
+            reach: "direct",
+            batch: 0,
+            usages: 1,
+            diagnostics: migrate::DiagCounts::default(),
+            rule_families: Vec::new(),
+        }
     }
 }

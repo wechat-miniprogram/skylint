@@ -458,7 +458,7 @@ fn collect_components(
 /// 一个单元声明的组件引用解析后得到的根相对路径。
 ///
 /// `usingComponents` 之外还有 `componentGenerics.{key}.default`：默认实现同样会被
-/// 编译器加载（minidev `compiler-graph/src/conf.rs:309-315` 一并入队），
+/// 编译器（minidev）一并加载入队，
 /// 漏掉它这个组件就完全不参与检查。
 fn routes_of(fs: &LocalFs, root: &str, unit: &str, json: &Map<String, Value>) -> Vec<String> {
     using_components(json)

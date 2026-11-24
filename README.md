@@ -42,6 +42,39 @@ skylint --json
 
 # 跳过某些规则（可重复）
 skylint --ignore skyline/no-pseudo --ignore skyline/flex-direction
+
+# 只跑某几条规则（写规则、回归时用）
+skylint --only skyline/box-sizing
+```
+
+### 收窄范围
+
+默认检查整个工程。以下开关都在**全量分析之后**过滤诊断，所以跨文件规则
+（组件是否注册、样式继承、共享样式）仍然看到完整工程：
+
+```bash
+# 只看某个页面 / 组件（`unit:` 前缀与 `.wxml` 后缀都可省）
+skylint --unit pages/detail/index
+skylint --unit unit:pages/detail/index.wxml --unit components/card/card
+
+# 只看路径匹配的诊断（glob：`*` 跨 `/`）
+skylint --include '**/components/**' --exclude '**/vendor/**'
+
+# 只看 git 里改过的文件所影响的单元（默认对比 HEAD，含未跟踪新文件）
+skylint --changed
+skylint --changed --since origin/main
+
+# 只保留不低于某级别的诊断
+skylint --min-severity error
+```
+
+迁移命令按单元 / 分包 / 类型分工：
+
+```bash
+skylint migration plan --package mt            # 只看某个分包（root 或 name）
+skylint migration plan --kind component        # 只看页面 / 只看组件
+skylint migration plan --renderer webview      # 只看某渲染器下的单元
+skylint migration job --unit pages/detail/index
 ```
 
 从代码中导出的全部规则见 [docs/RULES.md](docs/RULES.md)。
@@ -61,7 +94,8 @@ skylint --ignore skyline/no-pseudo --ignore skyline/flex-direction
 
 WXSS 里用 `/* skylint-disable-next-line */` 同样有效。
 
-退出码：`0` 没有问题，`1` 有 error 级问题，`2` 项目加载失败。
+退出码：`0` 没有问题，`1` 达到失败阈值（默认有 error），`2` 项目加载失败。
+阈值可用 `--fail-on warning` 收紧、或用 `--max-warnings 20` 给 warning 留额度。
 
 只想要检查结果、不要 CLI 依赖时，直接依赖库 `skylint`；分层与用法见
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。

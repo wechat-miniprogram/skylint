@@ -24,9 +24,8 @@ use std::collections::HashSet;
 use crate::input::wxml::{WxmlElement, WxmlNode};
 use crate::matcher::Tree;
 use crate::project::Project;
-use crate::rules::Rule;
-use crate::rules::RuleMeta;
 use crate::rules::wxml::{for_each_element, resolved_property_with};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 const MESSAGE: &str = "`position: fixed` 在这个轴上没写偏移：Skyline 把节点提到页面根后按根的起点定位，WebView 用的是它在原容器里的位置，两端会错位";
@@ -39,6 +38,22 @@ impl FixedOffsetMissing {
     pub const ID: &'static str = "skyline/fixed-offset-missing";
 }
 
+/// 视觉用例：fixed 元素缺垂直偏移，原容器里前面还有流内兄弟。
+///
+/// WebView 用元素在标题之后的静态位置；Skyline 提到页面根后按根起点定位，两端错开
+/// 一个标题的高度。元素贴顶、与标题重叠，差异在第一屏就看得到。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="page">
+  <view class="header">首页</view>
+  <view class="bar" id="target">浮动提示</view>
+</view>"#,
+    wxss: ".page { display: block; padding: 12px; background: #f5f5f5; }\n.header { height: 60px; background: #333; color: #fff; }\n.bar { position: fixed; left: 20px; width: 160px; height: 36px; background: #e54d42; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "fixed 缺垂直偏移：Skyline 提到页面根后落在顶部，WebView 留在标题之后的静态位置（相差约一个标题高度）",
+    target: "#target",
+}];
+
 impl Rule for FixedOffsetMissing {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -46,6 +61,10 @@ impl Rule for FixedOffsetMissing {
             severity: Severity::Warning,
             description: "`position: fixed` 元素没写某轴偏移：Skyline 下按页面根起点定位，WebView 下按它在原容器里的位置",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -310,6 +329,20 @@ mod tests {
     use crate::rules::testutil::Fixture;
 
     use super::FixedOffsetMissing;
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture =
+                crate::rules::testutil::Fixture::page("fixed-offset-visual", case.wxml, case.wxss);
+            let hits = crate::rules::testutil::check_rule(&fixture, &FixedOffsetMissing)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == FixedOffsetMissing::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     fn check(name: &str, wxml: &str, wxss: &str) -> usize {
         let fixture = Fixture::new(name);

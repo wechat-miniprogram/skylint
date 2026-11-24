@@ -16,13 +16,26 @@
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::{WxmlElement, WxmlNode};
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta, Target};
+use crate::rules::{Rule, RuleMeta, Target, VisualCase, VisualExpect};
 
 use super::{element_diagnostic, for_each_element};
 
 pub const ID: &str = "webview/text-children";
 
 pub struct TextChildren;
+
+/// 视觉用例：`<text>` 里放一个 `<input>`。
+///
+/// Skyline 的 TextShadowNode 把非文本子节点转成 WidgetSpan，输入框照常渲染；WebView 的
+/// `wx-text` 伪 slot 只保留文本与嵌套 `text`，输入框整块丢弃（只剩文字）。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="wrap" id="target"><text class="t">提示<input class="field"/></text></view>"#,
+    wxss: ".wrap { padding: 10px; background: #fafafa; }\n.t { font-size: 16px; }\n.field { width: 120px; height: 40px; background: #36c; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`<text>` 里的 `<input>`：Skyline 当作行内 widget 渲染，WebView 的 text 伪 slot 直接丢弃（只剩文字）",
+    target: "#target",
+}];
 
 impl Rule for TextChildren {
     fn meta(&self) -> RuleMeta {
@@ -35,6 +48,10 @@ impl Rule for TextChildren {
 
     fn target(&self) -> Target {
         Target::Webview
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -91,7 +108,7 @@ fn dropped_children(element: &WxmlElement) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::TextChildren;
-    use crate::rules::testutil::wxml::{check_rule, project};
+    use crate::rules::testutil::wxml::{Fixture, check_rule, project};
 
     #[test]
     fn custom_component_inside_text_is_reported() {
@@ -105,6 +122,19 @@ mod tests {
         assert_eq!(diagnostics.len(), 1);
         assert!(diagnostics[0].message.contains("<inline-content>"));
         assert!(diagnostics[0].message.contains("<seg-comment-badge>"));
+    }
+
+    /// 视觉用例同源的页面：`<text>` 里的 `<input>` 在 WebView 下被丢弃。
+    #[test]
+    fn visual_case_input_inside_text_is_reported() {
+        let fixture = Fixture::page(
+            "webview/text-children-visual",
+            r#"<view class="wrap" id="target"><text class="t">提示<input class="field"/></text></view>"#,
+            ".wrap { padding: 10px; }\n.t { font-size: 16px; }\n.field { width: 120px; height: 40px; }\n",
+        );
+        let diagnostics = check_rule(&fixture, &TextChildren);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("<input>"));
     }
 
     #[test]

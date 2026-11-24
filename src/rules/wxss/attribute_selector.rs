@@ -26,7 +26,7 @@ use std::rc::Rc;
 use crate::input::wxml::WxmlDoc;
 use crate::matcher::{Dialect, Tree, Tri, subject};
 use crate::project::{Project, Scope, StyleSheet};
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::visit_matching_rules;
@@ -45,6 +45,27 @@ enum Divergence {
     Wider,
 }
 
+/// 视觉用例：主体只有属性时整条失效，主体带 class 时命中范围被放宽。
+static VISUAL_CASES: &[VisualCase] = &[
+    VisualCase {
+        wxml: r#"<view class="card" data-theme="dark" id="target">属性选择器命中的卡片</view>"#,
+        wxss: "[data-theme=\"dark\"] { padding: 24px; background: #f0a020; color: #fff; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "主体只有属性选择器的 `[data-theme=\"dark\"]` 在 WebView 命中、Skyline 下整条丢弃，卡片少了内边距与背景",
+        target: "#target",
+    },
+    VisualCase {
+        wxml: r#"<view class="card" id="target">没有 data-theme</view>
+<view class="card" data-theme="dark">有 data-theme</view>"#,
+        wxss: ".card[data-theme=\"dark\"] { padding: 16px; background: #3a7afe; color: #fff; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "`.card[data-theme=\"dark\"]` 在 Skyline 下丢掉属性条件，第一张没有该属性的卡片也被上色，WebView 不会",
+        target: "#target",
+    },
+];
+
 impl Rule for AttributeSelector {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -52,6 +73,10 @@ impl Rule for AttributeSelector {
             severity: Severity::Warning,
             description: "属性选择器在 Skyline 下不参与匹配：主体只有属性时整条声明失效，否则命中范围被放宽",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -187,7 +212,7 @@ fn candidate_units<'a>(project: &'a Project, sheet: &StyleSheet) -> Vec<&'a str>
 mod tests {
     use crate::project::Project;
     use crate::rules::Rule;
-    use crate::rules::testutil::wxss::Fixture;
+    use crate::rules::testutil::{Fixture, check_rule};
 
     use super::AttributeSelector;
 
@@ -205,6 +230,16 @@ mod tests {
             .write("pages/index/index.wxss", wxss);
         let project = fixture.project();
         (fixture, project)
+    }
+
+    #[test]
+    fn visual_case_dead_attribute_selector_is_reported() {
+        let fixture = Fixture::page(
+            "visual-case-dead",
+            r#"<view class="card" data-theme="dark" id="target">属性选择器命中的卡片</view>"#,
+            r#"[data-theme="dark"] { padding: 24px; background: #f0a020; color: #fff; }"#,
+        );
+        assert!(!check_rule(&fixture, &AttributeSelector).is_empty());
     }
 
     #[test]

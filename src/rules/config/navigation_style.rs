@@ -1,7 +1,7 @@
 //! `skyline/navigation-style`：Skyline 页面的 `navigationStyle` 解析结果不是 `custom`
 //! 时，开发者工具会拒绝编译（`minidev build` 不校验这条）。
 //!
-//! 判据来自 minidev `compiler-graph/src/json/mutate.rs:452-477`（`check_renderer`）：
+//! 判据来自 minidev 构建期对页面 json 的 renderer 校验：
 //!
 //! - 页面 json 显式写 `navigationStyle: "default"` → 直接报错；
 //! - 否则解析链（页面 json → app.json 的 `window.navigationStyle`）不是 `custom`，

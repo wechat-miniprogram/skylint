@@ -50,7 +50,7 @@
 
 use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 use super::for_each_element;
 use super::structure::{self, Condition, Constraint, Relation};
@@ -155,6 +155,21 @@ const ROWS: &[Constraint] = &[
 
 pub struct ComponentChildren;
 
+/// 视觉用例：`<swiper>` 只挂载 `swiper-item` 类型的直接子节点。
+///
+/// Skyline 按类型过滤后挂载，普通 `<view>` 整块不渲染（页面只剩 swiper 背景）；
+/// WebView 的 swiper 模板是 `<slot></slot>`，内容照常显示（只是不成为一页）。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<swiper class="banner" id="target">
+  <view class="panel">不是 swiper-item</view>
+</swiper>"#,
+    wxss: ".banner { height: 200px; background: #0f0; }\n.panel { height: 200px; background: #00f; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`<swiper>` 只挂载 `swiper-item`：Skyline 下 `<view>` 子节点不渲染（只剩绿色背景），WebView 照常显示蓝色内容",
+    target: "#target",
+}];
+
 impl Rule for ComponentChildren {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -162,6 +177,10 @@ impl Rule for ComponentChildren {
             severity: Severity::Error,
             description: "组件对直接子节点的结构约束（只允许某类子节点 / 必须唯一子节点 / 条件必需的子节点）",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -194,6 +213,24 @@ mod tests {
 
     fn check(fixture: &Fixture) -> Vec<crate::Diagnostic> {
         check_rule(fixture, &ComponentChildren)
+    }
+
+    /// 视觉用例同源的页面：`<swiper>` 里的 `<view>` 在 Skyline 下不渲染。
+    #[test]
+    fn visual_case_swiper_with_plain_view_is_reported() {
+        let fixture = Fixture::page(
+            "children-visual-swiper",
+            r#"<swiper class="banner" id="target">
+  <view class="panel">不是 swiper-item</view>
+</swiper>"#,
+            ".banner { height: 200px; }\n.panel { height: 200px; }\n",
+        );
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0].message.contains("swiper"),
+            "{diagnostics:#?}"
+        );
     }
 
     /// `<slot>` 只是投影占位：`<text><slot/></text>` 里放什么由使用方决定。

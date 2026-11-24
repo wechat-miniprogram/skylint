@@ -3,14 +3,15 @@
 //! **声明级**：`box-sizing` 在 Skyline 下只接受 `content-box` / `border-box`。
 //! `padding-box` / `margin-box` 在 WebView 同样非法（MDN formal syntax 只有
 //! `content-box | border-box`），两端都丢弃该声明，差异只在**回落值**：未开
-//! `defaultContentBox` 时 Skyline 回落 `border-box`（`skyline/css/css_properties/box_sizing.cc`
-//! 的 ApplyInitial），WebView 回落 `content-box`；开了开关后两端都回落
+//! `defaultContentBox` 时 Skyline 按初始值回落 `border-box`，WebView 回落
+//! `content-box`；开了开关后两端都回落
 //! `content-box`。`initial` / `unset` / `revert` 等全局关键字走同一条 ApplyInitial
 //! 路径，同样会得到 Skyline 的 border-box。
 //!
 //! **默认值级**：元素根本没写 `box-sizing` 时，两端默认值也不同（WebView 按规范
-//! `content-box`，Skyline 按 `defaultContentBox` 取）。这一层按元素实测、在
-//! `app.json` 上报工程级一条，消息里附受影响最多的文档。
+//! `content-box`，Skyline 按所属页面 / 组件 json 的 `defaultContentBox` 取，没有则
+//! 回落 `app.json`）。这一层按元素实测，在 `app.json` 上报工程级一条，只统计所属
+//! 单元未开开关的元素，消息里附受影响最多的文档。
 //!
 //! 两层共用一个 id：它们的修法是同一个（显式写 `box-sizing` 或开开关），只是定位
 //! 粒度不同——声明级能指到行，默认值级只能指到工程 + 热点页面。
@@ -27,13 +28,41 @@ use super::visit_declarations;
 use crate::rules::wxml::{
     cascade::resolved_property_with_dialect, element_diagnostic, for_each_element,
 };
-use crate::rules::{Rule, RuleMeta, Target};
+use crate::rules::{Rule, RuleMeta, Target, VisualCase, VisualExpect};
 
 pub struct BoxSizing;
 
 impl BoxSizing {
     pub const ID: &'static str = "skyline/box-sizing";
 }
+
+/// 视觉用例：声明级与默认值级两种形态。
+///
+/// - 非法值 `padding-box` 两端都丢弃，差异在回落值：Skyline `border-box`、WebView `content-box`。
+/// - 完全不写 `box-sizing` 时两端默认值本身就是这对组合。
+///
+/// 两条都靠「确定宽度 + 同轴 padding」放大成 40 CSS px 的外宽差；不开 `defaultContentBox`，
+/// 否则两端都回落 content-box，差异消失。
+static VISUAL_CASES: &[VisualCase] = &[
+    VisualCase {
+        wxml: r#"<view class="panel">
+  <view class="card" id="target">内容</view>
+</view>"#,
+        wxss: ".panel { padding: 10px; background: #eee; }\n.card { box-sizing: padding-box; width: 240px; padding: 20px; background: #4caf50; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "非法值 `padding-box` 两端都丢弃：Skyline 回落 border-box（外宽 240），WebView 回落 content-box（外宽 280）",
+        target: "#target",
+    },
+    VisualCase {
+        wxml: r#"<view class="card" id="target">内容</view>"#,
+        wxss: ".card { width: 240px; padding: 20px; background: #4caf50; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "未写 box-sizing：Skyline 默认 border-box（外宽 240），WebView 默认 content-box（外宽 280）",
+        target: "#target",
+    },
+];
 
 impl Rule for BoxSizing {
     fn meta(&self) -> RuleMeta {
@@ -44,12 +73,18 @@ impl Rule for BoxSizing {
         }
     }
 
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
+    }
+
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut out = visit_declarations(project, |sheet, _rule, decl, out| {
             let doc = &sheet.doc;
             if !decl.name.eq_ignore_ascii_case("box-sizing") {
                 return;
             }
+            // 页面 / 组件 json 可以单独开开关，生效值按这份样式所属单元取。
+            let content_box = project.content_box(doc.path());
             let value = decl.value.trim();
             if value.is_empty() {
                 return;
@@ -62,7 +97,7 @@ impl Rule for BoxSizing {
             if is_box_sizing_value(&lower) {
                 // `initial` / `unset` / `revert` 落到 ApplyInitial：只有开启
                 // defaultContentBox 才是 content-box。
-                if is_global_value(&lower) && !project.app_content_box() {
+                if is_global_value(&lower) && !content_box {
                     out.push(at_value_with(
                         Self::ID,
                         doc,
@@ -76,7 +111,7 @@ impl Rule for BoxSizing {
             }
             // 非法值两端都会丢弃，差异只在回落值；开了 defaultContentBox 后两端都
             // 回落 content-box，没有可见差异，不报。
-            if project.app_content_box() {
+            if content_box {
                 return;
             }
             out.push(at_value_with(
@@ -99,13 +134,14 @@ impl Rule for BoxSizing {
 ///
 /// 工程级一条告警只说「多少元素不同」，落到代码还得自己找。真正有可见后果的是
 /// 「某一轴写了尺寸 + 同一轴有非零 padding」的组合：border-box 会把 padding 挤进
-/// 尺寸里（`width:750rpx; padding:0 36rpx` 就是 `address/pages/index-v3` 骨架屏
-/// 那一次）。这类点比全部漂移元素少一个量级，按元素报得动。
+/// 尺寸里（`width:750rpx; padding:0 36rpx` 就是某页面骨架屏那一次）。这类点比全部
+/// 漂移元素少一个量级，按元素报得动。
 fn drift_elements(project: &Project, out: &mut Vec<Diagnostic>) {
-    if project.app_content_box() {
-        return;
-    }
     for_each_element(project, Target::Skyline, |site| {
+        // 元素所在单元的开关已开时两端默认值一致，这个元素没有漂移。
+        if project.content_box(site.doc.path()) {
+            return;
+        }
         let drift = |dialect| {
             resolved_property_with_dialect(
                 site.project,
@@ -230,11 +266,11 @@ fn non_zero_value(
 
 /// 默认值级的差异：元素没写 `box-sizing` 时，两端默认值不同。
 ///
-/// 按元素实测而不是按开关猜：WebView 侧按规范默认 `content-box`，Skyline 侧按
-/// `defaultContentBox` 决定默认值。这样两种工程形态都能判对——没有 reset 时逐个元素
+/// 按元素实测而不是按开关猜：WebView 侧按规范默认 `content-box`，Skyline 侧按元素
+/// 所属单元（页面 / 组件 json，缺省回落 app 级）的 `defaultContentBox` 决定默认值。
+/// 这样两种工程形态都能判对——没有 reset 时逐个元素
 /// 命中默认值差异；有 `* { box-sizing: border-box }` 这类 reset 时，WebView 全部变成
-/// border-box，而 Skyline 会整条丢弃主体为空的选择器（`style/rule_set.cc` 的
-/// `ExtractRuleBySelector`），回落到默认值，此时若开了 `defaultContentBox` 反而是
+/// border-box，而 Skyline 会整条丢弃主体为空的选择器，回落到默认值，此时若开了 `defaultContentBox` 反而是
 /// Skyline 单方面变 content-box。
 fn default_drift(project: &Project) -> Option<Diagnostic> {
     // 与 `skyline/default-layout-drift` 共用同一道闸门：单文件 / 纯 WebView 工程 /
@@ -242,15 +278,12 @@ fn default_drift(project: &Project) -> Option<Diagnostic> {
     if !crate::rules::config::applicable_renderer_options(project) {
         return None;
     }
-    let skyline_default = if project.app_content_box() {
-        "content-box"
-    } else {
-        "border-box"
-    };
     // 两个方向的计数分开记：前者是「开关没开」，后者是「reset 的选择器在 Skyline 不生效」，
     // 修法完全相反，混成一个数就没法给建议。
     let mut open_content_box = 0usize;
     let mut unreachable_reset = 0usize;
+    // 所在单元已开开关的元素不算「该开开关」：它们的默认值已经对齐，从统计中排除。
+    let mut already_open = 0usize;
     // 工程级一条告警定位不到页面；按文档聚合出「哪些页面受影响最多」，让这条告警可操作。
     let mut pages: HashMap<String, usize> = HashMap::new();
     for_each_element(project, Target::Skyline, |site| {
@@ -275,13 +308,21 @@ fn default_drift(project: &Project) -> Option<Diagnostic> {
             return;
         }
         let webview = resolved_box_sizing(webview).unwrap_or("content-box");
-        let skyline = resolved_box_sizing(skyline).unwrap_or(skyline_default);
-        match (webview, skyline) {
-            ("content-box", "border-box") => {
+        let skyline = resolved_box_sizing(skyline);
+        // 所属单元开了开关时默认值是 content-box，未开时是 border-box；两个方向
+        // 分别属于「开关没开」与「reset 选择器不生效」，不能混。
+        let unit_on = project.content_box(site.doc.path());
+        match (
+            webview,
+            skyline.unwrap_or(if unit_on { "content-box" } else { "border-box" }),
+        ) {
+            ("content-box", "border-box") if !unit_on => {
                 open_content_box += 1;
                 *pages.entry(site.doc.path().to_string()).or_default() += 1;
             }
             ("border-box", "content-box") => unreachable_reset += 1,
+            // 未开开关时本会是 border-box，现已对齐：只计数用于说明被排除的量。
+            ("content-box", "border-box") => already_open += 1,
             _ => {}
         }
     });
@@ -296,13 +337,18 @@ fn default_drift(project: &Project) -> Option<Diagnostic> {
         .collect::<Vec<_>>()
         .join("、");
 
+    let excluded = if already_open == 0 {
+        String::new()
+    } else {
+        format!("（另有 {already_open} 个元素所在单元已开启 defaultContentBox，不计入）")
+    };
     let (message, help) = match (open_content_box, unreachable_reset) {
         (0, 0) => return None,
         (count, 0) => (
             format!(
-                "app 级未开启 defaultContentBox：{count} 个元素两端解析出的 box-sizing 不同（WebView content-box / Skyline border-box），显式声明尺寸的元素实际内容盒比 WebView 小，少掉的正是同轴 padding 与 border；受影响最多的文档：{hot_list}"
+                "所属单元未开启 defaultContentBox：{count} 个元素两端解析出的 box-sizing 不同（WebView content-box / Skyline border-box），显式声明尺寸的元素实际内容盒比 WebView 小，少掉的正是同轴 padding 与 border；受影响最多的文档：{hot_list}{excluded}"
             ),
-            "开启 rendererOptions.skyline.defaultContentBox: true 对齐 WebView；不想动全局开关时逐元素显式写 box-sizing: content-box",
+            "在对应页面 / 组件的 json（或 app.json）开启 rendererOptions.skyline.defaultContentBox: true 对齐 WebView；不想动开关时逐元素显式写 box-sizing: content-box",
         ),
         (0, count) => (
             format!(
@@ -312,9 +358,9 @@ fn default_drift(project: &Project) -> Option<Diagnostic> {
         ),
         (open, unreachable) => (
             format!(
-                "盒模型默认值两端不一致：{open} 个元素 WebView content-box / Skyline border-box，另有 {unreachable} 个元素相反（Skyline 丢弃了 `*` 或仅属性选择器后回落到默认值）；受影响最多的文档：{hot_list}"
+                "盒模型默认值两端不一致：{open} 个元素 WebView content-box / Skyline border-box，另有 {unreachable} 个元素相反（Skyline 丢弃了 `*` 或仅属性选择器后回落到默认值）；受影响最多的文档：{hot_list}{excluded}"
             ),
-            "先统一默认值：无 reset 的元素开 defaultContentBox；由 `*` 之类选择器提供的 border-box 改成标签选择器再开开关，否则两边只能对齐一侧",
+            "先统一默认值：无 reset 的元素在各自页面 / 组件开 defaultContentBox；由 `*` 之类选择器提供的 border-box 改成标签选择器再开开关，否则两边只能对齐一侧",
         ),
     };
 
@@ -369,6 +415,20 @@ mod tests {
     use crate::{Project, rules::Rule};
 
     use super::BoxSizing;
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture =
+                crate::rules::testutil::Fixture::page("box-sizing-visual", case.wxml, case.wxss);
+            let hits = crate::rules::testutil::check_rule(&fixture, &BoxSizing)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == BoxSizing::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     /// 声明级诊断（`app.json` 上的工程级默认值告警不算）。
     fn declarations(project: &Project) -> Vec<String> {
@@ -668,5 +728,168 @@ mod tests {
             r#".a { box-sizing: content-box; width: 750rpx; padding: 0 36rpx; }"#,
         );
         assert!(hits.is_empty(), "{hits:?}");
+    }
+
+    const DRIFT_WXSS: &str = r#".a { box-sizing: padding-box; width: 750rpx; padding: 0 36rpx; }"#;
+
+    /// 页面 json 自己开 defaultContentBox：该页的声明级、逐元素级、默认值级都不报。
+    #[test]
+    fn page_level_flag_silences_the_page() {
+        let fixture = Fixture::new("box-sizing-page-flag");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"rendererOptions":{"skyline":{"defaultContentBox":true}}}"#,
+            )
+            .write("pages/index/index.wxml", r#"<view class="a">内容</view>"#)
+            .write("pages/index/index.wxss", DRIFT_WXSS);
+        assert_eq!(
+            messages(&BoxSizing, &fixture.project()),
+            Vec::<String>::new()
+        );
+    }
+
+    /// 同工程里没开开关的页面照常报：声明级与逐元素级都落在这一页上。
+    #[test]
+    fn page_level_flag_does_not_silence_other_pages() {
+        let fixture = Fixture::new("box-sizing-page-flag-other");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/on/on","pages/off/off"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/on/on.json",
+                r#"{"rendererOptions":{"skyline":{"defaultContentBox":true}}}"#,
+            )
+            .write("pages/on/on.wxml", r#"<view class="a">内容</view>"#)
+            .write("pages/on/on.wxss", DRIFT_WXSS)
+            .write("pages/off/off.json", "{}")
+            .write("pages/off/off.wxml", r#"<view class="a">内容</view>"#)
+            .write("pages/off/off.wxss", DRIFT_WXSS);
+        let diags = BoxSizing.check(&fixture.project());
+        assert!(
+            diags.iter().all(|d| !d.path.contains("pages/on/")),
+            "{diags:#?}"
+        );
+        assert_eq!(
+            diags
+                .iter()
+                .filter(|d| d.path == "pages/off/off.wxss")
+                .count(),
+            1,
+            "{diags:#?}"
+        );
+        assert_eq!(
+            diags
+                .iter()
+                .filter(|d| d.path == "pages/off/off.wxml")
+                .count(),
+            1,
+            "{diags:#?}"
+        );
+    }
+
+    /// 组件 json 开开关只覆盖组件自己的元素，页面元素照常报。
+    #[test]
+    fn component_level_flag_silences_only_the_component() {
+        let fixture = Fixture::new("box-sizing-component-flag");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"card":"/components/card/index"}}"#,
+            )
+            .write(
+                "pages/index/index.wxml",
+                r#"<view class="a">内容</view><card/>"#,
+            )
+            .write("pages/index/index.wxss", DRIFT_WXSS)
+            .write(
+                "components/card/index.json",
+                r#"{"component":true,"rendererOptions":{"skyline":{"defaultContentBox":true}}}"#,
+            )
+            .write(
+                "components/card/index.wxml",
+                r#"<view class="a">内容</view>"#,
+            )
+            .write("components/card/index.wxss", DRIFT_WXSS);
+        let diags = BoxSizing.check(&fixture.project());
+        assert!(
+            diags.iter().all(|d| !d.path.starts_with("components/")),
+            "{diags:#?}"
+        );
+        assert_eq!(
+            diags
+                .iter()
+                .filter(|d| d.path == "pages/index/index.wxss")
+                .count(),
+            1,
+            "{diags:#?}"
+        );
+        assert_eq!(
+            diags
+                .iter()
+                .filter(|d| d.path == "pages/index/index.wxml")
+                .count(),
+            1,
+            "{diags:#?}"
+        );
+    }
+
+    /// 组件 json 没写开关时跟着渲染它的页面走：页面开了，组件内的元素也不报。
+    #[test]
+    fn component_inherits_the_page_flag() {
+        let fixture = Fixture::new("box-sizing-component-inherit");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"rendererOptions":{"skyline":{"defaultContentBox":true}},"usingComponents":{"card":"/components/card/index"}}"#,
+            )
+            .write("pages/index/index.wxml", r#"<card/>"#)
+            .write(
+                "components/card/index.json",
+                r#"{"component":true,"renderer":"skyline"}"#,
+            )
+            .write("components/card/index.wxml", r#"<view class="a">内容</view>"#)
+            .write("components/card/index.wxss", DRIFT_WXSS);
+        assert_eq!(
+            messages(&BoxSizing, &fixture.project()),
+            Vec::<String>::new()
+        );
+    }
+
+    /// app 级开、页面没写：整工程不报，现有行为不回归。
+    #[test]
+    fn app_level_flag_covers_pages_without_their_own() {
+        let fixture = Fixture::new("box-sizing-app-flag");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"skyline":{"defaultContentBox":true}}}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write("pages/index/index.wxml", r#"<view class="a">内容</view>"#)
+            .write("pages/index/index.wxss", DRIFT_WXSS);
+        assert_eq!(
+            messages(&BoxSizing, &fixture.project()),
+            Vec::<String>::new()
+        );
     }
 }

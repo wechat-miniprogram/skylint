@@ -2,12 +2,11 @@
 //!
 //! 超限后不是「多出的层失效」，而是该长写的整条值回退：fp 解析到 >2 层时 `break` 出
 //! switch，最终返回 `CSSUnsetValue`（`parser/mod.rs` 的 background / mask 解析路径），
-//! 引擎再走 `ApplyInitial`——image 回到 `none`、position 回到 `0% 0%`、size 回到 `auto`
-//! （`skyline/css/css_properties/background_*.cc`、`mask_*.cc` 的 `ApplyInitial`）。
+//! 引擎再按初始值回填——image 回到 `none`、position 回到 `0% 0%`、size 回到 `auto`。
 //! `background` / `mask` 简写展开后只有 image 那条长写回退，位置 / 尺寸 / 平铺仍按原值生效。
 
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{at_value, is_dynamic, split_top_level};
@@ -19,6 +18,19 @@ impl MultiValueLimit {
     pub const ID: &'static str = "skyline/multi-value-limit";
 }
 
+/// 视觉用例：三层 `background-image` 超过上限，整条回退 `none`。
+///
+/// WebView 叠三层不透明渐变，最上层是红色；Skyline 把整条 `background-image`
+/// 回退到初始值 `none`，只剩 `background-color` 的白色。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="hero" id="target"></view>"#,
+    wxss: ".hero { width: 300px; height: 160px; background-color: #ffffff; background-image: linear-gradient(#ff3b30, #ff3b30), linear-gradient(#00c853, #00c853), linear-gradient(#007aff, #007aff); }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "三层 `background-image` 超过 Skyline 的 2 层上限，整条回退 `none`：WebView 显示最上层红色，Skyline 只剩白色背景色",
+    target: "#target",
+}];
+
 impl Rule for MultiValueLimit {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -26,6 +38,10 @@ impl Rule for MultiValueLimit {
             severity: Severity::Warning,
             description: "background / mask 的多值数量超出 Skyline 支持范围",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -117,6 +133,23 @@ mod tests {
 
     use super::MultiValueLimit;
     use crate::rules::testutil::wxss::{messages, page};
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture = crate::rules::testutil::Fixture::page(
+                "multi-value-limit-visual",
+                case.wxml,
+                case.wxss,
+            );
+            let hits = crate::rules::testutil::check_rule(&fixture, &MultiValueLimit)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == MultiValueLimit::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     #[test]
     fn shorthand_layers_are_limited_too() {

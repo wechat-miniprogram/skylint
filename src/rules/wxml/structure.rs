@@ -8,7 +8,7 @@
 //! - `Direct`：直接父节点必须是目标之一（渲染树，block/wx:if/wx:for 已摊平）
 //! - `FirstChild`：父节点是目标容器时，子标签必须是它的第一个元素子节点
 //! - `Unique`：最近的目标容器内，子标签最多出现一次（多余的不会生效）
-//! - `RendersFirst`：子标签只渲染第一个直接子节点，多写的会被静默丢弃（见 `sticky_header.cc`）
+//! - `RendersFirst`：子标签只渲染第一个直接子节点，多写的会被静默丢弃
 //! - `RequiresAttr { name, unless }`：子标签必须显式声明 `name`；`unless` 为
 //!   `(attr, v)` 时，自身 `<attr>=<v>` 不再要求（典型：list-builder 的 child-height
 //!   只在定高模式必填）
@@ -418,8 +418,7 @@ fn unique_violation(
 ) -> Option<String> {
     let container = nearest_container_local(ancestors, containers)?;
     // 互斥分支里的同标签节点不会与它同时渲染，不计入重复。只数容器的直接子节点：
-    // 引擎的 `children.firstWhere`（skyline_scroll_view.dart:1559-1563）与
-    // `MultiSliver` 都只看一层。
+    // 引擎取容器直接子节点的做法都只看一层。
     let siblings: Vec<&WxmlElement> = element_children(container)
         .filter(|sibling| sibling.tag == element.tag && !exclusive(sibling, element))
         .collect();

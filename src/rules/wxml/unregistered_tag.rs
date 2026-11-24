@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use crate::diag::{Diagnostic, Severity};
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 use super::{element_diagnostic, for_each_element, is_builtin};
 
@@ -23,6 +23,20 @@ impl UnregisteredTag {
     const NOT_COMPONENTS: &[&str] = &["template", "import", "include", "wxs", "slot", "block"];
 }
 
+/// 视觉用例：同一段 WXML/WXSS 两端各渲一次，整页比对。
+///
+/// `my-modal` 未在 `usingComponents` 里注册：WebView 把它当行内元素，背景只包住「内容」
+/// （32×22 CSS，`height` 被忽略）；Skyline 当普通块级元素，背景铺满 355×40 CSS，后面的
+/// 兄弟被推下 18 CSS。差异主体是这块 355×40 的背景，而不是尾部的位移。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="wrap"><view class="head">标题</view><my-modal class="ghost">内容</my-modal><view class="tail" id="target">尾部</view></view>"#,
+    wxss: ".wrap { padding: 10px; }\n.ghost { height: 40px; background: #cde; }\n.tail { height: 20px; background: #edc; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "未注册的 <my-modal>：WebView 按行内元素收缩到内容尺寸（背景 32×22，`height` 被忽略）；Skyline 按块级元素铺满 355×40，尾部只差 18px——差异主体是这块 40px 高的背景",
+    target: "",
+}];
+
 impl Rule for UnregisteredTag {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -30,6 +44,10 @@ impl Rule for UnregisteredTag {
             severity: Severity::Error,
             description: "未注册的标签：WebView 不渲染其子树，Skyline 按普通元素渲染",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -76,7 +94,7 @@ impl Rule for UnregisteredTag {
 
 #[cfg(test)]
 mod tests {
-    use super::UnregisteredTag;
+    use super::{UnregisteredTag, VISUAL_CASES};
     use crate::rules::testutil::wxml::{Fixture, check_rule, project};
 
     #[test]
@@ -265,5 +283,19 @@ mod tests {
     fn tag_names_are_matched_case_insensitively() {
         let diagnostics = check_rule(&project("case", "<Page-Meta/>"), &UnregisteredTag);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    }
+
+    /// 视觉用例的同一份 WXML/WXSS 必须真的能触发本规则。
+    #[test]
+    fn visual_case_triggers_rule() {
+        let case = &VISUAL_CASES[0];
+        let fixture = Fixture::page("unregistered-visual", case.wxml, case.wxss);
+        let diagnostics = check_rule(&fixture, &UnregisteredTag);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.rule == UnregisteredTag::ID),
+            "视觉用例未触发规则"
+        );
     }
 }

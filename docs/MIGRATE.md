@@ -308,9 +308,9 @@ id = "{rule}|{path}|{line}:{column}"
 
 ```json
 {
-  "id": "skyline/unsupported-property|styles/common.wxss|.mt-pull-left|float|#0",
+  "id": "skyline/unsupported-property|styles/common.wxss|.pull-left|float|#0",
   "path": "styles/common.wxss",
-  "selector": ".mt-pull-left",
+  "selector": ".pull-left",
   "property": "float",
   "declarations": [
     { "property": "display", "value": "block", "line": 16, "column": 3 },

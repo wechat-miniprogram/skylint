@@ -10,7 +10,7 @@
 
 use crate::input::wxss::ValueToken;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{
@@ -25,6 +25,29 @@ impl GradientLimit {
     pub const ID: &'static str = "skyline/gradient-limit";
 }
 
+/// 视觉用例：形状与停止位置两个分支。
+///
+/// - 省略形状的 `radial-gradient` 默认 ellipse，Skyline 只认 circle，整张图不渲染。
+/// - `linear-gradient` 的 `em` 停止位置被丢弃，颜色过渡的起点从 0 开始。
+static VISUAL_CASES: &[VisualCase] = &[
+    VisualCase {
+        wxml: r#"<view class="spot" id="target"></view>"#,
+        wxss: ".spot { width: 240px; height: 160px; background-color: #ffffff; background-image: radial-gradient(#ff3b30, #007aff); }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "`radial-gradient` 省略形状即默认 ellipse，Skyline 只认 circle、整张图不渲染：WebView 是红蓝径向渐变，Skyline 只剩白底",
+        target: "#target",
+    },
+    VisualCase {
+        wxml: r#"<view class="bar" id="target"></view>"#,
+        wxss: ".bar { width: 240px; height: 160px; background-color: #ffffff; background-image: linear-gradient(90deg, #ff3b30 10em, #007aff 100%); }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "`linear-gradient` 的 `10em` 停止位置在 Skyline 被丢弃：WebView 前 160px 是纯红，Skyline 从 0 就开始向蓝色过渡",
+        target: "#target",
+    },
+];
+
 impl Rule for GradientLimit {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -32,6 +55,10 @@ impl Rule for GradientLimit {
             severity: Severity::Warning,
             description: "渐变的形状 / 尺寸 / 颜色停止位置超出 Skyline 支持范围",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -214,6 +241,23 @@ mod tests {
 
     use super::GradientLimit;
     use crate::rules::testutil::wxss::{messages, page};
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture = crate::rules::testutil::Fixture::page(
+                "gradient-limit-visual",
+                case.wxml,
+                case.wxss,
+            );
+            let hits = crate::rules::testutil::check_rule(&fixture, &GradientLimit)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == GradientLimit::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     #[test]
     fn gradient_limit_reports_shape_size_and_stop_units() {

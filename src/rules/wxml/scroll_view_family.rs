@@ -16,11 +16,9 @@
 //!   只加「在 sticky-section 内时」的条件约束，挂载位置仍不约束（见下方整条撤销的记录）。
 //! - nested-scroll-body 唯一：scroll/nested-scroll.md MUST 4「外层只能有一个 nested-scroll-body」（:166）、
 //!   NEVER 2「不要有多个 nested-scroll-body」。
-//! - nested-scroll-body 必需：nested-scroll.md:38 只渲染第一个 body；
-//!   skyline_scroll_view.dart:1559-1562 用 `firstWhere((child) => child is NestedScrollBody)`
-//!   且没有 orElse，缺 body 时直接抛 StateError（`?? SizedBox()` 是死代码）。
-//! - nested-scroll-header 与 body 的顺序无关：skyline_scroll_view.dart:1551-1554 用
-//!   `children.whereType<NestedScrollHeader>()` 收集，不依赖声明顺序。
+//! - nested-scroll-body 必需：nested-scroll.md:38 只渲染第一个 body；引擎按类型查找
+//!   第一个 body，缺 body 时直接抛 StateError（兜底占位是死代码）。
+//! - nested-scroll-header 与 body 的顺序无关：引擎按类型收集 header，不依赖声明顺序。
 //! - 只渲染第一个子节点：nested-scroll.md:29（header）、:38（body）。多写的会被静默丢弃，故为 warning。
 //! - list-builder 必需属性：scroll/list-grid-view.md MUST 2「使用 list-builder 时必须指定
 //!   child-height（定高模式）」（:271）。grid-view 的 cross-axis-count 不是必填：
@@ -52,13 +50,17 @@
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::WxmlNode;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
+use crate::wxml_graph::WxmlGraph;
 
 use super::branch::element_children;
 use super::structure::{self, Condition, Constraint, Relation, Target};
 use super::{element_diagnostic, for_each_element, is_builtin, span_diagnostic};
 
 pub const ID: &str = "skyline/scroll-view-family";
+
+/// `virtualHost` 组件模板顶层的展开深度：只防自引用成环，正常嵌套远小于这个值。
+const MAX_VIRTUAL_HOST_DEPTH: usize = 4;
 
 const CUSTOM_SCROLL: Target = Target {
     tag: "scroll-view",
@@ -72,8 +74,7 @@ const STICKY_SECTION: Target = Target {
     tag: "sticky-section",
     attr: None,
 };
-/// 嵌套滚动的头部槽也是 sliver 列表（`skyline_scroll_view.dart:1551-1556` 交给
-/// `NestedScrollView.headerSliverBuilder`），放 `list-view` / `sticky-section` 合法。
+/// 嵌套滚动的头部槽也是 sliver 列表（交给嵌套滚动视图的 header 槽构建），放 `list-view` / `sticky-section` 合法。
 const NESTED_HEADER: Target = Target {
     tag: "nested-scroll-header",
     attr: None,
@@ -83,8 +84,7 @@ const NESTED_HEADER: Target = Target {
 const CONSTRAINTS: &[Constraint] = &[
     Constraint {
         tag: "sticky-section",
-        // 引擎只认直接子节点：`skyline_scroll_view.dart` 的 sliver 组装与
-        // `sticky.dart` 的 `MultiSliver` 都是按 `widget.children` 取的。
+        // 引擎只认直接子节点：sliver 组装与 MultiSliver 都按子节点列表直接取。
         relation: Relation::Direct(&[CUSTOM_SCROLL, NESTED_HEADER]),
         severity: Severity::Error,
         help: "把 `<sticky-section>` 放进 `<scroll-view type=\"custom\">` 或 `<nested-scroll-header>`，type 不能是 list/nested",
@@ -146,7 +146,7 @@ const CONSTRAINTS: &[Constraint] = &[
         tag: "sticky-header",
         relation: Relation::RendersFirst,
         severity: Severity::Warning,
-        help: "把内容收进一个直接子节点（`sticky_header.cc` 只把 `GetChildHandle()` 交给 Dart）",
+        help: "把内容收进一个直接子节点（Skyline 只把第一个直接子节点交给原生滚动组件）",
     },
     Constraint {
         tag: "nested-scroll-header",
@@ -215,7 +215,68 @@ const CONSTRAINTS: &[Constraint] = &[
     },
 ];
 
+/// `virtualHost` 组件在使用处没有宿主元素，模板顶层直接挂在这个位置：返回它模板
+/// 顶层渲染出的标签。顶层还是 `virtualHost` 组件时继续展开（`depth` 防自引用成环）。
+///
+/// `None` = 不是本文件注册的自定义组件，或它不抹掉宿主元素（宿主是真实节点）。
+fn virtual_host_top_tags<'a>(
+    project: &'a Project,
+    graph: &'a WxmlGraph,
+    usage_doc: &str,
+    tag: &str,
+    depth: usize,
+) -> Option<Vec<&'a str>> {
+    if depth == 0 {
+        return None;
+    }
+    let route = project
+        .tag_targets
+        .get(usage_doc)?
+        .get(&tag.to_ascii_lowercase())?;
+    let wxml = project
+        .components
+        .iter()
+        .find(|unit| unit.path == *route)?
+        .files
+        .wxml
+        .as_deref()?;
+    if !graph.component_options(wxml).1 {
+        return None;
+    }
+    Some(
+        graph
+            .component_top_tags(wxml)?
+            .into_iter()
+            .flat_map(
+                |top| match virtual_host_top_tags(project, graph, wxml, top, depth - 1) {
+                    Some(nested) => nested,
+                    None => vec![top],
+                },
+            )
+            .collect(),
+    )
+}
+
 pub struct ScrollViewFamily;
+
+/// 视觉用例：`<scroll-view type="nested">` 的直接子节点只认 header / body。
+///
+/// 另外补一个多余子节点：Skyline 把它整段丢弃（`#target` 里看不到红色块），
+/// WebView 的 scroll-view 只是普通滚动容器，会把它排在 header / body 之后。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="page">
+  <scroll-view type="nested" class="scroller" id="target">
+    <nested-scroll-header><view class="header">头部</view></nested-scroll-header>
+    <nested-scroll-body><view class="body">主体</view></nested-scroll-body>
+    <view class="extra">多余子节点</view>
+  </scroll-view>
+</view>"#,
+    wxss: ".scroller { height: 300px; }\n.header { height: 120px; background: #cde; }\n.body { height: 120px; background: #edc; }\n.extra { height: 60px; background: #f00; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`<scroll-view type=\"nested\">` 只渲染 header / body：Skyline 丢掉 `.extra`，WebView 照常把它渲染出来",
+    target: "#target",
+}];
 
 impl Rule for ScrollViewFamily {
     fn meta(&self) -> RuleMeta {
@@ -224,6 +285,10 @@ impl Rule for ScrollViewFamily {
             severity: Severity::Error,
             description: "scroll-view 家族组件的结构约束（挂载位置 / 顺序 / 唯一性 / 必需属性 / 关联容器）",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -264,12 +329,9 @@ impl Rule for ScrollViewFamily {
                     );
             }
 
-            // `<scroll-view type="nested">` 的直接子节点只认 header / body：
-            // `skyline_scroll_view.dart:1750-1756` 只把 `nestedHeaderChildren` 与
-            // `nestedBody` 交给 `NestedScrollView`；`:1551-1557` 的
-            // `whereType<NestedScrollHeader>()` 与 `:1559-1562` 的
-            // `firstWhere((child) => child is NestedScrollBody)` 都只看这两类 widget，
-            // 其余元素与有内容的文本不会进入构建结果，等于整段丢弃。
+            // `<scroll-view type="nested">` 的直接子节点只认 header / body：引擎只把
+            // 这两类子节点交给嵌套滚动视图，其余元素与有内容的文本不会进入构建结果，
+            // 等于整段丢弃。
             if !element.in_template()
                 && element.tag == "scroll-view"
                 && matches!(
@@ -291,16 +353,39 @@ impl Rule for ScrollViewFamily {
                     {
                         continue;
                     }
+                    // 带 `slot` 属性：投影进具名插槽的内容，不是普通直接子节点。
+                    if structure::find_attr(child, "slot").is_some() {
+                        continue;
+                    }
+                    // `virtualHost` 组件在使用处没有宿主元素，模板顶层直接挂到这里：
+                    // 顶层渲染出 header / body 就不算丢内容；顶层是 `<slot>` 时内容
+                    // 由使用方决定，静态不可知。
+                    let top = virtual_host_top_tags(
+                        project,
+                        graph,
+                        doc.path(),
+                        &child.tag,
+                        MAX_VIRTUAL_HOST_DEPTH,
+                    );
+                    if let Some(top) = &top
+                        && top.iter().any(|tag| {
+                            matches!(*tag, "nested-scroll-header" | "nested-scroll-body" | "slot")
+                        })
+                    {
+                        continue;
+                    }
+                    let text = match &top {
+                        Some(_) => format!(
+                            "`<{}>` 不会渲染：它是 `virtualHost` 组件，模板顶层没有 \
+                             `<nested-scroll-header>` 或 `<nested-scroll-body>`，放到 \
+                             `<scroll-view type=\"nested\">` 下的内容会被整段丢弃",
+                            child.tag
+                        ),
+                        None => message(&format!("`<{}>` ", child.tag)),
+                    };
                     out.push(
-                        element_diagnostic(
-                            ID,
-                            doc,
-                            child,
-                            doc.path(),
-                            Severity::Error,
-                            message(&format!("`<{}>` ", child.tag)),
-                        )
-                        .help(help),
+                        element_diagnostic(ID, doc, child, doc.path(), Severity::Error, text)
+                            .help(help),
                     );
                 }
                 for text in element.children.iter().filter_map(|node| match node {
@@ -334,6 +419,28 @@ mod tests {
 
     fn check(fixture: &Fixture) -> Vec<crate::Diagnostic> {
         check_rule(fixture, &ScrollViewFamily)
+    }
+
+    /// 视觉用例同源的页面：nested 模式下多写一个直接子节点会被整段丢弃。
+    #[test]
+    fn visual_case_extra_child_of_nested_scroll_is_reported() {
+        let fixture = Fixture::page(
+            "family-visual-extra",
+            r#"<view class="page">
+  <scroll-view type="nested" class="scroller" id="target">
+    <nested-scroll-header><view class="header">头部</view></nested-scroll-header>
+    <nested-scroll-body><view class="body">主体</view></nested-scroll-body>
+    <view class="extra">多余子节点</view>
+  </scroll-view>
+</view>"#,
+            ".scroller { height: 300px; }\n.header { height: 120px; }\n.body { height: 120px; }\n.extra { height: 60px; }\n",
+        );
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0].message.contains("整段丢弃"),
+            "{diagnostics:#?}"
+        );
     }
 
     /// 通过 `<slot>` 传进组件的节点，按**渲染树**判祖先：
@@ -645,6 +752,114 @@ mod tests {
             r#"<scroll-view type="{{t}}"><view/>文字</scroll-view>"#,
         ));
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 页面里 `<scroll-view type="nested">` 放一个自定义组件，组件模板由用例给。
+    fn nested_with_component(name: &str, child: &str, options: &str, template: &str) -> Fixture {
+        let fixture = Fixture::new(name);
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                r#"{"usingComponents":{"card":"/components/card/card"}}"#,
+            )
+            .write(
+                "pages/index/index.wxml",
+                &format!(
+                    r#"<scroll-view type="nested">{child}<nested-scroll-body><view/></nested-scroll-body></scroll-view>"#
+                ),
+            )
+            .write("pages/index/index.js", "Page({});")
+            .write("components/card/card.json", r#"{"component":true}"#)
+            .write(
+                "components/card/card.js",
+                &format!("Component({{ options: {{ {options} }} }});"),
+            )
+            .write("components/card/card.wxml", template);
+        fixture
+    }
+
+    /// `virtualHost` 组件没有宿主元素，模板顶层的 `nested-scroll-header` 就挂在使用处。
+    #[test]
+    fn virtual_host_component_rendering_nested_part_is_allowed() {
+        let fixture = nested_with_component(
+            "nested-virtual-host-part",
+            "<card/>",
+            "virtualHost: true",
+            "<nested-scroll-header><view/></nested-scroll-header>",
+        );
+        let diagnostics = check(&fixture);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 同上但模板顶层只有普通元素：内容确实不会渲染，报在使用处并说清原因。
+    #[test]
+    fn virtual_host_component_without_nested_part_is_reported() {
+        let fixture = nested_with_component(
+            "nested-virtual-host-view",
+            "<card/>",
+            "virtualHost: true",
+            "<view/>",
+        );
+        let diagnostics = check(&fixture);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0].message.contains("模板顶层没有"),
+            "{}",
+            diagnostics[0].message
+        );
+    }
+
+    /// 带 `slot` 属性的子节点是投影进具名插槽的内容，不是普通直接子节点。
+    #[test]
+    fn child_with_slot_attribute_is_skipped() {
+        let fixture = nested_with_component(
+            "nested-slot-attr",
+            r#"<card slot="refresher"/>"#,
+            "",
+            "<view/>",
+        );
+        let diagnostics = check(&fixture);
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 普通元素不是组件，宿主就是它自己。
+    #[test]
+    fn plain_view_child_is_still_reported() {
+        let diagnostics = check(&project(
+            "nested-plain-view",
+            r#"<scroll-view type="nested"><view/><nested-scroll-body><view/></nested-scroll-body></scroll-view>"#,
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0].message.contains("`<view>` 不会渲染"),
+            "{}",
+            diagnostics[0].message
+        );
+    }
+
+    /// 没有 `virtualHost` 的组件宿主元素是真实节点，照旧报。
+    #[test]
+    fn non_virtual_host_component_is_reported() {
+        let fixture = nested_with_component(
+            "nested-host-component",
+            "<card/>",
+            "",
+            "<nested-scroll-header><view/></nested-scroll-header>",
+        );
+        let diagnostics = check(&fixture);
+        // 组件模板里的 header 挂在宿主 `<card>` 下，也会单独报一条。
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.path == "pages/index/index.wxml"
+                    && d.message.contains("`<card>` 不会渲染")),
+            "{diagnostics:#?}"
+        );
     }
 
     // ---- draggable-sheet ----

@@ -17,7 +17,7 @@ use crate::project::Project;
 use crate::rules::wxml::resolved_property;
 use crate::{Diagnostic, Severity};
 
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 use super::value_util::at_declaration;
 use super::{all_matches_satisfy, visit_matching_rules};
@@ -28,6 +28,23 @@ impl FlexDirection {
     pub const ID: &'static str = "skyline/flex-direction";
 }
 
+/// 视觉用例：`display: flex` 没写方向。
+///
+/// WebView 的初始方向是 `row`，三个色块横排；Skyline 是 `column`，竖排。
+/// `#target` 放在第二个色块上，两种方向下它的位置都不同。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="row">
+  <view class="cell a">1</view>
+  <view class="cell b" id="target">2</view>
+  <view class="cell c">3</view>
+</view>"#,
+    wxss: ".row { display: flex; width: 300px; padding: 10px; background: #eee; }\n.cell { width: 80px; height: 40px; line-height: 40px; text-align: center; color: #fff; }\n.a { background: #e54d42; }\n.b { background: #4caf50; }\n.c { background: #2196f3; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "`display: flex` 未写 flex-direction：WebView 横排（第二块在右侧），Skyline 竖排（第二块在下方）",
+    target: "#target",
+}];
+
 impl Rule for FlexDirection {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -35,6 +52,10 @@ impl Rule for FlexDirection {
             severity: Severity::Warning,
             description: "display: flex 未声明 flex-direction，迁移后默认方向会从 row 变为 column",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -205,6 +226,23 @@ mod tests {
 
     use super::FlexDirection;
     use crate::rules::testutil::wxss::{Fixture, messages, page, page_opt_out};
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture = crate::rules::testutil::Fixture::page(
+                "flex-direction-visual",
+                case.wxml,
+                case.wxss,
+            );
+            let hits = crate::rules::testutil::check_rule(&fixture, &FlexDirection)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == FlexDirection::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     #[test]
     fn flex_direction_reports_flex_without_direction() {

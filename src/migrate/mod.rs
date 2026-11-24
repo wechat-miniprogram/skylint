@@ -71,6 +71,35 @@ pub struct Plan {
     pub shared: SharedFiles,
 }
 
+impl Plan {
+    /// 过滤 `units` 之后重建 `batches` 与 `summary`，让分批与计数和剩下的单元一致。
+    pub fn rebuild(&mut self) {
+        let mut by_batch: BTreeMap<u32, Vec<(String, String)>> = BTreeMap::new();
+        for unit in &self.units {
+            by_batch
+                .entry(unit.batch)
+                .or_default()
+                .push((unit.path.clone(), unit.id.clone()));
+        }
+        self.batches = by_batch
+            .into_values()
+            .map(|mut units| {
+                units.sort();
+                units.into_iter().map(|(_, id)| id).collect()
+            })
+            .collect();
+        self.summary = PlanSummary {
+            units: self.units.len(),
+            with_diagnostics: self
+                .units
+                .iter()
+                .filter(|unit| unit.diagnostics.total > 0)
+                .count(),
+            diagnostics: self.units.iter().map(|unit| unit.diagnostics.total).sum(),
+        };
+    }
+}
+
 /// 无归属诊断（`unit:shared`）按文件聚合，条数降序、同数按路径。
 ///
 /// 只含**不属于任何单元**的文件（`app.json` / `project.private.config.json` 等）；

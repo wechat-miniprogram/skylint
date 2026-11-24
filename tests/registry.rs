@@ -13,13 +13,16 @@ fn rule_ids_are_unique_and_namespaced() {
 
     let mut seen = HashSet::new();
     for (meta, target) in &entries {
-        let prefix = match target {
-            Target::Skyline | Target::Both => "skyline/",
-            Target::Webview => "webview/",
+        // `Both` 方向既可能是两端渲染差异（`skyline/`），也可能是与渲染器无关的
+        // 通用问题（`general/`）：后者在 WebView 时代同样成立，只是迁移时更容易暴露。
+        let namespaced = match target {
+            Target::Webview => meta.id.starts_with("webview/"),
+            Target::Skyline => meta.id.starts_with("skyline/"),
+            Target::Both => meta.id.starts_with("skyline/") || meta.id.starts_with("general/"),
         };
         assert!(
-            meta.id.starts_with(prefix),
-            "{} 的前缀与方向 {} 不符，应为 {prefix}",
+            namespaced,
+            "{} 的前缀与方向 {} 不符，应为 skyline/（两端渲染差异）或 general/（与渲染器无关）",
             meta.id,
             target.as_str()
         );

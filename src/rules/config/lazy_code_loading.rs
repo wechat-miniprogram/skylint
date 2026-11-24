@@ -1,7 +1,7 @@
 //! `skyline/lazy-code-loading`：页面 json **显式**写 `renderer: "skyline"`，而 app.json
 //! 的 `lazyCodeLoading` 不是 `"requiredComponents"`，开发者工具会拒绝编译（`minidev build` 不校验这条）。
 //!
-//! 判据来自 minidev `compiler-graph/src/json/mutate.rs:441-450`（`check_renderer`）：
+//! 判据来自 minidev 构建期对页面 json 的 renderer 校验：
 //! 只认页面 json 自己写的 `renderer: "skyline"`——app 级 `renderer` 让页面继承
 //! Skyline 时这条不报。放在这里而不是只放 app 级，是因为同一个工程可以只给个别
 //! 页面开 Skyline，而 `lazyCodeLoading` 是 app 级唯一开关。

@@ -5,7 +5,9 @@
 //! [`visit_declarations`] 两层遍历与 [`value_util`] 的值分词工具。
 
 pub mod attribute_selector;
+pub mod border_radius_per_side_color;
 pub mod box_sizing;
+pub mod button_after_reset;
 pub mod calc_min_max;
 pub mod dead_selector;
 pub mod dict_table;
@@ -43,7 +45,9 @@ pub mod value_util;
 pub mod vendor_prefix;
 
 pub use attribute_selector::AttributeSelector;
+pub use border_radius_per_side_color::BorderRadiusPerSideColor;
 pub use box_sizing::BoxSizing;
+pub use button_after_reset::ButtonAfterReset;
 pub use calc_min_max::CalcMinMax;
 pub use dead_selector::DeadSelector;
 pub use filter_limit::FilterLimit;

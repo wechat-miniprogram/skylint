@@ -9,7 +9,7 @@
 
 use crate::input::wxss::ValueToken;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 use super::value_util::{Call, all_calls, at_value, is_dynamic};
@@ -44,6 +44,16 @@ fn parses_as_standard_gradient(call: &Call<'_>) -> bool {
     }
 }
 
+/// 视觉用例：repeating 渐变整条声明在 Skyline 丢失。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="stripes" id="target"></view>"#,
+    wxss: ".stripes { width: 200px; height: 120px; background-image: repeating-linear-gradient(45deg, #e53935 0 10px, #1e88e5 10px 20px); }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "repeating-linear-gradient：WebView 画出红蓝斜条纹，Skyline 不解析 repeating 渐变，整条 background-image 丢失",
+    target: "#target",
+}];
+
 impl Rule for GradientUnsupported {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -51,6 +61,10 @@ impl Rule for GradientUnsupported {
             severity: Severity::Warning,
             description: "repeating / 厂商前缀渐变不被 Skyline 解析，mask 也不支持 conic 渐变",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -119,7 +133,21 @@ mod tests {
     use crate::rules::Rule;
 
     use super::GradientUnsupported;
-    use crate::rules::testutil::wxss::{messages, page};
+    use crate::rules::testutil::check_rule;
+    use crate::rules::testutil::wxss::{Fixture, messages, page};
+
+    /// 视觉用例与单测共用同一份 WXML/WXSS：每条都必须被本规则命中。
+    #[test]
+    fn visual_cases_are_reported() {
+        for case in super::VISUAL_CASES {
+            let fixture = Fixture::page("gradient-unsupported-visual", case.wxml, case.wxss);
+            let hits = check_rule(&fixture, &GradientUnsupported)
+                .iter()
+                .filter(|diagnostic| diagnostic.rule == GradientUnsupported::ID)
+                .count();
+            assert!(hits >= 1, "{}: {}", case.note, case.wxml);
+        }
+    }
 
     #[test]
     fn prefixed_gradient_is_reported_unless_a_standard_fallback_exists() {
@@ -167,7 +195,7 @@ mod tests {
 
     /// `linear-gradient(left top, …)` 缺 `to`，是旧 WebKit 语法，标准语法里非法，
     /// 两个引擎都会丢掉它。它不算「标准兜底」，否则同一条规则里的前缀写法会被消掉，
-    /// 而实际渲染是「根本没有背景」——`openplatform-verify-bulk` 就是这么丢黄底的。
+    /// 而实际渲染是「根本没有背景」——某页面就是这么丢掉按钮底色的。
     #[test]
     fn a_legacy_direction_standard_gradient_is_not_a_fallback() {
         let (_f, project) = page(
