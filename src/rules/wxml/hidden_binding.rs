@@ -28,19 +28,17 @@ pub struct HiddenBinding;
 ///
 /// Skyline 把 `hidden=""` 当「属性存在」→ 整块不渲染；WebView 按字符串真值把
 /// 空串当 falsy → 元素照常显示。`#target` 在 Skyline 侧零墨迹。
-static VISUAL_CASES: &[VisualCase] = &[
-    VisualCase {
-        wxml: r#"<view class="wrap">
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="wrap">
   <view id="target" class="box" hidden="{{q}}">这块在 Skyline 下会消失</view>
   <view class="after">下一块</view>
 </view>"#,
-        wxss: ".wrap { padding: 20px; }\n.box { height: 60px; background: #cde; }\n.after { background: #eee; }",
-        js: Some("Page({ data: { q: '' } });"),
-        expect: VisualExpect::Differ,
-        note: "`data.q` 初始为空串：Skyline 按属性存在判定，`hidden=\"\"` 也隐藏，蓝色块零墨迹；WebView 按字符串真值把空串当可见，正常显示",
-        target: "#target",
-    },
-];
+    wxss: ".wrap { padding: 20px; }\n.box { height: 60px; background: #cde; }\n.after { background: #eee; }",
+    js: Some("Page({ data: { q: '' } });"),
+    expect: VisualExpect::Differ,
+    note: "`data.q` 初始为空串：Skyline 按属性存在判定，`hidden=\"\"` 也隐藏，蓝色块零墨迹；WebView 按字符串真值把空串当可见，正常显示",
+    target: "#target",
+}];
 
 impl Rule for HiddenBinding {
     fn meta(&self) -> RuleMeta {
@@ -335,12 +333,13 @@ mod tests {
             .write("pages/index/index.json", "{}")
             .write("pages/index/index.wxml", case.wxml)
             .write("pages/index/index.wxss", case.wxss)
-            .write("pages/index/index.js", case.js.unwrap_or("Page({ data: {} });"));
+            .write(
+                "pages/index/index.js",
+                case.js.unwrap_or("Page({ data: {} });"),
+            );
         let diagnostics = check_rule(&fixture, &HiddenBinding);
         assert!(
-            diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.rule == ID),
+            diagnostics.iter().any(|diagnostic| diagnostic.rule == ID),
             "视觉用例夹具没有命中规则：{diagnostics:?}"
         );
     }
