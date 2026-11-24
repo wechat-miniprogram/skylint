@@ -1,5 +1,5 @@
 //! `skyline/navigation-style`：Skyline 页面的 `navigationStyle` 解析结果不是 `custom`
-//! 时，开发者工具会拒绝编译（`minidev build` 不校验这条）。
+//! 时，开发者工具与 `minidev build` 都会拒绝编译（minidev 0.18.0 实测）。
 //!
 //! 判据来自 minidev `compiler-graph/src/json/mutate.rs:452-477`（`check_renderer`）：
 //!
@@ -7,6 +7,8 @@
 //! - 否则解析链（页面 json → app.json 的 `window.navigationStyle`）不是 `custom`，
 //!   且页面写了任意 `navigationBarTitleText` / `navigationBarTextStyle` /
 //!   `navigationBarBackgroundColor` → 报错。
+//!
+//! 构建器只报缺什么，本规则补充页面 → app.json `window` 的解析链与行号。
 //!
 //! 编译器随后会无条件把 Skyline 页的 `navigationStyle` 改写成 `custom`、缺省补
 //! `disableScroll: true`，但那是构建产物，不改写会失败这件事仍然要提前告知。
@@ -186,7 +188,7 @@ impl Rule for NavigationStyle {
                     JsonPositions::new(source).key("navigationStyle"),
                     anchor(&["navigationStyle"], json.get("navigationStyle")),
                     format!(
-                        "页面 `{page_path}` 使用 Skyline 渲染，但 navigationStyle 显式写成 `\"default\"`，开发者工具会拒绝编译（`minidev build` 不校验这条）"
+                        "页面 `{page_path}` 使用 Skyline 渲染，但 navigationStyle 显式写成 `\"default\"`，开发者工具与 `minidev build` 都会拒绝编译"
                     ),
                     "把页面 json 的 `navigationStyle` 改成 `\"custom\"`；Skyline 页面固定使用自定义导航栏，minidev 在编译前直接报错",
                 );
@@ -229,7 +231,7 @@ impl Rule for NavigationStyle {
                 JsonPositions::new(source).key(key),
                 anchor(&[key], json.get(key)),
                 format!(
-                    "页面 `{page_path}` 使用 Skyline 渲染，写了 `{key}`，但{reason}，开发者工具会拒绝编译（`minidev build` 不校验这条）"
+                    "页面 `{page_path}` 使用 Skyline 渲染，写了 `{key}`，但{reason}，开发者工具与 `minidev build` 都会拒绝编译"
                 ),
                 "把页面 json 的 `navigationStyle` 写成 `\"custom\"`（或在 app.json 的 `window.navigationStyle` 统一设为 `\"custom\"`）；Skyline 页面固定使用自定义导航栏",
             );

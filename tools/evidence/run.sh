@@ -16,7 +16,7 @@
 #   PORT         serve 端口（默认 9791，只绑 127.0.0.1）。
 #   WAIT_MS      页面 reLaunch 后的沉降毫秒数（默认 2000）。
 #   SKIP         逗号分隔的规则 / 用例关键字，传给生成器的 --skip，只生成匹配的用例
-#                （例如 SKIP=scroll-view-type,autoprefix-build 只留下本次要跑的那几条）。
+#                （例如 SKIP=scroll-view-family,autoprefix-build 只留下本次要跑的那几条）。
 #
 # 行为：
 #   - 每条用例一个独立工程与（serve 类）一个独立 serve；构建与 serve 严格串行。

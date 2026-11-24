@@ -1,20 +1,22 @@
-//! worklet 里解构 `this.data` 会让 `this.data` 被 `Object.freeze` 冻结，`setData` 静默失效。
+//! worklet 里把 `this.data` 整体捕获成变量（整体赋值或解构）会让 `this.data`
+//! 被 `Object.freeze` 冻结，`setData` 静默失效。
 //!
-//! worklet 捕获的外部对象会被冻结以保证跨线程安全。`const { msg } = this.data` 这种
-//! 解构会把 `this.data` 整个对象作为 worklet 的外部引用捕获，于是 `this.data` 被冻结，
-//! 之后所有 `setData` 都不再生效；正确写法是直接访问属性
-//! （`const msg = this.data.msg`）。
+//! worklet 捕获的外部对象会被冻结以保证跨线程安全。`const { msg } = this.data` 与
+//! `const snapshot = this.data` 都会把 `this.data` 整个对象作为 worklet 的外部引用
+//! 捕获，于是 `this.data` 被冻结，之后所有 `setData` 都不再生效；正确写法是直接访问
+//! 属性（`const msg = this.data.msg`）。
 //!
-//! 只看 `VariableDeclarator`：id 是对象解构、init 是字面量 `this.data`。`this.props`、
-//! 数组解构、`const msg = this.data.msg` 都不在此列。解构是否在 worklet 内由
-//! [`ThisDataDestructure::worklet_scope`] 给出，取最近的外层函数——worklet 里嵌的
+//! 只看 `VariableDeclarator`：init 是字面量 `this.data`，与左侧是标识符、对象解构
+//! （含嵌套）还是数组解构无关。`this.props`、`const msg = this.data.msg` 都不在此列。
+//! 捕获是否在 worklet 内由
+//! [`ThisDataCapture::worklet_scope`] 给出，取最近的外层函数——worklet 里嵌的
 //! 普通函数不算 worklet。
 //!
 //! 证据：`skyline-worklet/references/core/worklet-overview.md:244-258`
 //! （「Object.freeze 冻结问题」：worklet 引用的对象类型会被冻结，要直接访问属性，
 //! 解构 `this.data` 会让 `setData` 失效）。
 
-use crate::input::js::ThisDataDestructure;
+use crate::input::js::ThisDataCapture;
 use crate::project::{JsFile, Project};
 use crate::rules::{
     EvidenceCase, EvidenceExpect, EvidenceRun, Rule, RuleMeta, VisualCase, VisualExpect, VisualFile,
@@ -170,7 +172,7 @@ impl Rule for WorkletDataFreeze {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Error,
-            description: "worklet 内解构 this.data 会冻结 this.data，导致 setData 失效",
+            description: "worklet 内把 this.data 赋给变量（含解构）会冻结 this.data，导致 setData 失效",
         }
     }
 
@@ -188,7 +190,7 @@ impl Rule for WorkletDataFreeze {
             .iter()
             .flat_map(|file| {
                 file.doc
-                    .this_data_destructures()
+                    .this_data_captures()
                     .iter()
                     .filter(|item| item.worklet_scope)
                     .map(|item| diagnostic(file, item))
@@ -197,14 +199,14 @@ impl Rule for WorkletDataFreeze {
     }
 }
 
-fn diagnostic(file: &JsFile, item: &ThisDataDestructure) -> Diagnostic {
+fn diagnostic(file: &JsFile, item: &ThisDataCapture) -> Diagnostic {
     at_span(
         WorkletDataFreeze::ID,
         Severity::Error,
         file,
         item.start,
         item.end,
-        "worklet 内解构 `this.data` 会把它标记为 Object.freeze 冻结，之后 `setData` 静默失效",
+        "worklet 内捕获 `this.data`（整体赋值或解构）会把它标记为 Object.freeze 冻结，之后 `setData` 静默失效",
     )
     .help("改为直接访问属性，如 `const msg = this.data.msg`")
 }
@@ -217,7 +219,7 @@ mod tests {
 
     use super::{VISUAL_CASES, WorkletDataFreeze};
 
-    /// 截图对照故意走「捕获后解构」，不写规则要报的字面量 `const {...} = this.data`：
+    /// 截图对照在 worklet **外**捕获 `this.data`，规则只看 worklet 内的捕获：
     /// 它是 compileWorklet 未开的阴性对照，不应该让规则报错。
     #[test]
     fn visual_case_is_a_negative_control() {
@@ -263,18 +265,49 @@ mod tests {
     }
 
     #[test]
-    fn multiple_destructures_and_let_are_all_reported() {
+    fn whole_capture_inside_worklet_is_reported() {
+        let (_f, project) = single(
+            "freeze-capture",
+            r#"
+            function handleTap() {
+              'worklet';
+              const snapshot = this.data;
+            }
+            "#,
+        );
+        let diagnostics = WorkletDataFreeze.check(&project);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].line, 4);
+    }
+
+    #[test]
+    fn nested_destructuring_inside_worklet_is_reported() {
+        let (_f, project) = single(
+            "freeze-nested-pattern",
+            r#"
+            function handleTap() {
+              'worklet';
+              const { user: { name } } = this.data;
+            }
+            "#,
+        );
+        assert_eq!(WorkletDataFreeze.check(&project).len(), 1);
+    }
+
+    #[test]
+    fn multiple_captures_and_let_are_all_reported() {
         let (_f, project) = single(
             "freeze-multiple",
             r#"
             const animated = () => {
               'worklet';
+              const snapshot = this.data;
               let { a, b } = this.data;
-              const { c } = this.data;
+              const { c: { d } } = this.data;
             };
             "#,
         );
-        assert_eq!(WorkletDataFreeze.check(&project).len(), 2);
+        assert_eq!(WorkletDataFreeze.check(&project).len(), 3);
     }
 
     #[test]
@@ -288,11 +321,12 @@ mod tests {
     }
 
     #[test]
-    fn destructuring_outside_worklet_is_ignored() {
+    fn captures_outside_worklet_are_ignored() {
         let (_f, project) = single(
             "freeze-negative",
             r#"
             function handleTap() {
+              const snapshot = this.data;
               const { msg } = this.data;
               this.setData({ msg });
             }
@@ -310,6 +344,7 @@ mod tests {
               'worklet';
               const msg = this.data.msg;
               const { a } = this.props;
+              const { b } = this.data.user;
               const [first] = this.data.list;
             }
             "#,

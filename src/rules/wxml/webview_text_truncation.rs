@@ -31,13 +31,13 @@ pub struct TextTruncation;
 /// 视觉用例：只有 `max-lines`，没有 WebView 侧的 clamp 兜底。
 ///
 /// Skyline 按 `max-lines="2"` 截断；WebView 的 `wx-text` 不认识这个属性，整段多行长文本
-/// 原样铺开。`#target` 的高度相差好几行。
+/// 原样铺开。实测 `#target` 高度 44px（两行）对 110px（五行）。
 static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxml: r#"<view class="box"><text max-lines="2" id="target">这段说明文字写得相当长，用来确保在两百像素宽的容器里至少能折出四五行，从而在两端产生明显的高度差。</text></view>"#,
     wxss: ".box { width: 200px; padding: 10px; background: #f6f6f6; }\n",
     js: None,
     expect: VisualExpect::Differ,
-    note: "`max-lines` 只在 Skyline 的 `<text>` 上生效：Skyline 截到两行，WebView 忽略后整段多行铺开（`#target` 高好几行）",
+    note: "同一段文字：Skyline 截成 2 行（`#target` 高 44px），WebView 铺成 5 行、高 110px",
     target: "#target",
 }];
 

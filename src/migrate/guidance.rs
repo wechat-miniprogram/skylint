@@ -63,6 +63,8 @@ pub fn guidance_for(rule: &str) -> &'static Guidance {
                 "padding-right",
                 "padding-bottom",
                 "padding-left",
+                "border-width",
+                "gap",
             ],
             preconditions: &[
                 "这类原生组件没有 CSS 盒，`padding` 走的是组件自己的 sliver padding",
@@ -84,13 +86,18 @@ pub fn guidance_for(rule: &str) -> &'static Guidance {
                 "margin",
                 "display",
                 "position",
+                "top",
+                "right",
+                "bottom",
+                "left",
                 "flex",
                 "flex-grow",
                 "flex-shrink",
                 "flex-basis",
                 "justify-content",
                 "align-items",
-                "gap",
+                "align-content",
+                "order",
                 "overflow",
             ],
             preconditions: &[
@@ -99,6 +106,17 @@ pub fn guidance_for(rule: &str) -> &'static Guidance {
             ],
             counterexamples: &[
                 "不要用 `!important` 或提高选择器优先级试图让它生效——声明根本进不了布局",
+            ],
+            family: "structure",
+        },
+        "skyline/selector-subset" => &Guidance {
+            facts: &[],
+            preconditions: &[
+                "Skyline 的规则集只按主体 compound 的 id / 标签 / class 分桶，三者都没有（且不是 `:host`）时规则整条不入集",
+                "属性条件在转 AST 时被丢弃；`*` 更早，在 WXSS 编译期就被拒绝，整份样式编不出来",
+            ],
+            counterexamples: &[
+                "不要靠给 `[foo]` 补一个祖先类名「保住」规则——属性条件在 Skyline 下仍然不存在，只是命中范围被放宽",
             ],
             family: "structure",
         },
@@ -119,12 +137,6 @@ pub fn guidance_for(rule: &str) -> &'static Guidance {
             counterexamples: &["不要用 `height: 100%` 绕过——父级没有确定高度时它同样是 0"],
             family: "structure",
         },
-        "skyline/scroll-view-type" => &Guidance {
-            facts: &["display", "flex-direction"],
-            preconditions: &["缺省 type 只渲染第一个子元素"],
-            counterexamples: &["不要把子元素包进一个外层 view 了事——滚动与布局语义都会变"],
-            family: "structure",
-        },
         "skyline/scroll-view-family" => &Guidance {
             facts: &["display", "flex-direction"],
             preconditions: &["引擎只认直接子节点作为 header / body / section"],
@@ -135,6 +147,26 @@ pub fn guidance_for(rule: &str) -> &'static Guidance {
             facts: &[],
             preconditions: &["子节点数量与标签按渲染树判定，`<slot>` 是占位不是元素"],
             counterexamples: &["不要为了满足数量要求加空 view —— 它会参与布局"],
+            family: "structure",
+        },
+        "skyline/component-support" => &Guidance {
+            facts: &[
+                "display",
+                "width",
+                "height",
+                "flex-direction",
+                "align-items",
+            ],
+            preconditions: &[
+                "未注册的标签在任何渲染器下都不是组件：glass-easel 退化为行内元素、旧 exparser 退化为无模板默认组件（子树整块消失）",
+                "同一个未注册标签在 Skyline 是块级 flex 容器（宽度撑满、height 生效），在 WebView 是行内元素（收缩到内容宽度）",
+                "`usingComponents` 里声明了同名标签就是自定义组件，平台同名组件的后果不适用",
+                "黑名单组件按组件表分三档：没有实现、盒子在但原生绘制丢失、只能整页保持 WebView",
+            ],
+            counterexamples: &[
+                "不要给未注册标签补 `display: block` / `width: 100%` 假装两端一致——旧 exparser 下子树仍然不显示",
+                "不要用 `<progress>` 的盒子尺寸推断它可用——CSS 底纹还在，原生进度填充不会画出来",
+            ],
             family: "structure",
         },
         "skyline/scroll-gesture-conflict" => &Guidance {
@@ -220,46 +252,45 @@ pub fn guidance_for(rule: &str) -> &'static Guidance {
             counterexamples: &["不要删掉 `@-webkit-keyframes` 就完事——必须补一份同名无前缀关键帧"],
             family: "visual",
         },
-        "skyline/no-inline-text" | "skyline/inline-run" => &Guidance {
+        "skyline/inline-run" => &Guidance {
             facts: &["display"],
-            preconditions: &["文本与块级元素混排时行盒会被拆开"],
+            preconditions: &[
+                "Skyline 没有元素级行内格式化上下文：裸文本与行内元素混排、非文本元素上的 `display: inline` / `inline-block`、并列且没写 `display` 的文本级元素，都会变成块级堆叠",
+                "`display: inline` 与 `inline-block` 对非文本元素在 Skyline 都不生效；WebView 两种都按行内级盒排",
+            ],
             counterexamples: &[
-                "不要把文本包进 view —— 行内与块级的分界会变",
-                "不要把同一段文本拆成并列的 `<text>` —— Skyline 下它们是各自独立的块级盒子",
+                "不要把文本包进 `<text>` —— Skyline 下它仍是块级项，包完还是各自换行",
+                "不要用 `display: inline` / `inline-block` 让元素并排，用 `display: flex; flex-direction: row`",
             ],
             family: "visual",
         },
-        "skyline/text-overflow-ellipsis" => &Guidance {
+        "skyline/text-only-property" => &Guidance {
             facts: &[
+                "text-overflow",
+                "text-decoration",
+                "text-decoration-line",
+                "text-decoration-color",
                 "white-space",
                 "overflow",
                 "overflow-x",
-                "text-overflow",
                 "display",
                 "width",
             ],
             preconditions: &[
-                "单行省略需要三件套同时成立：nowrap、overflow hidden、宽度确定",
+                "这两个属性只作用于行盒里的文字，且不继承：声明必须落在文本节点上，容器里有 `<text>` 也不行",
+                "单行省略还需要三件套同时成立：nowrap、overflow hidden、宽度确定",
                 "`white-space` 会继承，祖先的 nowrap 同样有效",
             ],
-            counterexamples: &["不要只加 `text-overflow: ellipsis` —— 没有 nowrap 与裁剪它不生效"],
+            counterexamples: &[
+                "不要只加 `text-overflow: ellipsis` —— 没有 nowrap 与裁剪它不生效",
+                "不要给容器加下划线指望覆盖文本——空容器不画线",
+            ],
             family: "visual",
         },
         "skyline/text-hard-break-ellipsis" => &Guidance {
             facts: &["white-space", "word-break", "overflow-wrap"],
             preconditions: &["Skyline 在长英文串上的断行策略与 WebView 不同"],
             counterexamples: &["不要用 `word-break: break-all` 一刀切——中文标点会被拆开"],
-            family: "visual",
-        },
-        "skyline/text-decoration-target" => &Guidance {
-            facts: &[
-                "text-decoration",
-                "text-decoration-line",
-                "text-decoration-color",
-                "display",
-            ],
-            preconditions: &["装饰线画在声明它的元素上，不跟随子元素"],
-            counterexamples: &["不要给容器加下划线指望覆盖文本——空容器不画线"],
             family: "visual",
         },
         "skyline/implicit-color" => &Guidance {

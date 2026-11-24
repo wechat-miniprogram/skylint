@@ -16,11 +16,16 @@
 //!   不传回调直接得到 `undefined`。
 //!
 //! 判据都只有一种写法：`getBoundingClientRect()` 不传实参、`getComputedStyle()` 缺第二个回调。
+//! 引擎判的是 `typeof cb !== 'function'`，所以 `undefined` / `null` / `{}` / `[]` 等
+//! 非函数实参同样等于没传。
+//!
+//! 覆盖面：`<wxs src>` 引入的外部模块（含只在 `<import>` 模板里引用的），以及内联
+//! `<wxs module>` 的模块体；后者的行列落回所在 WXML。
 //! 修法唯一：改成回调形式（需要同步值的场景改为回调里算、把结果缓存）。
 
-use crate::Severity;
 use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, VisualAction, VisualCase, VisualExpect, VisualFile};
+use crate::{Diagnostic, Severity};
 
 use super::{at_span, renders_in_skyline};
 
@@ -32,7 +37,7 @@ const HELP: &str = "WebView 的 DOM 可以同步取矩形与计算样式，Skyli
 
 /// 视觉用例的 WXS 模块：在事件处理器的第二参数上做同步矩形查询，按结果改背景。
 ///
-/// 必须是真实的 `.wxs` 文件：内联 `<wxs>` 不进 `project.scripts`，规则看不到。
+/// 用真实的 `.wxs` 文件而不是内联模块：构建产物里也是同一份脚本。
 static VISUAL_FILES: &[VisualFile] = &[VisualFile {
     path: "probe.wxs",
     content: r#"function onTap(evt, owner) {
@@ -91,22 +96,14 @@ impl Rule for WxsSyncQuery {
         VISUAL_ACTIONS
     }
 
-    fn check(&self, project: &Project) -> Vec<crate::Diagnostic> {
+    fn check(&self, project: &Project) -> Vec<Diagnostic> {
         let mut out = Vec::new();
         for file in &project.scripts {
             if !file.path.ends_with(".wxs") || !renders_in_skyline(project, &file.scope) {
                 continue;
             }
             for call in file.doc.calls() {
-                let message = if call.callee.ends_with(".getBoundingClientRect")
-                    && missing_rect_callback(file.doc.source(), call)
-                {
-                    RECT_MESSAGE
-                } else if call.callee.ends_with(".getComputedStyle")
-                    && missing_callback(file.doc.source(), call)
-                {
-                    STYLE_MESSAGE
-                } else {
+                let Some(message) = sync_query(file.doc.source(), call) else {
                     continue;
                 };
                 out.push(
@@ -122,7 +119,46 @@ impl Rule for WxsSyncQuery {
                 );
             }
         }
+        for module in &project.inline_wxs {
+            if !module
+                .scopes
+                .iter()
+                .any(|scope| renders_in_skyline(project, scope))
+            {
+                continue;
+            }
+            for call in module.doc.calls() {
+                let Some(message) = sync_query(module.doc.source(), call) else {
+                    continue;
+                };
+                let (line, column) = module.position(call.start);
+                let (end_line, end_column) = module.position(call.end);
+                out.push(
+                    Diagnostic::new(
+                        Self::ID,
+                        Severity::Warning,
+                        message,
+                        &module.path,
+                        line,
+                        column,
+                    )
+                    .end(end_line, end_column)
+                    .help(HELP),
+                );
+            }
+        }
         out
+    }
+}
+
+/// 这条调用是不是同步形式；是则返回对应文案。
+fn sync_query(source: &str, call: &crate::input::js::CallInfo) -> Option<&'static str> {
+    if call.callee.ends_with(".getBoundingClientRect") && missing_rect_callback(source, call) {
+        Some(RECT_MESSAGE)
+    } else if call.callee.ends_with(".getComputedStyle") && missing_callback(source, call) {
+        Some(STYLE_MESSAGE)
+    } else {
+        None
     }
 }
 
@@ -151,7 +187,7 @@ fn missing_callback(source: &str, call: &crate::input::js::CallInfo) -> bool {
 fn is_no_value(text: &str) -> bool {
     matches!(
         text.trim(),
-        "undefined" | "null" | "void 0" | "false" | "0" | "''" | "\"\""
+        "undefined" | "null" | "void 0" | "false" | "0" | "''" | "\"\"" | "{}" | "[]"
     )
 }
 
@@ -159,13 +195,10 @@ fn missing_arg(source: &str, call: &crate::input::js::CallInfo, index: usize) ->
     let Some(arg) = call.args.get(index) else {
         return true;
     };
-    let text = source
-        .get(arg.start as usize..arg.end as usize)
-        .unwrap_or_default()
-        .trim();
-    matches!(
-        text,
-        "undefined" | "null" | "void 0" | "false" | "0" | "''" | "\"\""
+    is_no_value(
+        source
+            .get(arg.start as usize..arg.end as usize)
+            .unwrap_or_default(),
     )
 }
 
@@ -252,6 +285,122 @@ mod tests {
         );
         let diagnostics = WxsSyncQuery.check(&f.project());
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn empty_object_and_array_arguments_are_not_callbacks() {
+        // 引擎判 `typeof cb !== 'function'`：`{}` / `[]` 和 `undefined` 一样等于没写。
+        for (name, wxs) in [
+            (
+                "wxs-sync-style-object",
+                "function move(evt, owner) { owner.getComputedStyle(['width'], {}) }",
+            ),
+            (
+                "wxs-sync-style-array",
+                "function move(evt, owner) { owner.getComputedStyle(['width'], []) }",
+            ),
+            (
+                "wxs-sync-rect-object",
+                "function move(evt, owner) { owner.getBoundingClientRect({}) }",
+            ),
+        ] {
+            let f = fixture(name, "skyline", wxs);
+            assert_eq!(WxsSyncQuery.check(&f.project()).len(), 1, "{name}");
+        }
+    }
+
+    fn inline_fixture(name: &str, renderer: &str) -> Fixture {
+        let f = Fixture::new(name);
+        f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                &format!(r#"{{"pages":["pages/index/index"],"renderer":"{renderer}"}}"#),
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                "<view/>\n<wxs module=\"m\">\nfunction move(evt, owner) { owner.getBoundingClientRect() }\n</wxs>\n<view bind:touchmove=\"{{m.move}}\"/>\n",
+            )
+            .write("pages/index/index.js", "Page({});");
+        f
+    }
+
+    #[test]
+    fn inline_module_is_reported_on_the_wxml() {
+        let f = inline_fixture("wxs-inline", "skyline");
+        let diagnostics = WxsSyncQuery.check(&f.project());
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].path, "pages/index/index.wxml");
+        // 模块体第 2 行落在 WXML 第 3 行（模块体从第 2 行的 `<wxs>` 后开始）。
+        assert_eq!(diagnostics[0].line, 3);
+    }
+
+    #[test]
+    fn inline_module_in_a_webview_page_is_ignored() {
+        let f = inline_fixture("wxs-inline-webview", "webview");
+        assert!(WxsSyncQuery.check(&f.project()).is_empty());
+    }
+
+    fn template_fixture(name: &str, renderer: &str) -> Fixture {
+        let f = Fixture::new(name);
+        f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                &format!(r#"{{"pages":["pages/index/index"],"renderer":"{renderer}"}}"#),
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<import src="../../templates/probe.wxml"/><view/>"#,
+            )
+            .write("pages/index/index.js", "Page({});")
+            .write(
+                "templates/probe.wxml",
+                r#"<wxs src="./probe.wxs" module="m"/><template name="x"><view bind:touchmove="{{m.move}}"/></template>"#,
+            )
+            .write(
+                "templates/probe.wxs",
+                "function move(evt, owner) { owner.getBoundingClientRect() }",
+            );
+        f
+    }
+
+    #[test]
+    fn inline_module_in_an_imported_template_is_visible() {
+        let f = Fixture::new("wxs-inline-template");
+        f.write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write("pages/index/index.json", "{}")
+            .write(
+                "pages/index/index.wxml",
+                r#"<import src="../../templates/probe.wxml"/><view/>"#,
+            )
+            .write("pages/index/index.js", "Page({});")
+            .write(
+                "templates/probe.wxml",
+                "<wxs module=\"m\">\nfunction move(evt, owner) { owner.getBoundingClientRect() }\n</wxs>\n<template name=\"x\"><view bind:touchmove=\"{{m.move}}\"/></template>",
+            );
+        let diagnostics = WxsSyncQuery.check(&f.project());
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].path, "templates/probe.wxml");
+        assert_eq!(diagnostics[0].line, 2);
+    }
+
+    #[test]
+    fn wxs_referenced_only_from_an_imported_template_is_visible() {
+        let f = template_fixture("wxs-template", "skyline");
+        let diagnostics = WxsSyncQuery.check(&f.project());
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].path, "templates/probe.wxs");
+    }
+
+    #[test]
+    fn template_imported_by_a_webview_page_is_ignored() {
+        let f = template_fixture("wxs-template-webview", "webview");
+        assert!(WxsSyncQuery.check(&f.project()).is_empty());
     }
 
     #[test]

@@ -769,4 +769,30 @@ mod tests {
         );
         assert_eq!(messages(&UnsupportedValue, &project), Vec::<String>::new());
     }
+
+    /// WXML 静态 `style` 属性里的声明同样要查，诊断落在属性值上。
+    #[test]
+    fn inline_style_attribute_is_reported_on_the_attribute_value() {
+        let fixture = crate::rules::testutil::Fixture::wxml(
+            "value-inline-style",
+            r#"<view style="display: grid; color: red"/>"#,
+        );
+        let diagnostics = UnsupportedValue.check(&fixture.project());
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("display: grid"));
+        assert_eq!(diagnostics[0].path, "pages/index/index.wxml");
+        // `<view style="` 之后第 1 列，指向 `display` 的属性名。
+        assert_eq!((diagnostics[0].line, diagnostics[0].column), (1, 14));
+        assert!(diagnostics[0].end_column > diagnostics[0].column);
+    }
+
+    /// 动态绑定的 `style`（`{{}}`）整段判不了，不报。
+    #[test]
+    fn dynamic_style_attribute_is_ignored() {
+        let fixture = crate::rules::testutil::Fixture::wxml(
+            "value-inline-style-dynamic",
+            r#"<view style="display: {{d}}"/><view style="display:grid;color:{{c}}"/>"#,
+        );
+        assert!(UnsupportedValue.check(&fixture.project()).is_empty());
+    }
 }

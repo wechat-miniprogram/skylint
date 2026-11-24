@@ -1,5 +1,5 @@
 //! `skyline/component-framework`：Skyline 页面的 `componentFramework` 解析结果不是
-//! `glass-easel`，开发者工具会拒绝编译（`minidev build` 不校验这条）。
+//! `glass-easel`，开发者工具与 `minidev build` 都会拒绝编译（minidev 0.18.0 实测）。
 //!
 //! 判据来自 minidev `compiler-graph/src/json/mutate.rs:496-540`
 //! （`is_glass_easel_component` / `check_component_framework`），解析顺序：
@@ -8,6 +8,8 @@
 //! 2. 所属分包的 `subPackages[].componentFramework`：按 `root` 前缀匹配、只看声明了
 //!    该键的分包，多个命中取 `root` 字典序第一个；
 //! 3. app.json 的 `componentFramework`。
+//!
+//! 构建器只报缺什么，本规则补充页面 → 分包 → app 的解析链与行号。
 //!
 //! 页面级优先，所以不能只看 app 级——工程 A 就有 4 个页面在页面 json 里单独
 //! 写了 `componentFramework`。插件视图不判：插件页走 `compile_plugin_json`，不经过
@@ -243,7 +245,7 @@ impl Rule for ComponentFramework {
                 at,
                 source.anchor(),
                 format!(
-                    "页面 `{page_path}` 使用 Skyline 渲染，但{detail}，开发者工具会拒绝编译（`minidev build` 不校验这条）"
+                    "页面 `{page_path}` 使用 Skyline 渲染，但{detail}，开发者工具与 `minidev build` 都会拒绝编译"
                 ),
                 "写 `componentFramework: \"glass-easel\"`（页面 json 优先，其次所属分包的 subPackages[].componentFramework，最后 app.json）；Skyline 只有 glass-easel 一套节点树实现",
             );

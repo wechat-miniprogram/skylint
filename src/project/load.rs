@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 use super::fs::LocalFs;
 use super::paths::{posix_dirname, posix_join};
 use super::units::{Exts, resolve_unit};
-use super::{ComponentUnit, JsFile, PageUnit, Project, Scope, StyleSheet};
+use super::{ComponentUnit, InlineWxs, JsFile, PageUnit, Project, Scope, StyleSheet};
 use crate::input::env::{Env, Lit};
 use crate::input::js::JsDoc;
 use crate::input::wxml;
@@ -278,9 +278,10 @@ impl Loaded {
             &components,
             &mut warnings,
         );
-        let scripts = collect_scripts(fs, base, exts, &pages, &components);
         let (template_files, template_scopes) =
             collect_template_files(fs, base, &pages, &components);
+        let scripts = collect_scripts(fs, base, exts, &pages, &components, &template_scopes);
+        let inline_wxs = collect_inline_wxs(fs, base, &pages, &components, &template_scopes);
         let envs = collect_envs(
             fs,
             base,
@@ -339,6 +340,7 @@ impl Loaded {
             envs,
             styles,
             scripts,
+            inline_wxs,
             template_files,
             template_scopes,
             warnings,
@@ -929,10 +931,11 @@ fn collect_styles(
         .collect()
 }
 
-/// 脚本图：`app.js` + 每个页面 / 组件的 js + 其余全部 `.js` / `.ts` 源文件。
+/// 脚本图：`app.js` + 每个页面 / 组件的 js + `.wxs` 脚本 + 其余全部 `.js` / `.ts` 源文件。
 ///
 /// 单元脚本的路径按后缀优先级解析（因此 typescript 插件的 `.ts` 源会命中），
 /// 不在这里重新拼后缀；同一文件被多个页面的组件闭包重复引用时按 path 去重。
+/// `<wxs src>` 也是脚本：直接引用的跟随单元，只在模板里引用的按模板的引用单元归属。
 /// 其余文件由 [`LocalFs::list_files`] 全域枚举（已剪掉 `node_modules` 与点目录），
 /// 排除 `.d.ts` 与 `miniprogram_npm` 编译产物后记为 [`Scope::Loose`]。
 /// 解析失败（语法错误 / 空文件）静默跳过——JS 语法由构建阶段拦，linter 不另造诊断。
@@ -942,6 +945,7 @@ fn collect_scripts(
     exts: &Exts,
     pages: &[PageUnit],
     components: &[ComponentUnit],
+    template_scopes: &BTreeMap<String, Vec<Scope>>,
 ) -> Vec<JsFile> {
     let mut entries: BTreeMap<String, Scope> = BTreeMap::new();
     if let Some(path) = resolve_unit(exts, fs, miniprogram_root, "app").js {
@@ -986,6 +990,25 @@ fn collect_scripts(
         }
     }
 
+    // 只在模板里引用的 wxs：模板没有自己的四件套，作用域取引用它的单元。
+    // 同一 wxs 被多个单元引用时只留一个（与直接引用同一口径），优先取会走 Skyline 的页面。
+    for (wxml_path, scopes) in template_scopes {
+        let Some(source) = fs.read_file(miniprogram_root, wxml_path) else {
+            continue;
+        };
+        let Ok(doc) = wxml::parse(wxml_path, &source, &Env::default()) else {
+            continue;
+        };
+        for src in doc.wxs_refs() {
+            let Some(target) = resolve_wxs_ref(fs, miniprogram_root, wxml_path, src) else {
+                continue;
+            };
+            if let Some(scope) = preferred_scope(scopes, pages) {
+                entries.entry(target).or_insert_with(|| scope.clone());
+            }
+        }
+    }
+
     // `list_files` 的返回值带 miniprogramRoot 前缀，脚本路径不带。
     let prefix = if miniprogram_root.is_empty() {
         String::new()
@@ -1010,6 +1033,71 @@ fn collect_scripts(
             Some(JsFile { path, scope, doc })
         })
         .collect()
+}
+
+/// 模板被多个单元引用时，给 wxs 选一个代表单元：优先会走 Skyline 的页面。
+///
+/// `JsFile` 只存一个作用域；模板也可能只被组件引用，此时取排序后的第一个。
+fn preferred_scope<'a>(scopes: &'a [Scope], pages: &[PageUnit]) -> Option<&'a Scope> {
+    let is_skyline = |route: &str| {
+        pages
+            .iter()
+            .any(|page| page.route == route && page.is_skyline && !page.opted_out)
+    };
+    scopes
+        .iter()
+        .find(|scope| matches!(scope, Scope::Page(route) if is_skyline(route)))
+        .or_else(|| scopes.first())
+}
+
+/// 内联 `<wxs module>` 的模块体：按所在 WXML 解析，作用域跟随 WXML 的单元。
+fn collect_inline_wxs(
+    fs: &LocalFs,
+    miniprogram_root: &str,
+    pages: &[PageUnit],
+    components: &[ComponentUnit],
+    template_scopes: &BTreeMap<String, Vec<Scope>>,
+) -> Vec<InlineWxs> {
+    let mut docs: BTreeMap<&str, Vec<Scope>> = BTreeMap::new();
+    for page in pages {
+        if let Some(path) = page.files.wxml.as_deref() {
+            docs.entry(path)
+                .or_insert_with(|| vec![Scope::Page(page.route.clone())]);
+        }
+    }
+    for component in components {
+        if let Some(path) = component.files.wxml.as_deref() {
+            docs.entry(path)
+                .or_insert_with(|| vec![Scope::Component(component.path.clone())]);
+        }
+    }
+    for (path, scopes) in template_scopes {
+        docs.entry(path.as_str()).or_insert_with(|| scopes.clone());
+    }
+
+    let mut out = Vec::new();
+    for (path, scopes) in docs {
+        let Some(source) = fs.read_file(miniprogram_root, path) else {
+            continue;
+        };
+        let Ok(doc) = wxml::parse(path, &source, &Env::default()) else {
+            continue;
+        };
+        for module in doc.wxs_modules() {
+            // 合成路径只用于选择解析模式（`.wxs` → CommonJS 脚本），不用于诊断。
+            let Ok(parsed) = JsDoc::parse(&format!("{path}#{}.wxs", module.name), &module.content)
+            else {
+                continue;
+            };
+            out.push(InlineWxs {
+                path: path.to_string(),
+                scopes: scopes.clone(),
+                doc: parsed,
+                start: doc.position(module.content_start),
+            });
+        }
+    }
+    out
 }
 
 /// 可以进入脚本图的源文件：`.js` / `.ts`，去掉类型声明与 npm 编译产物。

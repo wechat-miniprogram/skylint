@@ -68,7 +68,7 @@ pub struct JsDoc {
     functions: Vec<OwnedFunction>,
     calls: Vec<CallInfo>,
     strings: Vec<StringValue>,
-    this_data_destructures: Vec<ThisDataDestructure>,
+    this_data_captures: Vec<ThisDataCapture>,
     object_fns: Vec<ObjectFn>,
     /// 单元根对象（`Page({..})` / `Component({..})`）与 `methods` 的属性绑定。
     members: Vec<MemberBinding>,
@@ -77,8 +77,24 @@ pub struct JsDoc {
     /// 运行时挂到 `this` 上的属性（`this.onTap = ...`）。
     this_binds: Vec<MemberBinding>,
     literals: BTreeMap<String, Lit>,
+    /// 声明在 `properties` 里的属性，以及默认值能不能静态判空。
+    property_defaults: BTreeMap<String, PropertyDefault>,
     dirty_data: BTreeSet<String>,
     dirty_all: bool,
+}
+
+/// `Component({ properties })` 里一个属性的默认值形态。
+///
+/// 只区分「空 / 非空常量 / 判不了」三档：规则问的是「不传这个属性时背景是不是一定为空」，
+/// 默认值缺省、`''`、`null` 都算空；变量、调用等一律算判不了（宁可漏报）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum PropertyDefault {
+    /// `value` 缺省、`''` 或 `null`。
+    Empty,
+    /// 非空字面量（`'#fff'`、`false` 等）。
+    Fixed(Lit),
+    /// 取值依赖运行时（变量 / 调用 / 对象字面量）。
+    Unknown,
 }
 
 impl JsDoc {
@@ -125,12 +141,13 @@ impl JsDoc {
             functions: collector.functions,
             calls: collector.calls,
             strings: collector.strings,
-            this_data_destructures: collector.this_data_destructures,
+            this_data_captures: collector.this_data_captures,
             object_fns: collector.object_fns,
             members: collector.members,
             requires: collector.requires,
             this_binds: collector.this_binds,
             literals: collector.literals,
+            property_defaults: collector.property_defaults,
             dirty_data: collector.dirty_data,
             dirty_all: collector.dirty_all,
         })
@@ -160,6 +177,24 @@ impl JsDoc {
             env.insert(name.clone(), value.clone());
         }
         env
+    }
+
+    /// 声明在 `properties` 里的属性 → 默认值形态。
+    ///
+    /// 被 `setData` / `this.data.x = ...` 写过的键一律降为 [`PropertyDefault::Unknown`]：
+    /// 运行时会被改写，默认值不再代表实际取值。
+    pub fn declared_properties(&self) -> BTreeMap<String, PropertyDefault> {
+        self.property_defaults
+            .iter()
+            .map(|(name, default)| {
+                let default = if self.dirty_all || self.dirty_data.contains(name) {
+                    PropertyDefault::Unknown
+                } else {
+                    default.clone()
+                };
+                (name.clone(), default)
+            })
+            .collect()
     }
 
     /// 所有函数（函数声明、函数表达式、箭头函数、对象方法、类方法），按遍历顺序。
@@ -192,12 +227,12 @@ impl JsDoc {
         &self.strings
     }
 
-    /// 所有 `const { .. } = this.data` / `let { .. } = this.data` 形式的声明。
+    /// 所有以 `this.data` 为初始化值的声明（整体捕获或解构）。
     ///
     /// 只暴露这一个形状，不做通用 AST 暴露：worklet 的数据冻结规则（#156）只需要
-    /// 「解构了 `this.data`」与「在不在 worklet 里」，`calls()` 看不到解构。
-    pub fn this_data_destructures(&self) -> &[ThisDataDestructure] {
-        &self.this_data_destructures
+    /// 「捕获了 `this.data` 对象」与「在不在 worklet 里」，`calls()` 看不到声明。
+    pub fn this_data_captures(&self) -> &[ThisDataCapture] {
+        &self.this_data_captures
     }
 
     /// `Page({..})` / `Component({..})` 顶层与 `methods` 里的属性绑定，按出现顺序。
@@ -310,10 +345,13 @@ pub struct ArgInfo {
     pub ident: Option<String>,
 }
 
-/// 一次 `{ .. } = this.data` 解构声明。
+/// 一次以 `this.data` 为初始化值的声明：`const { a } = this.data`、`const snapshot = this.data`。
+///
+/// 整体捕获与解构在运行时是同一条路径——`this.data` 对象成为 worklet 的外部引用，
+/// 因此不区分绑定形态。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ThisDataDestructure {
-    /// 整个声明器（`{ a } = this.data`）的字节区间。
+pub struct ThisDataCapture {
+    /// 整个声明器（`const snapshot = this.data`）的字节区间。
     pub start: u32,
     pub end: u32,
     /// 是否位于 worklet 函数体内（同样取最近的外层函数）。
@@ -463,13 +501,15 @@ struct Collector {
     functions: Vec<OwnedFunction>,
     calls: Vec<CallInfo>,
     strings: Vec<StringValue>,
-    this_data_destructures: Vec<ThisDataDestructure>,
+    this_data_captures: Vec<ThisDataCapture>,
     object_fns: Vec<ObjectFn>,
     members: Vec<MemberBinding>,
     requires: Vec<RequireBinding>,
     this_binds: Vec<MemberBinding>,
     /// `Page({data})` / `Component({data, properties})` 里的字面量取值。
     literals: BTreeMap<String, Lit>,
+    /// 声明在 `properties` 里的属性 → 默认值形态。
+    property_defaults: BTreeMap<String, PropertyDefault>,
     /// 已经带上下文收录的字面量起点：父节点先收，通用字符串遍历后到时跳过。
     claimed_strings: BTreeSet<u32>,
     /// 被动态写入过的 data 键：`setData({k: 变量})` 或 `setData` 里出现动态键。
@@ -672,10 +712,9 @@ impl<'a> Visit<'a> for Collector {
         {
             self.pending = binding_name(&it.id);
         }
-        if matches!(it.id, BindingPattern::ObjectPattern(_))
-            && it.init.as_ref().is_some_and(is_this_data)
-        {
-            self.this_data_destructures.push(ThisDataDestructure {
+        // 右侧是字面量 `this.data` 就捕获了整个 data 对象，与左侧是不是解构无关。
+        if it.init.as_ref().is_some_and(is_this_data) {
+            self.this_data_captures.push(ThisDataCapture {
                 start: it.span.start,
                 end: it.span.end,
                 worklet_scope: self.worklet_scope(),
@@ -966,8 +1005,15 @@ impl Collector {
                 continue;
             };
             let Expression::ObjectExpression(definition) = &property.value else {
+                // `properties: { background: String }`：只写了类型，没有默认值。
+                if matches!(&property.value, Expression::Identifier(id)
+                    if matches!(id.name.as_str(), "String" | "Number" | "Boolean" | "Array" | "Object"))
+                {
+                    self.property_defaults.insert(key, PropertyDefault::Empty);
+                }
                 continue;
             };
+            let mut value = None;
             for field in &definition.properties {
                 let ObjectPropertyKind::ObjectProperty(field) = field else {
                     continue;
@@ -975,10 +1021,22 @@ impl Collector {
                 if field.computed || key_name(&field.key).as_deref() != Some("value") {
                     continue;
                 }
+                value = Some(&field.value);
                 if let Some(literal) = literal(&field.value) {
                     self.literals.insert(key.clone(), literal);
                 }
             }
+            let default = match value {
+                // 没写 `value` 就取类型默认值（字符串为空）。
+                None => PropertyDefault::Empty,
+                Some(Expression::NullLiteral(_)) => PropertyDefault::Empty,
+                Some(field) => match literal(field) {
+                    Some(Lit::Str(text)) if text.is_empty() => PropertyDefault::Empty,
+                    Some(literal) => PropertyDefault::Fixed(literal),
+                    None => PropertyDefault::Unknown,
+                },
+            };
+            self.property_defaults.insert(key, default);
         }
     }
 
@@ -1670,28 +1728,29 @@ mod tests {
     }
 
     #[test]
-    fn destructured_this_data_is_collected_with_scope() {
+    fn this_data_captures_are_collected_with_scope() {
         let src = r#"
             const { a } = this.data;
-            function normal() { let { b } = this.data; const c = this.data.c; const { d } = this.props; }
+            function normal() { let { b } = this.data; const c = this.data.c; const snapshot = this.data; const { d } = this.props; }
             function animated() { 'worklet'; const { e } = this.data; }
             function outer() { 'worklet'; const inner = () => { const { f } = this.data; }; }
             const { g } = other.data;
             const [h] = this.data;
+            const { i: { j } } = this.data;
         "#;
         let doc = parse_js(src);
         let found: Vec<(u32, bool)> = doc
-            .this_data_destructures()
+            .this_data_captures()
             .iter()
             .map(|d| (d.start, d.worklet_scope))
             .collect();
+        // 整体捕获、嵌套解构、数组解构都算；属性访问（`this.data.c`）不算。
         // 顶层、普通函数内、worklet 内、worklet 内嵌普通函数：作用域取最近一层。
-        assert_eq!(found.len(), 4, "{found:?}");
+        assert_eq!(found.len(), 7, "{found:?}");
         assert_eq!(
             found.iter().map(|(_, scope)| *scope).collect::<Vec<_>>(),
-            [false, false, true, false]
+            [false, false, false, true, false, false, false]
         );
-        assert_eq!(doc.position(found[2].0 as usize), (4, 52));
     }
 }
 

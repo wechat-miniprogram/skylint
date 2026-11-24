@@ -4,7 +4,8 @@
 //!
 //! - `disableScroll` 是页面级配置（`skyline-config/references/page-config.md:49`：
 //!   「此配置只在页面 json 中有效，无法在 `app.json` 中设置」）。写进 app.json 的
-//!   `window` 不会被任何页面读取，minidev 也不校验 app.json（实测静默通过）。
+//!   `window` 不会被任何页面读取；这是配置被忽略，不是构建校验——该键不触发构建
+//!   错误，`minidev build` 实测静默通过，所以只能靠这条规则提示。
 //! - `setting.skylineRenderEnable` 的类型是 Boolean（`skyline-config/references/
 //!   project-config.md:18-29`，开发者工具里开启 Skyline 渲染调试）。开发者工具按
 //!   真值判断，字符串 `"false"` 在 JS 里是真值，反而会把调试渲染器打开。

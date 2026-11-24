@@ -340,24 +340,18 @@ impl Registry {
     /// 全部内置规则。新增规则只改这里一处。
     pub fn builtin() -> Self {
         Self::from_rules(vec![
-            Box::new(wxml::NoInlineText),
             Box::new(wxml::NestedTextBlock),
-            Box::new(wxml::InlineDisplayIgnored),
             Box::new(wxml::TextBoxProperty),
             Box::new(wxml::ImageBlockLayout),
             Box::new(general::TransparentBackground),
-            Box::new(wxml::UnregisteredTag),
-            Box::new(wxml::UnsupportedComponent),
+            Box::new(wxml::ComponentSupport),
             Box::new(wxml::ScrollGestureConflict),
-            Box::new(wxml::ScrollViewType),
             Box::new(wxml::ComponentAttribute),
             Box::new(wxml::ScrollViewFamily),
             Box::new(wxml::ComponentChildren),
-            Box::new(wxml::PageMetaScroll),
             Box::new(wxml::ShareElementKey),
             // 已停用：模板数据作用域是框架语义，两个渲染器一致，不是迁移差异（源码保留）
             // Box::new(wxml::TemplateDataScope),
-            Box::new(wxml::HorizontalScrollEnableFlex),
             Box::new(wxml::TextHardBreakEllipsis),
             Box::new(wxml::InlineRun),
             Box::new(js::PageScrollApi),
@@ -371,8 +365,8 @@ impl Registry {
             Box::new(wxss::FixedLayer),
             Box::new(wxss::FixedOffsetMissing),
             Box::new(wxss::FixedZIndexInversion),
-            Box::new(wxss::TextOverflowEllipsis),
-            Box::new(wxss::AttributeSelector),
+            Box::new(wxss::TextOnlyProperty),
+            Box::new(wxss::SelectorSubset),
             // 已停用：死选择器是通用 lint，与本工具「WebView 正常 / Skyline 异常」的收录标准无关（源码保留）
             // Box::new(wxss::DeadSelector),
             Box::new(wxss::ScrollViewHeight),
@@ -387,23 +381,20 @@ impl Registry {
             Box::new(wxss::TransitionAnimationConflict),
             Box::new(wxss::TransitionProperty),
             Box::new(wxss::VendorPrefix),
-            Box::new(wxss::GradientLimit),
+            Box::new(wxss::GradientSupport),
             Box::new(wxss::LegacyFlexbox),
             Box::new(wxss::MediaQuery),
             Box::new(wxss::MultiValueLimit),
             Box::new(wxss::FilterLimit),
             Box::new(wxss::TextDecorationLine),
-            Box::new(wxss::TextDecorationTarget),
             Box::new(wxss::CalcMinMax),
-            Box::new(wxss::GradientUnsupported),
             Box::new(js::UnsupportedApi),
             Box::new(js::WxsSyncQuery),
             Box::new(js::WorkletApiScope),
             Box::new(js::WorkletDirective),
             Box::new(js::WorkletDataFreeze),
             Box::new(js::WorkletCompileSetting),
-            Box::new(js::ScrollContextEnhanced),
-            Box::new(js::ScrollContextRef),
+            Box::new(js::ScrollContext),
             Box::new(js::DraggableSheetScrollTo),
             Box::new(js::RouteType),
             Box::new(js::DynamicStyleValue),
@@ -422,7 +413,6 @@ impl Registry {
             Box::new(config::LazyCodeLoading),
             Box::new(config::ComponentFramework),
             Box::new(config::NavigationStyle),
-            Box::new(wxss::UniversalSelector),
         ])
     }
 
@@ -575,7 +565,7 @@ mod tests {
     use std::collections::HashSet;
     use std::path::{Component, Path};
 
-    use super::{Registry, Target};
+    use super::Registry;
 
     /// 证据用例的静态约束：名字能当目录名、工程非空且没有越界路径、`project_config` 是
     /// JSON 对象、`Serve` 指定的页面 json 确实在 `files` 里。生成器写盘前会再校验一次，
@@ -676,12 +666,13 @@ mod tests {
         }
     }
 
-    /// 视觉用例覆盖率门禁：`Target::Skyline` 的规则必须至少有一条 [`super::VisualCase`]。
+    /// 视觉用例覆盖率门禁：每条规则（`Skyline` / `Webview` / `Both`）必须至少有一条
+    /// [`super::VisualCase`] 或 [`super::EvidenceCase`]。
     ///
     /// 白名单给「差异无法用静态页面截图或产物/日志复现」的规则留出口，每条必须写清理由，
     /// 不允许无理由豁免。
     #[test]
-    fn skyline_rules_have_cases() {
+    fn rules_have_cases() {
         /// (规则 id, 为什么没有任何自动用例)。
         /// 用例包含截图证据（`VisualCase`）与产物/日志证据（`EvidenceCase`）。
         const WHITELIST: &[(&str, &str)] = &[
@@ -694,12 +685,12 @@ mod tests {
                 "共享元素转场同样跨页，且转场结束态两端一致，只有中间帧不同",
             ),
             (
-                "skyline/scroll-context-enhanced",
-                "模拟器不实现「未开 enhanced → 告警并返回 false」，两种配置的返回值、告警与滚动行为都没有差异",
-            ),
-            (
                 "skyline/draggable-sheet-scroll-to",
                 "模拟器里 sheet 几何不随 scrollTo({size|pixels}) 变化，且传 pixels 会把 appservice 事件循环卡死",
+            ),
+            (
+                "webview/tabbar-renderer",
+                "存在 custom tabBar 时 automator 的 `App.callFunction` / `evaluate` 都不返回，Runtime 与 Console 两条取证通道都采不到样；非法 renderer 又直接让首页路由抛错，截图也归因不到",
             ),
         ];
         assert!(
@@ -713,15 +704,30 @@ mod tests {
         let missing: Vec<&str> = registry
             .rules
             .iter()
-            .filter(|rule| rule.target() == Target::Skyline)
             .filter(|rule| rule.visual_cases().is_empty() && rule.evidence_cases().is_empty())
             .map(|rule| rule.meta().id)
             .filter(|id| !WHITELIST.iter().any(|(allowed, _)| allowed == id))
             .collect();
 
+        let stale: Vec<(&str, &str)> = WHITELIST
+            .iter()
+            .copied()
+            .filter(|(id, _)| {
+                !registry.rules.iter().any(|rule| {
+                    rule.meta().id == *id
+                        && rule.visual_cases().is_empty()
+                        && rule.evidence_cases().is_empty()
+                })
+            })
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "这些白名单条目已经有自动用例了，从白名单删掉（留假账比漏用例更难发现）：\n{stale:?}"
+        );
+
         assert!(
             missing.is_empty(),
-            "以下 skyline 规则没有任何自动用例（截图或产物证据），补完后或写进白名单：\n{}",
+            "以下规则没有任何自动用例（截图或产物证据），补完后或写进白名单：\n{}",
             missing.join("\n")
         );
     }

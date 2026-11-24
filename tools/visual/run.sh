@@ -168,10 +168,11 @@ else
 fi
 
 log "生成工程"
-# 默认跳过 `universal-selector`：它的用例含字面 `*`，WXSS 编译器直接报
+# 默认跳过 `skyline-selector-subset-3`：它含字面 `*`，WXSS 编译器直接报
 # `unexpected token '*'` 并让整个工程构建失败（这本身是结论，见 KNOWN-COMPILE-FAIL.md）。
+# 只跳这一页：同规则前两条属性选择器用例照常采集。
 SKIP_ARGS=()
-for skip in ${VISUAL_SKIP-universal-selector}; do
+for skip in ${VISUAL_SKIP-skyline-selector-subset-3}; do
   SKIP_ARGS+=(--skip "$skip")
 done
 cargo run -q --manifest-path "$ROOT/Cargo.toml" --example rule_visual_cases -- \

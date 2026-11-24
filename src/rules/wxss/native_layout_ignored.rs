@@ -1,18 +1,21 @@
 //! `skyline/native-layout-ignored`：没有 CSS 盒的内置组件上，布局类声明全部不生效。
 //!
-//! 与 `native-padding` 同一条机制（共享 [`NATIVES`]）：这些组件在 Skyline 里由原生
+//! 与 `native-padding` 同一条机制（共享 [`capability`] 能力表）：这些组件在 Skyline 里由原生
 //! widget 排布，`InflateNaked()` 连布局节点都不建，
-//! 所以 `width` / `height` / `margin` / `display` / `flex-*` / `position` 都不会进布局。
+//! 所以 `width` / `height` / `margin` / `display` / `flex-*` / `position` / offsets /
+//! `align-content` / `order` 都不会进布局。
 //! list/grid 四件套还会在 style builder 的白名单里被挡掉，只剩背景色；sticky / nested-scroll 系列连
 //! computed style 都不建。
 //!
-//! `padding` 不在这里报：它的后果与改法都不同，由 `native-padding` 单独负责。
+//! `padding` / `border-width` / `gap` 不在这里报：它们的后果与改法都不同，
+//! 由 `native-padding` 单独负责。
 //!
 //! WebView 里这些组件的内部是普通 DOM，布局属性照常生效，属于渲染器差异。
 
 use crate::project::Project;
+use crate::rules::wxml::tags::{Capability, CssBox, capability};
 use crate::rules::wxml::{Reach, element_diagnostic, for_each_element};
-use crate::rules::wxss::natives::{self, NATIVES, Native, NativeKind};
+use crate::rules::wxss::natives;
 use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
@@ -21,8 +24,12 @@ pub struct NativeLayoutIgnored;
 impl NativeLayoutIgnored {
     pub const ID: &'static str = "skyline/native-layout-ignored";
 
-    /// 会进布局的声明。`padding` 系列已经由 `native-padding` 负责，这里不重复报。
-    const PROPERTIES: [&'static str; 24] = [
+    /// 会进布局的声明。`padding` / `border-width` / `gap` 已经由 `native-padding` 负责，
+    /// 这里不重复报。
+    ///
+    /// offsets / `align-content` / `order` 与上面几项同源：`CssBox::None` 连布局节点都不建，
+    /// 它们不会进布局。没有单独的视觉用例，依据是能力表里 `None` 的判据。
+    const PROPERTIES: [&'static str; 29] = [
         "width",
         "height",
         "min-width",
@@ -36,6 +43,10 @@ impl NativeLayoutIgnored {
         "margin-left",
         "display",
         "position",
+        "top",
+        "right",
+        "bottom",
+        "left",
         "flex",
         "flex-direction",
         "flex-wrap",
@@ -45,11 +56,12 @@ impl NativeLayoutIgnored {
         "justify-content",
         "align-items",
         "align-self",
-        "gap",
+        "align-content",
+        "order",
         "overflow",
     ];
 
-    fn message(native: &Native, properties: &[&str]) -> String {
+    fn message(capability: &Capability, properties: &[&str]) -> String {
         let list = properties
             .iter()
             .map(|property| format!("`{property}`"))
@@ -57,20 +69,20 @@ impl NativeLayoutIgnored {
             .join("、");
         format!(
             "`{}` 在 Skyline 下没有 CSS 盒（由原生 widget 排布）：{list} 不会进布局，WebView 下生效",
-            native.tag
+            capability.tag
         )
     }
 
-    fn help(native: &Native) -> &'static str {
-        match native.kind {
+    fn help(capability: &Capability) -> &'static str {
+        match capability.css_box {
             // 背景色是唯一还能画出来的样式。
-            NativeKind::NoCssBox { background: true } => {
+            CssBox::None if capability.paints_background => {
                 "这层只负责滚动/布局容器：尺寸与间距交给组件自己的属性，或在里面包一层普通 `view` 承担布局；这个组件上只有 `background-color` 还会绘制"
             }
-            NativeKind::NoCssBox { background: false } => {
+            CssBox::None => {
                 "这个组件不构建样式，所有 CSS 都不生效：布局与外观都放到内层普通 `view` 上"
             }
-            NativeKind::BorderBoxTail => unreachable!("BorderBoxTail 不进这条规则"),
+            CssBox::Full | CssBox::BorderBoxTail => unreachable!("只有 CssBox::None 进这条规则"),
         }
     }
 }
@@ -118,12 +130,12 @@ impl Rule for NativeLayoutIgnored {
             }
             let (doc, tree, element) = (site.doc, site.tree, site.element);
             let reach = site.reach;
-            let Some(native) = NATIVES
-                .iter()
-                .find(|native| native.tag == element.tag && native.kind.ignores_layout())
-            else {
+            let Some(capability) = capability(&element.tag) else {
                 return;
             };
+            if !capability.css_box.ignores_layout() {
+                return;
+            }
             // 判不了的选择器可能改写结果：只要出现就不报（宁可漏报）。
             let Some(declared) =
                 natives::declared(project, tree, element, &Self::PROPERTIES, effective)
@@ -140,9 +152,9 @@ impl Rule for NativeLayoutIgnored {
                     element,
                     doc.path(),
                     Severity::Warning,
-                    Self::message(native, &declared),
+                    Self::message(capability, &declared),
                 )
-                .help(reach.help(Self::help(native))),
+                .help(reach.help(Self::help(capability))),
             );
         });
         out
@@ -170,9 +182,8 @@ fn effective(property: &str, value: &str) -> bool {
         "width" | "height" | "flex-basis" => value == "auto",
         "min-width" | "min-height" => value == "auto" || zero(&value),
         "max-width" | "max-height" => value == "none",
-        "margin" | "margin-top" | "margin-right" | "margin-bottom" | "margin-left" | "gap" => {
-            zero(&value)
-        }
+        "margin" | "margin-top" | "margin-right" | "margin-bottom" | "margin-left" => zero(&value),
+        "top" | "right" | "bottom" | "left" => value == "auto",
         "position" => value == "static",
         "flex-direction" => value == "row",
         "flex-wrap" => value == "nowrap",
@@ -180,9 +191,14 @@ fn effective(property: &str, value: &str) -> bool {
         "flex-shrink" => value == "1",
         "align-items" => matches!(value.as_str(), "normal" | "stretch"),
         "align-self" => matches!(value.as_str(), "auto" | "normal" | "stretch"),
+        "align-content" => matches!(value.as_str(), "normal" | "stretch"),
+        "order" => value == "0",
         "overflow" => value == "visible",
         // `display` / `flex` / `justify-content`：初始值取决于 defaultDisplayBlock 与
         // 父级类型，静态判不准，写了就报。
+        //
+        // 待确认、先不报：`float` / `box-sizing` / `inset` 的盒内行为没有实测；
+        // `display: none` 是否仍由 widget 树生效也未确认，现在按「写了就报」保持现状。
         _ => false,
     }
 }
@@ -247,6 +263,56 @@ mod tests {
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(diagnostics[0].message.contains("`display`"));
         assert!(!diagnostics[0].message.contains("`width`"));
+    }
+
+    #[test]
+    fn offsets_align_content_and_order_are_reported() {
+        let diagnostics = check(
+            "layout-box-properties",
+            r#"<sticky-section class="s"><view class="row"/></sticky-section>"#,
+            ".s { position: relative; top: 8px; left: 4px; align-content: center; order: 2; }",
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        for property in ["top", "left", "align-content", "order"] {
+            assert!(
+                diagnostics[0].message.contains(&format!("`{property}`")),
+                "缺少 {property}：{}",
+                diagnostics[0].message
+            );
+        }
+    }
+
+    #[test]
+    fn initial_offsets_align_content_and_order_are_ignored() {
+        let diagnostics = check(
+            "layout-box-defaults",
+            r#"<sticky-section class="s"><view class="row"/></sticky-section>"#,
+            ".s { top: auto; right: auto; bottom: auto; left: auto; align-content: normal; order: 0; }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// `Full`（swiper-item）与 `BorderBoxTail`（scroll-view）都有 CSS 盒的布局能力，
+    /// 即使写了布局属性也不该进这条规则。
+    #[test]
+    fn full_and_border_box_tail_components_are_not_reported() {
+        let diagnostics = check(
+            "layout-not-no-css-box",
+            r#"<swiper><swiper-item class="page"><view/></swiper-item></swiper><scroll-view class="list"><view/></scroll-view>"#,
+            ".page { top: 8px; align-content: center; order: 1; }\n.list { top: 8px; align-content: center; order: 1; }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 能力表里没有证据的标签保持不报：宁可漏报，不按「应该有」扩表。
+    #[test]
+    fn unconfirmed_components_are_not_reported() {
+        let diagnostics = check(
+            "layout-unconfirmed",
+            r#"<picker-view class="p"><view/></picker-view><rich-text class="r"/><cover-view class="c"/><page-container class="pc"><view/></page-container>"#,
+            ".p { display: flex; width: 300px; top: 8px; }\n.r { display: flex; order: 1; }\n.c { width: 100px; }\n.pc { padding: 8px; }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     #[test]

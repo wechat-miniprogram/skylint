@@ -11,6 +11,9 @@
 //! - 路由 API 文档（所有 `wx.router` 方法均不支持小程序插件）。
 //!
 //! 注释与字符串里的 `this.animate` 不在 AST 的调用节点上，天然不会命中。
+//!
+//! 页面级滚动的 API（`wx.pageScrollTo`）不在这里：它的根因是页面根默认不可滚，
+//! 与「某个 API 不受支持」不是一回事，由 `skyline/page-scroll-api` 统一负责。
 
 use crate::Severity;
 use crate::project::Project;
@@ -41,11 +44,6 @@ const ENTRIES: &[Entry] = &[
     Entry::Call {
         callee: "this.animate",
         message: "Skyline 不支持 `this.animate`，动画不会执行；改用 worklet（wx.worklet.shared + applyAnimatedStyle）",
-        skyline_only: true,
-    },
-    Entry::Call {
-        callee: "wx.pageScrollTo",
-        message: "Skyline 下页面根不是滚动容器，`wx.pageScrollTo` 没有消费者、滚动不会发生；把内容搬进 `<scroll-view>`，用 `ScrollViewContext.scrollTo`（先 `createSelectorQuery().select().ref()` 拿引用）",
         skyline_only: true,
     },
     Entry::PluginCall {
@@ -341,10 +339,20 @@ mod tests {
         assert_eq!(diagnostics[1].message, diagnostics[0].message);
     }
 
-    /// `onPageScroll` 由 `feature_flag.GetEnablePageScroll()` 支持，不再是无效配置。
+    /// `onPageScroll` 不是本规则的职责：页面级滚动的整体缺失由 `page-scroll-api` 报。
     #[test]
-    fn page_on_page_scroll_is_supported() {
+    fn page_on_page_scroll_is_not_this_rules_business() {
         let (_f, project) = single("unsupported-page-scroll", "Page({ onPageScroll() {} });");
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
+
+    /// `wx.pageScrollTo` 已迁到 `page-scroll-api`：这里不能再报，否则同一个 API 双报。
+    #[test]
+    fn page_scroll_to_belongs_to_page_scroll_api() {
+        let (_f, project) = single(
+            "unsupported-page-scroll-to",
+            "Page({ onReady() { wx.pageScrollTo({ scrollTop: 400 }); } });",
+        );
         assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
     }
 

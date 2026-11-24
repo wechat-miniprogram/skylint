@@ -26,7 +26,9 @@ use super::visit_declarations;
 ///
 /// 文本/字体类、`visibility`、`pointer-events` 不在表内（同文档 :60-64）。
 /// 一行一个属性名（小写），按白名单匹配。
-const ANIMATABLE_PROPERTIES: &[&str] = &[
+///
+/// 引擎不渲染的属性不收录：`unsupported-property` 已判它整条不生效，不存在过渡。
+pub(crate) const ANIMATABLE_PROPERTIES: &[&str] = &[
     "all",
     "none",
     "transform",
@@ -74,7 +76,9 @@ const ANIMATABLE_PROPERTIES: &[&str] = &[
     "box-shadow",
     "z-index",
     "text-decoration-color",
-    "text-decoration-thickness",
+    // `text-decoration-thickness` 不在此表：它被 `dict_table` 判为整条不生效，
+    // 不生效的属性谈不上过渡。fp 仍认这个名字，所以它留在下面的解析闭集里，
+    // 写进 transition 只丢该项、不回滚整条声明。
     "color",
     "font-size",
     "font-weight",
@@ -112,6 +116,8 @@ const BEHAVIOR_KEYWORDS: [&str; 2] = ["allow-discrete", "normal"];
 /// float-pigment 的 `TransitionPropertyItem` 是闭集
 /// （`float-pigment-css/src/property.rs:1028-1101`，需跟 fp 版本同步）。闭集之外的
 /// 属性名（含所有 `-` 前缀名）会让整条 `transition` 在解析层就失败。
+///
+/// 闭集只说明 fp 认这个名字、整条声明不会回滚，不代表渲染层会画出该属性。
 const TRANSITION_PROPERTY_ITEMS: &[&str] = &[
     "none",
     "transform",

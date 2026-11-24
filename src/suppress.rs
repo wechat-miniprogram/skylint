@@ -144,10 +144,7 @@ mod tests {
         );
         let kept = apply(
             &project,
-            vec![
-                diag("skyline/no-inline-text", 2),
-                diag("skyline/no-inline-text", 3),
-            ],
+            vec![diag("skyline/inline-run", 2), diag("skyline/inline-run", 3)],
         );
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].line, 3);
@@ -160,27 +157,24 @@ mod tests {
             f.wxml("<!-- skylint-disable-next-line skyline/no-pseudo -->\n<view>a<image/></view>");
         let kept = apply(
             &project,
-            vec![
-                diag("skyline/no-pseudo", 2),
-                diag("skyline/no-inline-text", 2),
-            ],
+            vec![diag("skyline/no-pseudo", 2), diag("skyline/inline-run", 2)],
         );
         assert_eq!(kept.len(), 1);
-        assert_eq!(kept[0].rule, "skyline/no-inline-text");
+        assert_eq!(kept[0].rule, "skyline/inline-run");
     }
 
     #[test]
     fn css_style_comment_works_too() {
         let f = Fixture::new("css");
         let project = f.wxml("/* skylint-disable-next-line */\n<view>a<image/></view>");
-        assert!(apply(&project, vec![diag("skyline/no-inline-text", 2)]).is_empty());
+        assert!(apply(&project, vec![diag("skyline/inline-run", 2)]).is_empty());
     }
 
     #[test]
     fn only_the_adjacent_line_is_affected() {
         let f = Fixture::new("far");
         let project = f.wxml("<!-- skylint-disable-next-line -->\n\n<view>a<image/></view>");
-        let kept = apply(&project, vec![diag("skyline/no-inline-text", 3)]);
+        let kept = apply(&project, vec![diag("skyline/inline-run", 3)]);
         assert_eq!(kept.len(), 1, "中间隔了空行就不该生效");
     }
 

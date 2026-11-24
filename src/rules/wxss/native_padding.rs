@@ -1,4 +1,5 @@
-//! `skyline/native-padding`：内置组件上的 CSS `padding` 不会内缩它的子节点。
+//! `skyline/native-padding`：内置组件上的 CSS `padding` / `border-width` / `gap`
+//! 不会内缩它的子节点。
 //!
 //! 判据只有一条：这个组件在 Skyline 里**有没有自己的 CSS 盒**。子节点一旦成为独立布局
 //! 根，父节点的 padding（连同 border / gap）就与它无关：
@@ -10,11 +11,14 @@
 //!
 //! 两档后果不同，所以文案分开：
 //!
-//! - [`NativeKind::NoCssBox`]：`InflateNaked()` / `SetSkipStyleBuild()`，连布局节点都不建，
+//! - [`CssBox::None`]：`InflateNaked()` / `SetSkipStyleBuild()`，连布局节点都不建，
 //!   CSS 布局属性一律无效。`list-view` / `grid-view` /
 //!   `list-builder` / `grid-builder` 还会在 style builder 的白名单里被挡掉，只剩背景色。
-//! - [`NativeKind::BorderBoxTail`]：有布局节点、padding 也写进去了，
+//! - [`CssBox::BorderBoxTail`]：有布局节点、padding 也写进去了，
 //!   但 concrete widget 是 widget 链尾，子节点仍是独立根，所以内容不内缩。
+//!
+//! 只收有证据的属性：`border-width` 与 `gap` 由同一条「子节点独立根」机制覆盖；
+//! `border` / `border-*` 简写与 `border-style` 的组合尚无实测用例，先不报。
 //!
 //! WebView 里这些组件的内部是普通 DOM（`wx-swiper > .wx-swiper-wrapper{width:100%}` 之类），
 //! padding 照常内缩，属于渲染器差异。
@@ -23,39 +27,55 @@
 //! 自己的布局树，padding 正常生效。
 
 use crate::project::Project;
+use crate::rules::wxml::tags::{Capability, CssBox, PaddingAttr, capability};
 use crate::rules::wxml::{Reach, element_diagnostic, for_each_element};
-use crate::rules::wxss::natives::{self, NATIVES, Native, NativeKind};
+use crate::rules::wxss::natives;
 use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
 
 pub struct NativePadding;
 
 const PADDING_ATTR: &str = "把内边距写成组件属性 `padding=\"{{[top,right,bottom,left]}}\"`（与 CSS padding 是两条通路；组件 padding 是 sliver padding，滚动方向上也占位），或在里面包一层普通 `view` 写 padding";
-const INNER_VIEW: &str =
+const NO_PADDING_ATTR: &str =
     "这个组件没有 `padding` 属性：在里面包一层普通 `view`，把内边距写在那层 `view` 上";
+const INNER_VIEW: &str = "组件自带的 `padding` 属性管不到边框与间距：在里面包一层普通 `view`，把内边距 / 边框 / 间距写在那层 `view` 上";
 
 impl NativePadding {
     pub const ID: &'static str = "skyline/native-padding";
 
-    /// 声明了非零 padding 的属性名（含 `padding` 简写）。
-    const PROPERTIES: [&'static str; 5] = [
+    /// 声明了非零 padding / border-width / gap 的属性名（含简写）。
+    const PROPERTIES: [&'static str; 13] = [
         "padding",
         "padding-top",
         "padding-right",
         "padding-bottom",
         "padding-left",
+        "border-width",
+        "border-top-width",
+        "border-right-width",
+        "border-bottom-width",
+        "border-left-width",
+        "gap",
+        "row-gap",
+        "column-gap",
     ];
 
-    fn message(native: &Native) -> String {
-        match native.kind {
-            NativeKind::NoCssBox { .. } => format!(
-                "`{}` 在 Skyline 下由原生 widget 排布子节点、自身不参与 CSS 布局，CSS `padding` 不会内缩子节点（WebView 下生效）",
-                native.tag
+    fn message(capability: &Capability, properties: &[&str]) -> String {
+        let list = properties
+            .iter()
+            .map(|property| format!("`{property}`"))
+            .collect::<Vec<_>>()
+            .join("、");
+        match capability.css_box {
+            CssBox::None => format!(
+                "`{}` 在 Skyline 下由原生 widget 排布子节点、自身不参与 CSS 布局，{list} 不会内缩子节点（WebView 下生效）",
+                capability.tag
             ),
-            NativeKind::BorderBoxTail => format!(
-                "`{}` 的 CSS `padding` 不会内缩子节点：子节点是独立布局根，容器按 border box 铺满（WebView 下生效）",
-                native.tag
+            CssBox::BorderBoxTail => format!(
+                "`{}` 的 {list} 不会内缩子节点：子节点是独立布局根，容器按 border box 铺满（WebView 下生效）",
+                capability.tag
             ),
+            CssBox::Full => unreachable!("CssBox::Full 不进这条规则"),
         }
     }
 }
@@ -79,7 +99,7 @@ impl Rule for NativePadding {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Warning,
-            description: "内置组件上的 CSS padding 在 Skyline 下不内缩子节点",
+            description: "内置组件上的 CSS padding / border-width / gap 在 Skyline 下不内缩子节点",
         }
     }
 
@@ -96,13 +116,16 @@ impl Rule for NativePadding {
             }
             let (doc, tree, element) = (site.doc, site.tree, site.element);
             let reach = site.reach;
-            let Some(native) = NATIVES.iter().find(|native| native.tag == element.tag) else {
+            let Some(capability) = capability(&element.tag) else {
                 return;
             };
+            if capability.css_box == CssBox::Full {
+                return;
+            }
             // 判不了的选择器可能改写结果：只要出现就不报（宁可漏报）。
             let Some(declared) =
                 natives::declared(project, tree, element, &Self::PROPERTIES, |_, value| {
-                    nonzero_padding(value)
+                    nonzero_inset(value)
                 })
             else {
                 return;
@@ -110,6 +133,16 @@ impl Rule for NativePadding {
             if declared.is_empty() {
                 return;
             }
+            // 只有命中 `padding*` 时才能把修法挂到组件的 `padding` 属性上；
+            // `border-width` / `gap` 一律要包一层内层 `view`。
+            let padding_hit = declared
+                .iter()
+                .any(|property| property.starts_with("padding"));
+            let help = match (capability.padding_attr, padding_hit) {
+                (PaddingAttr::Attribute, true) => PADDING_ATTR,
+                (PaddingAttr::Absent, true) => NO_PADDING_ATTR,
+                _ => INNER_VIEW,
+            };
             out.push(
                 element_diagnostic(
                     Self::ID,
@@ -117,25 +150,29 @@ impl Rule for NativePadding {
                     element,
                     doc.path(),
                     Severity::Warning,
-                    Self::message(native),
+                    Self::message(capability, &declared),
                 )
-                .help(reach.help(if native.padding_attr {
-                    PADDING_ATTR
-                } else {
-                    INNER_VIEW
-                })),
+                .help(reach.help(help)),
             );
         });
         out
     }
 }
 
-/// 值里有任意一边不为 0 就是「真的想留内边距」。
+/// 值里有任意一边不为 0 就是「真的想留内缩」。
 ///
+/// `border-width` 的 `medium`（初值）不算，`thin` / `thick` 算；
 /// 判不了的（`{{…}}`、`var(…)` 一类运行时值）按 0 处理，宁可漏报。
-fn nonzero_padding(value: &str) -> bool {
+fn nonzero_inset(value: &str) -> bool {
     value.split_whitespace().any(|token| {
+        let token = token.to_ascii_lowercase();
         if token.contains("var(") {
+            return false;
+        }
+        if matches!(token.as_str(), "thin" | "thick") {
+            return true;
+        }
+        if matches!(token.as_str(), "medium" | "normal") {
             return false;
         }
         let number = token.trim_end_matches(|c: char| c.is_ascii_alphabetic() || c == '%');
@@ -283,6 +320,78 @@ mod tests {
     }
 
     /// WebView 页面不归这条规则管。
+    #[test]
+    fn border_width_is_reported() {
+        let diagnostics = check(
+            "native-pad-border",
+            SCROLL,
+            ".list { border-width: 2px; height: 200px; }",
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("`border-width`"));
+        assert!(
+            diagnostics[0]
+                .help
+                .as_deref()
+                .is_some_and(|help| help.contains("包一层普通 `view`"))
+        );
+    }
+
+    #[test]
+    fn gap_is_reported() {
+        let diagnostics = check(
+            "native-pad-gap",
+            SWIPER,
+            ".slides { gap: 16px; height: 200px; }",
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("`gap`"));
+    }
+
+    #[test]
+    fn default_or_zero_border_and_gap_are_ignored() {
+        for (name, wxss) in [
+            (
+                "native-pad-border-default",
+                ".list { border-width: medium; height: 200px; }",
+            ),
+            (
+                "native-pad-border-zero",
+                ".list { border-width: 0; height: 200px; }",
+            ),
+            (
+                "native-pad-gap-normal",
+                ".list { gap: normal; height: 200px; }",
+            ),
+            ("native-pad-gap-zero", ".list { gap: 0; height: 200px; }"),
+        ] {
+            let diagnostics = check(name, SCROLL, wxss);
+            assert!(diagnostics.is_empty(), "{name}: {diagnostics:#?}");
+        }
+    }
+
+    /// `Full` 档有正常的 CSS 盒：子节点进自己的布局树，padding / border / gap 都生效。
+    #[test]
+    fn full_css_box_component_is_not_reported() {
+        let diagnostics = check(
+            "native-pad-full",
+            SWIPER,
+            ".slides { height: 200px; }\n.page { padding: 8px; border-width: 2px; gap: 8px; }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 能力表里没有证据的标签保持不报：宁可漏报，不按「应该有」扩表。
+    #[test]
+    fn unconfirmed_components_are_not_reported() {
+        let diagnostics = check(
+            "native-pad-unconfirmed",
+            r#"<picker-view class="p"><view/></picker-view><rich-text class="r"/><cover-view class="c"/><page-container class="pc"><view/></page-container>"#,
+            ".p { padding: 8px; border-width: 2px; gap: 4px; }\n.r { padding: 8px; }\n.c { padding: 8px; }\n.pc { padding: 8px; }",
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
     #[test]
     fn webview_page_is_not_reported() {
         let fixture = Fixture::new("native-pad-webview");

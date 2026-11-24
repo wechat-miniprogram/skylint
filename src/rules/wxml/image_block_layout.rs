@@ -5,7 +5,7 @@
 //! 写 `text-align: center`、头像 `.avatar { width: 150rpx; height: 150rpx }` 没有
 //! 任何 margin——WebView 里头像水平居中，Skyline 里紧贴左边界。同页 `<text>` 的
 //! 探针实测给出同一结论：Skyline 把这类宿主的 `display: inline` / `inline-block`
-//! 一律按块级处理（`display: inline` 被忽略的情形见 `skyline/inline-display-ignored`）。
+//! 一律按块级处理（`display: inline` / `inline-block` 被忽略的情形见 `skyline/inline-run`）。
 //!
 //! 本规则收四类「因块级化而失效」的声明：
 //!

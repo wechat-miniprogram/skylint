@@ -1,10 +1,12 @@
 //! `skyline/lazy-code-loading`：页面 json **显式**写 `renderer: "skyline"`，而 app.json
-//! 的 `lazyCodeLoading` 不是 `"requiredComponents"`，开发者工具会拒绝编译（`minidev build` 不校验这条）。
+//! 的 `lazyCodeLoading` 不是 `"requiredComponents"`，开发者工具与 `minidev build` 都会拒绝编译（minidev 0.18.0 实测）。
 //!
 //! 判据来自 minidev `compiler-graph/src/json/mutate.rs:441-450`（`check_renderer`）：
 //! 只认页面 json 自己写的 `renderer: "skyline"`——app 级 `renderer` 让页面继承
 //! Skyline 时这条不报。放在这里而不是只放 app 级，是因为同一个工程可以只给个别
 //! 页面开 Skyline，而 `lazyCodeLoading` 是 app 级唯一开关。
+//!
+//! 构建器只报缺哪个键，本规则补充触发页面与 app.json 的落点（含行号）。
 //!
 //! 插件视图不判：插件页走 `compile_plugin_json`，不经过 `compile_page_json`，
 //! 这条校验在插件视图里不会让构建失败。
@@ -157,7 +159,7 @@ impl Rule for LazyCodeLoading {
                     project.app_json.get("lazyCodeLoading"),
                 ),
                 format!(
-                    "{}显式使用 Skyline 渲染，但 app.json 的 lazyCodeLoading 不是 \"requiredComponents\"，开发者工具会拒绝编译（`minidev build` 不校验这条）",
+                    "{}显式使用 Skyline 渲染，但 app.json 的 lazyCodeLoading 不是 \"requiredComponents\"，开发者工具与 `minidev build` 都会拒绝编译",
                     page_list(&pages)
                 ),
                 "在 app.json 顶层写 \"lazyCodeLoading\": \"requiredComponents\"；页面显式 renderer: \"skyline\" 时 minidev 会在编译前校验这一项",
@@ -186,7 +188,7 @@ impl Rule for LazyCodeLoading {
                         .and_then(|json| json.get("renderer")),
                 ),
                 format!(
-                    "页面 `{route}.json` 显式声明 `renderer: \"skyline\"`，但 app.json 未设置 `lazyCodeLoading: \"requiredComponents\"`，开发者工具会拒绝编译（`minidev build` 不校验这条）"
+                    "页面 `{route}.json` 显式声明 `renderer: \"skyline\"`，但 app.json 未设置 `lazyCodeLoading: \"requiredComponents\"`，开发者工具与 `minidev build` 都会拒绝编译"
                 ),
                 "在 app.json 顶层补 \"lazyCodeLoading\": \"requiredComponents\"；这是 app 级开关，一个工程只需要写一次",
             );

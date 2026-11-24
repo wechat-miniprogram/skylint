@@ -23,7 +23,8 @@ use skylint::rules::{VisualAction, VisualComponent};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut renderer: Option<String> = None;
     let mut out: Option<PathBuf> = None;
-    // 规则 id 子串；用于排除「用例本身会让编译器失败」的规则，保证其余批次能跑。
+    // 规则 id 或用例 slug 的子串；用于排除「用例本身会让编译器失败」的单个用例，
+    // 保证同一规则其余用例与整批都能跑。
     let mut skips: Vec<String> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -76,6 +77,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 format!("{base}-{}", index + 1)
             };
+            // 用例级跳过：带 `skyline/` 的规则 id 会整条规则跳过，
+            // 而 `--skip <slug>` 只跳过这一页。
+            if skips.iter().any(|skip| slug.contains(skip.as_str())) {
+                continue;
+            }
 
             let route = format!("pages/{slug}/index");
             let dir = project.join("pages").join(&slug);
