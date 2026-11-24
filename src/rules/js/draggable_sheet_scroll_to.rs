@@ -7,6 +7,21 @@
 //!
 //! 证据：`skyline-scroll-api/references/api/draggable-sheet-context.md:32`
 //! （「`size` 和 `pixels` 同时传入时，仅 size 生效」）。
+//!
+//! ## 证据用例：为什么没有
+//!
+//! 本条**不可自动证**。沙箱实测（页面里放 `<draggable-sheet initial-child-size="0.5">`，
+//! `node().scrollTo` 依次传 `{size:0.9}` / `{size:0.1}` / `{size:0.5,pixels:100}`）：
+//!
+//! - `#sheet` 与子节点的 `boundingClientRect` 在每次调用后与初始值逐字相同
+//!   （页面侧看到的是布局盒，原生层的 transform 位移取不到，`computedStyle` 也不可用）；
+//! - `scrollTo({pixels: ...})` 会把 appservice 事件循环卡死，之后的
+//!   `scrollOffset` 回调与 evaluate 都不再返回；
+//! - 唯一稳定的信号是 `{}` 触发的 `parameter must contain size or pixels` warning，
+//!   它只区分「有没有传键」，区分不了 size 与 pixels 的优先级。
+//!
+//! 没有能归因到「pixels 被忽略」的稳定读数，硬写一条几何断言只会是空过或超时，
+//! 因此不写自动用例，留给真实设备或截图证据。
 
 use crate::Severity;
 use crate::project::Project;

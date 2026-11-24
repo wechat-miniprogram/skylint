@@ -3,32 +3,26 @@
 > 本文件由 `Registry::rules_document()` 生成，不要手工编辑。
 > 改了规则的 id / 级别 / 说明后，跑 `cargo run --example rules_doc` 重写。
 
-共 76 条：error 19 条、warning 52 条、info 5 条。
+共 66 条：error 19 条、warning 44 条、info 3 条。
 
 方向列：`skyline` = WebView 迁 Skyline 的检查（默认）；`webview` = Skyline 代码在不支持 Skyline 的环境里退回 WebView 渲染时的降级；`both` = 两个方向都跑。
 
 | 规则 | 级别 | 方向 | 说明 |
 |---|---|---|---|
-| `skyline/no-inline-text` | warning | skyline | Skyline 下文本与元素混排会变成独立 flex item，需用 `<text>` 包裹 |
 | `skyline/nested-text-block` | warning | skyline | 嵌套 `<text>` 上的 `display: block` 只在 WebView 生效：Skyline 的文本内部只走 inline 流 |
-| `skyline/inline-display-ignored` | warning | skyline | 非文本元素上的 `display: inline` 在 Skyline 被忽略，元素仍按块级盒布局 |
 | `skyline/text-box-property` | warning | skyline | 顶层 `<text>` / `<span>` 上写了宽高、垂直间距或小于父级行高的 `line-height`：Skyline 按块级盒应用，WebView 的 inline 盒排版不同 |
 | `skyline/image-block-layout` | warning | skyline | `<image>` 在 Skyline 是块级盒、WebView 是 inline-block：靠行内对齐居中、单侧 auto 外边距、`vertical-align`、祖先的 `text-indent` 在 Skyline 下都不再生效 |
-| `general/transparent-background` | info | both | 组件把背景色绑在属性上，调用处没传该属性：背景取默认值，为空时透明 |
-| `skyline/unregistered-tag` | error | skyline | 未注册的标签：WebView 不渲染其子树，Skyline 按普通元素渲染 |
-| `skyline/unsupported-component` | error | skyline | Skyline 下不可用的组件（如 web-view / movable-view / editor）：部分组件仍保留盒子，但缺少原生能力或绘制 |
-| `skyline/scroll-gesture-conflict` | warning | skyline | 滚动容器上的滑动会冒泡触发祖先的 touchmove 手势（拖拽收起等） |
-| `skyline/scroll-view-type` | info | skyline | `<scroll-view>` 建议显式指定 type：省略 type 走传统滚动（没有按需渲染），`default` 与未知值会被 JS 层回退成 `list` 并告警 |
-| `skyline/component-attribute` | warning | skyline | Skyline 会静默忽略的组件属性取值与组合（枚举白名单 / 不支持的属性 / 数值范围 / 跨属性条件） |
-| `skyline/scroll-view-family` | error | skyline | scroll-view 家族组件的结构约束（挂载位置 / 顺序 / 唯一性 / 必需属性 / 关联容器） |
-| `skyline/component-children` | error | skyline | 组件对直接子节点的结构约束（只允许某类子节点 / 必须唯一子节点 / 条件必需的子节点） |
-| `skyline/page-meta-scroll` | warning | skyline | `<page-meta>` 的 scroll-top / scrolldone 在 Skyline 下没有实现：页面根不是滚动容器 |
-| `skyline/share-element-key` | error | skyline | `<share-element>` 的 key 必填且同一文件内唯一 |
-| `skyline/horizontal-scroll-enable-flex` | warning | skyline | 横向滚动的 `<scroll-view>` 需开启 `enable-flex` 以兼容 WebView |
-| `skyline/text-hard-break-ellipsis` | info | skyline | 多行省略里含硬换行时，Skyline 默认不给末行省略号 |
-| `skyline/inline-run` | warning | skyline | 并列的文本级元素在 WebView 下排在同一行，在 Skyline 下各自占一行 |
+| `general/transparent-background` | warning | both | 组件把背景色绑在默认为空的属性上，调用处没传时这里一定透明 |
+| `skyline/component-support` | error | skyline | Skyline 下没有可用实现的组件：未注册标签按行内/无模板/块级 flex 三种退化方式渲染，黑名单组件按不可用/绘制丢失/整页 opt-out 分档 |
 | `skyline/hidden-binding` | warning | skyline | `hidden` 绑定可能取到空串：Skyline 按属性存在判定会隐藏，WebView 按字符串真值判定显示 |
-| `skyline/page-scroll-api` | warning | skyline | 页面级滚动生命周期 / 配置在 Skyline 下不生效：页面根不是滚动容器，改用 scroll-view |
+| `skyline/scroll-gesture-conflict` | warning | skyline | 滚动容器上的滑动会冒泡触发祖先的 touchmove 手势（拖拽收起等） |
+| `skyline/component-attribute` | warning | skyline | Skyline 会静默忽略的组件属性取值与组合（枚举白名单 / 不支持的属性 / 数值范围 / 跨属性条件） |
+| `skyline/scroll-view-family` | error | skyline | scroll-view 家族组件的结构约束（type 取值 / 挂载位置 / 顺序 / 唯一性 / 必需属性 / 关联容器） |
+| `skyline/component-children` | error | skyline | 组件对直接子节点的结构约束（只允许某类子节点 / 必须唯一子节点 / 条件必需的子节点） |
+| `skyline/share-element-key` | error | skyline | `<share-element>` 的 key 必填且同一文件内唯一 |
+| `skyline/text-hard-break-ellipsis` | info | skyline | 多行省略里含硬换行时，Skyline 默认不给末行省略号 |
+| `skyline/inline-run` | warning | skyline | Skyline 没有元素级行内格式化上下文：裸文本与元素混排、非文本元素上的 `display: inline` / `inline-block`、并列的文本级元素都会变成块级堆叠 |
+| `skyline/page-scroll-api` | warning | skyline | 页面级滚动在 Skyline 下不存在：页面根默认不建滚动容器、页面级订阅只在 WebView 渲染层，`<page-meta>` 的滚动接线也被注释掉——整页改用 scroll-view |
 | `skyline/no-pseudo` | warning | skyline | Skyline 不支持该伪类/伪元素：条件被丢弃（命中范围变大）或整条规则被跳过（声明不生效） |
 | `skyline/pseudo-inline-layout` | warning | skyline | 伪元素与文本并排时 Skyline 下会换行：伪元素是块级盒，WebView 下是 inline |
 | `skyline/box-sizing` | error | skyline | box-sizing 两端不一致：非法取值/initial 的回落值不同，或未开 defaultContentBox 时默认值不同 |
@@ -37,37 +31,34 @@
 | `skyline/fixed-layer` | warning | skyline | `position: fixed` 在 Skyline 下被提到页面根，祖先的包含块不再约束它（WebView 下相对该祖先定位），两端位置不同 |
 | `skyline/fixed-offset-missing` | warning | skyline | `position: fixed` 元素没写某轴偏移：Skyline 下按页面根起点定位，WebView 下按它在原容器里的位置 |
 | `skyline/fixed-z-index-inversion` | warning | skyline | `position: fixed` 在 Skyline 下跳出祖先的层叠上下文，上下顺序可能与 WebView 相反 |
-| `skyline/text-overflow-ellipsis` | warning | skyline | text-overflow: ellipsis 在 Skyline 下只对 `<text>` 生效 |
-| `skyline/attribute-selector` | warning | skyline | 属性选择器在 Skyline 下不参与匹配：主体只有属性时整条声明失效，否则命中范围被放宽 |
+| `skyline/text-only-property` | warning | skyline | text-overflow / text-decoration* 只在文本节点（`<text>` / `<span>` / `<navigator>`）上生效、且不继承到后代：写在 `<view>` 等容器上会静默失效 |
+| `skyline/selector-subset` | error | skyline | 选择器不在 Skyline 的选择器子集里：属性选择器被丢弃（整条失效或放宽命中），`*` 在编译期就被拒绝 |
 | `skyline/scroll-view-height` | warning | skyline | scroll-view 没有确定高度，Skyline 下内容不会撑开它，会塌成 0 |
 | `skyline/native-layout-ignored` | warning | skyline | 没有 CSS 盒的内置组件上，布局类声明在 Skyline 下不生效 |
-| `skyline/native-padding` | warning | skyline | 内置组件上的 CSS padding 在 Skyline 下不内缩子节点 |
+| `skyline/native-padding` | warning | skyline | 内置组件上的 CSS padding / border-width / gap 在 Skyline 下不内缩子节点 |
 | `skyline/implicit-color` | info | skyline | 省略颜色时 Skyline 用黑色而不是元素自身的 color（受实验开关影响） |
 | `skyline/tag-selector-isolation` | warning | skyline | 标签 / id 选择器在 Skyline 下不跨组件匹配，WebView 上生效的样式会静默失效 |
 | `skyline/unsupported-property` | error | skyline | 声明了 Skyline 完全不支持的属性，该属性不会生效 |
 | `skyline/unsupported-value` | error | skyline | 属性在 Skyline 下可用，但该值不支持：按 unset 回落到初始值或父元素的值，或整条声明被丢弃 |
 | `skyline/value-degraded` | warning | skyline | 属性在 Skyline 下可用，但该值的表现与 WebView 不同（被降级 / 映射 / 无效果） |
 | `skyline/shorthand-partial` | warning | skyline | 简写属性在 Skyline 下部分生效：值里属于不受支持子属性的那一段被丢弃 |
-| `skyline/transition-animation-conflict` | warning | skyline | 同一元素上 transition 与 animation 动同一个属性，Skyline 下动画只会跑开头几帧 |
-| `skyline/transition-property` | warning | skyline | transition 里的属性名不在 Skyline 的可动画属性白名单内，该段过渡不生效 |
+| `skyline/transition-animation-conflict` | warning | skyline | 同一元素上 transition 与 animation 动同一个属性时，Skyline 的 transition 抢占该属性，animation 的位移不按动画推进（本用例停在过渡起点） |
+| `skyline/transition-property` | warning | skyline | transition 里的属性名不受支持：闭集外（如 `visibility`、厂商前缀名）会让整条声明被丢弃；闭集内但引擎没有实现（如 `margin`、`background`）只丢该属性 |
 | `skyline/vendor-prefix` | warning | skyline | 带 `-webkit-` 前缀的关键帧块 / 动画属性在 Skyline 下被丢弃，WebView 认得 |
-| `skyline/gradient-limit` | warning | skyline | 渐变的形状 / 尺寸 / 颜色停止位置超出 Skyline 支持范围 |
+| `skyline/gradient-support` | warning | skyline | 渐变函数的支持矩阵：函数名、属性家族与形状 / 尺寸 / 停止位子文法在 Skyline 下只实现了一部分 |
 | `skyline/legacy-flexbox` | error | skyline | 规则块用了老式 `-webkit-box` 弹性盒，Skyline 不认识这些声明，整块布局会退回默认 display |
 | `skyline/media-query` | warning | skyline | 媒体查询条件在 Skyline 下被丢弃，块内声明对全部设备生效 |
 | `skyline/multi-value-limit` | warning | skyline | background / mask 的多值数量超出 Skyline 支持范围 |
-| `skyline/filter-limit` | warning | skyline | filter / backdrop-filter 使用了不支持的函数或组合 |
-| `skyline/text-decoration-line` | warning | skyline | text-decoration-line 只支持单值；多值或特殊线型会让 line 回落到 none（简写里其它子属性仍生效） |
-| `skyline/text-decoration-target` | warning | skyline | text-decoration 在 Skyline 下只对 `<text>` / `<span>` / `<input>` / `<navigator>` 生效 |
-| `skyline/calc-min-max` | warning | skyline | min() / max() / clamp() 在 Skyline 下求值为 0，整个表达式失效 |
-| `skyline/gradient-unsupported` | warning | skyline | repeating / 厂商前缀渐变不被 Skyline 解析，mask 也不支持 conic 渐变 |
+| `skyline/filter-limit` | warning | skyline | filter / backdrop-filter 的多个函数组合在 Skyline 下只应用第一个，后续函数被丢弃 |
+| `skyline/text-decoration-line` | warning | skyline | text-decoration-line 只支持单值；多值或特殊线型会让 line 回落到 none |
+| `skyline/calc-min-max` | warning | skyline | min() / max() / clamp() 在 Skyline 下求值失败，所在声明整条失效（长度类属性回落 auto / 初始值） |
 | `skyline/unsupported-api` | warning | skyline | Skyline 不支持的 JS API（如 this.animate、插件内的 wx.router.*） |
 | `skyline/wxs-sync-query` | warning | skyline | WXS 里同步形式的 `getBoundingClientRect()` / `getComputedStyle()` 在 Skyline 下拿不到值 |
 | `skyline/worklet-api-scope` | error | skyline | scrollViewContext.scrollTo 必须在 worklet 内调用，worklet 内不能调用 wx.* |
 | `skyline/worklet-directive` | error | skyline | worklet: 绑定、applyAnimatedStyle 与路由动画处理函数缺少 'worklet' 指令（回调不会注册） |
-| `skyline/worklet-data-freeze` | error | skyline | worklet 内解构 this.data 会冻结 this.data，导致 setData 失效 |
+| `skyline/worklet-data-freeze` | error | skyline | worklet 内把 this.data 赋给变量（含解构）会冻结 this.data，导致 setData 失效 |
 | `skyline/worklet-compile-setting` | warning | skyline | 工程使用了 worklet，但 project.config.json 没有开启 setting.compileWorklet |
-| `skyline/scroll-context-enhanced` | warning | skyline | 用 ScrollViewContext 控制滚动 / 刷新前，`<scroll-view>` 必须开启 `enhanced` |
-| `skyline/scroll-context-ref` | warning | skyline | 用 scrollViewContext.scrollTo 前没有通过 NodesRef.ref 拿到 scroll-view 引用 |
+| `skyline/scroll-context` | warning | skyline | 调用 ScrollViewContext 前没有拿到 context 或节点引用（刷新缺 `enhanced` / refresher 属性，`scrollTo` 缺 ref） |
 | `skyline/draggable-sheet-scroll-to` | warning | skyline | DraggableSheetContext.scrollTo 同时传 size 与 pixels 时 pixels 被忽略 |
 | `skyline/route-type` | warning | skyline | routeType 必须是 wx.router.addRouteBuilder 注册过的类型或 wx:// 预设 |
 | `skyline/dynamic-style-value` | warning | skyline | JS 字符串里的内联样式用了 Skyline 不支持的写法（前缀渐变、老式弹性盒、不可解析的 display、-webkit-line-clamp、会回落初始值的取值） |
@@ -84,4 +75,3 @@
 | `skyline/lazy-code-loading` | error | skyline | 页面显式声明 Skyline 渲染时，app.json 必须设置 lazyCodeLoading: "requiredComponents" |
 | `skyline/component-framework` | error | skyline | Skyline 页面的 componentFramework 解析结果必须是 glass-easel |
 | `skyline/navigation-style` | error | skyline | Skyline 页面的 navigationStyle 必须解析为 custom，且不能同时写 navigationBar* 字段 |
-| `skyline/universal-selector` | warning | skyline | 主体是 `*`（或只剩属性选择器）的规则在 Skyline 下不进规则集，声明全部不生效 |

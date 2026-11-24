@@ -13,7 +13,13 @@
 //! （glass-easel 适配层）
 //!
 //! 只有自定义 tabBar（`tabBar.custom: true`）才会走 `createTabBar`
-//! （路由面板只对 `isTab && isCustomTabBar` 的页面创建），内置 tabBar 不受影响。
+//! （`onAppRoute.js:669-671` 的 `isTab && isCustomTabBar`），内置 tabBar 不受影响。
+//!
+//! 不可自动证：模拟器里只要 app.json 带自定义 tabBar，automator 的
+//! `App.callFunction`（`EvidenceExpect::Runtime` / `Console` 取证都依赖它）就不再返回；
+//! 非 `webview` 的 renderer 还会让首页路由直接抛
+//! `Invalid tab-bar renderer`，页面不可用。因此本规则没有 `EvidenceCase`，只能保留覆盖率
+//! 门禁里的白名单（理由见 `rules::tests::rules_have_cases`）。
 
 use serde_json::Value;
 
@@ -107,6 +113,18 @@ mod tests {
             r#"{"pages":["pages/index/index"],"renderer":"skyline","tabBar":{"custom":true,"renderer":"skyline","list":[]}}"#,
         );
         assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].message.contains("Invalid tab-bar renderer"));
+    }
+
+    #[test]
+    fn probe_fixture_is_reported() {
+        // 与手工排查用的最小工程同形：页面在 tabBar.list 里，custom + renderer 都是
+        // 触发条件；规则命中的是配置本身，不依赖页面内容。
+        let diagnostics = check_with(
+            "webview/tabbar-probe",
+            r#"{"pages":["pages/index/index"],"renderer":"webview","componentFramework":"glass-easel","lazyCodeLoading":"requiredComponents","tabBar":{"custom":true,"renderer":"skyline","list":[{"pagePath":"pages/index/index","text":"Home"}]}}"#,
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         assert!(diagnostics[0].message.contains("Invalid tab-bar renderer"));
     }
 

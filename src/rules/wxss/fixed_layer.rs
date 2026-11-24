@@ -36,18 +36,18 @@ impl FixedLayer {
 
 /// 视觉用例：fixed 元素的祖先形成包含块。
 ///
-/// WebView 里 fixed 被 `.panel` 的 `transform` 抓住，相对它定位（面板整体下移 200px，
-/// fixed 也跟着下移）；Skyline 把它提到页面根，只相对视口。
+/// WebView 里 fixed 被 `.panel` 的 `transform` 抓住，相对它定位（面板在 header 之后
+/// 80px，再 `translate3d` 200px，目标实际 top 280px）；Skyline 把它提到页面根，只相对视口。
 static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxml: r#"<view class="header">页面头部</view>
 <view class="panel">
   <view class="bar" id="target">浮层</view>
 </view>
 <view class="content">页面内容</view>"#,
-    wxss: ".header { height: 80px; background: #333; color: #fff; }\n.panel { transform: translate3d(0, 200px, 0); height: 200px; background: #e0e0e0; }\n.bar { position: fixed; top: 0; left: 0; width: 160px; height: 40px; background: #e54d42; }\n.content { height: 300px; background: #fff; }\n",
+    wxss: ".header { height: 80px; background: #333; color: #fff; }\n.panel { transform: translate3d(0, 200px, 0); }\n.bar { position: fixed; top: 0; left: 0; width: 160px; height: 40px; background: #e54d42; }\n.content { height: 300px; background: #fff; }\n",
     js: None,
     expect: VisualExpect::Differ,
-    note: "祖先有 transform 时 WebView 相对该祖先定位 fixed（下移 200px），Skyline 提到页面根后贴顶",
+    note: "祖先有 transform 时 WebView 相对该祖先定位 fixed：祖先自身已在 header 之后 80px，再加 `translate3d` 200px，目标实际 top 280px；Skyline 提到页面根后贴顶（top 0）。祖先只留 `transform`，并集差异就只有两条 160×40 的红条",
     target: "#target",
 }];
 

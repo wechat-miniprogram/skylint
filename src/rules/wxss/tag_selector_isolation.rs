@@ -1,9 +1,10 @@
 //! 标签 / id 选择器在 Skyline 下不跨组件匹配。
 //!
-//! 引擎侧的证据：页面/组件样式表的规则命中前要求节点的样式作用域与规则作用域一致；
+//! 引擎侧的证据（`skyline/style/selector_matcher.cc`）：页面/组件样式表走
+//! `MatchScopedRules`，命中前要求 `node.StyleScopeId() == rule_scope_id`；
 //! 标签选择器在 `tagNameStyleIsolation: legacy` 下改查全局标签规则表放宽，
-//! id 选择器**没有 legacy 分支**——所以 legacy 只救标签，救不了 id。
-//! 而 `app.wxss` 按全局规则表匹配，本来就不分作用域，不受影响。
+//! id 选择器那段**没有 legacy 分支**——所以 legacy 只救标签，救不了 id。
+//! 而 `app.wxss` 走 `MatchGlobalRules`，本来就不分作用域，不受影响。
 //!
 //! 于是迁移风险只有一类：页面 / 组件的样式表里，纯标签或纯 id 选择器命中了
 //! **别的单元**的节点。WebView 下这层 DOM 是扁平的、能命中；Skyline 下静默不再命中。
@@ -62,10 +63,10 @@ static VISUAL_CASES: &[VisualCase] = &[VisualCase {
   <view class="spacer"/>
   <c/>
 </view>"#,
-    wxss: "view { padding: 12px; background: #e33; }\n.spacer { height: 240px; background: #fff; }\n",
+    wxss: "view { box-sizing: content-box; padding: 12px; background: #e33; }\n.spacer { height: 240px; background: #fff; }\n",
     js: None,
     expect: VisualExpect::Differ,
-    note: "页面 wxss 的 `view` 标签选择器命中了组件内的 `<view>`：WebView 下组件内多出红底内边距，Skyline 不跨组件匹配（整页比对）",
+    note: "页面 wxss 的 `view` 标签选择器命中了组件内的 `<view>`：WebView 下组件内多出 12px padding、盒高 48→72 CSS，页面因此比 Skyline 高 24 CSS；Skyline 不跨组件匹配（整页比对）。两端都显式写了 `box-sizing: content-box`，`.spacer` 的外高一致，剩余差异（整页 3.97%）只来自组件内节点能否吃到这条标签选择器；组件多出的红底与页面同色不可辨",
     target: "",
 }];
 
@@ -107,7 +108,7 @@ fn foreign_units<'a>(project: &'a Project, scope: &Scope) -> Option<(Vec<&'a str
             // WebView 能命中，Skyline 不跨作用域。
             //
             // `styleIsolation: shared` 是例外：它的规则拿到的是页面那一份
-            // scope（与页面共用一份），页面节点按主 scope 查规则集时
+            // scope（`space.ts:633-636`），页面节点按主 scope 查规则集时
             // 就会命中（匹配用的是节点主 scope），
             // 与 WebView 一致，只剩兄弟组件还会失效。
             let shared = project.style_isolation(path) == StyleIsolation::Shared;

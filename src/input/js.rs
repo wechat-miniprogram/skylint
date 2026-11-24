@@ -68,7 +68,7 @@ pub struct JsDoc {
     functions: Vec<OwnedFunction>,
     calls: Vec<CallInfo>,
     strings: Vec<StringValue>,
-    this_data_destructures: Vec<ThisDataDestructure>,
+    this_data_captures: Vec<ThisDataCapture>,
     object_fns: Vec<ObjectFn>,
     /// 单元根对象（`Page({..})` / `Component({..})`）与 `methods` 的属性绑定。
     members: Vec<MemberBinding>,
@@ -77,14 +77,26 @@ pub struct JsDoc {
     /// 运行时挂到 `this` 上的属性（`this.onTap = ...`）。
     this_binds: Vec<MemberBinding>,
     literals: BTreeMap<String, Lit>,
-    /// 模块顶层单元对象（`Page` / `Component` 及其工厂包装）的 `data` 初始字面量。
-    /// 与 [`Self::literals`] 分开：`data` 会被 `setData` 改写，不能参与常量折叠。
-    /// 值为 `None` 表示同一个键出现过非字面量或互相矛盾的值，初始值不可信。
-    data_literals: BTreeMap<String, Option<Lit>>,
-    /// 同一批对象的 `properties` 默认值；运行时属性值覆盖 `data` 的同名键。
-    property_literals: BTreeMap<String, Option<Lit>>,
+    /// `data` 里的字面量初始值。单独存：它会被 `setData` 改写，不能与 `properties` 混用。
+    data_literals: BTreeMap<String, Lit>,
+    /// 声明在 `properties` 里的属性，以及默认值能不能静态判空。
+    property_defaults: BTreeMap<String, PropertyDefault>,
     dirty_data: BTreeSet<String>,
     dirty_all: bool,
+}
+
+/// `Component({ properties })` 里一个属性的默认值形态。
+///
+/// 只区分「空 / 非空常量 / 判不了」三档：规则问的是「不传这个属性时背景是不是一定为空」，
+/// 默认值缺省、`''`、`null` 都算空；变量、调用等一律算判不了（宁可漏报）。
+#[derive(Debug, Clone, PartialEq)]
+pub enum PropertyDefault {
+    /// `value` 缺省、`''` 或 `null`。
+    Empty,
+    /// 非空字面量（`'#fff'`、`false` 等）。
+    Fixed(Lit),
+    /// 取值依赖运行时（变量 / 调用 / 对象字面量）。
+    Unknown,
 }
 
 impl JsDoc {
@@ -131,14 +143,14 @@ impl JsDoc {
             functions: collector.functions,
             calls: collector.calls,
             strings: collector.strings,
-            this_data_destructures: collector.this_data_destructures,
+            this_data_captures: collector.this_data_captures,
             object_fns: collector.object_fns,
             members: collector.members,
             requires: collector.requires,
             this_binds: collector.this_binds,
             literals: collector.literals,
             data_literals: collector.data_literals,
-            property_literals: collector.property_literals,
+            property_defaults: collector.property_defaults,
             dirty_data: collector.dirty_data,
             dirty_all: collector.dirty_all,
         })
@@ -170,20 +182,35 @@ impl JsDoc {
         env
     }
 
-    /// `data` / `properties` 的初始字面量（只用来判断「初始类型」）。
+    /// `data` 里的字面量初始值。
     ///
-    /// 这里刻意**不**因为键被 `setData` 写过就丢弃：本接口只回答「声明时的初始值是
-    /// 不是字符串」，与 [`Self::constants`] 的常量折叠口径不同。同一个键出现互相矛盾
-    /// 的取值时按不可信处理（`None`）；属性默认值覆盖同名 `data` 键。
-    pub fn initial_values(&self) -> Env {
+    /// 与 [`Self::constants`] 分开：`properties` 的默认值在没被写入时一直成立，`data`
+    /// 只是初始化值。刻意**不**看 `setData`：用它的规则判的是「声明时的类型」（例如
+    /// 字符串初始值被当布尔属性用），改写类型不属于它要管的事。
+    pub fn data_constants(&self) -> Env {
         let mut env = Env::default();
-        for (name, value) in self.data_literals.iter().chain(&self.property_literals) {
-            match value {
-                Some(value) => env.insert(name.clone(), value.clone()),
-                None => env.remove(name),
-            }
+        for (name, value) in &self.data_literals {
+            env.insert(name.clone(), value.clone());
         }
         env
+    }
+
+    /// 声明在 `properties` 里的属性 → 默认值形态。
+    ///
+    /// 被 `setData` / `this.data.x = ...` 写过的键一律降为 [`PropertyDefault::Unknown`]：
+    /// 运行时会被改写，默认值不再代表实际取值。
+    pub fn declared_properties(&self) -> BTreeMap<String, PropertyDefault> {
+        self.property_defaults
+            .iter()
+            .map(|(name, default)| {
+                let default = if self.dirty_all || self.dirty_data.contains(name) {
+                    PropertyDefault::Unknown
+                } else {
+                    default.clone()
+                };
+                (name.clone(), default)
+            })
+            .collect()
     }
 
     /// 所有函数（函数声明、函数表达式、箭头函数、对象方法、类方法），按遍历顺序。
@@ -216,12 +243,12 @@ impl JsDoc {
         &self.strings
     }
 
-    /// 所有 `const { .. } = this.data` / `let { .. } = this.data` 形式的声明。
+    /// 所有以 `this.data` 为初始化值的声明（整体捕获或解构）。
     ///
     /// 只暴露这一个形状，不做通用 AST 暴露：worklet 的数据冻结规则（#156）只需要
-    /// 「解构了 `this.data`」与「在不在 worklet 里」，`calls()` 看不到解构。
-    pub fn this_data_destructures(&self) -> &[ThisDataDestructure] {
-        &self.this_data_destructures
+    /// 「捕获了 `this.data` 对象」与「在不在 worklet 里」，`calls()` 看不到声明。
+    pub fn this_data_captures(&self) -> &[ThisDataCapture] {
+        &self.this_data_captures
     }
 
     /// `Page({..})` / `Component({..})` 顶层与 `methods` 里的属性绑定，按出现顺序。
@@ -334,10 +361,13 @@ pub struct ArgInfo {
     pub ident: Option<String>,
 }
 
-/// 一次 `{ .. } = this.data` 解构声明。
+/// 一次以 `this.data` 为初始化值的声明：`const { a } = this.data`、`const snapshot = this.data`。
+///
+/// 整体捕获与解构在运行时是同一条路径——`this.data` 对象成为 worklet 的外部引用，
+/// 因此不区分绑定形态。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ThisDataDestructure {
-    /// 整个声明器（`{ a } = this.data`）的字节区间。
+pub struct ThisDataCapture {
+    /// 整个声明器（`const snapshot = this.data`）的字节区间。
     pub start: u32,
     pub end: u32,
     /// 是否位于 worklet 函数体内（同样取最近的外层函数）。
@@ -487,22 +517,25 @@ struct Collector {
     functions: Vec<OwnedFunction>,
     calls: Vec<CallInfo>,
     strings: Vec<StringValue>,
-    this_data_destructures: Vec<ThisDataDestructure>,
+    this_data_captures: Vec<ThisDataCapture>,
     object_fns: Vec<ObjectFn>,
     members: Vec<MemberBinding>,
     requires: Vec<RequireBinding>,
     this_binds: Vec<MemberBinding>,
-    /// `Page({data})` / `Component({data, properties})` 里的字面量取值（只收 `properties`）。
+    /// `Page({data})` / `Component({data, properties})` 里的字面量取值。
     literals: BTreeMap<String, Lit>,
-    /// 模块顶层单元对象的 `data` / `properties` 初始字面量，单独存放以免参与常量折叠。
-    data_literals: BTreeMap<String, Option<Lit>>,
-    property_literals: BTreeMap<String, Option<Lit>>,
+    /// `data` 里的字面量初始值（`properties` 之外的那一半）。
+    data_literals: BTreeMap<String, Lit>,
+    /// 声明在 `properties` 里的属性 → 默认值形态。
+    property_defaults: BTreeMap<String, PropertyDefault>,
     /// 已经带上下文收录的字面量起点：父节点先收，通用字符串遍历后到时跳过。
     claimed_strings: BTreeSet<u32>,
     /// 被动态写入过的 data 键：`setData({k: 变量})` 或 `setData` 里出现动态键。
     dirty_data: BTreeSet<String>,
     /// 整份文件的 data 都被动态写入（`setData(变量)` / 展开语法），所有键都不再确定。
     dirty_all: bool,
+    /// 当前函数嵌套深度；为 0 时才是模块顶层，只有顶层对象才可能是单元配置。
+    fn_depth: usize,
     /// 下一个函数表达式 / 箭头函数该沿用的名字（变量名或方法名）。
     pending: Option<String>,
     /// 外层函数栈，值为该函数是否 `has_worklet`。取最近的一层。
@@ -591,7 +624,9 @@ impl<'a> Visit<'a> for Collector {
         // 无函数体（TS `declare function` / overload）不是有效作用域，占位到函数末尾。
         let body_span = body.map_or(it.span, |b| b.span);
         self.push_function(name, it.span, body, body_span);
+        self.fn_depth += 1;
         walk::walk_function(self, it, flags);
+        self.fn_depth -= 1;
         self.worklet_stack.pop();
         self.renderer_aliases.pop();
     }
@@ -606,7 +641,9 @@ impl<'a> Visit<'a> for Collector {
             ),
         };
         self.push_function(name, it.span, body, body_span);
+        self.fn_depth += 1;
         walk::walk_arrow_function_expression(self, it);
+        self.fn_depth -= 1;
         self.worklet_stack.pop();
         self.renderer_aliases.pop();
     }
@@ -699,10 +736,9 @@ impl<'a> Visit<'a> for Collector {
         {
             self.pending = binding_name(&it.id);
         }
-        if matches!(it.id, BindingPattern::ObjectPattern(_))
-            && it.init.as_ref().is_some_and(is_this_data)
-        {
-            self.this_data_destructures.push(ThisDataDestructure {
+        // 右侧是字面量 `this.data` 就捕获了整个 data 对象，与左侧是不是解构无关。
+        if it.init.as_ref().is_some_and(is_this_data) {
+            self.this_data_captures.push(ThisDataCapture {
                 start: it.span.start,
                 end: it.span.end,
                 worklet_scope: self.worklet_scope(),
@@ -837,18 +873,28 @@ impl<'a> Visit<'a> for Collector {
     }
 
     fn visit_call_expression(&mut self, it: &CallExpression<'a>) {
-        // 顶层调用实参里的 `{data, properties}`：直接写 `Page` / `Component`，或经
-        // `Base({..})` / `fstComponent({..})` 这类工厂包装，配置对象都在这一层。
-        if self.worklet_stack.is_empty()
-            && let Some(Expression::ObjectExpression(object)) =
-                it.arguments.first().and_then(arg_expression)
-        {
-            self.collect_initial(object);
-        }
         let callee = callee_name(&it.callee).unwrap_or_default();
         // 单元方法表三种写法：`Page/Component({ .. })`、链式 `.methods({ .. })`、
         // 链式 `.init(({..}) => { .. return { .. } })`。
         let tail = callee.trim_start_matches('.');
+        // 顶层调用实参里的 `{data}`：`Page` / `Component` 直接写，或经工厂包装
+        // （`Base({..})`）。函数体里的 `wx.request({data})` 等同名键不算单元数据。
+        if self.fn_depth == 0
+            && let Some(Expression::ObjectExpression(object)) =
+                it.arguments.first().and_then(arg_expression)
+        {
+            for property in &object.properties {
+                let ObjectPropertyKind::ObjectProperty(property) = property else {
+                    continue;
+                };
+                if !property.computed
+                    && key_name(&property.key).as_deref() == Some("data")
+                    && let Expression::ObjectExpression(data) = &property.value
+                {
+                    self.collect_data_literals(data);
+                }
+            }
+        }
         if matches!(callee.as_str(), "Page" | "Component") {
             if let Some(Expression::ObjectExpression(object)) =
                 it.arguments.first().and_then(arg_expression)
@@ -978,25 +1024,24 @@ impl Collector {
             if property.computed {
                 continue;
             }
-            let Some(key) = key_name(&property.key) else {
-                continue;
-            };
-            // `data` 刻意不参与常量折叠：它是初始化值，页面/组件随后会反复 `setData`。
-            // 初始字面量另由 [`Collector::collect_initial`] 收一份，不喂给 `env`。
-            if key == "properties"
+            // `data` 刻意不参与：它是初始化值，页面/组件随后会反复 `setData`，
+            // 只有 `properties` 的默认值在没有被写入时才是稳定的。
+            if key_name(&property.key).as_deref() == Some("properties")
                 && let Expression::ObjectExpression(properties) = &property.value
             {
                 self.collect_properties(properties);
             }
+            // `data` 另存一份：它会被 `setData` 改写，`properties` 的默认值则不会。
+            if key_name(&property.key).as_deref() == Some("data")
+                && let Expression::ObjectExpression(data) = &property.value
+            {
+                self.collect_data_literals(data);
+            }
         }
     }
 
-    /// 模块顶层单元对象（`Page` / `Component` 及其工厂包装）的 `data` / `properties`
-    /// 初始字面量。
-    ///
-    /// 只收顶层：包装工厂（`Base({..})`、`fstComponent({..})`）与直接的 `Page` / `Component`
-    /// 都写在这一层；函数体里的 `wx.request({data})` 之类同名键不算单元数据。
-    fn collect_initial<'b>(&mut self, object: &ObjectExpression<'b>) {
+    /// `data: { flag: '' }`：只收字面量，变量与调用都不算。
+    fn collect_data_literals<'b>(&mut self, object: &ObjectExpression<'b>) {
         for property in &object.properties {
             let ObjectPropertyKind::ObjectProperty(property) = property else {
                 continue;
@@ -1007,14 +1052,8 @@ impl Collector {
             let Some(key) = key_name(&property.key) else {
                 continue;
             };
-            match (key.as_str(), &property.value) {
-                ("data", Expression::ObjectExpression(data)) => {
-                    record_data_literals(data, &mut self.data_literals);
-                }
-                ("properties", Expression::ObjectExpression(definitions)) => {
-                    record_property_defaults(definitions, &mut self.property_literals);
-                }
-                _ => {}
+            if let Some(literal) = literal(&property.value) {
+                self.data_literals.insert(key, literal);
             }
         }
     }
@@ -1032,8 +1071,15 @@ impl Collector {
                 continue;
             };
             let Expression::ObjectExpression(definition) = &property.value else {
+                // `properties: { background: String }`：只写了类型，没有默认值。
+                if matches!(&property.value, Expression::Identifier(id)
+                    if matches!(id.name.as_str(), "String" | "Number" | "Boolean" | "Array" | "Object"))
+                {
+                    self.property_defaults.insert(key, PropertyDefault::Empty);
+                }
                 continue;
             };
+            let mut value = None;
             for field in &definition.properties {
                 let ObjectPropertyKind::ObjectProperty(field) = field else {
                     continue;
@@ -1041,10 +1087,22 @@ impl Collector {
                 if field.computed || key_name(&field.key).as_deref() != Some("value") {
                     continue;
                 }
+                value = Some(&field.value);
                 if let Some(literal) = literal(&field.value) {
                     self.literals.insert(key.clone(), literal);
                 }
             }
+            let default = match value {
+                // 没写 `value` 就取类型默认值（字符串为空）。
+                None => PropertyDefault::Empty,
+                Some(Expression::NullLiteral(_)) => PropertyDefault::Empty,
+                Some(field) => match literal(field) {
+                    Some(Lit::Str(text)) if text.is_empty() => PropertyDefault::Empty,
+                    Some(literal) => PropertyDefault::Fixed(literal),
+                    None => PropertyDefault::Unknown,
+                },
+            };
+            self.property_defaults.insert(key, default);
         }
     }
 
@@ -1063,65 +1121,6 @@ impl Collector {
                 }
                 _ => self.dirty_all = true,
             }
-        }
-    }
-}
-
-/// `data: { title: '', list: [] }`：只留字面量；同一个键取值矛盾或不是字面量时记为不可信。
-fn record_data_literals(object: &ObjectExpression<'_>, out: &mut BTreeMap<String, Option<Lit>>) {
-    for property in &object.properties {
-        let ObjectPropertyKind::ObjectProperty(property) = property else {
-            continue;
-        };
-        if property.computed {
-            continue;
-        }
-        let Some(key) = key_name(&property.key) else {
-            continue;
-        };
-        record_initial(out, key, literal(&property.value));
-    }
-}
-
-/// `properties: { renderer: { type: String, value: 'skyline' } }`：只收 `value` 字面量。
-fn record_property_defaults(
-    object: &ObjectExpression<'_>,
-    out: &mut BTreeMap<String, Option<Lit>>,
-) {
-    for property in &object.properties {
-        let ObjectPropertyKind::ObjectProperty(property) = property else {
-            continue;
-        };
-        if property.computed {
-            continue;
-        }
-        let Some(key) = key_name(&property.key) else {
-            continue;
-        };
-        let Expression::ObjectExpression(definition) = &property.value else {
-            continue;
-        };
-        let value = definition.properties.iter().find_map(|field| {
-            let ObjectPropertyKind::ObjectProperty(field) = field else {
-                return None;
-            };
-            (!field.computed && key_name(&field.key).as_deref() == Some("value"))
-                .then(|| literal(&field.value))
-                .flatten()
-        });
-        record_initial(out, key, value);
-    }
-}
-
-/// 同一个键只接受一致的字面量；出现不同取值或非字面量时记为 `None`（不可信）。
-fn record_initial(out: &mut BTreeMap<String, Option<Lit>>, key: String, value: Option<Lit>) {
-    match out.get(&key) {
-        Some(existing) if *existing != value => {
-            out.insert(key, None);
-        }
-        Some(_) => {}
-        None => {
-            out.insert(key, value);
         }
     }
 }
@@ -1795,28 +1794,29 @@ mod tests {
     }
 
     #[test]
-    fn destructured_this_data_is_collected_with_scope() {
+    fn this_data_captures_are_collected_with_scope() {
         let src = r#"
             const { a } = this.data;
-            function normal() { let { b } = this.data; const c = this.data.c; const { d } = this.props; }
+            function normal() { let { b } = this.data; const c = this.data.c; const snapshot = this.data; const { d } = this.props; }
             function animated() { 'worklet'; const { e } = this.data; }
             function outer() { 'worklet'; const inner = () => { const { f } = this.data; }; }
             const { g } = other.data;
             const [h] = this.data;
+            const { i: { j } } = this.data;
         "#;
         let doc = parse_js(src);
         let found: Vec<(u32, bool)> = doc
-            .this_data_destructures()
+            .this_data_captures()
             .iter()
             .map(|d| (d.start, d.worklet_scope))
             .collect();
+        // 整体捕获、嵌套解构、数组解构都算；属性访问（`this.data.c`）不算。
         // 顶层、普通函数内、worklet 内、worklet 内嵌普通函数：作用域取最近一层。
-        assert_eq!(found.len(), 4, "{found:?}");
+        assert_eq!(found.len(), 7, "{found:?}");
         assert_eq!(
             found.iter().map(|(_, scope)| *scope).collect::<Vec<_>>(),
-            [false, false, true, false]
+            [false, false, false, true, false, false, false]
         );
-        assert_eq!(doc.position(found[2].0 as usize), (4, 52));
     }
 }
 

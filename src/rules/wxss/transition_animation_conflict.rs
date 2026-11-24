@@ -1,5 +1,5 @@
 //! `skyline/transition-animation-conflict`：同一元素上，`transition` 与 `animation`
-//! 动同一个属性时，Skyline 会让 transition 提前把元素推到终态，动画只跑开头几帧。
+//! 动同一个属性时，Skyline 让 transition 抢占该属性，animation 的位移不按动画推进。
 //!
 //! 证据来自短剧插件 actionsheet 的真机现象（面板「走一点点就跳到终态」）：`.panel` 上写着
 //! `transition: transform 0.3s`，`.panel.slide-up` 上是 `animation: slide-up …`，两者都动
@@ -18,9 +18,27 @@ use crate::input::wxss::ValueToken;
 use crate::matcher::Tree;
 use crate::project::Project;
 use crate::rules::Rule;
-use crate::rules::RuleMeta;
 use crate::rules::wxml::{element_diagnostic, for_each_element, resolved_property_with};
+use crate::rules::{RuleMeta, VisualCase, VisualExpect};
 use crate::{Diagnostic, Severity};
+
+/// 视觉用例：同一元素上 `transition` 与 `animation` 都只动 `transform`。
+///
+/// 背景色不参与任何机制，保持固定的不透明蓝：这样两端的差异只剩位置，面板本身
+/// 始终可判读（此前的形态把 `background-color` 也放进 transition/animation，Skyline
+/// 截图整块变成近乎透明的 `rgba(0,0,0,5)`，颜色无法判读）。
+///
+/// 关键在 transition 的时长：600s 远大于采集窗口，所以「transition 接管」这一支在采集时刻
+/// （8s）仍在过渡起点（x=0、蓝、不透明）；WebView 的 animation 已跑完 `forwards` 停在终点
+/// （右移 200px、同色）。两端读的都是采集时刻的取值，不推断更晚的状态。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="panel on" id="target">面板</view>"#,
+    wxss: "@keyframes slide-in { from { transform: translateX(0); } to { transform: translateX(200px); } }\n.panel { width: 120px; height: 80px; color: #fff; font-size: 16px; background-color: #1e6fd9; transform: translateX(0); transition: transform 600s linear; }\n.on { animation: slide-in 300ms ease forwards; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "同一 transform 上两种机制并存：Skyline 的 transition（600s）抢占该属性，animation 的位移不按动画推进，采集时刻（8s）面板仍在过渡起点（x=0、蓝、不透明）；WebView 的 animation 300ms 后 forwards 停在终点（x=200px、同色）。按采集时刻取值，差异只在位置",
+    target: "#target",
+}];
 
 pub struct TransitionAnimationConflict;
 
@@ -65,8 +83,12 @@ impl Rule for TransitionAnimationConflict {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Warning,
-            description: "同一元素上 transition 与 animation 动同一个属性，Skyline 下动画只会跑开头几帧",
+            description: "同一元素上 transition 与 animation 动同一个属性时，Skyline 的 transition 抢占该属性，animation 的位移不按动画推进（本用例停在过渡起点）",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -130,7 +152,7 @@ impl TransitionAnimationConflict {
 
     fn message(property: &str, name: &str) -> String {
         format!(
-            "`transition` 与 `animation: {name}` 都在动 `{property}`：Skyline 下 transition 会先把元素推到终态，动画只跑开头几帧"
+            "`transition` 与 `animation: {name}` 都在动 `{property}`：Skyline 的 transition 抢占该属性，animation 的位移不按动画推进（实测停在过渡起点）"
         )
     }
 }
@@ -303,6 +325,7 @@ fn idents_of_value(value: &str) -> Vec<&str> {
 mod tests {
     use crate::Diagnostic;
     use crate::rules::Rule;
+    use crate::rules::testutil::check_rule;
     use crate::rules::testutil::wxss::{self, Fixture};
 
     use super::TransitionAnimationConflict;
@@ -396,5 +419,22 @@ mod tests {
             );
         let diagnostics = TransitionAnimationConflict.check(&fixture.project());
         assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 视觉用例的同一份页面源码必须真的命中本规则。
+    #[test]
+    fn visual_cases_trigger_the_rule() {
+        for (index, case) in super::VISUAL_CASES.iter().enumerate() {
+            let fixture = Fixture::page(
+                &format!("anim-conflict-visual-{index}"),
+                case.wxml,
+                case.wxss,
+            );
+            if let Some(js) = case.js {
+                fixture.write("pages/index/index.js", js);
+            }
+            let diagnostics = check_rule(&fixture, &TransitionAnimationConflict);
+            assert_eq!(diagnostics.len(), 1, "case {index}: {diagnostics:#?}");
+        }
     }
 }

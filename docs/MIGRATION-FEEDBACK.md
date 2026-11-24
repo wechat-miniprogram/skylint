@@ -86,14 +86,19 @@ split 文件名）与 `job.unit.files`（与 `next.unit.files` 同源）。
 `new > 0 → exit 1` 实测成立（把试点页 `navigationStyle` 改回 `default`，
 `new: 1 / exit: 1`）。finding 结构够编排器用。
 
-已修：三条配置规则的「构建会直接失败」在 `minidev build` 上不成立。实测
-`minidev build --no-pack` 对以下三种情况全部 **exit 0**：
+已修：三条配置规则的「构建会直接失败」在 `minidev build` 上成立。复测
+minidev 0.18.0（含 `--no-pack`），以下三种情况全部 **exit 1**，合规工程 exit 0：
 
 - Skyline 页面缺 `navigationStyle: custom`
 - Skyline 页面缺 `componentFramework: glass-easel`
 - app.json 缺 `lazyCodeLoading: requiredComponents`
 
-而开发者工具会拒绝启动模拟器（日志原文）：
+此前这里记的是同一命令对三种情况全部 **exit 0**。该记录与当前复测不符，可能是
+当时 minidev 版本不同，也可能是工程形态不同（旧用例在 app.json 设了 `renderer`、
+页面 json 未设，走的是 app 级继承分支）。历史记录保留，结论以本次复测为准。
+
+开发者工具与 minidev 的报错都会点名缺的键（`navigationStyle` / `glass-easel` /
+`lazyCodeLoading`）。开发者工具日志原文：
 
 ```
 页面 "renderer" 为 "skyline"，页面配置 "navigationStyle" 需设置为 "custom"
@@ -101,9 +106,9 @@ split 文件名）与 `job.unit.files`（与 `next.unit.files` 同源）。
 "renderer" 设置为 "skyline"，需在 app.json 添加 "lazyCodeLoading": "requiredComponents"
 ```
 
-所以文案改成「开发者工具会拒绝编译（`minidev build` 不校验这条）」。**这同时
-说明 L1 构建门禁对页面配置类错误是瞎的**：这类错只能靠 L0（规则）或 L2（模拟器
-启动）拦，编排顺序里 L2 不能省。
+所以文案改成「开发者工具与 `minidev build` 都会拒绝编译」。**L1 构建门禁能拦住
+这三类**；L0 规则的价值是给出页面→分包→app 的解析链和具体行号（构建器只报缺
+哪个键）。L2 模拟器启动仍然不能省，但它不再是这类错的第一道门。
 
 可优化：`findings[]` 不带 `help`（job 里带），人看 JSON 时要回查规则文档。
 
@@ -171,13 +176,7 @@ split 文件名）与 `job.unit.files`（与 `next.unit.files` 同源）。
 
 ## 更正一处早前的误判
 
-我先前说「裸文本 + 单个 `<text>` 被 `no-inline-text` 豁免、只有 `inline-run` 管
-≥2 个文本级元素，中间有缺口」——**这是错的**。`no-inline-text` 从未使用
-`INLINE_TEXT_TAGS`（该常量只在 `structure.rs` 的 `component-children` 约束里用），
-某模板文件的「客服电话」那行本来就会被它报出（`1:2241`），
-历史基线里也一直有这条 finding。真实原因是我在 `verify` 里看到 `fixed 1` 却没去
-核对它属于谁。现已补一条精确回归测试锁住该写法，`inline-run` 的判据不动
-（否则会与 `no-inline-text` 对同一行双重上报，并改变六工程基线）。
+我先前说「裸文本 + 单个 `<text>` 被行内规则豁免、只有并列 ≥2 个文本级元素才报，中间有缺口」——**这是错的**。当时拆开的两条规则里，报裸文本混排的那条从未按元素类型豁免，「客服电话」那行本来就会被它报出（`1:2241`），历史基线里也一直有这条 finding。真实原因是我在 `verify` 里看到 `fixed 1` 却没去核对它属于谁。现在两条规则已按同一根因合并为 `skyline/inline-run`（裸文本混排 / 静态 `inline`·`inline-block` / 并列文本级元素三种形态），一条精确回归测试锁住该写法。
 
 ## 工具链（不是 skylint 的问题，但会拖慢迁移）
 
@@ -300,7 +299,7 @@ y200–1199 逐像素 0 差异**——这种结论比「差异 7.9% < 阈值」�
 | 豁免对不上当前诊断 | `verify` 告警，避免豁免腐烂 |
 
 `--reason` 必填：没有理由的豁免等于静默忽略。本项目实际用过的三类口径：
-`scroll-view-type` 的 info（规则 help 自己写「兼容传统滚动则省略 type」）、
+`scroll-view` 缺省 `type` 的 info（规则 help 自己写「兼容传统滚动则省略 type」，该 info 已随规则合并删除）、
 `app.json` 的 `defaultContentBox`（开启会整体改盒模型，已有页面是按 border-box 修的）、
 全局样式里的一条省略号工具类（应随各页迁移逐处包 `<text max-lines>`，不该改全局）。
 
@@ -419,8 +418,8 @@ wxLoginStyle: 'background-image: -webkit-linear-gradient(left top, #FFD100, #FFD
 
 `-webkit-linear-gradient` 是老语法，Skyline 的 `<linear-gradient>` 文法只认
 `linear-gradient([<angle> | to <side-or-corner>]?, …)`（实测知识库的渐变语法表）。
-**`skyline/gradient-unsupported` 这条规则本来就能报它**（`gradient_unsupported.rs:21-24`
-里就列着 `-webkit-linear-gradient`），但它只扫 WXSS 文本；这个值在 JS 配置对象里，
+**`skyline/gradient-support` 这条规则本来就能报它**（渐变支持矩阵把厂商前缀写法
+归为整条声明被丢弃），但它只扫 WXSS 文本；这个值在 JS 配置对象里，
 经 `style="{{wxLoginStyle}}"` 注入——动态绑定，静态分析看不到。
 
 这正是「动态 style 绑定」这一类盲区：规则判据没问题，缺的是从 JS 常量到模板绑定的那一跳。
@@ -437,7 +436,7 @@ wxLoginStyle: 'background-image: -webkit-linear-gradient(left top, #FFD100, #FFD
 }
 ```
 
-`skyline/gradient-unsupported` 对前缀渐变的抑制条件是「同一条规则里已经有标准渐变兜底」。
+`skyline/gradient-support` 对前缀渐变的抑制条件是「同一条规则里已经有能解析的标准渐变兜底」。
 这里确实「有一条」，但 `linear-gradient(left top, …)` 缺 `to`，是旧 WebKit 写法，**标准语法里
 非法，两个引擎都会丢掉它**。于是规则沉默了，页面在 Skyline 下根本没有背景。
 

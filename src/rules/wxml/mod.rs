@@ -1,7 +1,7 @@
 //! WXML 规则。
 //!
-//! 一条规则一个文件：逐元素的局部判定（内联文本、组件白名单、scroll-view type）
-//! 与父子结构约束（scroll-view 家族、enable-flex）各占一个文件。它们共用同一套
+//! 一条规则一个文件：逐元素的局部判定（内联文本、组件白名单）与父子结构约束
+//! （scroll-view 家族）各占一个文件。它们共用同一套
 //! 「页面 + 组件 WXML 遍历」与解析辅助。
 //!
 //! 样式求值对两种文档统一：单元（页面 / 组件）按自己的作用域求值，独立模板文件与
@@ -12,18 +12,14 @@ pub mod branch;
 pub(crate) mod cascade;
 pub mod component_attribute;
 pub mod component_children;
+pub mod component_support;
 pub(crate) mod emit;
 pub mod hidden_binding;
-pub mod horizontal_scroll_enable_flex;
 pub mod image_block_layout;
-pub mod inline_display_ignored;
 pub mod inline_run;
 pub mod nested_text_block;
-pub mod no_inline_text;
-pub mod page_meta_scroll;
 pub mod scroll_gesture_conflict;
 pub mod scroll_view_family;
-pub mod scroll_view_type;
 pub mod share_element_key;
 pub(crate) mod structure;
 pub(crate) mod style;
@@ -32,8 +28,6 @@ pub mod template_data_scope;
 pub mod text_box_property;
 pub mod text_hard_break_ellipsis;
 pub(crate) mod truncation;
-pub mod unregistered_tag;
-pub mod unsupported_component;
 pub mod webview_nested_scroll;
 pub mod webview_pinned_renderer;
 pub mod webview_text_children;
@@ -42,23 +36,17 @@ pub mod webview_worklet_binding;
 
 pub use component_attribute::ComponentAttribute;
 pub use component_children::ComponentChildren;
+pub use component_support::ComponentSupport;
 pub use hidden_binding::HiddenBinding;
-pub use horizontal_scroll_enable_flex::HorizontalScrollEnableFlex;
 pub use image_block_layout::ImageBlockLayout;
-pub use inline_display_ignored::InlineDisplayIgnored;
 pub use inline_run::InlineRun;
 pub use nested_text_block::NestedTextBlock;
-pub use no_inline_text::NoInlineText;
-pub use page_meta_scroll::PageMetaScroll;
 pub use scroll_gesture_conflict::ScrollGestureConflict;
 pub use scroll_view_family::ScrollViewFamily;
-pub use scroll_view_type::ScrollViewType;
 pub use share_element_key::ShareElementKey;
 pub use template_data_scope::TemplateDataScope;
 pub use text_box_property::TextBoxProperty;
 pub use text_hard_break_ellipsis::TextHardBreakEllipsis;
-pub use unregistered_tag::UnregisteredTag;
-pub use unsupported_component::UnsupportedComponent;
 pub use webview_nested_scroll::NestedScroll;
 pub use webview_pinned_renderer::PinnedRenderer;
 pub use webview_text_children::TextChildren;
@@ -72,7 +60,7 @@ pub(crate) use cascade::{
 };
 pub(crate) use emit::{element_diagnostic, span_diagnostic};
 pub(crate) use style::{flex_container, is_flex_value, is_out_of_flow, width_follows_content};
-pub(crate) use tags::{is_builtin, unsupported_replacement};
+pub(crate) use tags::is_builtin;
 
 // 截断语义单独一个模块（[`truncation`]）：两条迁移规则与 `inspect` 的事实输出共用，
 // 规则模块不再各自复制一份。

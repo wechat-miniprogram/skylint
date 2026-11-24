@@ -16,9 +16,11 @@
 //!   只加「在 sticky-section 内时」的条件约束，挂载位置仍不约束（见下方整条撤销的记录）。
 //! - nested-scroll-body 唯一：scroll/nested-scroll.md MUST 4「外层只能有一个 nested-scroll-body」（:166）、
 //!   NEVER 2「不要有多个 nested-scroll-body」。
-//! - nested-scroll-body 必需：nested-scroll.md:38 只渲染第一个 body；引擎按类型查找
-//!   第一个 body，缺 body 时直接抛 StateError（兜底占位是死代码）。
-//! - nested-scroll-header 与 body 的顺序无关：引擎按类型收集 header，不依赖声明顺序。
+//! - nested-scroll-body 必需：nested-scroll.md:38 只渲染第一个 body；
+//!   skyline_scroll_view.dart:1559-1562 用 `firstWhere((child) => child is NestedScrollBody)`
+//!   且没有 orElse，缺 body 时直接抛 StateError（`?? SizedBox()` 是死代码）。
+//! - nested-scroll-header 与 body 的顺序无关：skyline_scroll_view.dart:1551-1554 用
+//!   `children.whereType<NestedScrollHeader>()` 收集，不依赖声明顺序。
 //! - 只渲染第一个子节点：nested-scroll.md:29（header）、:38（body）。多写的会被静默丢弃，故为 warning。
 //! - list-builder 必需属性：scroll/list-grid-view.md MUST 2「使用 list-builder 时必须指定
 //!   child-height（定高模式）」（:271）。grid-view 的 cross-axis-count 不是必填：
@@ -31,6 +33,22 @@
 //!   scroll-view 不参与嵌套滚动（sticky 里的横向 tab 列表就属于这种）。
 //! - draggable-sheet 内 scroll-view 关联容器：draggable-sheet.md:50、:342
 //!   「内部的 scroll-view 必须设置 associative-container="draggable-sheet"」。
+//! - `type` 合法取值：公开标签的 JS 白名单只有 `''` / `list` / `custom` / `nested`；
+//!   `default` 或其它未知静态值被 JS 层回退成 `list`，并打印一行固定 `console.warn`。
+//!   省略 `type`（含 `type=""`）走兼容 wrapper，子节点全部照常渲染，只是没有按需渲染——
+//!   两端没有渲染差异，不报。
+//!
+//! # 严重级别
+//!
+//! 表里每条约束自带 severity，按后果分两档：
+//!
+//! - `Error`：写出来的东西不再渲染、必需槽位/属性缺失，或者直接抛异常——挂载位置、顺序、
+//!   唯一性、RendersFirst（只渲染第一个直接子节点）、必需属性都属这档。
+//! - `Warning`：节点照常渲染，但写成非法值的枚举属性被运行时静默回退，效果与写法不符：
+//!   `scroll-view` / `list-builder` / `grid-view` 的 `type`。
+//!
+//! 规则级 `RuleMeta.severity` 只能写一个值，取最高档 `Error`；只想关掉某一处的 Warning 时
+//! 用行内 `<!-- skylint-disable-next-line skyline/scroll-view-family -->`，不必整条规则关掉。
 //!
 //! # 文档冲突记录
 //!
@@ -50,7 +68,9 @@
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::WxmlNode;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
+use crate::rules::{
+    EvidenceCase, EvidenceExpect, EvidenceRun, Rule, RuleMeta, VisualCase, VisualExpect, VisualFile,
+};
 use crate::wxml_graph::WxmlGraph;
 
 use super::branch::element_children;
@@ -74,7 +94,8 @@ const STICKY_SECTION: Target = Target {
     tag: "sticky-section",
     attr: None,
 };
-/// 嵌套滚动的头部槽也是 sliver 列表（交给嵌套滚动视图的 header 槽构建），放 `list-view` / `sticky-section` 合法。
+/// 嵌套滚动的头部槽也是 sliver 列表（`skyline_scroll_view.dart:1551-1556` 交给
+/// `NestedScrollView.headerSliverBuilder`），放 `list-view` / `sticky-section` 合法。
 const NESTED_HEADER: Target = Target {
     tag: "nested-scroll-header",
     attr: None,
@@ -82,9 +103,23 @@ const NESTED_HEADER: Target = Target {
 
 /// scroll-view 家族结构约束表。
 const CONSTRAINTS: &[Constraint] = &[
+    // `type` 的合法取值集是整张表的前置知识：下面每条 `Target` 都按 `type` 区分容器。
+    // 非法值不是「不生效」——白名单外的静态值会被 observer 回退成 `list` 并告警，
+    // 所以用 FallsBack 而不是 AllowedValues；省略 `type` 按缺省处理，不报。
+    Constraint {
+        tag: "scroll-view",
+        relation: Relation::FallsBack {
+            name: "type",
+            values: &["list", "custom", "nested"],
+            fallback: "list",
+        },
+        severity: Severity::Warning,
+        help: "普通长列表用 `list`、要用 list-view / grid-view / sticky-section 用 `custom`、嵌套滚动用 `nested`；想用兼容的传统滚动就省略 `type`（省略不等于 `default`）",
+    },
     Constraint {
         tag: "sticky-section",
-        // 引擎只认直接子节点：sliver 组装与 MultiSliver 都按子节点列表直接取。
+        // 引擎只认直接子节点：`skyline_scroll_view.dart` 的 sliver 组装与
+        // `sticky.dart` 的 `MultiSliver` 都是按 `widget.children` 取的。
         relation: Relation::Direct(&[CUSTOM_SCROLL, NESTED_HEADER]),
         severity: Severity::Error,
         help: "把 `<sticky-section>` 放进 `<scroll-view type=\"custom\">` 或 `<nested-scroll-header>`，type 不能是 list/nested",
@@ -145,20 +180,20 @@ const CONSTRAINTS: &[Constraint] = &[
     Constraint {
         tag: "sticky-header",
         relation: Relation::RendersFirst,
-        severity: Severity::Warning,
-        help: "把内容收进一个直接子节点（Skyline 只把第一个直接子节点交给原生滚动组件）",
+        severity: Severity::Error,
+        help: "把内容收进一个直接子节点（`sticky_header.cc` 只把 `GetChildHandle()` 交给 Dart），多写的子节点会被静默丢弃",
     },
     Constraint {
         tag: "nested-scroll-header",
         relation: Relation::RendersFirst,
-        severity: Severity::Warning,
-        help: "把头部内容收进一个直接子节点（例如一个 `<view>`）",
+        severity: Severity::Error,
+        help: "把头部内容收进一个直接子节点（例如一个 `<view>`），多写的子节点会被静默丢弃",
     },
     Constraint {
         tag: "nested-scroll-body",
         relation: Relation::RendersFirst,
-        severity: Severity::Warning,
-        help: "把主体内容收进一个直接子节点（例如一个 `<view>`）",
+        severity: Severity::Error,
+        help: "把主体内容收进一个直接子节点（例如一个 `<view>`），多写的子节点会被静默丢弃",
     },
     Constraint {
         tag: "list-builder",
@@ -175,8 +210,8 @@ const CONSTRAINTS: &[Constraint] = &[
             name: "type",
             values: &["static", "dynamic"],
         },
-        severity: Severity::Error,
-        help: "`type` 只能是 `static`（定高）或 `dynamic`（不定高）",
+        severity: Severity::Warning,
+        help: "`type` 只能是 `static`（定高）或 `dynamic`（不定高）；写成别的值会被忽略并退回 `static`，按项高是否固定二选一",
     },
     Constraint {
         tag: "grid-view",
@@ -184,8 +219,8 @@ const CONSTRAINTS: &[Constraint] = &[
             name: "type",
             values: &["aligned", "masonry"],
         },
-        severity: Severity::Error,
-        help: "`type` 只能是 `aligned`（网格）或 `masonry`（瀑布流）",
+        severity: Severity::Warning,
+        help: "`type` 只能是 `aligned`（网格）或 `masonry`（瀑布流）；写成别的值会被忽略并退回 `aligned`",
     },
     Constraint {
         tag: "scroll-view",
@@ -278,17 +313,105 @@ static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     target: "#target",
 }];
 
+/// 证据用例：`type` 只影响 JS 层的模式选择，两端渲染一致，只能用页面日志证明。
+///
+/// 页面加载后由采集脚本读取 console：`default` 不在 JS 白名单里，observer 回退成
+/// `list` 并打一行固定 warning；缺省 `type` 走兼容 wrapper，不应打这行。
+const APP_JS: &str = "App({})\n";
+const PAGE_JS: &str = "Page({})\n";
+const APP_JSON: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","componentFramework":"glass-easel","lazyCodeLoading":"requiredComponents"}"#;
+const PAGE_JSON: &str = r#"{"renderer":"skyline","navigationStyle":"custom"}"#;
+const WXML_DEFAULT: &str = r#"<scroll-view id="sv" type="default" scroll-y style="height: 300px;"><view>default</view></scroll-view>"#;
+const WXML_MISSING: &str =
+    r#"<scroll-view id="sv" scroll-y style="height: 300px;"><view>missing</view></scroll-view>"#;
+const WARNING: &str = "Do not support the attribute default in scroll-view";
+
+static EVIDENCE_CASES: &[EvidenceCase] = &[
+    EvidenceCase {
+        name: "type-default-warns",
+        files: &[
+            VisualFile {
+                path: "app.json",
+                content: APP_JSON,
+            },
+            VisualFile {
+                path: "app.js",
+                content: APP_JS,
+            },
+            VisualFile {
+                path: "pages/index/index.json",
+                content: PAGE_JSON,
+            },
+            VisualFile {
+                path: "pages/index/index.wxml",
+                content: WXML_DEFAULT,
+            },
+            VisualFile {
+                path: "pages/index/index.js",
+                content: PAGE_JS,
+            },
+        ],
+        project_config: None,
+        run: EvidenceRun::Serve {
+            page: "pages/index/index",
+        },
+        expect: EvidenceExpect::Console {
+            must: &[WARNING],
+            must_not: &[],
+        },
+        note: "type=\"default\" 不在公开白名单里：页面日志必须出现回退 warning",
+    },
+    EvidenceCase {
+        name: "type-missing-silent",
+        files: &[
+            VisualFile {
+                path: "app.json",
+                content: APP_JSON,
+            },
+            VisualFile {
+                path: "app.js",
+                content: APP_JS,
+            },
+            VisualFile {
+                path: "pages/index/index.json",
+                content: PAGE_JSON,
+            },
+            VisualFile {
+                path: "pages/index/index.wxml",
+                content: WXML_MISSING,
+            },
+            VisualFile {
+                path: "pages/index/index.js",
+                content: PAGE_JS,
+            },
+        ],
+        project_config: None,
+        run: EvidenceRun::Serve {
+            page: "pages/index/index",
+        },
+        expect: EvidenceExpect::Console {
+            must: &[],
+            must_not: &[WARNING],
+        },
+        note: "阴性对照：不写 type 不等于 default，同一页面不得出现回退 warning",
+    },
+];
+
 impl Rule for ScrollViewFamily {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
             id: ID,
             severity: Severity::Error,
-            description: "scroll-view 家族组件的结构约束（挂载位置 / 顺序 / 唯一性 / 必需属性 / 关联容器）",
+            description: "scroll-view 家族组件的结构约束（type 取值 / 挂载位置 / 顺序 / 唯一性 / 必需属性 / 关联容器）",
         }
     }
 
     fn visual_cases(&self) -> &'static [VisualCase] {
         VISUAL_CASES
+    }
+
+    fn evidence_cases(&self) -> &'static [EvidenceCase] {
+        EVIDENCE_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -329,9 +452,12 @@ impl Rule for ScrollViewFamily {
                     );
             }
 
-            // `<scroll-view type="nested">` 的直接子节点只认 header / body：引擎只把
-            // 这两类子节点交给嵌套滚动视图，其余元素与有内容的文本不会进入构建结果，
-            // 等于整段丢弃。
+            // `<scroll-view type="nested">` 的直接子节点只认 header / body：
+            // `skyline_scroll_view.dart:1750-1756` 只把 `nestedHeaderChildren` 与
+            // `nestedBody` 交给 `NestedScrollView`；`:1551-1557` 的
+            // `whereType<NestedScrollHeader>()` 与 `:1559-1562` 的
+            // `firstWhere((child) => child is NestedScrollBody)` 都只看这两类 widget，
+            // 其余元素与有内容的文本不会进入构建结果，等于整段丢弃。
             if !element.in_template()
                 && element.tag == "scroll-view"
                 && matches!(
@@ -506,6 +632,74 @@ mod tests {
     }
 
     // ---- 约束表 ----
+
+    // ---- type 取值 ----
+
+    #[test]
+    fn unknown_static_scroll_type_warns_about_list_fallback() {
+        let diagnostics = check(&project(
+            "scroll-type-unknown",
+            r#"<scroll-view type="page"><view/></scroll-view>"#,
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].severity, Severity::Warning);
+        assert!(diagnostics[0].message.contains("回退成 `list`"));
+        assert!(diagnostics[0].help.as_deref().unwrap().contains("custom"));
+    }
+
+    /// `default` 不在公开白名单里（省略 type 也不等于 default），JS 层回退成 `list` 并告警。
+    #[test]
+    fn default_type_warns_about_list_fallback() {
+        let diagnostics = check(&project(
+            "scroll-type-default",
+            r#"<scroll-view type="default"><view/></scroll-view>"#,
+        ));
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert_eq!(diagnostics[0].severity, Severity::Warning);
+        assert!(diagnostics[0].message.contains("回退成 `list`"));
+        assert!(
+            diagnostics[0]
+                .help
+                .as_deref()
+                .unwrap()
+                .contains("省略不等于 `default`")
+        );
+    }
+
+    #[test]
+    fn three_public_scroll_types_are_allowed() {
+        let diagnostics = check(&project(
+            "scroll-type-ok",
+            concat!(
+                r#"<scroll-view type="list"><view/></scroll-view>"#,
+                r#"<scroll-view type="custom"><view/></scroll-view>"#,
+                r#"<scroll-view type="nested"><nested-scroll-body><view/></nested-scroll-body></scroll-view>"#,
+            ),
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    /// 省略 `type` 与 `type=""` 都是按缺省处理：两端渲染一致，不报。
+    #[test]
+    fn missing_and_empty_type_are_not_reported() {
+        let diagnostics = check(&project(
+            "scroll-type-missing",
+            concat!(
+                r#"<scroll-view scroll-y><view/></scroll-view>"#,
+                r#"<scroll-view type=""><view/></scroll-view>"#,
+            ),
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
+
+    #[test]
+    fn dynamic_scroll_type_is_not_reported() {
+        let diagnostics = check(&project(
+            "scroll-type-dynamic",
+            r#"<scroll-view type="{{t}}"><view/></scroll-view>"#,
+        ));
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    }
 
     // ---- sticky-section ----
 
@@ -1352,7 +1546,8 @@ mod tests {
             r#"<scroll-view type="nested"><nested-scroll-header><view/><view/></nested-scroll-header><nested-scroll-body><view/></nested-scroll-body></scroll-view>"#,
         ));
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-        assert_eq!(diagnostics[0].severity, Severity::Warning);
+        // 多写的子节点直接被丢掉，属于内容丢失。
+        assert_eq!(diagnostics[0].severity, Severity::Error);
         assert!(diagnostics[0].message.contains("2 个直接子元素"));
     }
 
@@ -1363,7 +1558,7 @@ mod tests {
             r#"<scroll-view type="nested"><nested-scroll-header><view/></nested-scroll-header><nested-scroll-body><view/><view/></nested-scroll-body></scroll-view>"#,
         ));
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-        assert_eq!(diagnostics[0].severity, Severity::Warning);
+        assert_eq!(diagnostics[0].severity, Severity::Error);
         assert!(diagnostics[0].message.contains("nested-scroll-body"));
     }
 
@@ -1472,7 +1667,8 @@ mod tests {
             r#"<view><list-builder child-height="80" type="flex"/></view>"#,
         ));
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
-        assert_eq!(diagnostics[0].severity, Severity::Error);
+        // 值被忽略、退回定高模式，但页面照常渲染：warning，不是内容丢失。
+        assert_eq!(diagnostics[0].severity, Severity::Warning);
         assert!(diagnostics[0].message.contains("`static`"));
         assert!(diagnostics[0].message.contains("`dynamic`"));
     }

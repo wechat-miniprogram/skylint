@@ -1,11 +1,11 @@
 //! `skyline/image-block-layout`：`<image>` 在 Skyline 是**块级盒**、在 WebView 是
 //! **inline-block**，于是所有「行内级」才成立的写法在 Skyline 静默失效。
 //!
-//! 实测（`account/account-ext/pages/confirm-phone`，同代码两端各跑一次）：`.box`
+//! 实测（页面 A，同代码两端各跑一次）：父级 `.box`
 //! 写 `text-align: center`、头像 `.avatar { width: 150rpx; height: 150rpx }` 没有
 //! 任何 margin——WebView 里头像水平居中，Skyline 里紧贴左边界。同页 `<text>` 的
 //! 探针实测给出同一结论：Skyline 把这类宿主的 `display: inline` / `inline-block`
-//! 一律按块级处理（`display: inline` 被忽略的情形见 `skyline/inline-display-ignored`）。
+//! 一律按块级处理（`display: inline` / `inline-block` 被忽略的情形见 `skyline/inline-run`）。
 //!
 //! 本规则收四类「因块级化而失效」的声明：
 //!
@@ -35,7 +35,7 @@ use crate::rules::wxml::{
     ElementSite, element_diagnostic, flex_container, for_each_element, is_out_of_flow,
     resolved_property_with,
 };
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 pub const ID: &str = "skyline/image-block-layout";
 
@@ -54,6 +54,19 @@ const BLOCK_IN_BOTH: [&str; 7] = [
 
 pub struct ImageBlockLayout;
 
+/// 视觉用例：同一段 WXML/WXSS 两端各渲一次，看 `#target` 的几何与像素。
+///
+/// 父级 `text-align: center`：WebView 靠行内对齐把 inline-block 的 `<image>` 居中，
+/// Skyline 的 `<image>` 是块级盒，行内对齐不参与，紧贴左边。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="box"><image class="avatar" id="target"/></view>"#,
+    wxss: ".box { padding: 10px; text-align: center; }\n.avatar { width: 75px; height: 75px; background: #cde; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "父级 text-align:center 时 WebView 把 <image> 行内居中；Skyline 的 <image> 是块级盒，紧贴左边",
+    target: "",
+}];
+
 impl Rule for ImageBlockLayout {
     fn meta(&self) -> RuleMeta {
         RuleMeta {
@@ -61,6 +74,10 @@ impl Rule for ImageBlockLayout {
             severity: Severity::Warning,
             description: "`<image>` 在 Skyline 是块级盒、WebView 是 inline-block：靠行内对齐居中、单侧 auto 外边距、`vertical-align`、祖先的 `text-indent` 在 Skyline 下都不再生效",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -207,7 +224,7 @@ fn inherited_text_indent(
 
 #[cfg(test)]
 mod tests {
-    use super::{ID, ImageBlockLayout};
+    use super::{ID, ImageBlockLayout, VISUAL_CASES};
     use crate::rules::testutil::wxml::{Fixture, check_rule};
 
     fn count(wxml: &str, wxss: &str) -> usize {
@@ -393,5 +410,12 @@ mod tests {
             ),
             1
         );
+    }
+
+    /// 视觉用例的同一份 WXML/WXSS 必须真的能触发本规则。
+    #[test]
+    fn visual_case_triggers_rule() {
+        let case = &VISUAL_CASES[0];
+        assert!(count(case.wxml, case.wxss) >= 1, "视觉用例未触发规则");
     }
 }

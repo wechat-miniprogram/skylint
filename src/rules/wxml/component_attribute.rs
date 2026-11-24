@@ -26,8 +26,8 @@ use crate::project::Project;
 use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
 
 use super::ancestry;
-use super::structure::find_attr;
-use super::{for_each_element, span_diagnostic, truncation};
+use super::structure::{find_attr, flag};
+use super::{cascade_entries_with, for_each_element, is_flex_value, span_diagnostic, truncation};
 
 #[derive(Debug, Clone, Copy)]
 enum Constraint {
@@ -193,7 +193,7 @@ const ATTRIBUTES: &[AttributeRule] = &[
         attrs: &["confirm-type"],
         constraint: Constraint::Allowed(&["send", "search", "next", "go", "done", "return"]),
         help: Some("合法值：send、search、next、go、done、return"),
-    }, // form/input.md:54-60；`return` 是引擎侧额外映射的合法值
+    }, // form/input.md:54-60；input.dart:1121-1122 映射 return
     AttributeRule {
         tags: &["swiper"],
         attrs: &["layout-type"],
@@ -309,7 +309,7 @@ const ATTRIBUTES: &[AttributeRule] = &[
             "fastOutSlowIn",
         ]),
         help: Some("用 materialRectArc / materialRectCenterArc / linear 或 cubic-bezier(...)"),
-    }, // special/share-element.md:85-98
+    }, // special/share-element.md:85-98；缓动名全集见 curve.dart:23-70
     AttributeRule {
         tags: &["share-element"],
         attrs: &["shuttle-on-push", "shuttle-on-pop"],
@@ -417,6 +417,14 @@ const REQUIRES: &[Requires] = &[
         requirement: Requirement::Custom(max_lines_when_webview_truncates),
         help: Some("只要一行省略改用 `overflow=\"clip\"`；要限制行数就同时写 `max-lines`"),
     }, // max_lines=0 表示不施加行数约束，overflow 与 maxLines 是两个独立属性
+    Requires {
+        tag: "scroll-view",
+        trigger: Trigger::Present("scroll-x"),
+        requirement: Requirement::Custom(scroll_x_needs_enable_flex),
+        help: Some(
+            "给 `<scroll-view>` 加 `enable-flex`：WebView 只有开启它才把宿主的 flex 布局下传给内部滚动容器；Skyline 直接在节点上布局，不需要它",
+        ),
+    }, // WebView 组件内部还有一层滚动容器，getComputedStyle(this.$$).display === 'flex' 时才下传 flex
 ];
 
 fn table() -> &'static Table {
@@ -465,6 +473,18 @@ static VISUAL_CASES: &[VisualCase] = &[
         js: None,
         expect: VisualExpect::Differ,
         note: "mode=top 是 WebView 的裁剪模式：图片按原始尺寸贴顶（上半红）；Skyline 忽略该取值，按原始尺寸在盒子里居中（红蓝整体下移）",
+        target: "#target",
+    },
+    VisualCase {
+        wxml: r#"<scroll-view class="tabs" type="list" scroll-x id="target">
+  <view class="tab">一</view>
+  <view class="tab">二</view>
+  <view class="tab">三</view>
+</scroll-view>"#,
+        wxss: ".tabs { display: flex; flex-direction: row; width: 300px; height: 100px; }\n.tab { flex: 1; margin-right: 10px; background: #36c; color: #fff; }\n",
+        js: None,
+        expect: VisualExpect::Differ,
+        note: "缺 `enable-flex`：Skyline 的 `scroll-x` 内容主轴按 max-content 排，三个子项各保持内容宽 16 CSS、横向一行并撑满 100 CSS 高（`flex: 1` 不参与分配）；WebView 不下传 flex，子项退化为块级、竖排铺满 290 CSS 宽（行高 22 CSS）。两端都没有横向溢出（内容宽 68 / 290 CSS，小于 300 容器），本用例只证明子项排布不同，不含滚动行为",
         target: "#target",
     },
 ];
@@ -520,6 +540,7 @@ impl Rule for ComponentAttribute {
                     return;
                 };
                 let context = Context {
+                    project,
                     views,
                     tree,
                     ancestors,
@@ -694,6 +715,7 @@ fn judge(element: &WxmlElement, requirement: &Requirement) -> Verdict {
 
 /// 跨属性判定需要的上下文：祖先可能落在别的文档里，截断判定要它。
 struct Context<'a, 'b> {
+    project: &'a Project,
     views: &'a ancestry::DocViews<'b>,
     tree: &'a Tree<'b>,
     ancestors: &'a [&'a WxmlElement],
@@ -789,6 +811,28 @@ fn max_lines_when_webview_truncates(
     Some(format!(
         "`<{tag} {trigger}>` 缺少 `max-lines`：WebView 靠祖先的 `-webkit-line-clamp: {lines}` 截 {lines} 行，Skyline 下按属性截断，补 `max-lines=\"{lines}\"`",
         tag = element.tag
+    ))
+}
+
+/// `<scroll-view scroll-x>` 的宿主是 flex 容器时，要求开启 `enable-flex`。
+///
+/// WebView 的组件内部还有一层滚动容器，只有宿主 `display: flex` 且开启 `enable-flex`
+/// 时才把 flex 布局下传；缺失时子项退化为块级盒竖排，坏的是布局。能否横向滚动
+/// 取决于内容是否溢出，与本开关无关。
+/// Skyline 直接在 scroll-view 节点上布局，`enable-flex` 只是给 WebView 的兼容开关。
+/// `display` 判不了（模板定义体 / 选择器超出受限文法）时放过。
+fn scroll_x_needs_enable_flex(element: &WxmlElement, context: &Context<'_, '_>) -> Option<String> {
+    let display = cascade_entries_with(context.project, context.tree, element, "display")?;
+    if !display
+        .last()
+        .is_some_and(|entry| is_flex_value(&entry.value))
+        || flag(element, "enable-flex") != Some(false)
+    {
+        return None;
+    }
+    Some(format!(
+        "横向滚动的 `<{} scroll-x>` 未开启 `enable-flex`：WebView 不把宿主的 flex 布局下传给内部滚动容器，子项退化为块级竖排，布局与 Skyline 不同（`enable-flex` 只决定布局是否下传，不决定内容能否横向滚动）",
+        element.tag
     ))
 }
 
@@ -1364,6 +1408,58 @@ mod tests {
         assert!(diagnostics[0].message.contains("placeholder-class"));
         assert!(diagnostics[1].message.contains("safe-password-nonce"));
         assert!(diagnostics[2].message.contains("safe-password-length"));
+    }
+
+    /// `<scroll-view scroll-x>`：宿主是 flex 容器时要求 `enable-flex`，否则 WebView 不把
+    /// flex 下传，子项退化为块级竖排。
+    #[test]
+    fn scroll_x_requires_enable_flex_only_for_flex_hosts() {
+        let diagnostics = check_rule(
+            &project(
+                "attr-scroll-x",
+                r#"<scroll-view scroll-x style="display: flex;"><view/></scroll-view>
+<scroll-view scroll-x enable-flex style="display: flex;"><view/></scroll-view>
+<scroll-view scroll-x><view/></scroll-view>
+<scroll-view enable-flex style="display: flex;"><view/></scroll-view>"#,
+            ),
+            &ComponentAttribute,
+        );
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("enable-flex"));
+        assert!(
+            diagnostics[0].message.contains("子项退化为块级竖排"),
+            "{}",
+            diagnostics[0].message
+        );
+        assert_eq!((diagnostics[0].line, diagnostics[0].column), (1, 14));
+    }
+
+    /// `display` 来自 class 时同样要判；WXML 里 `="false"` 是非空字符串，按开启处理。
+    #[test]
+    fn scroll_x_reads_flex_display_from_a_class() {
+        let fixture = project(
+            "attr-scroll-x-class",
+            r#"<scroll-view scroll-x class="tabs"><view/></scroll-view>
+<scroll-view scroll-x class="tabs" enable-flex="false"><view/></scroll-view>
+<scroll-view scroll-x="false" class="tabs"><view/></scroll-view>"#,
+        );
+        fixture.write("pages/index/index.wxss", ".tabs { display: flex; }");
+        let diagnostics = check_rule(&fixture, &ComponentAttribute);
+        assert_eq!(diagnostics.len(), 2, "{diagnostics:#?}");
+        assert_eq!(diagnostics[1].line, 3);
+    }
+
+    /// `scroll-x` 是动态绑定、或 `display` 判不了时放过。
+    #[test]
+    fn scroll_x_skips_dynamic_and_undecidable_display() {
+        let diagnostics = check_rule(
+            &project(
+                "attr-scroll-x-dynamic",
+                r#"<scroll-view scroll-x="{{x}}" style="display: flex;"><view/></scroll-view>"#,
+            ),
+            &ComponentAttribute,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:#?}");
     }
 
     /// 视觉用例的同一份 WXML/WXSS 必须真的能触发本规则。

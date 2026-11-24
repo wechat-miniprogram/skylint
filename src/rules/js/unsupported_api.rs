@@ -11,10 +11,13 @@
 //! - 路由 API 文档（所有 `wx.router` 方法均不支持小程序插件）。
 //!
 //! 注释与字符串里的 `this.animate` 不在 AST 的调用节点上，天然不会命中。
+//!
+//! 页面级滚动的 API（`wx.pageScrollTo`）不在这里：它的根因是页面根默认不可滚，
+//! 与「某个 API 不受支持」不是一回事，由 `skyline/page-scroll-api` 统一负责。
 
 use crate::Severity;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta};
+use crate::rules::{Rule, RuleMeta, VisualCase, VisualComponent, VisualExpect};
 
 use super::{Callee, at_span, in_plugin, renders_in_skyline};
 
@@ -41,11 +44,6 @@ const ENTRIES: &[Entry] = &[
     Entry::Call {
         callee: "this.animate",
         message: "Skyline 不支持 `this.animate`，动画不会执行；改用 worklet（wx.worklet.shared + applyAnimatedStyle）",
-        skyline_only: true,
-    },
-    Entry::Call {
-        callee: "wx.pageScrollTo",
-        message: "Skyline 下页面根不是滚动容器，`wx.pageScrollTo` 没有消费者、滚动不会发生；把内容搬进 `<scroll-view>`，用 `ScrollViewContext.scrollTo`（先 `createSelectorQuery().select().ref()` 拿引用）",
         skyline_only: true,
     },
     Entry::PluginCall {
@@ -84,6 +82,32 @@ const ENTRIES: &[Entry] = &[
     },
 ];
 
+/// 视觉用例：组件 `ready` 里调 `this.animate`，动画回调里再 `setData` 换状态。
+///
+/// WebView 执行动画并在回调里把方块换成蓝色「已执行」；Skyline 不执行 `this.animate`，
+/// 回调也不触发，方块保持红色原文。组件内部节点从页面层查不到，只能整页比对。
+static VISUAL_CASES: &[VisualCase] = &[VisualCase {
+    wxml: r#"<view class="wrap">
+  <anim-box/>
+  <view class="hint">页面内容</view>
+</view>"#,
+    wxss: ".wrap { padding: 20px; }\n.hint { margin-top: 16px; font-size: 14px; color: #666666; }\n",
+    js: None,
+    expect: VisualExpect::Differ,
+    note: "组件 ready 里的 `this.animate`：WebView 执行动画并在回调里 setData 成蓝色「已执行」，Skyline 不执行动画、回调不触发，方块保持红色原文（整页模式，证据强度弱于元素模式）",
+    target: "",
+}];
+
+/// 动画载体组件：所有用例共用，动画只在 `ready` 里跑一次。
+static VISUAL_COMPONENTS: &[VisualComponent] = &[VisualComponent {
+    name: "anim-box",
+    wxml: r#"<view class="box {{done ? 'done' : ''}}" id="box">{{done ? '已执行' : 'ANIM'}}</view>"#,
+    wxss: ".box { width: 220px; height: 88px; background-color: #d33; color: #ffffff; text-align: center; line-height: 88px; font-size: 16px; }\n.box.done { background-color: #2f6fed; }\n",
+    js: Some(
+        "Component({\n  data: { done: false },\n  lifetimes: {\n    ready() {\n      const finish = () => this.setData({ done: true });\n      if (typeof this.animate === 'function') {\n        this.animate('#box', [\n          { opacity: 1, translateX: 0 },\n          { opacity: 0.2, translateX: 180 },\n        ], 500, finish);\n      }\n    },\n  },\n});\n",
+    ),
+}];
+
 impl Entry {
     fn message(&self) -> &'static str {
         match self {
@@ -105,6 +129,14 @@ impl Rule for UnsupportedApi {
             severity: Severity::Warning,
             description: "Skyline 不支持的 JS API（如 this.animate、插件内的 wx.router.*）",
         }
+    }
+
+    fn visual_cases(&self) -> &'static [VisualCase] {
+        VISUAL_CASES
+    }
+
+    fn visual_components(&self) -> &'static [VisualComponent] {
+        VISUAL_COMPONENTS
     }
 
     fn check(&self, project: &Project) -> Vec<crate::Diagnostic> {
@@ -166,9 +198,59 @@ fn shadows_with_own_method(doc: &crate::input::js::JsDoc, callee: &str) -> bool 
 mod tests {
 
     use crate::rules::Rule;
+    use crate::rules::testutil::check_rule;
 
-    use super::UnsupportedApi;
+    use super::{UnsupportedApi, VISUAL_CASES};
     use crate::rules::testutil::js::{Fixture, messages, plugin, single, single_with_app};
+
+    /// 视觉用例的同一份 WXML/WXSS/JS（含规则级组件夹具）必须真的能触发本规则。
+    #[test]
+    fn visual_case_triggers_rule() {
+        let case = &VISUAL_CASES[0];
+        let using = UnsupportedApi
+            .visual_components()
+            .iter()
+            .map(|component| {
+                format!(
+                    r#""{}":"/components/{}/index""#,
+                    component.name, component.name
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let fixture = Fixture::new("unsupported-visual");
+        fixture
+            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
+            .write(
+                "app.json",
+                r#"{"pages":["pages/index/index"],"renderer":"skyline"}"#,
+            )
+            .write(
+                "pages/index/index.json",
+                &format!(r#"{{"usingComponents":{{{using}}}}}"#),
+            )
+            .write("pages/index/index.wxml", case.wxml)
+            .write("pages/index/index.wxss", case.wxss)
+            .write("pages/index/index.js", case.js.unwrap_or("Page({})"));
+        for component in UnsupportedApi.visual_components() {
+            let dir = format!("components/{}", component.name);
+            fixture
+                .write(&format!("{dir}/index.wxml"), component.wxml)
+                .write(&format!("{dir}/index.wxss"), component.wxss)
+                .write(
+                    &format!("{dir}/index.js"),
+                    component.js.unwrap_or("Component({})"),
+                )
+                .write(&format!("{dir}/index.json"), r#"{"component":true}"#);
+        }
+        let diagnostics = check_rule(&fixture, &UnsupportedApi);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.rule == UnsupportedApi::ID),
+            "视觉用例未触发规则：{diagnostics:#?}"
+        );
+    }
 
     /// 单页工程 + 一个额外的脚本文件（用于验证全域扫描的边界）。
     fn with_script(name: &str, rel: &str, js: &str) -> (Fixture, crate::project::Project) {
@@ -257,10 +339,20 @@ mod tests {
         assert_eq!(diagnostics[1].message, diagnostics[0].message);
     }
 
-    /// `onPageScroll` 由 `feature_flag.GetEnablePageScroll()` 支持，不再是无效配置。
+    /// `onPageScroll` 不是本规则的职责：页面级滚动的整体缺失由 `page-scroll-api` 报。
     #[test]
-    fn page_on_page_scroll_is_supported() {
+    fn page_on_page_scroll_is_not_this_rules_business() {
         let (_f, project) = single("unsupported-page-scroll", "Page({ onPageScroll() {} });");
+        assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
+    }
+
+    /// `wx.pageScrollTo` 已迁到 `page-scroll-api`：这里不能再报，否则同一个 API 双报。
+    #[test]
+    fn page_scroll_to_belongs_to_page_scroll_api() {
+        let (_f, project) = single(
+            "unsupported-page-scroll-to",
+            "Page({ onReady() { wx.pageScrollTo({ scrollTop: 400 }); } });",
+        );
         assert_eq!(messages(&UnsupportedApi, &project), Vec::<String>::new());
     }
 

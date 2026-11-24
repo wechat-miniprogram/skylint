@@ -38,10 +38,10 @@ static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxml: r#"<view class="wrap">
   <view class="ring" id="target"></view>
 </view>"#,
-    wxss: ".wrap { padding: 20px; background: #333; }\n.ring { width: 140px; height: 140px; background: #fff; border: 10px solid #ddd; border-top-color: #e54d42; border-radius: 40px; }\n",
+    wxss: ".wrap { padding: 20px; background: #333; }\n.ring { box-sizing: content-box; width: 140px; height: 140px; background: #fff; border: 10px solid #ddd; border-top-color: #e54d42; border-radius: 40px; }\n",
     js: None,
     expect: VisualExpect::Differ,
-    note: "单边 border 颜色 + border-radius：WebView 画圆角，Skyline 丢弃圆角画成方角（四角像素不同）",
+    note: "单边 border 颜色 + border-radius：WebView 画圆角，Skyline 丢弃圆角画成方角；两端 bbox 一致，差异只在四个角的圆角/直角区域",
     target: "#target",
 }];
 

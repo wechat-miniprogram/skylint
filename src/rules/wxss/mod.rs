@@ -4,7 +4,6 @@
 //! 「值的个数/结构」类限制各占一个文件。它们共用 [`visit_rules`] /
 //! [`visit_declarations`] 两层遍历与 [`value_util`] 的值分词工具。
 
-pub mod attribute_selector;
 pub mod border_radius_per_side_color;
 pub mod box_sizing;
 pub mod button_after_reset;
@@ -16,9 +15,9 @@ pub mod fixed_layer;
 pub mod fixed_offset_missing;
 pub mod fixed_z_index_inversion;
 pub mod flex_direction;
-pub mod gradient_limit;
-pub mod gradient_unsupported;
+pub mod gradient_support;
 pub mod implicit_color;
+pub mod inline;
 pub mod keyframes;
 pub mod legacy_flexbox;
 pub mod media_query;
@@ -30,21 +29,19 @@ pub mod no_pseudo;
 pub mod pseudo_inline;
 pub mod scroll_view_height;
 pub mod selector;
+pub mod selector_subset;
 pub mod shorthand_partial;
 pub mod tag_selector_isolation;
 pub mod text_decoration_line;
-pub mod text_decoration_target;
-pub mod text_overflow_ellipsis;
+pub mod text_only_property;
 pub mod transition_animation_conflict;
 pub mod transition_property;
-pub mod universal_selector;
 pub mod unsupported_property;
 pub mod unsupported_value;
 pub mod value_degraded;
 pub mod value_util;
 pub mod vendor_prefix;
 
-pub use attribute_selector::AttributeSelector;
 pub use border_radius_per_side_color::BorderRadiusPerSideColor;
 pub use box_sizing::BoxSizing;
 pub use button_after_reset::ButtonAfterReset;
@@ -55,8 +52,7 @@ pub use fixed_layer::FixedLayer;
 pub use fixed_offset_missing::FixedOffsetMissing;
 pub use fixed_z_index_inversion::FixedZIndexInversion;
 pub use flex_direction::FlexDirection;
-pub use gradient_limit::GradientLimit;
-pub use gradient_unsupported::GradientUnsupported;
+pub use gradient_support::GradientSupport;
 pub use implicit_color::ImplicitColor;
 pub use legacy_flexbox::LegacyFlexbox;
 pub use media_query::MediaQuery;
@@ -66,14 +62,13 @@ pub use native_padding::NativePadding;
 pub use no_pseudo::NoPseudo;
 pub use pseudo_inline::PseudoInlineLayout;
 pub use scroll_view_height::ScrollViewHeight;
+pub use selector_subset::SelectorSubset;
 pub use shorthand_partial::ShorthandPartial;
 pub use tag_selector_isolation::TagSelectorIsolation;
 pub use text_decoration_line::TextDecorationLine;
-pub use text_decoration_target::TextDecorationTarget;
-pub use text_overflow_ellipsis::TextOverflowEllipsis;
+pub use text_only_property::TextOnlyProperty;
 pub use transition_animation_conflict::TransitionAnimationConflict;
 pub use transition_property::TransitionProperty;
-pub use universal_selector::UniversalSelector;
 pub use unsupported_property::UnsupportedProperty;
 pub use unsupported_value::UnsupportedValue;
 pub use value_degraded::ValueDegraded;
@@ -581,7 +576,8 @@ pub(crate) fn visit_rules(
     visit_rules_inner(project, false, f)
 }
 
-/// 同 [`visit_rules`]，但跳过「选择器在本样式表作用域里命不中任何节点」的规则块。
+/// 同 [`visit_rules`]，但跳过「选择器在本样式表作用域里命不中任何节点」的规则块，
+/// 并把 WXML `style` 属性里的内联声明也一并交出。
 ///
 /// 针对 `decl × selector` 的规则看的是声明本身，不接可达性就会把 vendored `weui.wxss`
 /// 那类在本工程里一个节点都命不中的样式表整份报出来——命不中就是两端都不生效。
@@ -609,10 +605,17 @@ fn visit_rules_inner(
             f(sheet, rule, &mut out);
         }
     }
+    // 内联样式没有选择器上下文，`only_matching` 的闸门对它不适用。
+    if only_matching {
+        out.extend(inline::visit(project, |sheet, rule, out| {
+            f(sheet, rule, out);
+        }));
+    }
     out
 }
 
-/// 遍历全部样式文件的每一条声明（同样跳过命不中的规则块）。
+/// 遍历全部样式文件的每一条声明（同样跳过命不中的规则块），并带上 WXML `style`
+/// 属性里的内联声明。
 pub(crate) fn visit_declarations(
     project: &Project,
     mut f: impl FnMut(&StyleSheet, &WxssRule, &WxssDeclaration, &mut Vec<Diagnostic>),
@@ -629,5 +632,10 @@ pub(crate) fn visit_declarations(
             }
         }
     }
+    out.extend(inline::visit(project, |sheet, rule, out| {
+        for declaration in &rule.declarations {
+            f(sheet, rule, declaration, out);
+        }
+    }));
     out
 }

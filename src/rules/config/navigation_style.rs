@@ -1,5 +1,5 @@
 //! `skyline/navigation-style`：Skyline 页面的 `navigationStyle` 解析结果不是 `custom`
-//! 时，开发者工具会拒绝编译（`minidev build` 不校验这条）。
+//! 时，开发者工具与 `minidev build` 都会拒绝编译（minidev 0.18.0 实测）。
 //!
 //! 判据来自 minidev 构建期对页面 json 的 renderer 校验：
 //!
@@ -7,6 +7,8 @@
 //! - 否则解析链（页面 json → app.json 的 `window.navigationStyle`）不是 `custom`，
 //!   且页面写了任意 `navigationBarTitleText` / `navigationBarTextStyle` /
 //!   `navigationBarBackgroundColor` → 报错。
+//!
+//! 构建器只报缺什么，本规则补充页面 → app.json `window` 的解析链与行号。
 //!
 //! 编译器随后会无条件把 Skyline 页的 `navigationStyle` 改写成 `custom`、缺省补
 //! `disableScroll: true`，但那是构建产物，不改写会失败这件事仍然要提前告知。
@@ -16,12 +18,123 @@ use serde_json::Value;
 
 use crate::input::json::JsonPositions;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta, Target};
+use crate::rules::{EvidenceCase, EvidenceExpect, EvidenceRun, Rule, RuleMeta, Target, VisualFile};
 use crate::{Diagnostic, Severity};
 
 use super::anchor;
 
 pub struct NavigationStyle;
+
+/// 三个最小工程只差页面 json 的 `navigationStyle` / `navigationBar*`。
+const APP_JS: &str = "App({})\n";
+const PAGE_JS: &str = "Page({})\n";
+const PAGE_WXML: &str = "<view>navigation style probe</view>\n";
+const APP_JSON: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","componentFramework":"glass-easel","lazyCodeLoading":"requiredComponents"}"#;
+const PAGE_JSON_DEFAULT: &str = r#"{"renderer":"skyline","navigationStyle":"default"}"#;
+const PAGE_JSON_FIELDS: &str = r#"{"renderer":"skyline","navigationBarTitleText":"probe"}"#;
+const PAGE_JSON_CUSTOM: &str = r#"{"renderer":"skyline","navigationStyle":"custom"}"#;
+
+const FILES_DEFAULT: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON_DEFAULT,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS,
+    },
+];
+
+const FILES_FIELDS: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON_FIELDS,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS,
+    },
+];
+
+const FILES_CUSTOM: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON_CUSTOM,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS,
+    },
+];
+
+static EVIDENCE_CASES: &[EvidenceCase] = &[
+    EvidenceCase {
+        name: "default-navigation-style",
+        files: FILES_DEFAULT,
+        project_config: None,
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::BuildFails {
+            stderr_contains: &["should set navigationStyle to custom."],
+        },
+        note: "页面显式 navigationStyle: default：构建失败，stderr 要求 custom",
+    },
+    EvidenceCase {
+        name: "navigation-bar-fields",
+        files: FILES_FIELDS,
+        project_config: None,
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::BuildFails {
+            stderr_contains: &[
+                "should set navigationStyle to custom when using navigationBar* fields.",
+            ],
+        },
+        note: "写了 navigationBarTitleText 却没有 custom：构建失败，错误行点名 navigationBar* 字段",
+    },
+    EvidenceCase {
+        name: "custom-navigation-style",
+        files: FILES_CUSTOM,
+        project_config: None,
+        run: EvidenceRun::Build,
+        expect: EvidenceExpect::BuildOk,
+        note: "阴性对照：唯一差异是 navigationStyle: custom，构建即通过",
+    },
+];
 
 impl NavigationStyle {
     pub const ID: &'static str = "skyline/navigation-style";
@@ -45,6 +158,10 @@ impl Rule for NavigationStyle {
 
     fn target(&self) -> Target {
         Target::Skyline
+    }
+
+    fn evidence_cases(&self) -> &'static [EvidenceCase] {
+        EVIDENCE_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -71,7 +188,7 @@ impl Rule for NavigationStyle {
                     JsonPositions::new(source).key("navigationStyle"),
                     anchor(&["navigationStyle"], json.get("navigationStyle")),
                     format!(
-                        "页面 `{page_path}` 使用 Skyline 渲染，但 navigationStyle 显式写成 `\"default\"`，开发者工具会拒绝编译（`minidev build` 不校验这条）"
+                        "页面 `{page_path}` 使用 Skyline 渲染，但 navigationStyle 显式写成 `\"default\"`，开发者工具与 `minidev build` 都会拒绝编译"
                     ),
                     "把页面 json 的 `navigationStyle` 改成 `\"custom\"`；Skyline 页面固定使用自定义导航栏，minidev 在编译前直接报错",
                 );
@@ -114,7 +231,7 @@ impl Rule for NavigationStyle {
                 JsonPositions::new(source).key(key),
                 anchor(&[key], json.get(key)),
                 format!(
-                    "页面 `{page_path}` 使用 Skyline 渲染，写了 `{key}`，但{reason}，开发者工具会拒绝编译（`minidev build` 不校验这条）"
+                    "页面 `{page_path}` 使用 Skyline 渲染，写了 `{key}`，但{reason}，开发者工具与 `minidev build` 都会拒绝编译"
                 ),
                 "把页面 json 的 `navigationStyle` 写成 `\"custom\"`（或在 app.json 的 `window.navigationStyle` 统一设为 `\"custom\"`）；Skyline 页面固定使用自定义导航栏",
             );
