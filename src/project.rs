@@ -636,8 +636,8 @@ impl Project {
         renderer_flag(&self.renderer_options, "defaultDisplayBlock")
     }
 
-    /// app 级 `defaultContentBox` 是否开启。运行时只读 `rendererOptions.skyline` 这一层
-    /// （`runtime/index.ts:145`），写在顶层的同名单键不生效，所以这里也只认嵌套写法。
+    /// app 级 `defaultContentBox` 是否开启。运行时只读 `rendererOptions.skyline` 这一层，
+    /// 写在顶层的同名单键不生效，所以这里也只认嵌套写法。
     ///
     /// 这只是回落值：页面 / 组件 json 可以各自覆盖，见 [`Self::content_box`]。
     pub fn app_content_box(&self) -> bool {
@@ -718,7 +718,7 @@ impl Project {
     }
 
     /// 页面级覆盖；`None` 表示这一页没写，回落到 app 级。运行时只认
-    /// `rendererOptions.skyline.*` 这一层（`skyline.js:428-431`）。
+    /// `rendererOptions.skyline.*` 这一层。
     fn page_display_block(&self, route: &str) -> Option<bool> {
         self.page_json
             .get(route)
@@ -926,8 +926,7 @@ mod tests {
         assert!(project.scroll_view_auto_size());
     }
 
-    /// 运行时只读 `rendererOptions.skyline.enableScrollViewAutoSize`
-    /// （`runtime/index.ts:148`）；顶层的同名单键不生效，认了它会让
+    /// 运行时只读 `rendererOptions.skyline.enableScrollViewAutoSize`；顶层的同名单键不生效，认了它会让
     /// `scroll-view-height` 整条规则静默（全工程漏报）。
     #[test]
     fn scroll_view_auto_size_ignores_the_top_level_key() {

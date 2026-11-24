@@ -1,10 +1,9 @@
 //! 标签 / id 选择器在 Skyline 下不跨组件匹配。
 //!
-//! 引擎侧的证据（`skyline/style/selector_matcher.cc`）：页面/组件样式表走
-//! `MatchScopedRules`，命中前要求 `node.StyleScopeId() == rule_scope_id`；
+//! 引擎侧的证据：页面/组件样式表的规则命中前要求节点的样式作用域与规则作用域一致；
 //! 标签选择器在 `tagNameStyleIsolation: legacy` 下改查全局标签规则表放宽，
-//! id 选择器那段**没有 legacy 分支**——所以 legacy 只救标签，救不了 id。
-//! 而 `app.wxss` 走 `MatchGlobalRules`，本来就不分作用域，不受影响。
+//! id 选择器**没有 legacy 分支**——所以 legacy 只救标签，救不了 id。
+//! 而 `app.wxss` 按全局规则表匹配，本来就不分作用域，不受影响。
 //!
 //! 于是迁移风险只有一类：页面 / 组件的样式表里，纯标签或纯 id 选择器命中了
 //! **别的单元**的节点。WebView 下这层 DOM 是扁平的、能命中；Skyline 下静默不再命中。
@@ -108,7 +107,7 @@ fn foreign_units<'a>(project: &'a Project, scope: &Scope) -> Option<(Vec<&'a str
             // WebView 能命中，Skyline 不跨作用域。
             //
             // `styleIsolation: shared` 是例外：它的规则拿到的是页面那一份
-            // scope（`space.ts:633-636`），页面节点按主 scope 查规则集时
+            // scope（与页面共用一份），页面节点按主 scope 查规则集时
             // 就会命中（匹配用的是节点主 scope），
             // 与 WebView 一致，只剩兄弟组件还会失效。
             let shared = project.style_isolation(path) == StyleIsolation::Shared;

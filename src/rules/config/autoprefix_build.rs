@@ -1,10 +1,9 @@
 //! `skyline/autoprefix-build`：prod 构建的 autoprefixer 会给 Skyline 样式注入 `-webkit-`。
 //!
 //! 开发者工具的 `setting.postcss` 与 `setting.minifyWXSS` 是「或」关系：任一为真就注册
-//! wxss 插件（`pluginconfig.ts:48-51`），而插件里的 `autoPrefix` 默认 `true`
-//! （`plugins/base/wxss.ts:100`），按 `iOS >= 8, Chrome >= 37` 补前缀且 `remove: false`。
-//! 更麻烦的是它**只在 prod 构建跑**（`wxss.ts:143-148` 对 `resultType === 'dev'` 直接
-//! 返回），所以本地预览与开发者工具里永远复现不出来。
+//! wxss 插件，而插件里的 `autoPrefix` 默认 `true`，按 `iOS >= 8, Chrome >= 37` 补前缀
+//! 且 `remove: false`。更麻烦的是它**只在 prod 构建跑**（dev 构建直接跳过），
+//! 所以本地预览与开发者工具里永远复现不出来。
 //!
 //! 注入结果里真正会坏事的只有两种：`transition` **值**里的 `-webkit-transform`
 //! （fp 属性名闭集里没有前缀，整条声明回滚）和 `@-webkit-keyframes`（Skyline 不解析

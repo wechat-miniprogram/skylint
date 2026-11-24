@@ -1,7 +1,7 @@
 //! `skyline/legacy-flexbox`：老式 `-webkit-box` 弹性盒按**规则块**合并报告。
 //!
-//! 这一族属性在引擎里全都不存在：`css/css_property_names.h` 的 194 个属性名里没有任何
-//! `-webkit-*`（声明查不到 id、解析阶段整条丢弃），`display` 的取值也只认
+//! 这一族属性在引擎里全都不存在：属性名表里没有任何 `-webkit-*`
+//! （声明查不到 id、解析阶段整条丢弃），`display` 的取值也只认
 //! none/block/inline/inline-block/flex/grid/flow-root/inline-flex
 //! （`float-pigment-css-0.7.0/src/property.rs:193-200`），`-webkit-box` 解析失败同样丢弃。
 //! WebView 认这套老式弹性盒（weui 用它做垂直居中与横排），所以迁移后整块布局会退回

@@ -13,9 +13,8 @@
 //! 绝对定位上下拉伸、flex 主轴 grow、交叉轴 stretch」，全都不成立就是 0。
 //!
 //! 工程级 `rendererOptions.skyline.enableScrollViewAutoSize` 开启时是另一种失效：
-//! scroll-view 变成 measurable 节点（`scroll_view_shadow_node.cc` 的
-//! `ygnode->SetMeasurableNode(scroll_view)`），高度来自 `ScrollView::MeasureContent`
-//! ——纵向滚动容器把子节点高度累加成内容高。于是 `flex: 1` 的 scroll-view 会被内容
+//! scroll-view 变成 measurable 节点，高度来自纵向滚动容器把子节点高度累加成的
+//! 内容高。于是 `flex: 1` 的 scroll-view 会被内容
 //! 高度顶开，撑破父容器；页面根默认不滚动，超出的部分就看不到了。
 //! 修法是显式写 `height: 0`：显式高度 + `flex: 1` 才会走 flex 分配剩余空间。
 

@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn accepts_app_level_top_level_display_block() {
-        // app 级顶层写法运行时也认（runtime/index.ts:142）；defaultContentBox 只有嵌套写法。
+        // app 级顶层写法运行时也认；defaultContentBox 只有嵌套写法。
         let (_f, project) = project(
             "drift-app-top-level",
             r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"defaultDisplayBlock":true,"skyline":{"defaultContentBox":true}}}"#,
@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn app_level_display_block_wins_over_the_nested_layer() {
-        // `runtime/index.ts:141-144` 是 `顶层 || 嵌套`：顶层 true 就算开了。
+        // 运行时按「顶层 || 嵌套」取：顶层 true 就算开了。
         let (_f, project) = project(
             "drift-top-wins",
             r#"{"pages":["pages/index/index"],"renderer":"skyline","rendererOptions":{"defaultDisplayBlock":true,"skyline":{"defaultDisplayBlock":false,"defaultContentBox":true}}}"#,

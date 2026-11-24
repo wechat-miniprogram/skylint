@@ -10,10 +10,10 @@
 //! - Skyline：`be.getBoundingClientRect(cb)`，引擎侧只有回调式接口
 //!   （Skyline 原生接口实现），因为布局在 UI 线程、JS 在逻辑线程。
 //!
-//! - `getBoundingClientRect()`：`base.ts:201-229` 在不传回调时只能返回
-//!   `defaultBoundingClientRect`（全 0）——调用方拿着 0 继续算，既不报错也不生效；
-//! - `getComputedStyle(fields)`：`wxs/skyline.ts:41-57` 只有回调分支、没有 `return`，
-//!   不传回调直接得到 `undefined`。
+//! - `getBoundingClientRect()`：适配层在不传回调时只返回默认矩形（全 0）——
+//!   调用方拿着 0 继续算，既不报错也不生效；
+//! - `getComputedStyle(fields)`：适配层只有回调分支、没有返回分支，不传回调直接
+//!   得到 `undefined`。
 //!
 //! 判据都只有一种写法：`getBoundingClientRect()` 不传实参、`getComputedStyle()` 缺第二个回调。
 //! 修法唯一：改成回调形式（需要同步值的场景改为回调里算、把结果缓存）。
@@ -85,7 +85,7 @@ impl Rule for WxsSyncQuery {
 /// 只看参数个数会把 `getComputedStyle(fields, undefined)` 当成有回调（引擎里同样拿不到值），
 /// 所以显式排除那些「写了等于没写」的实参；变量/箭头函数/函数名一律当作有回调。
 /// `getBoundingClientRect` 的回调是第一个实参；不传、或传 `undefined` / `null`
-/// 都走「没有回调」的分支（`base.ts:206-227` 用 `typeof cb !== 'function'` 判）。
+/// 都走「没有回调」的分支（适配层用 `typeof cb !== 'function'` 判）。
 fn missing_rect_callback(source: &str, call: &crate::input::js::CallInfo) -> bool {
     match call.args.first() {
         None => true,

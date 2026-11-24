@@ -193,7 +193,7 @@ const ATTRIBUTES: &[AttributeRule] = &[
         attrs: &["confirm-type"],
         constraint: Constraint::Allowed(&["send", "search", "next", "go", "done", "return"]),
         help: Some("合法值：send、search、next、go、done、return"),
-    }, // form/input.md:54-60；input.dart:1121-1122 映射 return
+    }, // form/input.md:54-60；`return` 是引擎侧额外映射的合法值
     AttributeRule {
         tags: &["swiper"],
         attrs: &["layout-type"],
@@ -309,7 +309,7 @@ const ATTRIBUTES: &[AttributeRule] = &[
             "fastOutSlowIn",
         ]),
         help: Some("用 materialRectArc / materialRectCenterArc / linear 或 cubic-bezier(...)"),
-    }, // special/share-element.md:85-98；缓动名全集见 curve.dart:23-70
+    }, // special/share-element.md:85-98
     AttributeRule {
         tags: &["share-element"],
         attrs: &["shuttle-on-push", "shuttle-on-pop"],

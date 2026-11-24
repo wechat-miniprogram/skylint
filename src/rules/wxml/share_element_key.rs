@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn empty_key_is_reported_like_a_missing_one() {
-        // 引擎按 `tag.isNotEmpty` 决定是否建立 hero 关系（hero.dart:400），
+        // 引擎按 tag 非空决定是否建立 hero 关系，
         // 空串等同于没写。
         let diagnostics = check(&project("share-empty", r#"<share-element key=""/>"#));
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");

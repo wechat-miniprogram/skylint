@@ -3,8 +3,8 @@
 //! **声明级**：`box-sizing` 在 Skyline 下只接受 `content-box` / `border-box`。
 //! `padding-box` / `margin-box` 在 WebView 同样非法（MDN formal syntax 只有
 //! `content-box | border-box`），两端都丢弃该声明，差异只在**回落值**：未开
-//! `defaultContentBox` 时 Skyline 回落 `border-box`（`skyline/css/css_properties/box_sizing.cc`
-//! 的 ApplyInitial），WebView 回落 `content-box`；开了开关后两端都回落
+//! `defaultContentBox` 时 Skyline 按初始值回落 `border-box`，WebView 回落
+//! `content-box`；开了开关后两端都回落
 //! `content-box`。`initial` / `unset` / `revert` 等全局关键字走同一条 ApplyInitial
 //! 路径，同样会得到 Skyline 的 border-box。
 //!
@@ -270,8 +270,7 @@ fn non_zero_value(
 /// 所属单元（页面 / 组件 json，缺省回落 app 级）的 `defaultContentBox` 决定默认值。
 /// 这样两种工程形态都能判对——没有 reset 时逐个元素
 /// 命中默认值差异；有 `* { box-sizing: border-box }` 这类 reset 时，WebView 全部变成
-/// border-box，而 Skyline 会整条丢弃主体为空的选择器（`style/rule_set.cc` 的
-/// `ExtractRuleBySelector`），回落到默认值，此时若开了 `defaultContentBox` 反而是
+/// border-box，而 Skyline 会整条丢弃主体为空的选择器，回落到默认值，此时若开了 `defaultContentBox` 反而是
 /// Skyline 单方面变 content-box。
 fn default_drift(project: &Project) -> Option<Diagnostic> {
     // 与 `skyline/default-layout-drift` 共用同一道闸门：单文件 / 纯 WebView 工程 /

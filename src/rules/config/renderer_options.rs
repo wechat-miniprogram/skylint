@@ -51,7 +51,7 @@ const APP_JSON_OVERRIDE: &str = r#"{"rendererOptions":{"skyline":{"defaultDispla
 
 /// 已知键的期望类型（来源：`skyline-config/references/app-config.md` 的配置项表，
 /// 与运行时的取值方式一一对应）。每个键在 app.json 与页面 json 里都合法：
-/// 布局类的 6 个键由 Skyline 运行时读（`runtime/index.ts:424-449`），版本区间与
+/// 布局类的 6 个键由 Skyline 运行时读，版本区间与
 /// `disableABTest` 由客户端选渲染器时读，官方文档也写明「app.json 或 page.json」
 /// （`skyline-overview/references/migration/release.md:105-145`）。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -83,12 +83,12 @@ const KNOWN: &[(&str, Kind)] = &[
 ];
 
 /// app 级 `rendererOptions` 顶层**不生效**的键：运行时只读
-/// `rendererOptions.skyline.*`（`runtime/index.ts:126-151`）。
+/// `rendererOptions.skyline.*`。
 /// `defaultDisplayBlock` 不在此列——运行时两种写法都认。
 /// app 级 `rendererOptions` 顶层**会**被读取的键。
 ///
-/// 运行时只认这两个（`runtime/index.ts:139` 的 `?.defaultDisplayBlock`、`:126`
-/// 起的 `?.skyline?.`）加上 `__useTextStyle`（`typings/wxConfig.d.ts:92`）。
+/// 运行时只认这两个（顶层的 `defaultDisplayBlock` 与 `skyline.*` 下的键）
+/// 加上 `__useTextStyle`。
 const APP_TOP_READ_KEYS: &[&str] = &["defaultDisplayBlock", "__useTextStyle"];
 
 const SKYLINE_ONLY_TOP: &[&str] = &[

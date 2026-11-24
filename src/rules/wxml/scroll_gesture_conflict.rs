@@ -1,7 +1,7 @@
 //! 滚动容器与祖先的 `touchmove` 手势会同时生效。
 //!
-//! Skyline 的 `scroll-view` 滚动由原生滚动完成（`skyline/shadow/components/scroll_view_shadow_node.cc`
-//! 创建 `ScrollView` widget），JS 的 `bind:touchmove` 是普通节点事件，两者**并行**——
+//! Skyline 的 `scroll-view` 滚动由原生滚动组件完成，JS 的 `bind:touchmove` 是普通
+//! 节点事件，两者**并行**——
 //! 祖先在子元素滚动时会照常收到 `touchmove`。所以「半屏弹窗在下拉时收起」这类
 //! 实现（面板绑 `touchmove` + 内容里放 `scroll-y` 列表）会在往回滚列表时误触发：
 //! 列表在滚，面板同时被 `translate3d` 往下拖，抬手超过阈值就关闭。

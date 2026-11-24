@@ -6,8 +6,8 @@
 //! 方言是必需的：同一段选择器在两个渲染器下的可匹配范围不同。
 //!
 //! - **WebView**：标准 CSS。
-//! - **Skyline**：属性选择器的条件被丢弃（`[foo]` 等价 `*`，`css/selector.h` 的
-//!   `CompoundSelector` 只有 id/tag/classes）；`:nth-of-type` 与 `::selection`
+//! - **Skyline**：属性选择器的条件被丢弃（`[foo]` 等价 `*`，复合选择器只保留
+//!   id/tag/classes）；`:nth-of-type` 与 `::selection`
 //!   之类没有对应 case，降级成「没有这个伪类」；而未知伪类（`:active` 等）会让
 //!   整条规则在解析阶段被丢弃（`float-pigment-css/parser/mod.rs:989-991`）。
 //!

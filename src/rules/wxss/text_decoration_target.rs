@@ -1,9 +1,9 @@
 //! `text-decoration*` 在 Skyline 下只对文本节点生效。
 //!
-//! 引擎证据（`skyline/style/style_builder.cc`）：装饰只在文字节点上应用——`TextSpan`
-//! 分支 1298-1316 处理 line/color/style/thickness，`Input` 分支 1486-1494 处理输入框；
-//! 而 `text_decoration_line_` 在 `ComputedStyle` 的非继承数据里，**不会从父节点继承**。所以 WebView 上给
-//! `<view>` 加下划线（浏览器会把装饰绘制到后代文本上）在 Skyline 下完全消失。
+//! 引擎证据：装饰只在文字节点上应用——处理文本节点的分支应用 line/color/style/thickness，
+//! 处理输入框的分支单独处理；而装饰线在计算样式的非继承数据里，**不会从父节点继承**。
+//! 所以 WebView 上给 `<view>` 加下划线（浏览器会把装饰绘制到后代文本上）在 Skyline
+//! 下完全消失。
 //!
 //! 判定范围是「声明所在选择器命中的节点」——这里与 `text-overflow` 不同：装饰不继承，
 //! 所以命中的容器里有 `<text>` 也不能豁免。命中节点是自定义组件、或属性带插值时静态

@@ -2,13 +2,12 @@
 //!
 //! 证据链：
 //!
-//! - 引擎默认不给页面根建滚动容器：`shadow/context.cc` 的 `enablePageScroll` 才把
-//!   根包进 `ScrollViewShadowNode`（`shadow_tree.cc:202-213`），默认分支是直接
-//!   `root_container_->AppendChildImpl(root_)`——页面根不可滚。整页能不能滚由
+//! - 引擎默认不给页面根建滚动容器：只有把页面滚动开关打开时，才把根包进原生
+//!   滚动容器，默认分支直接把根挂到根容器上——页面根不可滚。整页能不能滚由
 //!   `scroll-view` 决定。
-//! - `onPageScroll` / `onReachBottom` 的唯一生产者在 WebView 渲染层：`WAWebview.js`
-//!   里 `(enablePageScroll || enablePullUpRefresh)` 时才挂 `window.onscroll` 并
-//!   `publishPageEvent`。Skyline 渲染层 `WARenderContext.js` 没有任何对应实现。
+//! - `onPageScroll` / `onReachBottom` 的唯一生产者在 WebView 渲染层：页面滚动或下拉
+//!   刷新任一开启时才监听 `window.onscroll` 并派发页面事件。Skyline 渲染层没有任何
+//!   对应实现。
 //! - 因此页面 json 的 `enablePullDownRefresh` / `onReachBottomDistance` 也没有消费者：
 //!   下拉与触底都发生在被 `scroll-view` 接管的内容区里。
 //!

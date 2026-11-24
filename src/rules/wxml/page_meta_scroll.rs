@@ -1,10 +1,9 @@
 //! `skyline/page-meta-scroll`：`<page-meta>` 的页面滚动绑定在 Skyline 下没有实现。
 //!
-//! 证据：Skyline 的 `page-meta` 组件里，把 `scroll-top` 转成滚动的整段被注释掉了
-//! （`wx-page-meta` 的 `_applyUpdates`：`if (this._dirtyFields.scrollTop) { … }`
-//! 连同 `__webviewEngine__.onPageScrollTo(...)` 整块是注释），同一文件里
-//! `background-text-style` / `background-color` / `page-orientation` 都正常派发。WebView
-//! 版的同名组件走的是 `onPageScrollTo`，这是 Skyline 渲染层唯一的消费者。
+//! 证据：Skyline 的 `page-meta` 组件里，把 `scroll-top` 转成滚动的整段实现被注释掉了
+//! （连同把滚动请求转发给页面滚动接口那一块），同一实现里 `background-text-style` /
+//! `background-color` / `page-orientation` 都正常派发。WebView 版的同名组件走的是页面
+//! 滚动接口，而 Skyline 渲染层已经没有这条路径。
 //!
 //! 因此：
 //! - `scroll-top`（含 `scroll-duration`）不产生任何滚动，页面也不会因此改变位置；

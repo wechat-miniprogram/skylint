@@ -1,6 +1,6 @@
 //! 样式级联：元素某个属性有哪些候选声明、怎么排序、最后取哪一条。
 //!
-//! 排序口径对齐引擎（`style/cascade_priority.h`）：`!important` 最高，其次内联
+//! 排序口径对齐引擎：`!important` 最高，其次内联
 //! `style` 胜过任何选择器，再比 specificity，最后比出现顺序。[`cascade_entries`]
 //! 返回升序，末位生效。
 //!
@@ -22,7 +22,7 @@ use super::structure;
 
 /// 一条参与级联的声明，带溯源信息。
 ///
-/// 排序口径对齐引擎（`style/cascade_priority.h`）：importance 最高，其次 inline 胜过
+/// 排序口径对齐引擎：importance 最高，其次 inline 胜过
 /// 任何选择器，再比 specificity，最后比出现顺序。`cascade_entries` 返回升序，末位生效。
 pub(crate) struct CascadeEntry<'a> {
     pub value: String,
@@ -192,9 +192,9 @@ fn cascade_entries_with_dialect_impl<'a>(
 
     // `app.wxss` 对 isolated 组件只穿透标签 / 通配主体：class / id / 属性选择器在两端
     // 都进不了组件——Skyline 只给 apply-shared / shared 挂 sharedStyleScope
-    // （glass-easel 适配层），WebView 侧 exparser 给 class 加组件前缀
-    // （`exparser.min.js:129`）。不按这个口径筛，`app.wxss` 里的类规则会被算进组件元素的
-    // 级联，`native-padding` / `scroll-view-height` 这类吃级联的规则因此误报。
+    // （glass-easel 适配层），WebView 侧 exparser 给 class 加组件前缀。不按这个口径筛，
+    // `app.wxss` 里的类规则会被算进组件元素的级联，`native-padding` /
+    // `scroll-view-height` 这类吃级联的规则因此误报。
     let global_tag_only = match project.scope_of(tree.path()) {
         Some(Scope::Component(path)) => project.style_isolation(&path) == StyleIsolation::Isolated,
         _ => false,
@@ -433,7 +433,7 @@ mod tests {
             .map(|(value, important)| (value.as_str(), *important))
     }
 
-    /// 引擎先比 specificity 再比源码位置（`style/style_resolver.cc` 的 `CompareRules`）。
+    /// 引擎先比 specificity 再比源码位置。
     /// 按「取最后一条」会得出 `blue`，与引擎相反。
     #[test]
     fn specificity_wins_over_source_order() {

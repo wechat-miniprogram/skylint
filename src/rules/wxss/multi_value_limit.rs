@@ -2,8 +2,7 @@
 //!
 //! 超限后不是「多出的层失效」，而是该长写的整条值回退：fp 解析到 >2 层时 `break` 出
 //! switch，最终返回 `CSSUnsetValue`（`parser/mod.rs` 的 background / mask 解析路径），
-//! 引擎再走 `ApplyInitial`——image 回到 `none`、position 回到 `0% 0%`、size 回到 `auto`
-//! （`skyline/css/css_properties/background_*.cc`、`mask_*.cc` 的 `ApplyInitial`）。
+//! 引擎再按初始值回填——image 回到 `none`、position 回到 `0% 0%`、size 回到 `auto`。
 //! `background` / `mask` 简写展开后只有 image 那条长写回退，位置 / 尺寸 / 平铺仍按原值生效。
 
 use crate::project::Project;

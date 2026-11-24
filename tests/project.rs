@@ -519,7 +519,7 @@ fn missing_project_config_is_silent() {
 }
 
 /// `componentGenerics.{key}.default` 也是组件引用：编译器会加载默认实现，
-/// 漏掉它这个组件完全不参与检查（minidev `compiler-graph/src/conf.rs:309-315`）。
+/// 漏掉它这个组件完全不参与检查（minidev 构建期同样会一并加载）。
 #[test]
 fn component_generics_default_joins_the_closure() {
     let f = standard_project("generics");

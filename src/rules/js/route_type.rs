@@ -106,7 +106,7 @@ impl Rule for RouteType {
             }
         }
         let mut out = Vec::new();
-        // `routeType` 只在 `navigateTo` 分支被读（`onAppRoute.js:501`）：写在
+        // `routeType` 只在 `navigateTo` 的实参处理分支被读：写在
         // redirectTo / reLaunch 的实参里没有读者，自定义路由不会生效。
         // 这条判定与注册表无关，动态注册也照报。
         for file in &project.scripts {

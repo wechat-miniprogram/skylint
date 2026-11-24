@@ -1,8 +1,7 @@
 //! `skyline/component-framework`：Skyline 页面的 `componentFramework` 解析结果不是
 //! `glass-easel`，开发者工具会拒绝编译（`minidev build` 不校验这条）。
 //!
-//! 判据来自 minidev `compiler-graph/src/json/mutate.rs:496-540`
-//! （`is_glass_easel_component` / `check_component_framework`），解析顺序：
+//! 判据来自 minidev 构建期对 `componentFramework` 的校验，解析顺序：
 //!
 //! 1. 页面 json 自己的 `componentFramework`（是字符串时直接决定）；
 //! 2. 所属分包的 `subPackages[].componentFramework`：按 `root` 前缀匹配、只看声明了

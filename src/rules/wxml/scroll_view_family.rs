@@ -16,11 +16,9 @@
 //!   只加「在 sticky-section 内时」的条件约束，挂载位置仍不约束（见下方整条撤销的记录）。
 //! - nested-scroll-body 唯一：scroll/nested-scroll.md MUST 4「外层只能有一个 nested-scroll-body」（:166）、
 //!   NEVER 2「不要有多个 nested-scroll-body」。
-//! - nested-scroll-body 必需：nested-scroll.md:38 只渲染第一个 body；
-//!   skyline_scroll_view.dart:1559-1562 用 `firstWhere((child) => child is NestedScrollBody)`
-//!   且没有 orElse，缺 body 时直接抛 StateError（`?? SizedBox()` 是死代码）。
-//! - nested-scroll-header 与 body 的顺序无关：skyline_scroll_view.dart:1551-1554 用
-//!   `children.whereType<NestedScrollHeader>()` 收集，不依赖声明顺序。
+//! - nested-scroll-body 必需：nested-scroll.md:38 只渲染第一个 body；引擎按类型查找
+//!   第一个 body，缺 body 时直接抛 StateError（兜底占位是死代码）。
+//! - nested-scroll-header 与 body 的顺序无关：引擎按类型收集 header，不依赖声明顺序。
 //! - 只渲染第一个子节点：nested-scroll.md:29（header）、:38（body）。多写的会被静默丢弃，故为 warning。
 //! - list-builder 必需属性：scroll/list-grid-view.md MUST 2「使用 list-builder 时必须指定
 //!   child-height（定高模式）」（:271）。grid-view 的 cross-axis-count 不是必填：
@@ -76,8 +74,7 @@ const STICKY_SECTION: Target = Target {
     tag: "sticky-section",
     attr: None,
 };
-/// 嵌套滚动的头部槽也是 sliver 列表（`skyline_scroll_view.dart:1551-1556` 交给
-/// `NestedScrollView.headerSliverBuilder`），放 `list-view` / `sticky-section` 合法。
+/// 嵌套滚动的头部槽也是 sliver 列表（交给嵌套滚动视图的 header 槽构建），放 `list-view` / `sticky-section` 合法。
 const NESTED_HEADER: Target = Target {
     tag: "nested-scroll-header",
     attr: None,
@@ -87,8 +84,7 @@ const NESTED_HEADER: Target = Target {
 const CONSTRAINTS: &[Constraint] = &[
     Constraint {
         tag: "sticky-section",
-        // 引擎只认直接子节点：`skyline_scroll_view.dart` 的 sliver 组装与
-        // `sticky.dart` 的 `MultiSliver` 都是按 `widget.children` 取的。
+        // 引擎只认直接子节点：sliver 组装与 MultiSliver 都按子节点列表直接取。
         relation: Relation::Direct(&[CUSTOM_SCROLL, NESTED_HEADER]),
         severity: Severity::Error,
         help: "把 `<sticky-section>` 放进 `<scroll-view type=\"custom\">` 或 `<nested-scroll-header>`，type 不能是 list/nested",
@@ -150,7 +146,7 @@ const CONSTRAINTS: &[Constraint] = &[
         tag: "sticky-header",
         relation: Relation::RendersFirst,
         severity: Severity::Warning,
-        help: "把内容收进一个直接子节点（`sticky_header.cc` 只把 `GetChildHandle()` 交给 Dart）",
+        help: "把内容收进一个直接子节点（Skyline 只把第一个直接子节点交给原生滚动组件）",
     },
     Constraint {
         tag: "nested-scroll-header",
@@ -333,12 +329,9 @@ impl Rule for ScrollViewFamily {
                     );
             }
 
-            // `<scroll-view type="nested">` 的直接子节点只认 header / body：
-            // `skyline_scroll_view.dart:1750-1756` 只把 `nestedHeaderChildren` 与
-            // `nestedBody` 交给 `NestedScrollView`；`:1551-1557` 的
-            // `whereType<NestedScrollHeader>()` 与 `:1559-1562` 的
-            // `firstWhere((child) => child is NestedScrollBody)` 都只看这两类 widget，
-            // 其余元素与有内容的文本不会进入构建结果，等于整段丢弃。
+            // `<scroll-view type="nested">` 的直接子节点只认 header / body：引擎只把
+            // 这两类子节点交给嵌套滚动视图，其余元素与有内容的文本不会进入构建结果，
+            // 等于整段丢弃。
             if !element.in_template()
                 && element.tag == "scroll-view"
                 && matches!(

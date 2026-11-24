@@ -108,7 +108,7 @@ fn requirement(project: &Project) -> Option<(Version, &'static str)> {
     if skyline {
         bump(((2, 30, 4), "Skyline 渲染"));
     }
-    // app 级 `rendererOptions` 只在 Skyline 运行时引导时被读（`runtime/index.ts:124-151`），
+    // app 级 `rendererOptions` 只在 Skyline 运行时引导时被读，
     // 全 WebView 工程里它是死配置，不构成版本门槛。
     if skyline && project.app_json.contains_key("rendererOptions") {
         bump(((2, 31, 1), "app 级 rendererOptions"));

@@ -1,6 +1,6 @@
 //! `nested-scroll-*` 与 `scroll-view type="nested"` 在 WebView 下不联动。
 //!
-//! 嵌套滚动是 Skyline 新增能力（`skyline/shadow/components/nested_scroll_*`），
+//! 嵌套滚动是 Skyline 新增能力，
 //! WebView 的 `wx-scroll-view` 从不读 `type`（WebView 组件实现），
 //! `nested-scroll-header` / `nested-scroll-body` 是未注册标签 → 未知元素：
 //! 子节点还在，但头部不会随主体滚动收起，而是常驻在顶部。
