@@ -75,18 +75,24 @@ impl NativeLayoutIgnored {
     }
 }
 
-/// 视觉用例：`list-view` 上的尺寸与间距在 WebView 生效，Skyline 因为没有 CSS 盒而忽略。
+/// 视觉用例：`sticky-section` 上的尺寸与间距在 WebView 生效，Skyline 因为没有 CSS 盒而忽略。
+///
+/// 两端的 `scroll-view type="custom"` 只用来满足该组件的使用条件（必须放在 custom 模式的
+/// scroll-view 里）并给子树一个可见高度：Skyline 下 scroll-view 没有高度时子树不绘制。
+/// `.sect` 的 `display`、300×120、`margin-top` 与子 `.row` 的高度才是要比的点。
 static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxml: r#"<view class="wrap">
   <view class="head">上方的标题</view>
-  <list-view class="list" id="target">
-    <list-item class="row">列表项</list-item>
-  </list-view>
+  <scroll-view type="custom" class="scroll">
+    <sticky-section class="sect">
+      <view class="row" id="target">列表项</view>
+    </sticky-section>
+  </scroll-view>
 </view>"#,
-    wxss: ".wrap { background: #fff; }\n.head { height: 30px; background: #4a4a68; color: #fff; }\n.list { width: 300px; height: 120px; margin-top: 16px; background: #d9f2d9; }\n.row { height: 40px; background: #9ad0f5; }\n",
+    wxss: ".wrap { background: #fff; }\n.head { height: 30px; background: #4a4a68; color: #fff; }\n.scroll { height: 200px; }\n.sect { display: block; width: 300px; height: 120px; margin-top: 16px; background: #d9f2d9; }\n.row { height: 40px; background: #9ad0f5; }\n",
     js: None,
     expect: VisualExpect::Differ,
-    note: "`list-view` 在 Skyline 下没有 CSS 盒：声明的 300×120 尺寸与 `margin-top` 都不进布局，WebView 按普通 DOM 排",
+    note: "`sticky-section` 在 Skyline 下没有 CSS 盒：声明的 300×120、`margin-top` 与 `display` 都不进布局，子节点 `.row` 作为独立布局根紧贴标题渲染；WebView 按普通 DOM 排出 300×120 的盒子。该组件连 `background-color` 也不画（`#d9f2d9` 在 Skyline 侧面积 0、WebView 侧 96000 device px），这是并集差异里最大的一块",
     target: "#target",
 }];
 
@@ -196,13 +202,14 @@ mod tests {
     }
 
     #[test]
-    fn visual_case_list_view_layout_is_reported() {
+    fn visual_case_sticky_section_layout_is_reported() {
         let diagnostics = check(
             "layout-visual",
-            r#"<view class="wrap"><view class="head">标题</view><list-view class="list" id="target"><list-item class="row">列表项</list-item></list-view></view>"#,
-            ".head { height: 30px; }\n.list { width: 300px; height: 120px; margin-top: 16px; }\n.row { height: 40px; }",
+            r#"<view class="wrap"><view class="head">标题</view><scroll-view type="custom"><sticky-section class="sect"><view class="row">列表项</view></sticky-section></scroll-view></view>"#,
+            ".head { height: 30px; }\n.sect { display: block; width: 300px; height: 120px; margin-top: 16px; }\n.row { height: 40px; }",
         );
         assert!(!diagnostics.is_empty(), "{diagnostics:#?}");
+        assert!(diagnostics[0].message.contains("`sticky-section`"));
     }
 
     #[test]

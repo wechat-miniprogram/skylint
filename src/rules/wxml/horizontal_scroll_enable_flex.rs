@@ -19,8 +19,8 @@ pub struct HorizontalScrollEnableFlex;
 
 /// 视觉用例：宿主 `display: flex` 但没写 `enable-flex`。
 ///
-/// 同一段 WXML 在 Skyline 仍按 `display: flex` 横向排列：三个子项各 16 CSS 宽、撑满
-/// 100 CSS 高（`scroll-x` 的内容主轴是 max-content，`flex: 1` 不会把子项拉到 1/3 宽）。
+/// 同一段 WXML 在 Skyline 侧横向排：`scroll-x` 的内容主轴按 max-content 排，子项保持
+/// 内容宽 16 CSS、撑满 100 CSS 高（`flex: 1` 不参与分配，子项不会被拉到 1/3 宽）。
 /// WebView 的组件只在 `enable-flex` 下才把 flex 布局下传给内部滚动容器，缺省时子项
 /// 退化为块级盒、竖排铺满 290 CSS 宽（行高 22 CSS）。`#target` 固定 300x100，bbox 相同。
 static VISUAL_CASES: &[VisualCase] = &[VisualCase {
@@ -32,7 +32,7 @@ static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxss: ".tabs { display: flex; flex-direction: row; width: 300px; height: 100px; }\n.tab { flex: 1; margin-right: 10px; background: #36c; color: #fff; }\n",
     js: None,
     expect: VisualExpect::Differ,
-    note: "缺 `enable-flex`：Skyline 仍按 `display: flex` 把三个子项横向排成一行（各 16 CSS 宽、撑满 100 CSS 高）；WebView 不下传 flex，子项退化为块级、竖排铺满 290 CSS 宽（行高 22 CSS）",
+    note: "缺 `enable-flex`：Skyline 的 `scroll-x` 内容主轴按 max-content 排，子项保持内容宽 16 CSS 横向一行（`flex: 1` 不参与分配）；WebView 组件缺 `enable-flex` 时不把 flex 下传给内部滚动容器，子项退化为块级、竖排铺满 290 CSS 宽（行高 22 CSS）",
     target: "#target",
 }];
 

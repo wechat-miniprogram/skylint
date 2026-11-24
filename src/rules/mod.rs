@@ -301,31 +301,31 @@ pub trait Rule {
     }
 
     /// 本规则所有视觉用例渲染后要注入的动作，按声明顺序执行。默认不做任何输入。
+    ///
+    /// 只有单条用例需要不同注入点时才覆盖 [`Self::visual_case_actions`]。
     fn visual_actions(&self) -> &'static [VisualAction] {
         &[]
     }
 
-    /// 规则级 app.json 覆盖夹具，写成 JSON 对象；生成器把它合并进整批工程的
-    /// app.json。默认 `None`。
+    /// 单条视觉用例要注入的动作；默认沿用规则级的 [`Self::visual_actions`]。
     ///
-    /// 只在规则必须改 app 级配置才能复现现象时使用（例如 `rendererOptions`）。
-    /// 生成器最后才写 `pages` / `renderer` / `componentFramework` /
-    /// `lazyCodeLoading`，覆盖里不要写这几个键；覆盖作用于**整批**用例，因此值
-    /// 必须是行为中性的，不能让依赖 app 级缺省配置的用例失效。
-    fn visual_app_json(&self) -> Option<&'static str> {
-        None
+    /// 同一规则的多条用例需要不同触点时才覆盖（例如阴性对照的滑动打在容器上、
+    /// 阳性用例必须打在滚动内容上）。与组件夹具同理放在规则级：给 [`VisualCase`]
+    /// 加字段会让所有既有用例字面量都要同步补齐。
+    fn visual_case_actions(&self, index: usize) -> &'static [VisualAction] {
+        let _ = index;
+        self.visual_actions()
     }
 }
 
-/// 视觉用例生成器用的规则条目：元数据、用例、组件夹具、app.json 覆盖、
-/// 页面附属文件、渲染后动作。
+/// 视觉用例生成器用的规则条目：元数据、用例、组件夹具、页面附属文件、
+/// 逐用例的动作（与用例一一对应）。
 pub type VisualEntry = (
     RuleMeta,
     &'static [VisualCase],
     &'static [VisualComponent],
-    Option<&'static str>,
     &'static [VisualFile],
-    &'static [VisualAction],
+    Vec<&'static [VisualAction]>,
 );
 
 /// 证据用例生成器用的规则条目：元数据与用例列表。
@@ -453,22 +453,24 @@ impl Registry {
             .collect()
     }
 
-    /// 有视觉用例的规则：id、用例列表、规则级组件夹具与 app.json 覆盖。
+    /// 有视觉用例的规则：id、用例列表、规则级组件夹具、页面附属文件与逐用例的动作。
     /// 生成器把它写成可运行的小程序工程。
     pub fn visual_cases(&self) -> Vec<VisualEntry> {
         self.rules
             .iter()
             .map(|rule| {
+                let cases = rule.visual_cases();
                 (
                     rule.meta(),
-                    rule.visual_cases(),
+                    cases,
                     rule.visual_components(),
-                    rule.visual_app_json(),
                     rule.visual_files(),
-                    rule.visual_actions(),
+                    (0..cases.len())
+                        .map(|index| rule.visual_case_actions(index))
+                        .collect(),
                 )
             })
-            .filter(|(_, cases, _, _, _, _)| !cases.is_empty())
+            .filter(|(_, cases, _, _, _)| !cases.is_empty())
             .collect()
     }
 

@@ -40,7 +40,7 @@ static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxss: ".box { width: 96px; font-size: 16px; line-height: 20px; background: #eef; color: #223; word-break: keep-all; }\n",
     js: None,
     expect: VisualExpect::Differ,
-    note: "`word-break: keep-all` 被 Skyline 映射成 normal：WebView 不拆开中文、只有一行，Skyline 按 normal 逐字换行成多行",
+    note: "`word-break: keep-all` 被 Skyline 映射成 normal：WebView 不拆开中文、只有一行，Skyline 按 normal 逐字换行成多行。证据看 bbox 高度差（4 行 80 CSS vs 1 行 20 CSS，120 device px）；两端 bbox 交集只覆盖首行前 6 个字、逐字相同，0.195% 的像素差不可用",
     target: "#target",
 }];
 

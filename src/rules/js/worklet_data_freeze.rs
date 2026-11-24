@@ -16,28 +16,148 @@
 
 use crate::input::js::ThisDataDestructure;
 use crate::project::{JsFile, Project};
-use crate::rules::{Rule, RuleMeta, VisualCase, VisualExpect};
+use crate::rules::{
+    EvidenceCase, EvidenceExpect, EvidenceRun, Rule, RuleMeta, VisualCase, VisualExpect, VisualFile,
+};
 use crate::{Diagnostic, Severity};
 
 use super::at_span;
 
-/// 视觉用例：页面 JS 在 1.2s 后注册一个解构 `this.data` 的 worklet 样式更新器，
-/// 0.4s 后再 `setData`。
+/// 截图对照（阴性）：截图批次的 `project.config.json` 没有开 `setting.compileWorklet`，
+/// worklet 不会被转换，`applyAnimatedStyle` 里的函数按普通闭包执行，捕获的 `snapshot`
+/// 不会被标记为跨线程引用，随后 `setData` 在两端都生效——终态同为 AFTER。
 ///
-/// Skyline 的 worklet 会被传到 UI 线程，捕获的 `this.data` 被冻结，随后的 `setData`
-/// 静默失效；WebView 的 updater 在逻辑线程上跑（不过线程），`setData` 正常生效。
+/// 它不证明冻结机制（机制需要 `compileWorklet: true`，见本文件的证据用例），只证明
+/// 「同样一份源码在开关关闭时两端都不冻结」这个阴性前提。
 static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxml: r#"<view class="wrap">
   <view class="target {{accent ? 'accent' : ''}}" id="target">{{label}}</view>
 </view>"#,
     wxss: ".wrap { padding: 20px; }\n.target { width: 200px; height: 88px; background-color: #dfe6f5; color: #213; text-align: center; line-height: 88px; font-size: 16px; }\n.target.accent { width: 300px; height: 160px; background-color: #d33; color: #ffffff; line-height: 160px; }\n",
-    js: Some(
-        "Page({\n  data: { label: 'BEFORE', accent: false },\n  onReady() {\n    setTimeout(() => {\n      if (typeof this.applyAnimatedStyle === 'function') {\n        this.applyAnimatedStyle('#target', function () {\n          'worklet'\n          const { accent } = this.data\n          return { opacity: accent ? 0.35 : 1 }\n        })\n      }\n      setTimeout(() => {\n        this.setData({ label: 'AFTER', accent: true })\n      }, 400)\n    }, 800)\n  },\n});\n",
-    ),
-    expect: VisualExpect::Differ,
-    note: "worklet 里解构 `this.data`：Skyline 把它冻结后 `setData` 静默失效，#target 停在浅蓝 BEFORE；WebView 不过线程冻结，`setData` 生效，#target 变成红色 AFTER",
+    js: Some(PAGE_JS),
+    expect: VisualExpect::Same,
+    note: "阴性对照：截图批次未开 compileWorklet，worklet 不转换、snapshot 不冻结，两端 setData 都生效，终态同为 AFTER（BEFORE 只存在 400ms）；0.498% 残差仅为 AFTER 字形栅格化，不是状态差异",
     target: "#target",
 }];
+
+const APP_JSON: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","componentFramework":"glass-easel","lazyCodeLoading":"requiredComponents"}"#;
+const APP_JSON_WEBVIEW: &str = r#"{"pages":["pages/index/index"],"renderer":"webview","componentFramework":"glass-easel","lazyCodeLoading":"requiredComponents"}"#;
+const APP_JS: &str = "App({})\n";
+const PAGE_JSON: &str = r#"{"navigationStyle":"custom"}"#;
+const PAGE_WXML: &str = "<view class=\"wrap\">\n  <view class=\"target {{accent ? 'accent' : ''}}\" id=\"target\">{{label}}</view>\n</view>\n";
+
+/// `this.data` 在 worklet 内恒为 undefined（实测），所以必须先在页面作用域把 data 对象
+/// 捕获成 `snapshot`，再让 worklet 解构它：这正是「捕获外部对象」的那条路径。
+/// 冻结后 `setData` 抛只读错误；800ms 时补一条冻结状态 + 终态标签。
+const PAGE_JS: &str = r#"Page({
+  data: { label: 'BEFORE', accent: false },
+  onReady() {
+    const snapshot = this.data
+    try {
+      this.applyAnimatedStyle('#target', function () {
+        'worklet'
+        const { accent } = snapshot
+        return { opacity: accent ? 0.35 : 1 }
+      })
+      console.log('EVIDENCE_WORKLET_REGISTERED')
+    } catch (e) {
+      console.log('EVIDENCE_WORKLET_THROW ' + e.message)
+    }
+    setTimeout(() => {
+      try {
+        this.setData({ label: 'AFTER', accent: true })
+        console.log('EVIDENCE_SETDATA_OK')
+      } catch (e) {
+        console.log('EVIDENCE_SETDATA_THROW ' + e.message)
+      }
+    }, 400)
+    setTimeout(() => {
+      console.log('EVIDENCE_FROZEN ' + Object.isFrozen(snapshot) + ' label=' + this.data.label)
+    }, 800)
+  },
+});
+"#;
+
+const CONFIG_ON: &str =
+    r#"{"miniprogramRoot":"","appid":"touristappid","setting":{"compileWorklet":true}}"#;
+
+const FILES_SKYLINE: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS,
+    },
+];
+
+const FILES_WEBVIEW: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON_WEBVIEW,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS,
+    },
+];
+
+static EVIDENCE_CASES: &[EvidenceCase] = &[
+    EvidenceCase {
+        name: "skyline-data-frozen",
+        files: FILES_SKYLINE,
+        project_config: Some(CONFIG_ON),
+        run: EvidenceRun::Serve {
+            page: "pages/index/index",
+        },
+        expect: EvidenceExpect::Console {
+            must: &[
+                "EVIDENCE_FROZEN true label=BEFORE",
+                "EVIDENCE_SETDATA_THROW Cannot assign to read only property",
+            ],
+            must_not: &["label=AFTER"],
+        },
+        note: "compileWorklet: true 时 worklet 捕获的 data 对象被冻结（frozen=true），随后的 setData 抛只读错误，标签停在 BEFORE",
+    },
+    EvidenceCase {
+        name: "webview-data-intact",
+        files: FILES_WEBVIEW,
+        project_config: Some(CONFIG_ON),
+        run: EvidenceRun::Serve {
+            page: "pages/index/index",
+        },
+        expect: EvidenceExpect::Console {
+            must: &["EVIDENCE_FROZEN false label=AFTER"],
+            must_not: &["EVIDENCE_SETDATA_THROW"],
+        },
+        note: "对照：同一份源码在 WebView 下 updater 不过线程，data 未被冻结（frozen=false），setData 生效，标签变成 AFTER",
+    },
+];
 
 pub struct WorkletDataFreeze;
 
@@ -56,6 +176,10 @@ impl Rule for WorkletDataFreeze {
 
     fn visual_cases(&self) -> &'static [VisualCase] {
         VISUAL_CASES
+    }
+
+    fn evidence_cases(&self) -> &'static [EvidenceCase] {
+        EVIDENCE_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -93,9 +217,10 @@ mod tests {
 
     use super::{VISUAL_CASES, WorkletDataFreeze};
 
-    /// 视觉用例的同一份 WXML/WXSS/JS 必须真的能触发本规则。
+    /// 截图对照故意走「捕获后解构」，不写规则要报的字面量 `const {...} = this.data`：
+    /// 它是 compileWorklet 未开的阴性对照，不应该让规则报错。
     #[test]
-    fn visual_case_triggers_rule() {
+    fn visual_case_is_a_negative_control() {
         let case = &VISUAL_CASES[0];
         let fixture = Fixture::new("freeze-visual");
         fixture
@@ -108,13 +233,7 @@ mod tests {
             .write("pages/index/index.wxml", case.wxml)
             .write("pages/index/index.wxss", case.wxss)
             .write("pages/index/index.js", case.js.expect("视觉用例需要 JS"));
-        let diagnostics = check_rule(&fixture, &WorkletDataFreeze);
-        assert!(
-            diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.rule == WorkletDataFreeze::ID),
-            "视觉用例未触发规则：{diagnostics:#?}"
-        );
+        assert!(check_rule(&fixture, &WorkletDataFreeze).is_empty());
     }
 
     #[test]

@@ -35,23 +35,34 @@ const HELP: &str = "在列表的 `bind:scroll` 里按 `scrollTop` 门控手势�
 /// 视觉用例：阴性对照 + 真实 Differ。
 ///
 /// 规则主张的差异在**触摸事件的冒泡路径**上（Skyline 原生滚动与 `touchmove` 并行），
-/// 而不是静态渲染：没有输入注入时两端都不触发 `touchmove`，同一结构画出来一样。
-/// 所以第一条记一份 `Same`，明确「结构本身不产生视觉差异」；第二条注入一次纵向滑动：
-/// 同一串触摸打在列表内部，WebView 的滚动容器会滚动并把它吃掉，Skyline 下事件照常
-/// 冒泡到祖先——用祖先里的指示条把「有没有收到触摸」画成终态。
+/// 而不是静态渲染：同一结构画出来一样。第二条注入一次纵向滑动：同一串触摸打在列表
+/// 内部，WebView 的滚动容器会滚动并把它吃掉，Skyline 下事件冒泡到祖先——用祖先里的
+/// 指示条把「有没有收到触摸」画成终态。
+///
+/// 实测口径（2026-11 复核，见 `docs/RULE-VISUAL.md` 的「注入的手势不等于真机手势」）：
+/// 宿主注入的合成 touch 序列不被 Skyline 的原生滚动控件消费（列表 `top` 保持 0），
+/// 所以 Differ 证明的是「两端对同一串合成触摸的反应不同」，不等于真机上「原生滚动与
+/// JS `touchmove` 并行」的手感；真机结论仍需单独验证。
+///
+/// 第一条 `Same` 的前置条件修正为「内容真的溢出」：容器 96px、单块内容 300px；注入点
+/// 落在容器 `.list` 上，本模拟器两端都不启动原生滚动，内容又是一整块纯色，所以终态一致。
+/// 它仍不是机制级对照：合成触摸下两端 `scrollTop` 都为 0，截图只能证明「溢出本身不产生
+/// 可见差异」；本模拟器里「溢出 + scroll-view 的真阴性对照」不可能成立（见
+/// `docs/RULE-VISUAL.md` 的「注入的手势不等于真机手势」）。
 static VISUAL_CASES: &[VisualCase] = &[
     VisualCase {
-        wxml: r#"<view class="sheet" id="target" bind:touchmove="onMove">
-  <scroll-view class="list" scroll-y>
-    <view class="row">第一行</view>
-    <view class="row">第二行</view>
-    <view class="row">第三行</view>
+        wxml: r#"<view class="sheet" bind:touchmove="onMove">
+  <scroll-view class="list" scroll-y show-scrollbar="{{false}}">
+    <view class="row" id="target"></view>
   </scroll-view>
 </view>"#,
-        wxss: ".sheet { padding: 12px; }\n.list { height: 96px; }\n.row { height: 24px; line-height: 24px; font-size: 14px; color: #333; }\n",
+        // 全部涂同色，内容块给定宽 200px：本模拟器里 WebView 不实现
+        // `show-scrollbar=false`，溢出的 scroll-view 会把内容宽度压窄 15px（原生滚动条槽位，
+        // 实测 bbox 311 vs 296），目标用固定宽就避开槽位，也不让滑块进入比对区域。
+        wxss: ".sheet { padding: 12px; background-color: #c2402a; }\n.list { height: 96px; background-color: #c2402a; }\n.row { width: 200px; height: 300px; background-color: #c2402a; }\n",
         js: Some("Page({ onMove() {} });\n"),
         expect: VisualExpect::Same,
-        note: "结构命中规则（祖先 bind:touchmove + 子 scroll-y），但内容不溢出、处理函数为空：注入滑动后两端仍然一致",
+        note: "结构命中规则（祖先 bind:touchmove + 子 scroll-y），内容 300px 真的溢出 96px 容器；滑动打在容器 `.list` 上，本模拟器两端都不启动原生滚动，单块纯色下终态一致（目标块固定宽 200px，避开 WebView 的滚动条槽位）。只证明「溢出本身不产生可见差异」，不证明两端滚动行为相同。Same 只在 `#target` 内成立——整页仍有 5760 device px 差异，是 WebView 独有的 15×96 CSS 滚动条，在元素比对区之外",
         target: "#target",
     },
     VisualCase {
@@ -79,13 +90,17 @@ static VISUAL_CASES: &[VisualCase] = &[
             "Page({\n  data: { moves: 0, top: 0, moved: false },\n  onMove() { this.setData({ moves: this.data.moves + 1, moved: true }); },\n  onScroll(e) { this.setData({ top: Math.round(e.detail.scrollTop) }); },\n});\n",
         ),
         expect: VisualExpect::Differ,
-        note: "在列表第一行上向上滑：Skyline 的祖先照常收到 `touchmove`（moves=6、指示条变红，原生滚动与 JS 事件并行）；WebView 的滚动容器处理这串触摸并吃掉它（列表滚了 100，祖先 moves=0）",
+        note: "在列表第一行上向上滑：Skyline 侧列表 top 保持 0（宿主注入的合成触摸不驱动原生滚动），只把 touchmove 冒泡给祖先（moves=6、指示条变红）；WebView 的滚动容器消费同一串触摸并阻止冒泡（列表滚到 100、top=100、祖先 moves=0）。仅证明合成触摸不被原生滚动消费，不代表真机「原生滚动 + touchmove 并行」行为",
         target: "#target",
     },
 ];
 
-static VISUAL_ACTIONS: &[VisualAction] = &[VisualAction::Swipe(".row", 0, -120)];
-
+/// 两条用例的注入点不同（实测确定，不能共用）：
+/// - `Same`：300px 内容块溢出 96px 容器，滑动打在容器 `.list` 上时两端都不启动原生
+///   滚动，目标 bbox 不动，阴性对照成立；打在 `.row` 上 WebView 会真的滚动（目标 bbox
+///   上移 120 CSS），`Same` 直接失败。
+/// - `Differ`：12 行 24px 内容，滑动必须打在滚动内容（`.row`）上，WebView 的原生滚动
+///   才会启动；打在 `.list` 容器上时本模拟器的 WebView 不滚，两端读数退化成一样。
 pub struct ScrollGestureConflict;
 
 impl Rule for ScrollGestureConflict {
@@ -101,8 +116,13 @@ impl Rule for ScrollGestureConflict {
         VISUAL_CASES
     }
 
-    fn visual_actions(&self) -> &'static [VisualAction] {
-        VISUAL_ACTIONS
+    fn visual_case_actions(&self, index: usize) -> &'static [VisualAction] {
+        const SAME: &[VisualAction] = &[VisualAction::Swipe(".list", 0, -120)];
+        const DIFFER: &[VisualAction] = &[VisualAction::Swipe(".row", 0, -120)];
+        match index {
+            0 => SAME,
+            _ => DIFFER,
+        }
     }
 
     fn target(&self) -> Target {
@@ -248,6 +268,25 @@ mod tests {
                 "case {index}: {diagnostics:#?}"
             );
         }
+    }
+
+    /// 两条用例的注入点必须不同：`Same` 打在容器上（本模拟器的 WebView 不启动滚动，
+    /// 目标 bbox 不动），`Differ` 打在滚动内容上（WebView 必须真的滚起来）。
+    #[test]
+    fn visual_cases_use_different_swipe_targets() {
+        use crate::rules::VisualAction;
+        let selector = |index: usize| {
+            ScrollGestureConflict
+                .visual_case_actions(index)
+                .iter()
+                .find_map(|action| match action {
+                    VisualAction::Swipe(selector, ..) => Some(*selector),
+                    _ => None,
+                })
+                .expect("用例应当注入一次 Swipe")
+        };
+        assert_eq!(selector(0), ".list");
+        assert_eq!(selector(1), ".row");
     }
 
     #[test]

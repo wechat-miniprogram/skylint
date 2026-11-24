@@ -2,8 +2,8 @@
 //!
 //! 实测（同一探针页两端各跑一次）：
 //!
-//! - WebView：`<view style="display: inline">` 真的变成行内盒——盒子收缩到内容宽度，
-//!   后面的兄弟接在同一行；
+//! - WebView：`<view style="display: inline">` 真的变成行内盒——盒子收缩成只有文字宽的一行；
+//!   兄弟 `<view>` 是块级，仍然另起一行；
 //! - Skyline：`display: inline` 被忽略，元素仍是块级盒——宽度撑满父级、后面的兄弟另起一行。
 //!
 //! 也就是说「靠 `display: inline` 让若干块级元素并排」的写法迁到 Skyline 后会全部竖排。
@@ -32,14 +32,14 @@ pub struct InlineDisplayIgnored;
 
 /// 视觉用例：同一段 WXML/WXSS 两端各渲一次，看 `#target` 的几何与像素。
 ///
-/// `display: inline` 的 `<view>`：WebView 收缩到文字宽、与兄弟同排；
-/// Skyline 忽略这条声明，仍是撑满父宽的块级盒。
+/// 两个 `display: inline` 的 `<view>`：WebView 都收缩成文字宽并排在同一行；
+/// Skyline 忽略这条声明，两个都是撑满父宽的块级盒、各占一行。
 static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxml: r#"<view class="row"><view class="a" id="target">甲</view><view class="b">乙</view></view>"#,
-    wxss: ".row { padding: 10px; }\n.a { display: inline; background: #cde; }\n.b { background: #edc; }\n",
+    wxss: ".row { padding: 10px; }\n.a { display: inline; background: #cde; }\n.b { display: inline; background: #edc; }\n",
     js: None,
     expect: VisualExpect::Differ,
-    note: "WebView 的 display:inline 让 <view> 收缩到文字宽并与兄弟同排；Skyline 忽略它，仍是撑满父宽的块级盒",
+    note: "WebView 的 `display: inline` 让 `.a`、`.b` 都收缩成文字宽并排在同一行；Skyline 忽略它，两个都撑满父宽、各占一行。规则对 `.a`、`.b` 各报一条，属预期。整页模式，证据强度弱于元素模式",
     target: "",
 }];
 

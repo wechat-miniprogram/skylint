@@ -58,19 +58,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut pages = Vec::new();
     let mut cases = Vec::new();
-    // 规则级 app.json 覆盖；整批工程共用一份 app.json，所以只允许行为中性的覆盖。
-    let mut app_overrides = Vec::new();
     // 组件目录是全局的 `components/<name>/`：同名组件必须内容一致，否则后写的会
     // 静默覆盖先写的，某个 case 的夹具就不是它声明的那个了。
     let mut components: BTreeMap<&'static str, &'static VisualComponent> = BTreeMap::new();
-    for (meta, visual_cases, rule_components, app_override, rule_files, rule_actions) in
+    for (meta, visual_cases, rule_components, rule_files, rule_actions) in
         Registry::builtin().visual_cases()
     {
         if skips.iter().any(|skip| meta.id.contains(skip.as_str())) {
             continue;
-        }
-        if let Some(text) = app_override {
-            app_overrides.push(parse_app_override(meta.id, text)?);
         }
         let base = slugify(meta.id);
         // 规则级夹具：该规则的每个 case 页面都引用同一组组件。
@@ -123,9 +118,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "target": case.target,
                 "mode": case.mode().as_str(),
             });
-            if !rule_actions.is_empty() {
+            let case_actions = rule_actions[index];
+            if !case_actions.is_empty() {
                 case_json["actions"] =
-                    serde_json::Value::Array(rule_actions.iter().map(action_json).collect());
+                    serde_json::Value::Array(case_actions.iter().map(action_json).collect());
             }
             cases.push(case_json);
         }
@@ -145,20 +141,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
     }
 
-    // 先合并规则覆盖，再写生成器管理的必备键：覆盖不能替换页面表与渲染器。
-    let mut app = serde_json::Map::new();
-    for override_map in app_overrides {
-        app.extend(override_map);
-    }
-    for (key, value) in [
-        ("pages", serde_json::json!(pages)),
-        ("renderer", serde_json::json!(renderer)),
-        ("componentFramework", serde_json::json!("glass-easel")),
-        ("lazyCodeLoading", serde_json::json!("requiredComponents")),
-    ] {
-        app.insert(key.to_string(), value);
-    }
-    let app = serde_json::Value::Object(app);
+    let app = serde_json::json!({
+        "pages": pages,
+        "renderer": renderer,
+        "componentFramework": "glass-easel",
+        "lazyCodeLoading": "requiredComponents",
+    });
     write(
         &project.join("app.json"),
         &serde_json::to_string_pretty(&app)?,
@@ -237,8 +225,7 @@ fn register_components(
 ///
 /// `defaultContentBox` / `defaultDisplayBlock` 保持关闭是好几条用例的前提
 /// （`box-sizing`、`flex-direction`、`default-layout-drift` 与三条 `fixed-*`）；
-/// 确实要改 app 级配置的规则走 [`skylint::rules::Rule::visual_app_json`]，并自行
-/// 保证覆盖值在运行时等价于缺省（例如 `defaultDisplayBlock: null`）。
+/// 确实要逐工程控制 app 级配置的规则改走证据用例（`Rule::evidence_cases`）。
 fn assert_no_renderer_options(
     json: &serde_json::Value,
     what: &str,
@@ -250,26 +237,6 @@ fn assert_no_renderer_options(
         .into());
     }
     Ok(())
-}
-
-/// 规则级 app.json 覆盖：必须是 JSON 对象，且不能写生成器管理的键。
-fn parse_app_override(
-    rule_id: &str,
-    text: &'static str,
-) -> Result<serde_json::Map<String, serde_json::Value>, Box<dyn std::error::Error>> {
-    let value: serde_json::Value = serde_json::from_str(text)
-        .map_err(|error| format!("规则 `{rule_id}` 的 visual_app_json 不是合法 JSON：{error}"))?;
-    let serde_json::Value::Object(map) = value else {
-        return Err(format!("规则 `{rule_id}` 的 visual_app_json 必须是 JSON 对象").into());
-    };
-    const GENERATED: &[&str] = &["pages", "renderer", "componentFramework", "lazyCodeLoading"];
-    if let Some(key) = GENERATED.iter().find(|key| map.contains_key(**key)) {
-        return Err(format!(
-            "规则 `{rule_id}` 的 visual_app_json 不能写 `{key}`：这些键由生成器写入"
-        )
-        .into());
-    }
-    Ok(map)
 }
 
 /// 组件标签名会拼进文件路径与 `usingComponents`，只允许安全字符。

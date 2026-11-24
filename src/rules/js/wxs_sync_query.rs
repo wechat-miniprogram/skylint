@@ -60,7 +60,7 @@ static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxss: ".card { box-sizing: border-box; width: 240px; height: 180px; margin: 60px auto; padding: 20px; background-color: #6b7a90; border-radius: 12px; }\n.title { display: block; color: #ffffff; font-size: 18px; }\n.hint { display: block; margin-top: 14px; color: #e4e9f0; font-size: 14px; }\n",
     js: Some("Page({});\n"),
     expect: VisualExpect::Differ,
-    note: "点击后 WXS 在 `ownerInstance`（页面根）上做同步矩形查询并按 `rect.width` 改背景：WebView 拿到真实宽度变绿，Skyline 的同步查询恒为空（全 0）走兜底变红——整页终态相反",
+    note: "点击后 WXS 在 `ownerInstance`（页面根）上做同步矩形查询并按 `rect.width` 改背景：WebView 拿到真实宽度、整个视口变绿；Skyline 的同步查询恒为空（全 0）走兜底，只有页面根（高 300px）变红、下方仍是白底",
     target: "",
 }];
 

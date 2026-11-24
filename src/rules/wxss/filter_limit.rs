@@ -26,16 +26,16 @@ impl FilterLimit {
     pub const ID: &'static str = "skyline/filter-limit";
 }
 
-/// 视觉用例：多个滤镜函数组合在 Skyline 下不被支持。
+/// 视觉用例：多个滤镜函数组合在 Skyline 下只应用第一个函数。
 ///
-/// WebView 先灰度再反相，红色块变成浅灰；Skyline 不会得到同样的处理结果，
-/// 色块保持明显不同的颜色。
+/// WebView 把 `grayscale(1) invert(1)` 两个函数都应用；Skyline 只留下第一个
+/// `grayscale`，两端都变灰、深浅不同。
 static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxml: r#"<view class="swatch" id="target"></view>"#,
     wxss: ".swatch { width: 220px; height: 160px; background: #ff3b30; filter: grayscale(1) invert(1); }\n",
     js: None,
     expect: VisualExpect::Differ,
-    note: "`filter` 多函数组合在 Skyline 不被支持：WebView 把红色块灰化再反相成浅灰，Skyline 色块大面积保持不同颜色",
+    note: "`filter` 多函数组合在 Skyline 只应用第一个函数：`grayscale(1) invert(1)` 只灰化、丢掉反相（#646464），WebView 两个函数都生效得到更浅的 #9b9b9b",
     target: "#target",
 }];
 
@@ -44,7 +44,7 @@ impl Rule for FilterLimit {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Warning,
-            description: "filter / backdrop-filter 使用了不支持的函数或组合",
+            description: "filter / backdrop-filter 的多个函数组合在 Skyline 下只应用第一个，后续函数被丢弃",
         }
     }
 
@@ -96,7 +96,7 @@ impl Rule for FilterLimit {
             let help = if calls.iter().any(|c| c.name == "drop-shadow") {
                 "drop-shadow 没有被实现（阴影不会绘制）。能不能换 box-shadow 取决于元素盒子是否就是可见形状：不透明矩形可以换；元素透明、图形在背景图或字体里时，box-shadow 会沿盒子画出一圈方框，应当把阴影烘焙进图形或去掉阴影"
             } else {
-                "filter / backdrop-filter 只支持单个 blur/brightness/contrast/grayscale/hue-rotate/invert/opacity/saturate/sepia 函数"
+                "filter / backdrop-filter 只支持单个 blur/brightness/contrast/grayscale/hue-rotate/invert/opacity/saturate/sepia 函数；Skyline 遇到多函数组合只应用第一个，不要依赖组合后的效果"
             };
             out.push(at_value(
                 Self::ID,

@@ -279,7 +279,7 @@ impl Rule for TransitionProperty {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Warning,
-            description: "transition 里的属性名不在 Skyline 的可动画属性白名单内，该段过渡不生效",
+            description: "transition 里的属性名不受支持：闭集外（如 `visibility`、厂商前缀名）会让整条声明被丢弃；闭集内但引擎没有实现（如 `margin`、`background`）只丢该属性",
         }
     }
 

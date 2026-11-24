@@ -41,10 +41,10 @@ static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxml: r#"<view class="wrap">
   <view class="title" id="target">流浪地球计划要延续两千五百年，这段标题故意写得足够长</view>
 </view>"#,
-    wxss: ".wrap { width: 200px; padding: 8px; background: #fff; }\n.title { font-size: 16px; line-height: 24px; color: #222; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }\n",
+    wxss: ".wrap { box-sizing: content-box; width: 200px; padding: 8px; background: #fff; }\n.title { font-size: 16px; line-height: 24px; color: #222; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }\n",
     js: None,
     expect: VisualExpect::Differ,
-    note: "WebView 在 200px 宽的 `<view>` 末尾画出省略号，Skyline 的 text-overflow 只对 `<text>` 生效，文本被直接裁断",
+    note: "WebView 在 200px 宽的 `<view>` 末尾画省略号：「千」之后收成「…」；Skyline 的 text-overflow 只对 `<text>` 生效，文本照常排到右边被裁掉——「五」完整、「百」只剩左半边。两端 bbox 一致，差异只在右端约 24 CSS px",
     target: "#target",
 }];
 

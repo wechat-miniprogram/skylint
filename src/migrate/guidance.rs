@@ -190,7 +190,7 @@ pub fn guidance_for(rule: &str) -> &'static Guidance {
                 "transform",
             ],
             preconditions: &[
-                "同一属性上 transition 与 animation 同时存在时，Skyline 会先把元素推到终态",
+                "同一属性上 transition 与 animation 同时存在时，Skyline 会把该属性交给 transition，animation 的位移不按动画推进",
             ],
             counterexamples: &["不要保留 transition 只为了「兜底」——两者必须二选一"],
             family: "visual",

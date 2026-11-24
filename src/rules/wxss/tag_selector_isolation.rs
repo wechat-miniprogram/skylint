@@ -63,10 +63,10 @@ static VISUAL_CASES: &[VisualCase] = &[VisualCase {
   <view class="spacer"/>
   <c/>
 </view>"#,
-    wxss: "view { padding: 12px; background: #e33; }\n.spacer { height: 240px; background: #fff; }\n",
+    wxss: "view { box-sizing: content-box; padding: 12px; background: #e33; }\n.spacer { height: 240px; background: #fff; }\n",
     js: None,
     expect: VisualExpect::Differ,
-    note: "页面 wxss 的 `view` 标签选择器命中了组件内的 `<view>`：WebView 下组件内多出红底内边距，Skyline 不跨组件匹配（整页比对）",
+    note: "页面 wxss 的 `view` 标签选择器命中了组件内的 `<view>`：WebView 下组件内多出 12px padding、盒高 48→72 CSS，页面因此比 Skyline 高 24 CSS；Skyline 不跨组件匹配（整页比对）。两端都显式写了 `box-sizing: content-box`，`.spacer` 的外高一致，剩余差异（整页 3.97%）只来自组件内节点能否吃到这条标签选择器；组件多出的红底与页面同色不可辨",
     target: "",
 }];
 

@@ -47,17 +47,17 @@
 | `skyline/unsupported-value` | error | skyline | 属性在 Skyline 下可用，但该值不支持：按 unset 回落到初始值或父元素的值，或整条声明被丢弃 |
 | `skyline/value-degraded` | warning | skyline | 属性在 Skyline 下可用，但该值的表现与 WebView 不同（被降级 / 映射 / 无效果） |
 | `skyline/shorthand-partial` | warning | skyline | 简写属性在 Skyline 下部分生效：值里属于不受支持子属性的那一段被丢弃 |
-| `skyline/transition-animation-conflict` | warning | skyline | 同一元素上 transition 与 animation 动同一个属性，Skyline 下动画只会跑开头几帧 |
-| `skyline/transition-property` | warning | skyline | transition 里的属性名不在 Skyline 的可动画属性白名单内，该段过渡不生效 |
+| `skyline/transition-animation-conflict` | warning | skyline | 同一元素上 transition 与 animation 动同一个属性时，Skyline 的 transition 抢占该属性，animation 的位移不按动画推进（本用例停在过渡起点） |
+| `skyline/transition-property` | warning | skyline | transition 里的属性名不受支持：闭集外（如 `visibility`、厂商前缀名）会让整条声明被丢弃；闭集内但引擎没有实现（如 `margin`、`background`）只丢该属性 |
 | `skyline/vendor-prefix` | warning | skyline | 带 `-webkit-` 前缀的关键帧块 / 动画属性在 Skyline 下被丢弃，WebView 认得 |
 | `skyline/gradient-limit` | warning | skyline | 渐变的形状 / 尺寸 / 颜色停止位置超出 Skyline 支持范围 |
 | `skyline/legacy-flexbox` | error | skyline | 规则块用了老式 `-webkit-box` 弹性盒，Skyline 不认识这些声明，整块布局会退回默认 display |
 | `skyline/media-query` | warning | skyline | 媒体查询条件在 Skyline 下被丢弃，块内声明对全部设备生效 |
 | `skyline/multi-value-limit` | warning | skyline | background / mask 的多值数量超出 Skyline 支持范围 |
-| `skyline/filter-limit` | warning | skyline | filter / backdrop-filter 使用了不支持的函数或组合 |
-| `skyline/text-decoration-line` | warning | skyline | text-decoration-line 只支持单值；多值或特殊线型会让 line 回落到 none（简写里其它子属性仍生效） |
+| `skyline/filter-limit` | warning | skyline | filter / backdrop-filter 的多个函数组合在 Skyline 下只应用第一个，后续函数被丢弃 |
+| `skyline/text-decoration-line` | warning | skyline | text-decoration-line 只支持单值；多值或特殊线型会让 line 回落到 none |
 | `skyline/text-decoration-target` | warning | skyline | text-decoration 在 Skyline 下只对 `<text>` / `<span>` / `<input>` / `<navigator>` 生效 |
-| `skyline/calc-min-max` | warning | skyline | min() / max() / clamp() 在 Skyline 下求值为 0，整个表达式失效 |
+| `skyline/calc-min-max` | warning | skyline | min() / max() / clamp() 在 Skyline 下求值失败，所在声明整条失效（长度类属性回落 auto / 初始值） |
 | `skyline/gradient-unsupported` | warning | skyline | repeating / 厂商前缀渐变不被 Skyline 解析，mask 也不支持 conic 渐变 |
 | `skyline/unsupported-api` | warning | skyline | Skyline 不支持的 JS API（如 this.animate、插件内的 wx.router.*） |
 | `skyline/wxs-sync-query` | warning | skyline | WXS 里同步形式的 `getBoundingClientRect()` / `getComputedStyle()` 在 Skyline 下拿不到值 |

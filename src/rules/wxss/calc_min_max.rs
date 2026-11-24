@@ -1,8 +1,9 @@
 //! `min()` / `max()` / `clamp()` 在 Skyline 的数学表达式求值里是空分支。
 //!
 //! 证据：引擎把 `Min` / `Max` / `Clamp` 三个 case 都当成
-//! `// TODO` + `break`，函数末尾 `return MathNumberExpression::Create(0.f)`，所以
-//! `width: min(100%, 300px)` 会直接变成 0。
+//! `// TODO` + `break`，函数末尾 `return MathNumberExpression::Create(0.f)`；实测
+//! `width: min(100%, 300px)` 因此整条 `width` 声明失效、回落 `auto`，元素撑满父级
+//! （WebView 取 300px），而不是变成 0 宽。
 //!
 //! 例外：fp 在到达 Skyline 前就会常量折叠，这些写法到不了那一层，不报：
 //! - 同 specified unit 的 `+`/`-`，以及带裸数字标量的 `*`/`/`
@@ -48,7 +49,7 @@ impl CalcMinMax {
     pub const ID: &'static str = "skyline/calc-min-max";
 }
 
-/// 视觉用例：`min()` 求值为 0，元素宽从 300px 塌成 0。
+/// 视觉用例：`min()` 所在声明整条失效，宽度从 300px 回落 `auto`（撑满父级 380px）。
 static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxml: r#"<view class="wrap">
   <view class="box" id="target"></view>
@@ -56,7 +57,7 @@ static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxss: ".wrap { width: 400px; padding: 10px; background: #eee; }\n.box { width: min(100%, 300px); height: 40px; background: #e53935; }\n",
     js: None,
     expect: VisualExpect::Differ,
-    note: "`width: min(100%, 300px)` 在 WebView 取 300px，Skyline 的数学表达式是空分支、整个求值为 0，元素没有宽度",
+    note: "`width: min(100%, 300px)` 在 WebView 取 300px；Skyline 下 `min()` 求值失败使整条 `width` 声明失效、宽度回落 `auto`，元素撑满父级（380px），反而比 WebView 更宽",
     target: "#target",
 }];
 
@@ -65,7 +66,7 @@ impl Rule for CalcMinMax {
         RuleMeta {
             id: Self::ID,
             severity: Severity::Warning,
-            description: "min() / max() / clamp() 在 Skyline 下求值为 0，整个表达式失效",
+            description: "min() / max() / clamp() 在 Skyline 下求值失败，所在声明整条失效（长度类属性回落 auto / 初始值）",
         }
     }
 
@@ -95,7 +96,7 @@ impl Rule for CalcMinMax {
                 doc,
                 decl,
                 format!(
-                    "`{name}: {}` 里的 `{}()` 在 Skyline 下求值为 0，整个表达式失效",
+                    "`{name}: {}` 里的 `{}()` 在 Skyline 下求值失败，整条声明失效",
                     decl.value.trim(),
                     call.name
                 ),

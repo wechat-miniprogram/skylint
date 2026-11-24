@@ -40,21 +40,22 @@ impl Rule for X {
 
 ```rust
 fn visual_components(&self) -> &'static [VisualComponent] { ... }   // 挂到本规则每个用例页面
-fn visual_app_json(&self) -> Option<&'static str> { ... }           // 合并进 app.json
 fn visual_files(&self) -> &'static [VisualFile] { ... }             // 写到页面目录，如 "probe.wxs"
 fn visual_actions(&self) -> &'static [VisualAction] { ... }         // Tap / Swipe / Wait，截图前执行
+fn visual_case_actions(&self, index: usize) -> &'static [VisualAction] { ... } // 单条用例的覆盖
 ```
 
-四者都是默认空实现的 trait 方法，所以给 `VisualCase` 加字段不会逼着所有既有字面量一起改；
-代价是同一规则的多条用例只能共享同一组组件、同一份 app.json 覆盖与同一串动作。
+它们都是默认空实现的 trait 方法，所以给 `VisualCase` 加字段不会逼着所有既有字面量一起改；
+代价是同一规则的多条用例只能共享同一组组件与附属文件。动作默认整条规则共用一串，
+确实需要不同注入点时（例如阴性对照的滑动打在容器上、阳性用例必须打在滚动内容上）
+再覆盖 `visual_case_actions`。
 
 需要真实输入的规则（WXS 里用事件处理器第二参数做同步查询、`scroll-view` 与祖先 `touchmove` 抢手势）
 用 `visual_files` 写真实 `.wxs`（内联 `<wxs>` 不进编译产物）、用 `visual_actions` 注入 `Tap` / `Swipe`。
 
-`visual_app_json` 的覆盖里**不许**出现 `renderer` / `pages` / `componentFramework` / `lazyCodeLoading`，
-生成器会直接报错而不是静默忽略；同理页面 json 与 app json 都不得写 `rendererOptions`——
-`defaultContentBox` / `defaultDisplayBlock` 保持缺省是 `box-sizing`、`flex-direction`、
-`default-layout-drift` 与三条 `fixed-*` 用例成立的前提。
+页面 json 与 app json 都不得写 `rendererOptions`——`defaultContentBox` / `defaultDisplayBlock`
+保持缺省是 `box-sizing`、`flex-direction`、`default-layout-drift` 与三条 `fixed-*` 用例成立的
+前提。确实要逐工程控制 app 级配置的规则（例如 `renderer-options`）改走证据用例。
 
 ## 判定口径
 
@@ -71,16 +72,15 @@ fn visual_actions(&self) -> &'static [VisualAction] { ... }         // Tap / Swi
 `Same` 成立要求两者都在容差内。阈值不设成「像素差足够小」的原因是系统性色差：容差 1 个单位
 就会把 2 个单位的偏色放大成整页 70% 的差异。
 
-纯位移的差异在交集里接近 0%，只能靠 bbox 边差兜底——当前有 6 条用例完全依赖它：
+纯位移的差异在交集里接近 0%，只能靠 bbox 边差兜底——当前有 5 条用例完全依赖它：
 
 ```
 box-sizing 0.00%(bbox 80)   box-sizing-2 0.00%(bbox 80)   value-degraded 0.20%(bbox 120)
-calc-min-max 0.00%(bbox 160)   default-layout-drift 0.00%(bbox 40)   renderer-options 0.00%(bbox 40)
+calc-min-max 0.00%(bbox 160)   default-layout-drift 0.00%(bbox 40)
 ```
 
-另有 4 条处于 1%–2% 的边缘（`text-hard-break-ellipsis` 1.88%、`text-decoration-target` 1.83%、
-`worklet-data-freeze` 1.74%、`text-overflow-ellipsis` 1.28%），报告会单列为 `nearThreshold`，
-复核时优先看这四条。
+另有 3 条处于 1%–2% 的边缘（`text-hard-break-ellipsis` 1.88%、`text-decoration-target` 1.83%、
+`text-overflow-ellipsis` 1.28%），报告会单列为 `nearThreshold`，复核时优先看这三条。
 
 `error` 不等于 `fail`：截图尺度不对、bbox 取不到、`reLaunch` 超时、serve 掉线都记 `error`，
 必须解决后重跑，不能当「规则不成立」。
@@ -111,15 +111,16 @@ serve 的端点分层（旧版本只有 `/cdp`）：`/automator` 是协议层、
 
 ## 覆盖现状
 
-两套用例合计：**70 个截图用例覆盖 55 条规则 + 27 个证据用例覆盖 11 条规则**。
+两套用例合计：**69 个截图用例覆盖 54 条规则 + 32 个证据用例覆盖 13 条规则**。
 
-截图部分：66 条 `Differ`（其中 60 条像素差 ≥1%、6 条完全靠 bbox 边差）+ 4 条阴性对照；
+截图部分：65 条 `Differ`（其中 60 条像素差 ≥1%、5 条完全靠 bbox 边差）+ 4 条阴性对照；
 其中 1 条是对照里**故意失败**的（`skyline/text-box-property` 的第二条：实测两端宽度必然不同，
 用它标注「这类阴性对照不成立」）。
 
 证据部分（产物 / 构建日志 / 运行期取值）：`component-framework`、`navigation-style`、
 `lazy-code-loading`、`worklet-compile-setting`、`worklet-directive`、`autoprefix-build`、
-`scroll-view-type`、`config-ignored`、`scroll-context-ref`、`worklet-api-scope`、`lib-version`。
+`scroll-view-type`、`config-ignored`、`scroll-context-ref`、`worklet-api-scope`、`lib-version`、
+`renderer-options`、`worklet-data-freeze`。
 
 覆盖率门禁 `skyline_rules_have_cases` 已启用（不再 `#[ignore]`）：skyline 规则必须至少有一条
 截图用例或证据用例，否则测试失败。目前只豁免 4 条，每条都带实测理由：
@@ -134,6 +135,34 @@ serve 的端点分层（旧版本只有 `/cdp`）：`/automator` 是协议层、
 另有一条**用例存在但默认跳过**：`universal-selector` 的 WXSS 写 `*` 时编译器报
 `unexpected token '*'` 并让整个工程构建失败（不是规则不生效，是一份 WXSS 编不出来）。
 全批默认 `--skip universal-selector`；「生产构建是否同样拒绝」尚未确认，结论未定前不进报告。
+
+## 读图复核
+
+自动判定只能证明「两端不一样」，不能证明「是它声称的那种不一样」。所以全部 70 对截图被逐张读过一遍
+（按 slug 分五组，每组由独立审计写 `.tmp/visual/audit-L*.md`），对每一对判定：差异是否存在、位置与形态
+是否就是规则主张。结果：**56 条可信、10 条描述与像素不符、3 条机制不成立、1 条差异不可判读**——
+自动口径当时是「全绿」。
+
+据此做了三类修正：
+
+- **描述不准**：按实测改写。例如 `filter-limit` 不是「两端颜色不同」，而是两端都变灰、Skyline 只应用
+  第一个滤镜函数；`calc-min-max` 不是「求值为 0」，而是整条 `width` 失效、回落 `auto`（反而更宽）；
+  `page-meta-scroll` 的三个数字全错（滚动被钳到 533、`#target` 在 67／333.5）。
+- **机制不成立**：改用例或换证据形式。`renderer-options` 与 `worklet-data-freeze` 改成证据用例
+  （前者截图批次做不到两臂——app.json 是规则级共享、页面 json 又被 schema 拒绝 `null`；
+  后者原先两端都在 worklet 里抛 TypeError，`setData` 根本没执行）；`transition-animation-conflict`
+  面板原本整片 `rgba(0,0,0,5)` 不可判读，改为冲突只落在 `transform`、背景保持不透明。
+- **盒模型污染**：Skyline 默认 `border-box`、WebView 默认 `content-box`，5 条 fixture 同时写
+  `width/height` + `padding`，差异里混进 +16/+20/+24px 的盒模型差（其中一条还因此改变了截断点）。
+  统一改为 fixture 级显式 `box-sizing: content-box`。不能改用工程级 `defaultContentBox`——
+  `box-sizing` 规则自己的两条用例正是靠这个默认值差异制造差异。
+
+复核也留下了两处**已知偏弱**的证据，已在对应 note 里写明，不要当成强证据：
+
+- `text-hard-break-ellipsis`：own 1.713% 刚过 1% 判定线，结论靠 44 设备 px 的 bbox 差；
+  且两端都没画省略号，像素差只体现为「第三行只出现在 WebView」。
+- `scroll-gesture-conflict` 的 Same：只是「内容溢出但同色、位移不可见」，不是机制级阴性对照——
+  本模拟器里溢出 + `scroll-view` 的真阴性对照做不出来。
 
 ## 口径与局限
 
@@ -201,7 +230,7 @@ open .tmp/evidence-run/report.html
 - 每条规则至少一条阴性对照：构建类用「只补缺键即构建通过」，运行期类用「不写触发值
   即不出现该日志」。
 
-当前覆盖（M0）：
+当前覆盖：
 
 - `skyline/lazy-code-loading`：缺 `lazyCodeLoading` 时构建 exit 1、stderr 含
   `lazyCodeLoading` 与 `requiredComponents`；补齐后 `BuildOk`。

@@ -18,7 +18,7 @@ use serde_json::{Map, Value};
 use crate::diag::JsonAnchor;
 use crate::input::json::JsonPositions;
 use crate::project::Project;
-use crate::rules::{Rule, RuleMeta, Target, VisualCase, VisualExpect};
+use crate::rules::{EvidenceCase, EvidenceExpect, EvidenceRun, Rule, RuleMeta, Target, VisualFile};
 use crate::{Diagnostic, Severity};
 
 use super::{anchor, child, warn};
@@ -29,25 +29,172 @@ impl RendererOptions {
     pub const ID: &'static str = "skyline/renderer-options";
 }
 
-/// 视觉用例：`rendererOptions.skyline.defaultDisplayBlock` 写非法值（`null`）时，
-/// 运行时按 `|| false` 取真值、静默退回默认（flex 布局，不折叠外边距），与显式
-/// `true`（运行时切到 block 布局）的行为不同。
+/// 证据用例：同一份页面，只改 app.json 的 `rendererOptions.skyline.defaultDisplayBlock`。
 ///
-/// 覆盖只能写「运行时等价于缺省」的值：整批工程共用 app.json，`null` 与未设置
-/// 同为 false，不会改变其它用例依赖的默认布局。
-static VISUAL_CASES: &[VisualCase] = &[VisualCase {
-    wxml: r#"<view class="page">
-  <view class="first"></view>
-  <view class="second" id="target"></view>
-</view>"#,
-    wxss: ".page { padding: 20px; background: #f5f5f5; }\n.first { height: 40px; margin-bottom: 20px; background: #e54d42; }\n.second { height: 40px; margin-top: 30px; background: #1e88e5; }\n",
-    js: None,
-    expect: VisualExpect::Differ,
-    note: "defaultDisplayBlock 写 null 是非法取值，运行时 `|| false` 静默退回默认：Skyline 仍是 flex column，相邻外边距不折叠，间距 50px；WebView 按 block 折叠成 30px，第二个块上移 20px",
-    target: "#target",
-}];
+/// 页面里两个 40px 块，`margin-bottom: 20px` / `margin-top: 30px`：默认 flex 布局下
+/// 相邻外边距不折叠，第二块顶到第一块底 = 50px；开启 `defaultDisplayBlock` 后按 block
+/// 布局折叠成 30px。`null` 是非法类型，运行时 `|| false` 退回默认（50px），与完全不写
+/// 该键相同；只有真正的布尔 `true` 才切到 block（30px）。
+///
+/// 截图批次做不到两臂对照：整批截图工程共用一份 app.json（写 `true` 会改掉其它用例
+/// 依赖的默认布局），页面 json 又对 `defaultDisplayBlock` 做 schema 校验（写 `null`
+/// 直接构建失败）。所以这条只能用逐工程 app.json 的证据用例。
+const PAGE_WXML: &str = r#"<view class="page">
+  <view class="first" id="first"></view>
+  <view class="second" id="second"></view>
+</view>"#;
 
-const APP_JSON_OVERRIDE: &str = r#"{"rendererOptions":{"skyline":{"defaultDisplayBlock":null}}}"#;
+const PAGE_WXSS: &str = ".page { padding: 20px; background: #f5f5f5; }\n.first { height: 40px; margin-bottom: 20px; background: #e54d42; }\n.second { height: 40px; margin-top: 30px; background: #1e88e5; }\n";
+
+/// onReady 后量第二个块顶到第一个块底的间距；两端都取稳定终态，不依赖中间帧。
+const PAGE_JS: &str = r#"Page({
+  onReady() {
+    setTimeout(() => {
+      this.createSelectorQuery()
+        .select('#first')
+        .boundingClientRect()
+        .select('#second')
+        .boundingClientRect()
+        .exec((res) => {
+          const [first, second] = res || []
+          if (first && second) {
+            globalThis.__evidence_gap = Math.round(second.top - first.bottom)
+          }
+        })
+    }, 300)
+  },
+});
+"#;
+
+const APP_JS: &str = "App({})\n";
+const PAGE_JSON: &str = r#"{"componentFramework":"glass-easel"}"#;
+
+const APP_JSON_NULL: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","componentFramework":"glass-easel","lazyCodeLoading":"requiredComponents","rendererOptions":{"skyline":{"defaultDisplayBlock":null}}}"#;
+const APP_JSON_ABSENT: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","componentFramework":"glass-easel","lazyCodeLoading":"requiredComponents"}"#;
+const APP_JSON_TRUE: &str = r#"{"pages":["pages/index/index"],"renderer":"skyline","componentFramework":"glass-easel","lazyCodeLoading":"requiredComponents","rendererOptions":{"skyline":{"defaultDisplayBlock":true}}}"#;
+
+const FILES_NULL: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON_NULL,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.wxss",
+        content: PAGE_WXSS,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS,
+    },
+];
+
+const FILES_ABSENT: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON_ABSENT,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.wxss",
+        content: PAGE_WXSS,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS,
+    },
+];
+
+const FILES_TRUE: &[VisualFile] = &[
+    VisualFile {
+        path: "app.json",
+        content: APP_JSON_TRUE,
+    },
+    VisualFile {
+        path: "app.js",
+        content: APP_JS,
+    },
+    VisualFile {
+        path: "pages/index/index.json",
+        content: PAGE_JSON,
+    },
+    VisualFile {
+        path: "pages/index/index.wxml",
+        content: PAGE_WXML,
+    },
+    VisualFile {
+        path: "pages/index/index.wxss",
+        content: PAGE_WXSS,
+    },
+    VisualFile {
+        path: "pages/index/index.js",
+        content: PAGE_JS,
+    },
+];
+
+static EVIDENCE_CASES: &[EvidenceCase] = &[
+    EvidenceCase {
+        name: "null-falls-back",
+        files: FILES_NULL,
+        project_config: None,
+        run: EvidenceRun::Serve {
+            page: "pages/index/index",
+        },
+        expect: EvidenceExpect::Runtime {
+            expr: "globalThis.__evidence_gap",
+            equals: "50",
+        },
+        note: "app.json 写 defaultDisplayBlock: null（非法类型）：运行时 `|| false` 退回默认 flex，相邻外边距不折叠，实测间距 50px",
+    },
+    EvidenceCase {
+        name: "unset-is-default",
+        files: FILES_ABSENT,
+        project_config: None,
+        run: EvidenceRun::Serve {
+            page: "pages/index/index",
+        },
+        expect: EvidenceExpect::Runtime {
+            expr: "globalThis.__evidence_gap",
+            equals: "50",
+        },
+        note: "对照：完全不写 defaultDisplayBlock，Skyline 默认 flex，间距同为 50px——非法值不改变布局",
+    },
+    EvidenceCase {
+        name: "true-switches-to-block",
+        files: FILES_TRUE,
+        project_config: None,
+        run: EvidenceRun::Serve {
+            page: "pages/index/index",
+        },
+        expect: EvidenceExpect::Runtime {
+            expr: "globalThis.__evidence_gap",
+            equals: "30",
+        },
+        note: "defaultDisplayBlock: true 时运行时切到 block 布局，相邻外边距折叠成 30px，第二个块上移 20px",
+    },
+];
 
 /// 已知键的期望类型（来源：`skyline-config/references/app-config.md` 的配置项表，
 /// 与运行时的取值方式一一对应）。每个键在 app.json 与页面 json 里都合法：
@@ -119,12 +266,8 @@ impl Rule for RendererOptions {
         Target::Skyline
     }
 
-    fn visual_cases(&self) -> &'static [VisualCase] {
-        VISUAL_CASES
-    }
-
-    fn visual_app_json(&self) -> Option<&'static str> {
-        Some(APP_JSON_OVERRIDE)
+    fn evidence_cases(&self) -> &'static [EvidenceCase] {
+        EVIDENCE_CASES
     }
 
     fn check(&self, project: &Project) -> Vec<Diagnostic> {
@@ -497,7 +640,7 @@ mod tests {
     use crate::rules::Rule;
     use crate::rules::testutil::{Fixture, check_rule};
 
-    use super::{APP_JSON_OVERRIDE, RendererOptions, VISUAL_CASES};
+    use super::{EVIDENCE_CASES, RendererOptions};
 
     fn project(name: &str, app: &str, page: &str) -> (Fixture, Project) {
         let fixture = Fixture::new(name);
@@ -843,27 +986,24 @@ mod tests {
         assert!(RendererOptions.check(&project).is_empty());
     }
 
-    /// 视觉用例的同一份 WXML/WXSS 与覆盖后的 app.json 必须真的触发本规则。
+    /// 证据用例：`null` 非法值必须触发本规则，缺省与 `true` 都是合法的对照组。
     #[test]
-    fn visual_case_triggers_rule() {
-        let case = &VISUAL_CASES[0];
-        // 用生成器实际写入的形态：先规则覆盖，再必备键。
-        let mut app: serde_json::Value = serde_json::from_str(APP_JSON_OVERRIDE).unwrap();
-        app["pages"] = serde_json::json!(["pages/index/index"]);
-        app["renderer"] = serde_json::json!("skyline");
-        let fixture = Fixture::new("renderer-options-visual");
-        fixture
-            .write("project.config.json", r#"{"miniprogramRoot":""}"#)
-            .write("app.json", &serde_json::to_string(&app).unwrap())
-            .write("pages/index/index.json", "{}")
-            .write("pages/index/index.wxml", case.wxml)
-            .write("pages/index/index.wxss", case.wxss);
-        let diagnostics = check_rule(&fixture, &RendererOptions);
-        assert!(
-            diagnostics
+    fn evidence_cases_cover_rule_and_controls() {
+        for case in EVIDENCE_CASES {
+            let fixture = Fixture::new(&format!("renderer-options-{}", case.name));
+            fixture.write("project.config.json", r#"{"miniprogramRoot":""}"#);
+            for file in case.files {
+                fixture.write(file.path, file.content);
+            }
+            let flagged = check_rule(&fixture, &RendererOptions)
                 .iter()
-                .any(|d| d.rule == RendererOptions::ID && d.message.contains("defaultDisplayBlock")),
-            "视觉用例未触发规则：{diagnostics:#?}"
-        );
+                .any(|diagnostic| diagnostic.message.contains("defaultDisplayBlock"));
+            assert_eq!(
+                flagged,
+                case.name == "null-falls-back",
+                "case {}: 只有非法类型应触发规则",
+                case.name
+            );
+        }
     }
 }

@@ -40,11 +40,11 @@ impl TextDecorationTarget {
 
 /// 视觉用例：`<view>` 上的下划线在 WebView 绘制、在 Skyline 消失（装饰不继承）。
 static VISUAL_CASES: &[VisualCase] = &[VisualCase {
-    wxml: r#"<view class="link" id="target">商品详情</view>"#,
-    wxss: ".link { width: 160px; padding: 12px; font-size: 20px; color: #222; background: #fff; text-decoration: underline; }\n",
+    wxml: r#"<view class="link" id="target">查看商品详情页面</view>"#,
+    wxss: ".link { box-sizing: content-box; width: 160px; padding: 12px; font-size: 20px; color: #222; background: #fff; text-decoration: underline; }\n",
     js: None,
     expect: VisualExpect::Differ,
-    note: "`<view>` 上的下划线：WebView 把装饰画到文本上，Skyline 只对 `<text>` 绘制，这段文字没有下划线",
+    note: "`<view>` 上的下划线：WebView 把装饰画到文本上（文字下方一条 160 CSS 宽的下划线），Skyline 只对 `<text>` 绘制，这段文字没有下划线；两端 bbox 一致，差异只在这条线上",
     target: "#target",
 }];
 

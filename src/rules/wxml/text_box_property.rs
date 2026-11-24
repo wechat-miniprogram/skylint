@@ -67,7 +67,7 @@ static VISUAL_CASES: &[VisualCase] = &[
         wxss: ".wrap { padding: 20px; }\n.name { display: inline; margin-top: 8px; font-size: 13px; line-height: 18px; }\n.after { background: #eee; }\n",
         js: None,
         expect: VisualExpect::Differ,
-        note: "WebView 的 <text> 是 inline（宽度只包文字、margin-top 不生效）；Skyline 是块级盒（占满父宽、margin-top 生效）",
+        note: "WebView 的 <text> 是 inline（宽度只包文字、margin-top 不生效）；Skyline 是块级盒（占满父宽），margin-top: 8px 生效但下一块实际只比 WebView 低 4 CSS px——WebView 的 inline 行盒更高，抵掉了另外 4px",
         target: "#target",
     },
     VisualCase {

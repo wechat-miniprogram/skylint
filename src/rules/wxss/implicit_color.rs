@@ -72,10 +72,10 @@ impl ImplicitColor {
 static VISUAL_CASES: &[VisualCase] = &[
     VisualCase {
         wxml: r#"<view class="tag" id="target">标签</view>"#,
-        wxss: ".tag { display: inline-block; padding: 8px 16px; font-size: 20px; color: #e33; border: 4px solid; background: #fff; }\n",
+        wxss: ".tag { display: block; padding: 8px 16px; font-size: 20px; color: #e33; border: 4px solid; background: #fff; }\n",
         js: None,
         expect: VisualExpect::Differ,
-        note: "`border: 4px solid` 省略颜色：WebView 画成 `color` 的红色，Skyline 默认黑色",
+        note: "`border: 4px solid` 省略颜色：两端都渲染成同尺寸的块级盒（用 `display: block` 避开 Skyline 把 `inline-block` 当块级），唯一差异是边框颜色——WebView 取 `color` 的红色，Skyline 默认黑色",
         target: "#target",
     },
     VisualCase {
@@ -322,7 +322,7 @@ mod tests {
         let diagnostics = check(
             "implicit-color-visual",
             r#"<view class="tag" id="target">标签</view>"#,
-            ".tag { display: inline-block; padding: 8px 16px; font-size: 20px; color: #e33; border: 4px solid; background: #fff; }",
+            ".tag { display: block; padding: 8px 16px; font-size: 20px; color: #e33; border: 4px solid; background: #fff; }",
         );
         assert!(!diagnostics.is_empty(), "{diagnostics:?}");
     }

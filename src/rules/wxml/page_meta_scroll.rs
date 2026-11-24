@@ -30,9 +30,10 @@ pub struct PageMetaScroll;
 
 /// 视觉用例：`scroll-top` 写在模板里，首帧就生效。
 ///
-/// WebView 的 `<page-meta>` 走 `onPageScrollTo`，页面直接滚到 600px，`#target`（第四个
-/// 200px 高的块）顶到视口；Skyline 的这条路径被注释掉了，页面停在顶端，`#target` 仍在
-/// 600px 处。两端 bbox 的 top 相差约 600 CSS px。
+/// WebView 的 `<page-meta>` 走 `onPageScrollTo`：页高 1200px（6×200）减视口 667px，
+/// `scroll-top=600` 被钳到最大值 533，`#target` 顶部落在 67px，不是「视口顶部」。
+/// Skyline 的这条路径被注释掉了，滚动偏移仍为 0；同时页面根把 6 个 200px 块压成
+/// 111.17px，`#target` 顶部在 333.5px。99.97% 的像素差异同时含「压扁」与「滚动」两个效应。
 static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxml: r#"<page-meta scroll-top="600"/>
 <view class="block a">一</view>
@@ -44,7 +45,7 @@ static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxss: ".block { height: 200px; font-size: 20px; }\n.a { background: #eee; }\n.b { background: #ddd; }\n.c { background: #ccc; }\n.d { background: #f66; }\n.e { background: #bbb; }\n.f { background: #aaa; }\n",
     js: None,
     expect: VisualExpect::Differ,
-    note: "首帧 `<page-meta scroll-top=\"600\">`：WebView 已滚到 600px（`#target` 在视口顶部），Skyline 不滚（`#target` 仍在 600px 处）",
+    note: "首帧 `<page-meta scroll-top=\"600\">`：WebView 滚到页高上限 533px，`#target` 顶部在 67px；Skyline 不滚（偏移 0），页面根把 6 个 200px 块压成 111.17px，`#target` 顶部在 333.5px——99.97% 的差异同时来自「压扁」和「滚动」",
     target: "#target",
 }];
 

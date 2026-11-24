@@ -23,13 +23,13 @@ pub struct TextHardBreakEllipsis;
 ///
 /// `max-lines="2"` 的第二行以 `\n` 结束：Skyline 截到两行且这一行不画省略号；
 /// WebView 既没有 WebView 分支的 clamp 兜底、又不认这两个属性，三行原样铺开。
-/// 两端 `#target` 的高度差两行以上。
+/// 两端 `#target` 的高度差一行（64 vs 86 CSS）。
 static VISUAL_CASES: &[VisualCase] = &[VisualCase {
     wxml: "<view class=\"box\" id=\"target\"><text class=\"t\" overflow=\"ellipsis\" max-lines=\"2\">第一行文字\n第二行文字\n第三行文字</text></view>",
-    wxss: ".box { width: 200px; padding: 10px; background: #eef; }\n.t { font-size: 16px; }\n",
+    wxss: ".box { box-sizing: content-box; width: 200px; padding: 10px; background: #eef; }\n.t { font-size: 16px; }\n",
     js: None,
     expect: VisualExpect::Differ,
-    note: "硬换行正好落在 `max-lines=\"2\"` 的末行：Skyline 截到两行且该行不给省略号，WebView 不截断、三行原样铺开",
+    note: "硬换行正好落在 `max-lines=\"2\"` 的末行：两端都没画省略号——Skyline 按 `max-lines` 截到两行（`#target` 高 64 CSS）、末行不画，WebView 不认这两个属性、三行原样铺开（高 86 CSS），宽度一致；像素差 = 第三行只出现在 WebView + 盒底多 22 CSS。own 1.713% 已过 1% 判定线，44 设备 px 的 bbox 差是旁证，2% 只是人工复核线",
     target: "#target",
 }];
 
