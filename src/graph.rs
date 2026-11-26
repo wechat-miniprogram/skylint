@@ -1,0 +1,376 @@
+//! 单元依赖图：页面与组件之间通过 `usingComponents` 形成的引用关系。
+//!
+//! 数据全部来自 [`Project::deps`]——工程加载时从页面 / 组件的 `usingComponents`
+//! 做 BFS 建好的组件闭包（npm 裸包名已回溯到 `miniprogram_npm`）。这里只做三件事：
+//! 按视图打包成节点、反向算出「谁引用了这个单元」、按文本或 JSON 输出，不重新
+//! 解析工程，也不跑任何规则。
+//!
+//! 三类节点：
+//! - 页面：key 是 app.json 里的 route（分包页已带 root 前缀）；
+//! - 组件：key 是组件路径；
+//! - app 配置（`app.json` / 插件的 `plugin.json`）：**app 级 `usingComponents` 挂在
+//!   这个节点上，不摊到每个页面**。「页面能用哪些组件」与「页面声明了哪些组件」
+//!   是两件事，图只记后者；要前者就沿 app 节点再展开一层。
+//!
+//! 非声明式入口（`custom-tab-bar`、`app-bar` 这类不在任何 `usingComponents` 里的
+//! 组件）在图里是根节点：没有任何单元的 `deps` 指向它。
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::Serialize;
+
+use crate::project::Project;
+
+/// 产物版本：字段改名 / 语义变化时加一。
+pub const SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencyGraph {
+    pub schema_version: u32,
+    pub nodes: Vec<GraphNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphNode {
+    /// 页面 route、组件路径或 app 配置文件名；插件视图带 `pluginRoot/` 前缀。
+    pub id: String,
+    /// `page` / `component` / `app`。
+    pub kind: &'static str,
+    /// 该单元的 wxml（项目相对）；app 节点与缺 wxml 的单元为 `None`。
+    pub wxml: Option<String>,
+    /// 页面是解析后的渲染器；组件与 app 只记自己 json 里写过的，未写为 `None`（继承）。
+    pub renderer: Option<&'static str>,
+    /// 直接引用的单元（已排序去重）。
+    pub deps: Vec<String>,
+    /// 直接引用本单元的单元（已排序去重）。
+    pub consumers: Vec<String>,
+}
+
+impl DependencyGraph {
+    pub fn of(views: &[Project]) -> Self {
+        let mut nodes: BTreeMap<String, GraphNode> = BTreeMap::new();
+        for view in views {
+            let prefix = view.report_prefix.as_str();
+            let id_of = |key: &str| format!("{prefix}{key}");
+            let deps_of = |key: &str| -> Vec<String> {
+                view.deps
+                    .get(key)
+                    .map(|deps| {
+                        deps.iter()
+                            .map(|dep| id_of(dep))
+                            .collect::<BTreeSet<_>>()
+                            .into_iter()
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let wxml_of = |files: &crate::project::UnitFiles| {
+                files.wxml.as_ref().map(|path| format!("{prefix}{path}"))
+            };
+
+            let app_id = id_of(&view.app_json_path);
+            nodes.insert(
+                app_id.clone(),
+                GraphNode {
+                    id: app_id.clone(),
+                    kind: "app",
+                    wxml: None,
+                    renderer: declared_renderer(&view.app_json),
+                    deps: deps_of(&view.app_json_path),
+                    consumers: Vec::new(),
+                },
+            );
+            for page in &view.pages {
+                nodes.insert(
+                    id_of(&page.route),
+                    GraphNode {
+                        id: id_of(&page.route),
+                        kind: "page",
+                        wxml: wxml_of(&page.files),
+                        renderer: Some(if page.is_skyline {
+                            "skyline"
+                        } else {
+                            "webview"
+                        }),
+                        deps: deps_of(&page.route),
+                        consumers: Vec::new(),
+                    },
+                );
+            }
+            for component in &view.components {
+                nodes.insert(
+                    id_of(&component.path),
+                    GraphNode {
+                        id: id_of(&component.path),
+                        kind: "component",
+                        wxml: wxml_of(&component.files),
+                        renderer: view
+                            .component_json
+                            .get(&component.path)
+                            .and_then(declared_renderer),
+                        deps: deps_of(&component.path),
+                        consumers: Vec::new(),
+                    },
+                );
+            }
+        }
+
+        // 被引用但自己没有 json 的单元（缺文件时组件闭包不收录）：仍然放进图里，
+        // 否则引用方那条边会指向一个不存在的节点，读图的人看不到「这里少了一份组件」。
+        let dangling: Vec<String> = nodes
+            .values()
+            .flat_map(|node| node.deps.iter().cloned())
+            .filter(|dep| !nodes.contains_key(dep))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        for id in dangling {
+            nodes.insert(
+                id.clone(),
+                GraphNode {
+                    id,
+                    kind: "component",
+                    wxml: None,
+                    renderer: None,
+                    deps: Vec::new(),
+                    consumers: Vec::new(),
+                },
+            );
+        }
+
+        let edges: Vec<(String, String)> = nodes
+            .values()
+            .flat_map(|node| {
+                node.deps
+                    .iter()
+                    .map(move |dep| (node.id.clone(), dep.clone()))
+            })
+            .collect();
+        for (consumer, dep) in edges {
+            if let Some(node) = nodes.get_mut(&dep) {
+                node.consumers.push(consumer);
+            }
+        }
+        for node in nodes.values_mut() {
+            node.consumers.sort();
+            node.consumers.dedup();
+        }
+
+        Self {
+            schema_version: SCHEMA_VERSION,
+            nodes: nodes.into_values().collect(),
+        }
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).expect("依赖图总是可序列化")
+    }
+
+    /// 文本森林。
+    ///
+    /// 正向（默认）以「没人引用」的单元为根，往下展开它引用的组件，即组件与页面的
+    /// 包含关系；`reverse` 反转边，从叶子组件往上看「改了它会影响谁」。
+    /// 同一个单元被多处引用时每处都完整展开（依赖图看的是路径，不图去重）；
+    /// 碰到环标一句 `↩ 环` 就返回；整圈都是环、没有根的节点最后单独打出来。
+    pub fn to_text(&self, reverse: bool) -> String {
+        let mut tree = Tree {
+            nodes: &self.nodes,
+            index: self
+                .nodes
+                .iter()
+                .enumerate()
+                .map(|(index, node)| (node.id.as_str(), index))
+                .collect(),
+            reverse,
+            visited: BTreeSet::new(),
+            stack: Vec::new(),
+            out: String::new(),
+        };
+        tree.render();
+        tree.out
+    }
+}
+
+struct Tree<'a> {
+    nodes: &'a [GraphNode],
+    index: BTreeMap<&'a str, usize>,
+    reverse: bool,
+    visited: BTreeSet<String>,
+    stack: Vec<String>,
+    out: String,
+}
+
+impl Tree<'_> {
+    fn render(&mut self) {
+        let roots: Vec<String> = self
+            .nodes
+            .iter()
+            .filter(|node| {
+                if self.reverse {
+                    node.deps.is_empty()
+                } else {
+                    node.consumers.is_empty()
+                }
+            })
+            .filter(|node| !self.is_edge_less_app(node))
+            .map(|node| node.id.clone())
+            .collect();
+        for id in roots {
+            self.walk(&id, "", "");
+        }
+        // 整圈都是环时没有根，从任意一个节点切进去把它打出来。
+        let remaining: Vec<String> = self
+            .nodes
+            .iter()
+            .filter(|node| !self.visited.contains(&node.id) && !self.is_edge_less_app(node))
+            .map(|node| node.id.clone())
+            .collect();
+        for id in remaining {
+            if self.visited.contains(&id) {
+                continue;
+            }
+            self.walk(&id, "", "");
+        }
+    }
+
+    /// app 节点只是 app 级 `usingComponents` 的宿主：没写全局组件时它没有任何边，
+    /// 打一行孤零零的 `app.json` 只是噪音（JSON 里仍然保留它）。
+    fn is_edge_less_app(&self, node: &GraphNode) -> bool {
+        node.kind == "app" && node.deps.is_empty() && node.consumers.is_empty()
+    }
+
+    fn walk(&mut self, id: &str, prefix: &str, connector: &str) {
+        let Some(&index) = self.index.get(id) else {
+            return;
+        };
+        let nodes = self.nodes;
+        let node = &nodes[index];
+        let (kind, renderer, node_id) = (node.kind, node.renderer, node.id.clone());
+        let edges = if self.reverse {
+            node.consumers.clone()
+        } else {
+            node.deps.clone()
+        };
+
+        self.out.push_str(prefix);
+        self.out.push_str(connector);
+        self.out.push_str(&node_id);
+        self.out
+            .push_str(&format!("  ({kind}, {})", renderer.unwrap_or("继承")));
+        if self.stack.contains(&node_id) {
+            self.out.push_str("  ↩ 环\n");
+            return;
+        }
+        self.out.push('\n');
+        self.visited.insert(node_id.clone());
+        self.stack.push(node_id);
+        let next_prefix = format!(
+            "{prefix}{}",
+            match connector {
+                "" => "",
+                "└─ " => "   ",
+                _ => "│  ",
+            }
+        );
+        let last = edges.len().saturating_sub(1);
+        for (position, child) in edges.iter().enumerate() {
+            self.walk(
+                child,
+                &next_prefix,
+                if position == last {
+                    "└─ "
+                } else {
+                    "├─ "
+                },
+            );
+        }
+        self.stack.pop();
+    }
+}
+
+/// json 里显式写过的 `renderer`；没写或写了别的值都算「继承」。
+fn declared_renderer(json: &serde_json::Map<String, serde_json::Value>) -> Option<&'static str> {
+    match json.get("renderer").and_then(|value| value.as_str()) {
+        Some("skyline") => Some("skyline"),
+        Some("webview") => Some("webview"),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 直接拼节点校验渲染：节点顺序按 id 排，等价于 `of()` 的产出顺序。
+    fn graph(edges: &[(&str, &'static str, &str)]) -> DependencyGraph {
+        let mut nodes: BTreeMap<String, GraphNode> = BTreeMap::new();
+        for (id, kind, deps) in edges {
+            nodes.insert(
+                id.to_string(),
+                GraphNode {
+                    id: id.to_string(),
+                    kind,
+                    wxml: None,
+                    renderer: None,
+                    deps: deps.split_whitespace().map(str::to_string).collect(),
+                    consumers: Vec::new(),
+                },
+            );
+        }
+        for node in nodes.values().cloned().collect::<Vec<_>>() {
+            for dep in &node.deps {
+                if let Some(target) = nodes.get_mut(dep) {
+                    target.consumers.push(node.id.clone());
+                }
+            }
+        }
+        DependencyGraph {
+            schema_version: SCHEMA_VERSION,
+            nodes: nodes.into_values().collect(),
+        }
+    }
+
+    #[test]
+    fn text_tree_nests_dependencies() {
+        let graph = graph(&[
+            ("pages/index/index", "page", "components/card/index"),
+            (
+                "components/card/index",
+                "component",
+                "components/icon/index",
+            ),
+            ("components/icon/index", "component", ""),
+        ]);
+        let text = graph.to_text(false);
+        assert_eq!(
+            text,
+            "pages/index/index  (page, 继承)\n\
+             └─ components/card/index  (component, 继承)\n   \
+             └─ components/icon/index  (component, 继承)\n"
+        );
+    }
+
+    #[test]
+    fn reverse_walks_consumers() {
+        let graph = graph(&[
+            ("pages/a/a", "page", "components/x/index"),
+            ("pages/b/b", "page", "components/x/index"),
+            ("components/x/index", "component", ""),
+        ]);
+        let text = graph.to_text(true);
+        assert!(text.starts_with("components/x/index  (component, 继承)\n├─ pages/a/a"));
+        assert!(text.contains("└─ pages/b/b"));
+    }
+
+    #[test]
+    fn cycles_do_not_loop_forever() {
+        let graph = graph(&[
+            ("components/a/index", "component", "components/b/index"),
+            ("components/b/index", "component", "components/a/index"),
+        ]);
+        let text = graph.to_text(false);
+        assert_eq!(text.matches("↩ 环").count(), 1, "{text}");
+    }
+}

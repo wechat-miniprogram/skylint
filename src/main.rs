@@ -5,6 +5,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use skylint::config::glob_match;
+use skylint::graph::DependencyGraph;
 use skylint::migrate::{self, Plan, PlanUnit};
 use skylint::render::{self, Style};
 use skylint::rules::{RuleFilter, Target};
@@ -63,6 +64,22 @@ enum Command {
     /// 迁移：单元清单 / 作业单 / 门禁 / 台账（Agent 调用）
     #[command(subcommand)]
     Migration(MigrationCommand),
+    /// 依赖图：页面与组件之间通过 usingComponents 形成的引用关系
+    Graph(GraphArgs),
+}
+
+/// `skylint graph`：只读 `usingComponents`，不跑规则。
+#[derive(Debug, Args)]
+struct GraphArgs {
+    /// 项目根目录
+    #[arg(default_value = ".", value_name = "PATH")]
+    path: PathBuf,
+    /// 输出 JSON（机器可读）
+    #[arg(long)]
+    json: bool,
+    /// 反着看：每个组件被哪些页面 / 组件引用
+    #[arg(long)]
+    reverse: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -445,8 +462,34 @@ fn main() -> ExitCode {
     let mut cli = Cli::parse();
     match cli.command.take() {
         Some(Command::Migration(command)) => run_migration(command),
+        Some(Command::Graph(args)) => run_graph(args),
         None => run_check(cli),
     }
+}
+
+fn run_graph(args: GraphArgs) -> ExitCode {
+    if args.path.is_file() {
+        eprintln!(
+            "skylint: 依赖图要工程根目录（它读 app.json 与各单元 json 的 usingComponents），不能只传一个文件"
+        );
+        return ExitCode::from(2);
+    }
+    let projects = match load(&args.path) {
+        Ok(projects) => projects,
+        Err(code) => return code,
+    };
+    let graph = DependencyGraph::of(&projects);
+    if graph.nodes.is_empty() {
+        eprintln!(
+            "skylint: 没有可解析的单元——依赖图只读工程配置里的 usingComponents，需要工程根目录"
+        );
+    }
+    if args.json {
+        println!("{}", graph.to_json());
+    } else {
+        print!("{}", graph.to_text(args.reverse));
+    }
+    ExitCode::SUCCESS
 }
 
 fn run_migration(command: MigrationCommand) -> ExitCode {

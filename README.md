@@ -77,6 +77,17 @@ skylint migration plan --renderer webview      # 只看某渲染器下的单元
 skylint migration job --unit pages/detail/index
 ```
 
+依赖关系只看 `usingComponents`，不跑规则：
+
+```bash
+skylint graph              # 页面 → 组件 → 组件，按「没人引用」的单元为根
+skylint graph --reverse    # 反着看：某个组件被哪些页面 / 组件引用
+skylint graph --json       # 节点的 deps / consumers，给脚本用
+```
+
+app 级 `usingComponents` 挂在 `app.json` 节点上，不摊到每个页面：「页面能用哪些组件」
+与「页面声明了哪些组件」是两件事。
+
 从代码中导出的全部规则见 [docs/RULES.md](docs/RULES.md)。
 
 ### 抑制单行

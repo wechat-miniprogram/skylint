@@ -16,6 +16,7 @@
 
 pub mod config;
 pub mod diag;
+pub mod graph;
 pub mod input;
 pub mod inspect;
 pub mod matcher;
@@ -29,6 +30,7 @@ pub mod wxml_graph;
 
 pub use config::Excludes;
 pub use diag::{Diagnostic, Severity};
+pub use graph::{DependencyGraph, GraphNode};
 pub use inspect::{
     AncestorView, Ancestors, CascadeView, Facts, HandlerFunction, HandlerView, LayoutFacts,
     LoadedDoc, Renderer, UnitFacts, UnitKind, UsageView,

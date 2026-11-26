@@ -9,7 +9,7 @@
 | 层 | 路径 | 内容 |
 |---|---|---|
 | 引擎 | `src/project`、`src/input`、`src/matcher`、`src/wxml_graph.rs`、`src/rules`、`src/diag.rs`、`src/report.rs`、`src/suppress.rs` | 工程加载、模板/样式/脚本解析、选择器匹配、运行时父子关系、全部规则、诊断与报告数据、抑制 |
-| 事实层 | `src/inspect.rs`、`src/migrate` | 「这个元素为什么这么判」以及迁移工具的 plan / job / baseline / ledger |
+| 事实层 | `src/inspect.rs`、`src/migrate`、`src/graph.rs` | 「这个元素为什么这么判」、迁移工具的 plan / job / baseline / ledger，以及页面与组件之间的依赖图 |
 | 集成层 | `src/render.rs`、`src/main.rs` | 终端渲染（miette）、`skylint` 二进制（clap） |
 
 依赖方向只有「集成 → 引擎」，引擎不引用 `render`，也不引用 clap。
