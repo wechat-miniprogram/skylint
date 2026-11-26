@@ -126,10 +126,10 @@ impl Rule for LegacyFlexbox {
             let (message, help) = if clamp.is_some() {
                 (
                     format!(
-                        "这块的多行省略用了老式 `-webkit-box`：{} 处声明（{names}）在 Skyline 下全部被丢弃，`-webkit-line-clamp` 不起作用，文本会完整铺开",
+                        "这块的多行省略用了老式 `-webkit-box`：{} 处声明（{names}）在 Skyline 下全部被丢弃，`-webkit-line-clamp` 不起作用，文本不再按行数截断",
                         legacy.len()
                     ),
-                    "Skyline 用 `<text max-lines=\"N\" overflow=\"ellipsis\">` 截断；要两端都兼容就另加 WebView 兜底（`-webkit-line-clamp` 保留在独立的 `.webview` 分支里）",
+                    "多行截断改用 `<text max-lines=\"N\" overflow=\"ellipsis\">`（Skyline 只认这个属性）：原来的 `-webkit-line-clamp` / `display: -webkit-box` 原地留着即可，Skyline 直接丢弃它们，不用分渲染器写两份；只有这段 `-webkit-box` 还在做横排/居中布局时，才要把布局改成标准 flex",
                 )
             } else {
                 (

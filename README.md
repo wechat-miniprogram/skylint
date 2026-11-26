@@ -68,14 +68,17 @@ skylint --changed --since origin/main
 skylint --min-severity error
 ```
 
-迁移命令按单元 / 分包 / 类型分工：
+依赖关系只看 `usingComponents`，不跑规则：
 
 ```bash
-skylint migration plan --package mt            # 只看某个分包（root 或 name）
-skylint migration plan --kind component        # 只看页面 / 只看组件
-skylint migration plan --renderer webview      # 只看某渲染器下的单元
-skylint migration job --unit pages/detail/index
+skylint graph              # 页面 → 组件 → 组件，模板 / 样式文件用 `⇢` 挂出来
+skylint graph --reverse    # 反着看：某个组件 / 模板 / 样式被哪些页面、组件引用
+skylint graph --json       # 节点、deps / templates / styles / consumers，给脚本用
 ```
+
+app 级 `usingComponents` 挂在 `app.json` 节点上，不摊到每个页面：「页面能用哪些组件」
+与「页面声明了哪些组件」是两件事。模板（`<import>` / `<include>`）与样式（`@import`）
+是**文件级**引用，闭包已展开；反向落在这些节点上就是「改这个文件影响哪些页面」。
 
 从代码中导出的全部规则见 [docs/RULES.md](docs/RULES.md)。
 
