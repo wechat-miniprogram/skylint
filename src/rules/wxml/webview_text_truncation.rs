@@ -7,9 +7,9 @@
 //! `max-lines` 被丢掉、`overflow` 不是 HTML 表现属性 → 长文本原样铺开，多行截断与
 //! 单行省略都不发生。
 //!
-//! 两端兼容写法：保留属性给 Skyline，另加 WebView 分支的 `-webkit-line-clamp`
+//! 两端兼容写法：属性留给 Skyline，同一块里再写 WebView 侧的 clamp
 //! （`display: -webkit-box` + `-webkit-box-orient: vertical` + `overflow: hidden`）。
-//! Skyline 不支持这个 `display`，正好互相忽略。同一元素上已有这类兜底时不再报。
+//! Skyline 丢弃这些声明，两边不用分渲染器写两份。同一元素上已有这类兜底时不再报。
 
 use crate::diag::{Diagnostic, Severity};
 use crate::input::wxml::WxmlElement;
@@ -90,7 +90,7 @@ impl Rule for TextTruncation {
                         format!("{written} 只在 Skyline 的 `<text>` 上生效，WebView 下被忽略：文本不再截断"),
                     )
                     .help(
-                        "保留属性给 Skyline，另加 WebView 分支：多行用 `display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: N; overflow: hidden`，单行用 `white-space: nowrap; overflow: hidden; text-overflow: ellipsis`",
+                        "属性留给 Skyline，同一块里补 WebView 侧的 CSS（Skyline 会丢弃这些声明）：多行用 `display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: N; overflow: hidden`，单行用 `white-space: nowrap; overflow: hidden; text-overflow: ellipsis`",
                     ),
                 );
             });
