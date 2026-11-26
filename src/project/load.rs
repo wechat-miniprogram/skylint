@@ -1287,14 +1287,49 @@ fn collect_scripts(
             .or_insert_with(|| Scope::Loose(rel.to_string()));
     }
 
-    entries
-        .into_iter()
-        .filter_map(|(path, scope)| {
-            let source = fs.read_file(miniprogram_root, &path)?;
-            let doc = JsDoc::parse(&path, &source).ok()?;
-            Some(JsFile { path, scope, doc })
+    // 逐文件「读 + 解析 JS」是加载阶段的主要开销之一，且文件间相互独立：按分块并行。
+    let entries: Vec<(String, Scope)> = entries.into_iter().collect();
+    parse_in_parallel(entries.len(), |index| {
+        let (path, scope) = &entries[index];
+        let source = fs.read_file(miniprogram_root, path)?;
+        let doc = JsDoc::parse(path, &source).ok()?;
+        Some(JsFile {
+            path: path.clone(),
+            scope: scope.clone(),
+            doc,
         })
-        .collect()
+    })
+}
+
+/// 按下标分块并行执行，结果按原顺序收齐。
+///
+/// 只用标准库：任务是无共享状态的纯函数（读文件 + 解析），分块比线程池更简单。
+fn parse_in_parallel<T: Send, F>(n: usize, f: F) -> Vec<T>
+where
+    F: Fn(usize) -> Option<T> + Sync,
+{
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |parallelism| parallelism.get())
+        .min(n.max(1));
+    if threads <= 1 {
+        return (0..n).filter_map(f).collect();
+    }
+    let chunk = n.div_ceil(threads);
+    let mut out = Vec::with_capacity(n);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..n)
+            .step_by(chunk)
+            .map(|start| {
+                let end = (start + chunk).min(n);
+                let f = &f;
+                scope.spawn(move || (start..end).filter_map(f).collect::<Vec<_>>())
+            })
+            .collect();
+        for handle in handles {
+            out.extend(handle.join().expect("解析线程不能 panic"));
+        }
+    });
+    out
 }
 
 /// 模板被多个单元引用时，给 wxs 选一个代表单元：优先会走 Skyline 的页面。
