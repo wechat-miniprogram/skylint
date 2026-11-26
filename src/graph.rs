@@ -204,19 +204,22 @@ struct Tree<'a> {
 
 impl Tree<'_> {
     fn render(&mut self) {
-        let roots: Vec<String> = self
-            .nodes
-            .iter()
-            .filter(|node| {
-                if self.reverse {
-                    node.deps.is_empty()
-                } else {
-                    node.consumers.is_empty()
-                }
-            })
-            .filter(|node| !self.is_edge_less_app(node))
-            .map(|node| node.id.clone())
-            .collect();
+        let mut roots: Vec<String> = Vec::new();
+        for node in self.nodes {
+            // 一条边都没有的节点（登不进去的单页、没写全局组件的 app 节点、不引用
+            // 任何东西的组件）打出来只是一行噪音；JSON 里仍然保留它们。
+            if self.edges(node).is_empty() {
+                continue;
+            }
+            let is_root = if self.reverse {
+                node.deps.is_empty()
+            } else {
+                node.consumers.is_empty()
+            };
+            if is_root {
+                roots.push(node.id.clone());
+            }
+        }
         for id in roots {
             self.walk(&id, "", "");
         }
@@ -224,7 +227,7 @@ impl Tree<'_> {
         let remaining: Vec<String> = self
             .nodes
             .iter()
-            .filter(|node| !self.visited.contains(&node.id) && !self.is_edge_less_app(node))
+            .filter(|node| !self.visited.contains(&node.id) && !self.edges(node).is_empty())
             .map(|node| node.id.clone())
             .collect();
         for id in remaining {
@@ -235,10 +238,13 @@ impl Tree<'_> {
         }
     }
 
-    /// app 节点只是 app 级 `usingComponents` 的宿主：没写全局组件时它没有任何边，
-    /// 打一行孤零零的 `app.json` 只是噪音（JSON 里仍然保留它）。
-    fn is_edge_less_app(&self, node: &GraphNode) -> bool {
-        node.kind == "app" && node.deps.is_empty() && node.consumers.is_empty()
+    /// 当前方向上要展开的边：正向看依赖，`--reverse` 看引用方。
+    fn edges<'a>(&self, node: &'a GraphNode) -> &'a Vec<String> {
+        if self.reverse {
+            &node.consumers
+        } else {
+            &node.deps
+        }
     }
 
     fn walk(&mut self, id: &str, prefix: &str, connector: &str) {
@@ -248,11 +254,7 @@ impl Tree<'_> {
         let nodes = self.nodes;
         let node = &nodes[index];
         let (kind, renderer, node_id) = (node.kind, node.renderer, node.id.clone());
-        let edges = if self.reverse {
-            node.consumers.clone()
-        } else {
-            node.deps.clone()
-        };
+        let edges = self.edges(node).clone();
 
         self.out.push_str(prefix);
         self.out.push_str(connector);
