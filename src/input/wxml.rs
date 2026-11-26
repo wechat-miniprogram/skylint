@@ -56,6 +56,8 @@ pub struct TemplateCall {
 pub struct WxmlDoc {
     path: String,
     source: String,
+    /// 行索引：`slice` / `position` 靠它把坐标换成字节偏移。
+    index: LineIndex,
     pub nodes: Vec<WxmlNode>,
     /// `<import>` / `<include>` 的 `src` 原始值（编译器已剥掉 `.wxml` 后缀）。
     template_refs: Vec<String>,
@@ -256,6 +258,7 @@ impl WxmlDoc {
     /// `path` 只用于错误消息，不需要是磁盘上的真实路径。
     pub fn parse(path: &str, source: &str, env: &Env) -> Result<Self, String> {
         let source = crate::input::strip_bom(source);
+        let index = LineIndex::new(source);
         let (template, state) = parse::parse(path, source);
         if let Some(err) = state
             .warnings()
@@ -266,7 +269,7 @@ impl WxmlDoc {
                 "{}:{}:{}: {}",
                 path,
                 start.line + 1,
-                column_at(source, start),
+                index.column(start),
                 err.kind
             ));
         }
@@ -274,8 +277,11 @@ impl WxmlDoc {
         let mut template_calls = Vec::new();
         let mut nodes = flatten(
             &template.content,
-            source,
-            env,
+            Fold {
+                source,
+                index: &index,
+                env,
+            },
             &mut next_group,
             &[],
             None,
@@ -289,8 +295,11 @@ impl WxmlDoc {
         for definition in &template.globals.sub_templates {
             nodes.extend(flatten(
                 &definition.content,
-                source,
-                &empty,
+                Fold {
+                    source,
+                    index: &index,
+                    env: &empty,
+                },
                 &mut next_group,
                 &[],
                 Some(definition.name.name.as_str()),
@@ -356,6 +365,7 @@ impl WxmlDoc {
         Ok(Self {
             path: path.to_string(),
             source: source.to_string(),
+            index,
             nodes,
             template_refs,
             includes,
@@ -379,8 +389,8 @@ impl WxmlDoc {
     /// 回到源码，这是唯一入口。
     pub fn slice(&self, start: Position, end: Position) -> &str {
         match (
-            byte_offset(&self.source, start),
-            byte_offset(&self.source, end),
+            self.index.byte(self.source.len(), start),
+            self.index.byte(self.source.len(), end),
         ) {
             (Some(from), Some(to)) if from <= to => &self.source[from..to],
             _ => "",
@@ -389,7 +399,7 @@ impl WxmlDoc {
 
     /// `parse::Position`（0-based 行、UTF-16 列）→ 诊断位置（1-based 行、字符列）。
     pub fn position(&self, pos: Position) -> (u32, u32) {
-        (pos.line + 1, column_at(&self.source, pos))
+        (pos.line + 1, self.index.column(pos))
     }
 
     /// 按标签名的原始起点（编译器 0 基坐标）查回元素。
@@ -466,41 +476,113 @@ impl WxmlDoc {
     }
 }
 
-/// 1-based 字符列。`utf16_col` 落在代理对中间时按该字符计入，不会越界。
-fn column_at(source: &str, pos: Position) -> u32 {
-    let line = source.split('\n').nth(pos.line as usize).unwrap_or("");
-    let mut utf16 = 0u32;
-    let mut chars = 0u32;
-    for ch in line.chars() {
-        if utf16 >= pos.utf16_col {
-            break;
-        }
-        utf16 += ch.len_utf16() as u32;
-        chars += 1;
-    }
-    chars + 1
-}
-
 /// 位置 → 字节偏移，用于从原文切出插值文本。
-fn byte_offset(source: &str, pos: Position) -> Option<usize> {
-    let mut offset = 0;
-    for (index, line) in source.split('\n').enumerate() {
-        if index as u32 == pos.line {
-            let mut utf16 = 0u32;
-            for (bytes, ch) in line.char_indices() {
-                if utf16 >= pos.utf16_col {
-                    return Some(offset + bytes);
-                }
-                utf16 += ch.len_utf16() as u32;
-            }
-            return Some(offset + line.len());
-        }
-        offset += line.len() + 1;
-    }
-    None
+///
+/// 微压缩过的 WXML（整文件一行、几十万字符）会在每个文本 / 属性上切一次原文。
+/// 之前每次都从文件头扫起，加载阶段因此退化成平方级（大工程上占掉大头），
+/// 所以按行建一次索引，之后是 O(1)。
+#[derive(Debug)]
+struct LineIndex {
+    /// 每行起始字节偏移（含最后一行的下一个位置）。
+    starts: Vec<usize>,
+    /// 与 `starts` 等长；只有含非 ASCII 的行才有逐列映射。
+    maps: Vec<Option<LineMap>>,
 }
 
-fn text_node(value: &Value, source: &str, branches: &[Branch], template: Option<&str>) -> WxmlText {
+/// 非 ASCII 行的 UTF-16 列映射。两个数组长度都是「行内 UTF-16 长度 + 1」。
+#[derive(Debug)]
+struct LineMap {
+    /// 该列所在字符的行内字节偏移。
+    byte: Vec<u32>,
+    /// 读到该列时已经消费的字符数（代代理对中间按该字符计入）。
+    chars: Vec<u32>,
+}
+
+impl LineIndex {
+    fn new(source: &str) -> Self {
+        let mut starts = vec![0usize];
+        starts.extend(
+            source
+                .bytes()
+                .enumerate()
+                .filter(|(_, byte)| *byte == b'\n')
+                .map(|(index, _)| index + 1),
+        );
+        let maps = (0..starts.len())
+            .map(|line| {
+                let start = starts[line];
+                let end = starts.get(line + 1).map_or(source.len(), |next| next - 1);
+                LineMap::new(&source[start..end])
+            })
+            .collect();
+        Self { starts, maps }
+    }
+
+    fn line_span(&self, line: usize, source_len: usize) -> Option<(usize, usize)> {
+        let start = *self.starts.get(line)?;
+        let end = self
+            .starts
+            .get(line + 1)
+            .map_or(source_len, |next| next - 1);
+        Some((start, end))
+    }
+
+    fn byte(&self, source_len: usize, pos: Position) -> Option<usize> {
+        let (start, end) = self.line_span(pos.line as usize, source_len)?;
+        let col = pos.utf16_col as usize;
+        Some(
+            match self.maps.get(pos.line as usize).and_then(Option::as_ref) {
+                None => (start + col).min(end),
+                Some(map) => {
+                    start
+                        + map
+                            .byte
+                            .get(col)
+                            .copied()
+                            .map_or(end - start, |b| b as usize)
+                }
+            },
+        )
+    }
+
+    /// 1-based 字符列；`utf16_col` 落在代理对中间时按该字符计入。
+    fn column(&self, pos: Position) -> u32 {
+        let col = pos.utf16_col as usize;
+        match self.maps.get(pos.line as usize).and_then(Option::as_ref) {
+            None => pos.utf16_col + 1,
+            Some(map) => map.chars.get(col).copied().map_or(1, |chars| chars + 1),
+        }
+    }
+}
+
+impl LineMap {
+    fn new(line: &str) -> Option<Self> {
+        if line.is_ascii() {
+            return None;
+        }
+        let mut byte = Vec::with_capacity(line.len() + 1);
+        let mut chars = Vec::with_capacity(line.len() + 1);
+        let mut count = 0u32;
+        for (offset, ch) in line.char_indices() {
+            for unit in 0..ch.len_utf16() {
+                byte.push(offset as u32);
+                chars.push(if unit == 0 { count } else { count + 1 });
+            }
+            count += 1;
+        }
+        byte.push(line.len() as u32);
+        chars.push(count);
+        Some(Self { byte, chars })
+    }
+}
+
+fn text_node(
+    value: &Value,
+    source: &str,
+    index: &LineIndex,
+    branches: &[Branch],
+    template: Option<&str>,
+) -> WxmlText {
     let range = value.location();
     let (text, expression, start, end) = match value {
         Value::Static { value: raw, .. } => {
@@ -512,12 +594,17 @@ fn text_node(value: &Value, source: &str, branches: &[Branch], template: Option<
             (trimmed.to_string(), None, start, advance(start, trimmed))
         }
         Value::Dynamic { expression, .. } => (
-            slice(source, range.clone()),
+            slice(source, index, range.clone()),
             Some((**expression).clone()),
             range.start,
             range.end,
         ),
-        _ => (slice(source, range.clone()), None, range.start, range.end),
+        _ => (
+            slice(source, index, range.clone()),
+            None,
+            range.start,
+            range.end,
+        ),
     };
     WxmlText {
         text,
@@ -541,14 +628,22 @@ fn advance(mut pos: Position, text: &str) -> Position {
     pos
 }
 
-fn slice(source: &str, range: Range<Position>) -> String {
+fn slice(source: &str, index: &LineIndex, range: Range<Position>) -> String {
     let (Some(start), Some(end)) = (
-        byte_offset(source, range.start),
-        byte_offset(source, range.end),
+        index.byte(source.len(), range.start),
+        index.byte(source.len(), range.end),
     ) else {
         return String::new();
     };
     source.get(start..end).unwrap_or("").to_string()
+}
+
+/// 摊平时不变的上下文：源码、行索引、常量环境。
+#[derive(Clone, Copy)]
+struct Fold<'a> {
+    source: &'a str,
+    index: &'a LineIndex,
+    env: &'a Env,
 }
 
 /// 包装节点摊平；元素保留。
@@ -557,8 +652,7 @@ fn slice(source: &str, range: Range<Position>) -> String {
 /// 由包装节点透传给摊平后的元素。
 fn flatten(
     nodes: &[Node],
-    source: &str,
-    env: &Env,
+    fold: Fold<'_>,
     next_group: &mut u32,
     branches: &[Branch],
     template: Option<&str>,
@@ -566,23 +660,28 @@ fn flatten(
 ) -> Vec<WxmlNode> {
     nodes
         .iter()
-        .flat_map(|node| node_nodes(node, source, env, next_group, branches, template, calls))
+        .flat_map(|node| node_nodes(node, fold, next_group, branches, template, calls))
         .collect()
 }
 
 fn node_nodes(
     node: &Node,
-    source: &str,
-    env: &Env,
+    fold: Fold<'_>,
     next_group: &mut u32,
     branches: &[Branch],
     template: Option<&str>,
     calls: &mut Vec<TemplateCall>,
 ) -> Vec<WxmlNode> {
     match node {
-        Node::Text(value) => vec![WxmlNode::Text(text_node(value, source, branches, template))],
+        Node::Text(value) => vec![WxmlNode::Text(text_node(
+            value,
+            fold.source,
+            fold.index,
+            branches,
+            template,
+        ))],
         Node::Element(element) => {
-            element_nodes(element, source, env, next_group, branches, template, calls)
+            element_nodes(element, fold, next_group, branches, template, calls)
         }
         Node::Comment(_) => vec![WxmlNode::Comment],
         _ => Vec::new(),
@@ -591,8 +690,7 @@ fn node_nodes(
 
 fn element_nodes(
     element: &Element,
-    source: &str,
-    env: &Env,
+    fold: Fold<'_>,
     next_group: &mut u32,
     branches: &[Branch],
     template: Option<&str>,
@@ -607,9 +705,9 @@ fn element_nodes(
             end: element.location().end,
             tag_start: tag_name.location.start,
             tag_end: tag_name.location.end,
-            attributes: attributes(element, source, env),
+            attributes: attributes(element, fold.source, fold.index, fold.env),
             unknown_children: has_unknown_children(children),
-            children: flatten(children, source, env, next_group, branches, template, calls),
+            children: flatten(children, fold, next_group, branches, template, calls),
             branches: branches.to_vec(),
             template: template.map(str::to_string),
             is_slot: false,
@@ -617,7 +715,7 @@ fn element_nodes(
         })],
         // 透明容器：不产生条件组，但把外层的分支栈透传下去。
         ElementKind::Pure { children, .. } | ElementKind::For { children, .. } => {
-            flatten(children, source, env, next_group, branches, template, calls)
+            flatten(children, fold, next_group, branches, template, calls)
         }
         ElementKind::If {
             branches: arms,
@@ -636,7 +734,7 @@ fn element_nodes(
             // 用 `renderer` 的两个取值各求一次值：哪些 arm 在该渲染器下可能渲染。
             // `else` 是「前面都不成立」的补集，按链上结果算。
             let reachable = |renderer: &str| {
-                let mut probe = env.clone();
+                let mut probe = fold.env.clone();
                 probe.insert("renderer", Lit::Str(renderer.to_string()));
                 let mut out = Vec::with_capacity(arms.len() + 1);
                 let mut decided = false;
@@ -686,15 +784,14 @@ fn element_nodes(
                 if decided {
                     break;
                 }
-                match condition_truthy(condition, env) {
+                match condition_truthy(condition, fold.env) {
                     Some(true) => decided = true,
                     Some(false) => continue,
                     None => {}
                 }
                 out.extend(flatten(
                     children,
-                    source,
-                    env,
+                    fold,
                     next_group,
                     &inner(
                         arm as u32,
@@ -709,8 +806,7 @@ fn element_nodes(
             if !decided && let Some((_, children)) = else_branch {
                 out.extend(flatten(
                     children,
-                    source,
-                    env,
+                    fold,
                     next_group,
                     &inner(arms.len() as u32, chain_guarded, Vec::new(), None),
                     template,
@@ -725,7 +821,7 @@ fn element_nodes(
             end: element.location().end,
             tag_start: element.tag_location.start.0.start,
             tag_end: element.tag_location.start.1.end,
-            attributes: attributes(element, source, env),
+            attributes: attributes(element, fold.source, fold.index, fold.env),
             children: Vec::new(),
             unknown_children: false,
             branches: branches.to_vec(),
@@ -828,7 +924,7 @@ fn has_unknown_children(nodes: &[Node]) -> bool {
 
 /// 元素属性。只收集「用户写在开始标签里」的属性：`wx:for`/`wx:if` 被解析成
 /// 包装节点，不在其内；`<block>` 摊平后属性也不会保留。
-fn attributes(element: &Element, source: &str, env: &Env) -> Vec<WxmlAttribute> {
+fn attributes(element: &Element, source: &str, index: &LineIndex, env: &Env) -> Vec<WxmlAttribute> {
     let mut out = Vec::new();
     match &element.kind {
         ElementKind::Normal {
@@ -846,26 +942,34 @@ fn attributes(element: &Element, source: &str, env: &Env) -> Vec<WxmlAttribute> 
             out.extend(
                 normal
                     .iter()
-                    .map(|attr| normal_attribute(attr, source, env)),
+                    .map(|attr| normal_attribute(attr, source, index, env)),
             );
-            out.extend(class_attributes(class, source, env));
-            out.extend(style_attributes(style, source, env));
+            out.extend(class_attributes(class, source, index, env));
+            out.extend(style_attributes(style, source, index, env));
             out.extend(
                 change_attributes
                     .iter()
-                    .map(|attr| prefixed_attribute(attr, source, env)),
+                    .map(|attr| prefixed_attribute(attr, source, index, env)),
             );
             out.extend(
                 worklet_attributes
                     .iter()
-                    .map(|attr| static_attribute(attr, source)),
+                    .map(|attr| static_attribute(attr, source, index)),
             );
-            out.extend(generics.iter().map(|attr| static_attribute(attr, source)));
-            out.extend(extra_attr.iter().map(|attr| static_attribute(attr, source)));
+            out.extend(
+                generics
+                    .iter()
+                    .map(|attr| static_attribute(attr, source, index)),
+            );
+            out.extend(
+                extra_attr
+                    .iter()
+                    .map(|attr| static_attribute(attr, source, index)),
+            );
             out.extend(
                 let_vars
                     .iter()
-                    .map(|attr| prefixed_attribute(attr, source, env)),
+                    .map(|attr| prefixed_attribute(attr, source, index, env)),
             );
             if let Some((range, value)) = &common.id {
                 out.push(value_attribute("id".to_string(), range, Some(value), env));
@@ -877,32 +981,32 @@ fn attributes(element: &Element, source: &str, env: &Env) -> Vec<WxmlAttribute> 
                 common
                     .slot_value_refs
                     .iter()
-                    .map(|attr| static_attribute(attr, source)),
+                    .map(|attr| static_attribute(attr, source, index)),
             );
             out.extend(
                 common
                     .data
                     .iter()
-                    .map(|attr| prefixed_attribute(attr, source, env)),
+                    .map(|attr| prefixed_attribute(attr, source, index, env)),
             );
             out.extend(
                 common
                     .marks
                     .iter()
-                    .map(|attr| prefixed_attribute(attr, source, env)),
+                    .map(|attr| prefixed_attribute(attr, source, index, env)),
             );
             out.extend(
                 common
                     .event_bindings
                     .iter()
-                    .map(|binding| event_attribute(binding, source, env)),
+                    .map(|binding| event_attribute(binding, source, index, env)),
             );
         }
         ElementKind::Slot { values, common, .. } => {
             out.extend(
                 values
                     .iter()
-                    .map(|attr| prefixed_attribute(attr, source, env)),
+                    .map(|attr| prefixed_attribute(attr, source, index, env)),
             );
             if let Some((range, value)) = &common.id {
                 out.push(value_attribute("id".to_string(), range, Some(value), env));
@@ -911,7 +1015,7 @@ fn attributes(element: &Element, source: &str, env: &Env) -> Vec<WxmlAttribute> 
                 common
                     .event_bindings
                     .iter()
-                    .map(|binding| event_attribute(binding, source, env)),
+                    .map(|binding| event_attribute(binding, source, index, env)),
             );
         }
         _ => {}
@@ -984,12 +1088,17 @@ fn value_attribute(
     }
 }
 
-fn normal_attribute(attr: &NormalAttribute, source: &str, env: &Env) -> WxmlAttribute {
+fn normal_attribute(
+    attr: &NormalAttribute,
+    source: &str,
+    index: &LineIndex,
+    env: &Env,
+) -> WxmlAttribute {
     let prefix = match &attr.prefix {
         NormalAttributePrefix::None => None,
         NormalAttributePrefix::Model(range) => Some(range),
     };
-    let name = full_name(prefix, &attr.name, source);
+    let name = full_name(prefix, &attr.name, source, index);
     let start = prefix.map_or(attr.name.location.start, |range| range.start);
     value_attribute(
         name,
@@ -999,9 +1108,14 @@ fn normal_attribute(attr: &NormalAttribute, source: &str, env: &Env) -> WxmlAttr
     )
 }
 
-fn prefixed_attribute(attr: &Attribute, source: &str, env: &Env) -> WxmlAttribute {
+fn prefixed_attribute(
+    attr: &Attribute,
+    source: &str,
+    index: &LineIndex,
+    env: &Env,
+) -> WxmlAttribute {
     let prefix = attr.prefix_location.as_ref();
-    let name = full_name(prefix, &attr.name, source);
+    let name = full_name(prefix, &attr.name, source, index);
     let start = prefix.map_or(attr.name.location.start, |range| range.start);
     value_attribute(
         name,
@@ -1011,9 +1125,9 @@ fn prefixed_attribute(attr: &Attribute, source: &str, env: &Env) -> WxmlAttribut
     )
 }
 
-fn static_attribute(attr: &StaticAttribute, source: &str) -> WxmlAttribute {
+fn static_attribute(attr: &StaticAttribute, source: &str, index: &LineIndex) -> WxmlAttribute {
     let prefix = attr.prefix_location.as_ref();
-    let name = full_name(prefix, &attr.name, source);
+    let name = full_name(prefix, &attr.name, source, index);
     let start = prefix.map_or(attr.name.location.start, |range| range.start);
     WxmlAttribute {
         name,
@@ -1029,8 +1143,13 @@ fn static_attribute(attr: &StaticAttribute, source: &str) -> WxmlAttribute {
     }
 }
 
-fn event_attribute(binding: &EventBinding, source: &str, env: &Env) -> WxmlAttribute {
-    let name = full_name(Some(&binding.prefix_location), &binding.name, source);
+fn event_attribute(
+    binding: &EventBinding,
+    source: &str,
+    index: &LineIndex,
+    env: &Env,
+) -> WxmlAttribute {
+    let name = full_name(Some(&binding.prefix_location), &binding.name, source, index);
     value_attribute(
         name,
         &(binding.prefix_location.start..binding.name.location.end),
@@ -1039,7 +1158,12 @@ fn event_attribute(binding: &EventBinding, source: &str, env: &Env) -> WxmlAttri
     )
 }
 
-fn class_attributes(class: &ClassAttribute, source: &str, env: &Env) -> Vec<WxmlAttribute> {
+fn class_attributes(
+    class: &ClassAttribute,
+    source: &str,
+    index: &LineIndex,
+    env: &Env,
+) -> Vec<WxmlAttribute> {
     match class {
         ClassAttribute::None => Vec::new(),
         ClassAttribute::String(range, value) => {
@@ -1053,7 +1177,7 @@ fn class_attributes(class: &ClassAttribute, source: &str, env: &Env) -> Vec<Wxml
         ClassAttribute::Multiple(items) => items
             .iter()
             .map(|(range, name, value)| {
-                let full = full_name(Some(range), name, source);
+                let full = full_name(Some(range), name, source, index);
                 let range = range.start..name.location.end;
                 value_attribute(full, &range, value.as_ref(), env)
             })
@@ -1062,7 +1186,12 @@ fn class_attributes(class: &ClassAttribute, source: &str, env: &Env) -> Vec<Wxml
     }
 }
 
-fn style_attributes(style: &StyleAttribute, source: &str, env: &Env) -> Vec<WxmlAttribute> {
+fn style_attributes(
+    style: &StyleAttribute,
+    source: &str,
+    index: &LineIndex,
+    env: &Env,
+) -> Vec<WxmlAttribute> {
     match style {
         StyleAttribute::None => Vec::new(),
         StyleAttribute::String(range, value) => {
@@ -1076,7 +1205,7 @@ fn style_attributes(style: &StyleAttribute, source: &str, env: &Env) -> Vec<Wxml
         StyleAttribute::Multiple(items) => items
             .iter()
             .map(|(range, name, value)| {
-                let full = full_name(Some(range), name, source);
+                let full = full_name(Some(range), name, source, index);
                 let range = range.start..name.location.end;
                 value_attribute(full, &range, Some(value), env)
             })
@@ -1087,13 +1216,18 @@ fn style_attributes(style: &StyleAttribute, source: &str, env: &Env) -> Vec<Wxml
 
 /// 带前缀的属性名（`bind:tap`、`model:value`、`mark:foo`）从原文切出，
 /// 前缀与名字之间的冒号因此得以保留。
-fn full_name(prefix: Option<&Range<Position>>, name: &Ident, source: &str) -> String {
+fn full_name(
+    prefix: Option<&Range<Position>>,
+    name: &Ident,
+    source: &str,
+    index: &LineIndex,
+) -> String {
     match prefix {
-        Some(prefix) => slice(source, prefix.start..name.location.end),
+        Some(prefix) => slice(source, index, prefix.start..name.location.end),
         // 模板编译器会改写属性名：`data-theme` 被剥成 `theme`、自定义组件插槽上的
         // 连字符名被驼峰化。名字以原文为准，位置区间始终指向原始拼写。
         None => {
-            let raw = slice(source, name.location.start..name.location.end);
+            let raw = slice(source, index, name.location.start..name.location.end);
             if raw.is_empty() {
                 name.name.to_string()
             } else {
