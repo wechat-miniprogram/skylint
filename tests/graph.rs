@@ -58,12 +58,30 @@ fn project(name: &str) -> Fixture {
         r#"{"pages":["pages/index/index","pages/detail/index"],"renderer":"skyline","usingComponents":{"nav":"/components/nav/nav"}}"#,
     )
     .write("miniprogram/app.js", "App({})")
+    .write("miniprogram/app.wxss", ".global { color: #333; }\n")
     .write(
         "miniprogram/pages/index/index.json",
         r#"{"usingComponents":{"card":"/components/card/index","loop":"/components/loop-a/index"}}"#,
     )
-    .write("miniprogram/pages/index/index.wxml", "<card/>")
+    .write(
+        "miniprogram/pages/index/index.wxml",
+        "<import src=\"../../templates/header.wxml\"/>\n<include src=\"../../partials/tip.wxml\"/>\n<card/>",
+    )
+    .write(
+        "miniprogram/pages/index/index.wxss",
+        "@import \"../../styles/theme.wxss\";\n.a { color: red; }\n",
+    )
     .write("miniprogram/pages/index/index.js", "Page({})")
+    .write(
+        "miniprogram/templates/header.wxml",
+        "<import src=\"./inner.wxml\"/>\n<template name=\"header\"><view>h</view></template>\n",
+    )
+    .write(
+        "miniprogram/templates/inner.wxml",
+        "<template name=\"inner\"><view>i</view></template>\n",
+    )
+    .write("miniprogram/partials/tip.wxml", "<view>tip</view>\n")
+    .write("miniprogram/styles/theme.wxss", ".t { color: blue; }\n")
     .write("miniprogram/pages/detail/index.json", r#"{}"#)
     .write("miniprogram/pages/detail/index.wxml", "<nav/>")
     .write("miniprogram/pages/detail/index.js", "Page({})")
@@ -148,9 +166,13 @@ fn text_output_nests_pages_over_components() {
         "pages/index/index  (page, skyline)",
         "├─ components/card/index  (component, webview)",
         "│  └─ components/icon/index  (component, 继承)",
-        "└─ components/loop-a/index  (component, 继承)",
-        "   └─ components/loop-b/index  (component, 继承)",
-        "      └─ components/loop-a/index  (component, 继承)  ↩ 环",
+        "├─ components/loop-a/index  (component, 继承)",
+        "│  └─ components/loop-b/index  (component, 继承)",
+        "│     └─ components/loop-a/index  (component, 继承)  ↩ 环",
+        "├─ ⇢ partials/tip.wxml",
+        "├─ ⇢ templates/header.wxml",
+        "├─ ⇢ templates/inner.wxml",
+        "└─ ⇢ styles/theme.wxss",
     ];
     for line in lines {
         assert!(text.contains(line), "缺 `{line}`：\n{text}");
@@ -167,6 +189,59 @@ fn reverse_lists_consumers_from_the_leaf() {
              └─ pages/index/index  (page, skyline)\n"
         ),
         "{text}"
+    );
+}
+
+#[test]
+fn templates_and_styles_become_file_nodes() {
+    let graph = project("files").graph();
+
+    let page = node(&graph, "pages/index/index");
+    assert_eq!(
+        page.templates,
+        vec![
+            "partials/tip.wxml".to_string(),
+            "templates/header.wxml".to_string(),
+            // `header.wxml` 自己又 `<import>` 了它，闭包要展开到第二代。
+            "templates/inner.wxml".to_string(),
+        ]
+    );
+    assert_eq!(
+        page.styles,
+        vec!["styles/theme.wxss".to_string()],
+        "单元自己的 wxss 不算引用"
+    );
+
+    let tip = node(&graph, "partials/tip.wxml");
+    assert_eq!(tip.kind, "template");
+    assert_eq!(tip.consumers, vec!["pages/index/index".to_string()]);
+    assert!(tip.deps.is_empty(), "模板文件不引用组件");
+
+    let theme = node(&graph, "styles/theme.wxss");
+    assert_eq!(theme.kind, "style");
+    assert_eq!(theme.consumers, vec!["pages/index/index".to_string()]);
+
+    // 全局样式挂在 app 节点：它的 consumers 就是 app.json。
+    let app = node(&graph, "app.json");
+    assert_eq!(app.styles, vec!["app.wxss".to_string()]);
+    assert_eq!(
+        node(&graph, "app.wxss").consumers,
+        vec!["app.json".to_string()]
+    );
+}
+
+#[test]
+fn file_nodes_are_part_of_the_tree() {
+    let graph = project("files-tree").graph();
+    let text = graph.to_text(false);
+    assert!(text.contains("⇢ partials/tip.wxml"), "{text}");
+    assert!(text.contains("⇢ styles/theme.wxss"), "{text}");
+
+    // 反向落在模板上：直接回答「改这个文件影响哪些页面」。
+    let reverse = graph.to_text(true);
+    assert!(
+        reverse.contains("partials/tip.wxml  (template)\n└─ pages/index/index"),
+        "{reverse}"
     );
 }
 
@@ -205,7 +280,7 @@ fn plugin_view_nodes_are_prefixed_and_unique() {
 fn json_carries_schema_version_and_every_node() {
     let graph = project("json").graph();
     let parsed: serde_json::Value = serde_json::from_str(&graph.to_json()).unwrap();
-    assert_eq!(parsed["schemaVersion"], 1);
+    assert_eq!(parsed["schemaVersion"], 2);
     let ids: Vec<&str> = parsed["nodes"]
         .as_array()
         .unwrap()
