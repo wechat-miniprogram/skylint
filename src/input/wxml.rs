@@ -1461,6 +1461,27 @@ mod tests {
     }
 
     #[test]
+    fn slice_and_position_map_multibyte_text() {
+        // 中文与 emoji 都是多字节：列按 UTF-16 计，字节偏移必须落在字符边界上。
+        let doc = doc_of(r#"<view title="中文😀">中文</view>"#);
+        let element = doc.elements().next().expect("一个元素");
+        let title = element
+            .attributes
+            .iter()
+            .find(|attribute| attribute.name == "title")
+            .expect("title 属性");
+        let start = title.value_start.expect("静态值有起点");
+        // `<view title="` 是 13 个 UTF-16 单元 → 属性值从 1-based 第 14 列开始。
+        assert_eq!(doc.position(start), (1, 14));
+        assert_eq!(title.value.as_deref(), Some("中文😀"));
+        let end = Position {
+            line: start.line,
+            utf16_col: start.utf16_col + 4,
+        };
+        assert_eq!(doc.slice(start, end), "中文😀");
+    }
+
+    #[test]
     fn nested_if_keeps_the_outer_branch_on_the_stack() {
         let doc = parse(
             "a.wxml",
