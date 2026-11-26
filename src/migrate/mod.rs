@@ -614,13 +614,10 @@ fn depth_of(
     }
     let depth = project
         .deps
-        .get(key)
-        .map(|deps| {
-            deps.iter()
-                .map(|dep| depth_of(dep, project, memo, visiting) + 1)
-                .max()
-                .unwrap_or(0)
-        })
+        .declared(key)
+        .iter()
+        .map(|dep| depth_of(dep, project, memo, visiting) + 1)
+        .max()
         .unwrap_or(0);
     visiting.remove(key);
     memo.insert(key.to_string(), depth);

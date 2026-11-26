@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use super::deps::{DependencyIndex, UnitDeps};
 use super::fs::LocalFs;
 use super::paths::{posix_dirname, posix_join};
 use super::units::{Exts, resolve_unit};
@@ -198,8 +199,20 @@ impl Loaded {
             })
             .collect();
 
-        let component_graph =
-            collect_components(fs, base, view.app, &page_json, &view.seeds, &mut warnings);
+        let app_key = if view.plugin_view {
+            "plugin.json"
+        } else {
+            "app.json"
+        };
+        let component_graph = collect_components(
+            fs,
+            base,
+            view.app,
+            app_key,
+            &page_json,
+            &view.seeds,
+            &mut warnings,
+        );
         let ComponentGraph {
             paths: component_paths,
             declared: component_declared,
@@ -293,6 +306,7 @@ impl Loaded {
                 component_json: &component_json,
                 app: view.app,
                 template_files: &template_files,
+                template_scopes: &template_scopes,
             },
         );
         record_unparsed_templates(
@@ -306,6 +320,30 @@ impl Loaded {
             &mut warnings,
         );
 
+        let used = collect_used(
+            fs,
+            base,
+            &EnvView {
+                pages: &pages,
+                components: &components,
+                scripts: &scripts,
+                page_json: &page_json,
+                component_json: &component_json,
+                app: view.app,
+                template_files: &template_files,
+                template_scopes: &template_scopes,
+            },
+        );
+        let deps = build_dependency_index(
+            &pages,
+            &components,
+            app_key,
+            &component_graph.deps,
+            &used,
+            &template_scopes,
+            &styles,
+        );
+
         Project {
             root: self.root.clone(),
             miniprogram_root: base.to_string(),
@@ -315,11 +353,7 @@ impl Loaded {
             report_prefix: view.report_prefix.to_string(),
             app_json: view.app.clone(),
             app_json_source: view.app_source.to_string(),
-            app_json_path: if view.plugin_view {
-                "plugin.json".to_string()
-            } else {
-                "app.json".to_string()
-            },
+            app_json_path: app_key.to_string(),
             renderer_options,
             project_config: self.config.clone(),
             project_config_source: self.config_source.clone(),
@@ -329,7 +363,7 @@ impl Loaded {
             components,
             component_json,
             component_json_source,
-            deps: component_graph.deps,
+            deps,
             page_json: page_json
                 .into_iter()
                 .filter_map(|(route, json)| Some((route, json?)))
@@ -406,6 +440,7 @@ fn collect_components(
     fs: &LocalFs,
     root: &str,
     app_json: &Map<String, Value>,
+    app_key: &str,
     page_json: &[(String, Option<Map<String, Value>>)],
     seeds: &[String],
     warnings: &mut Vec<Diagnostic>,
@@ -426,7 +461,7 @@ fn collect_components(
         .filter_map(|target| resolve_component_route(fs, root, "app.json", target))
         .collect();
     queue.extend(app_targets.iter().cloned());
-    deps.insert("app.json".to_string(), app_targets);
+    deps.insert(app_key.to_string(), app_targets);
     // 非声明式入口（custom-tab-bar / app-bar / agent.skills）不在任何 usingComponents 里。
     queue.extend(seeds.iter().cloned());
 
@@ -457,16 +492,140 @@ fn collect_components(
     }
 }
 
+/// 把组件闭包、模板闭包与样式图归并成一份依赖索引。
+///
+/// 只管归集，不判断语义：`declared` 来自组件闭包（已含 generics 默认实现与
+/// placeholder 占位），`templates` / `styles` 分别来自两侧闭包。`used` 留空给
+/// 扫描阶段填（见 `project::deps` 的模块文档）。
+fn build_dependency_index(
+    pages: &[PageUnit],
+    components: &[ComponentUnit],
+    app_key: &str,
+    declared: &BTreeMap<String, Vec<String>>,
+    used: &BTreeMap<String, Vec<String>>,
+    template_scopes: &BTreeMap<String, Vec<Scope>>,
+    styles: &[StyleSheet],
+) -> DependencyIndex {
+    let mut templates_of: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for (path, scopes) in template_scopes {
+        for unit in scopes.iter().filter_map(unit_of) {
+            templates_of.entry(unit).or_default().insert(path);
+        }
+    }
+
+    // 单元自己的 wxss 是单元的一部分，不算「引用了某个样式文件」。
+    let own_style: BTreeMap<&str, &str> = pages
+        .iter()
+        .filter_map(|page| Some((page.route.as_str(), page.files.wxss.as_deref()?)))
+        .chain(
+            components
+                .iter()
+                .filter_map(|unit| Some((unit.path.as_str(), unit.files.wxss.as_deref()?))),
+        )
+        .collect();
+    let mut styles_of: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for sheet in styles {
+        let path = sheet.doc.path();
+        for owner in sheet.scopes.iter().filter_map(|scope| match scope {
+            Scope::Global => Some(app_key),
+            other => unit_of(other),
+        }) {
+            if own_style.get(owner) == Some(&path) {
+                continue;
+            }
+            styles_of.entry(owner).or_default().insert(path);
+        }
+    }
+
+    let mut index = DependencyIndex::default();
+    for unit in pages
+        .iter()
+        .map(|page| page.route.as_str())
+        .chain(components.iter().map(|unit| unit.path.as_str()))
+        .chain(std::iter::once(app_key))
+    {
+        let mut targets = declared.get(unit).cloned().unwrap_or_default();
+        targets.sort();
+        targets.dedup();
+        index.insert(
+            unit,
+            UnitDeps {
+                declared: targets,
+                used: used.get(unit).cloned().unwrap_or_default(),
+                templates: templates_of
+                    .get(unit)
+                    .map(|paths| paths.iter().map(|p| p.to_string()).collect())
+                    .unwrap_or_default(),
+                styles: styles_of
+                    .get(unit)
+                    .map(|paths| paths.iter().map(|p| p.to_string()).collect())
+                    .unwrap_or_default(),
+            },
+        );
+    }
+    index
+}
+
+/// 页面 / 组件作用域对应的单元 key；`Global` 与 `Loose` 不是单元。
+fn unit_of(scope: &Scope) -> Option<&str> {
+    match scope {
+        Scope::Page(route) | Scope::Component(route) => Some(route),
+        Scope::Global | Scope::Loose(_) => None,
+    }
+}
+
 /// 一个单元声明的组件引用解析后得到的根相对路径。
 ///
 /// `usingComponents` 之外还有 `componentGenerics.{key}.default`：默认实现同样会被
 /// 编译器（minidev）一并加载入队，
 /// 漏掉它这个组件就完全不参与检查。
+///
+/// `componentPlaceholder` 的值也是引用：写组件路径时是直接引用，写同单元已声明的
+/// 标签名时是「加载期用那个组件占位」。`view` 这类基础组件两种解析都落空，自然忽略。
 fn routes_of(fs: &LocalFs, root: &str, unit: &str, json: &Map<String, Value>) -> Vec<String> {
     using_components(json)
         .into_iter()
         .chain(generic_defaults(json))
+        .chain(placeholder_targets(fs, root, unit, json))
         .filter_map(|target| resolve_component_route(fs, root, unit, &target))
+        .collect()
+}
+
+/// `componentPlaceholder.<tag>` 的值 → 组件路径。
+///
+/// 值是标签名时按本单元的 `usingComponents` 查；值本身是路径（`./x/index`、
+/// `../y/index`）时按引用方解析。两种都不是就是基础组件占位（`view`），不产生边。
+fn placeholder_targets(
+    fs: &LocalFs,
+    root: &str,
+    unit: &str,
+    json: &Map<String, Value>,
+) -> Vec<String> {
+    let Some(placeholders) = json.get("componentPlaceholder").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let tags: BTreeMap<String, String> = json
+        .get("usingComponents")
+        .and_then(Value::as_object)
+        .map(|using| {
+            using
+                .iter()
+                .filter_map(|(tag, target)| {
+                    let route = resolve_component_route(fs, root, unit, target.as_str()?)?;
+                    Some((tag.to_ascii_lowercase(), route))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    placeholders
+        .values()
+        .filter_map(Value::as_str)
+        .filter_map(|value| {
+            if let Some(route) = tags.get(&value.to_ascii_lowercase()) {
+                return Some(route.clone());
+            }
+            resolve_component_route(fs, root, unit, value)
+        })
         .collect()
 }
 
@@ -480,6 +639,101 @@ fn generic_defaults(json: &Map<String, Value>) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// 单元实际在 WXML 里用到的组件（标签出现 + `generic:*` 传的实现）。
+///
+/// 三条规则：
+/// - 单元自己的 wxml 与它 `<import>` / `<include>` 的模板都算它的使用点；模板里的
+///   标签按**引用方**的声明解析（同一模板被两个单元引用可以解析出不同组件）。
+/// - `generic:<slot>="x"` 的值是声明的标签名（单元级或 app 级）；写路径不在文法内，不认。
+/// - 解析不到的一律不记（`view` 这类基础组件、缺文件的模板块），宁可少记。
+fn collect_used(fs: &LocalFs, base: &str, view: &EnvView<'_>) -> BTreeMap<String, Vec<String>> {
+    let EnvView {
+        pages,
+        components,
+        page_json,
+        component_json,
+        app,
+        template_scopes,
+        ..
+    } = view;
+    // 单元 → 自己的 wxml 与它那份 json（解析标签名的上下文）。
+    let units: Vec<UnitContext<'_>> = pages
+        .iter()
+        .filter_map(|page| {
+            Some((
+                page.route.as_str(),
+                page.files.wxml.as_deref()?,
+                page_json
+                    .iter()
+                    .find(|(route, _)| route == &page.route)
+                    .and_then(|(_, json)| json.as_ref()),
+            ))
+        })
+        .chain(components.iter().filter_map(|unit| {
+            Some((
+                unit.path.as_str(),
+                unit.files.wxml.as_deref()?,
+                component_json.get(&unit.path),
+            ))
+        }))
+        .collect();
+    let targets: BTreeMap<&str, BTreeMap<String, String>> = units
+        .iter()
+        .map(|(unit, wxml, json)| (*unit, tag_targets(fs, base, wxml, app, *json)))
+        .collect();
+
+    // 文件 → 引用它（因而共享它的使用点）的单元。
+    let mut owners: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (unit, wxml, _) in &units {
+        owners.entry(wxml).or_default().push(unit);
+    }
+    for (path, scopes) in *template_scopes {
+        for unit in scopes.iter().filter_map(unit_of) {
+            if targets.contains_key(unit) {
+                owners.entry(path.as_str()).or_default().push(unit);
+            }
+        }
+    }
+
+    let mut used: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+    for (path, mut owners) in owners {
+        owners.sort_unstable();
+        owners.dedup();
+        let Some(source) = fs.read_file(base, path) else {
+            continue;
+        };
+        let Ok(doc) = wxml::parse(path, &source, &Env::default()) else {
+            continue;
+        };
+        for unit in owners {
+            let Some(map) = targets.get(unit) else {
+                continue;
+            };
+            each_element(&doc.nodes, &mut |element| {
+                let tag = element.tag.to_ascii_lowercase();
+                if let Some(target) = map.get(&tag) {
+                    used.entry(unit).or_default().insert(target.clone());
+                }
+                for attribute in &element.attributes {
+                    if !attribute.name.starts_with("generic:") || !attribute.is_static {
+                        continue;
+                    }
+                    let Some(value) = attribute.value.as_deref() else {
+                        continue;
+                    };
+                    let Some(target) = map.get(&value.to_ascii_lowercase()) else {
+                        continue;
+                    };
+                    used.entry(unit).or_default().insert(target.clone());
+                }
+            });
+        }
+    }
+    used.into_iter()
+        .map(|(unit, targets)| (unit.to_string(), targets.into_iter().collect()))
+        .collect()
 }
 
 /// app.json 里本项目真正消费的部分：页面清单与分包。
@@ -556,7 +810,11 @@ struct EnvView<'a> {
     component_json: &'a BTreeMap<String, Map<String, Value>>,
     app: &'a Map<String, Value>,
     template_files: &'a [String],
+    template_scopes: &'a BTreeMap<String, Vec<Scope>>,
 }
+
+/// 扫描使用点时的单元上下文：key、它的 wxml、它那份 json。
+type UnitContext<'a> = (&'a str, &'a str, Option<&'a Map<String, Value>>);
 
 /// 每个 WXML 的常量环境。
 ///
@@ -575,6 +833,7 @@ fn collect_envs(fs: &LocalFs, base: &str, view: EnvView<'_>) -> BTreeMap<String,
         component_json,
         app,
         template_files,
+        template_scopes: _,
     } = view;
     let mut envs: BTreeMap<String, Env> = BTreeMap::new();
     for page in pages {
@@ -1025,14 +1284,49 @@ fn collect_scripts(
             .or_insert_with(|| Scope::Loose(rel.to_string()));
     }
 
-    entries
-        .into_iter()
-        .filter_map(|(path, scope)| {
-            let source = fs.read_file(miniprogram_root, &path)?;
-            let doc = JsDoc::parse(&path, &source).ok()?;
-            Some(JsFile { path, scope, doc })
+    // 逐文件「读 + 解析 JS」是加载阶段的主要开销之一，且文件间相互独立：按分块并行。
+    let entries: Vec<(String, Scope)> = entries.into_iter().collect();
+    parse_in_parallel(entries.len(), |index| {
+        let (path, scope) = &entries[index];
+        let source = fs.read_file(miniprogram_root, path)?;
+        let doc = JsDoc::parse(path, &source).ok()?;
+        Some(JsFile {
+            path: path.clone(),
+            scope: scope.clone(),
+            doc,
         })
-        .collect()
+    })
+}
+
+/// 按下标分块并行执行，结果按原顺序收齐。
+///
+/// 只用标准库：任务是无共享状态的纯函数（读文件 + 解析），分块比线程池更简单。
+fn parse_in_parallel<T: Send, F>(n: usize, f: F) -> Vec<T>
+where
+    F: Fn(usize) -> Option<T> + Sync,
+{
+    let threads = std::thread::available_parallelism()
+        .map_or(1, |parallelism| parallelism.get())
+        .min(n.max(1));
+    if threads <= 1 {
+        return (0..n).filter_map(f).collect();
+    }
+    let chunk = n.div_ceil(threads);
+    let mut out = Vec::with_capacity(n);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..n)
+            .step_by(chunk)
+            .map(|start| {
+                let end = (start + chunk).min(n);
+                let f = &f;
+                scope.spawn(move || (start..end).filter_map(f).collect::<Vec<_>>())
+            })
+            .collect();
+        for handle in handles {
+            out.extend(handle.join().expect("解析线程不能 panic"));
+        }
+    });
+    out
 }
 
 /// 模板被多个单元引用时，给 wxs 选一个代表单元：优先会走 Skyline 的页面。
