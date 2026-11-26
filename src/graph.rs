@@ -24,7 +24,7 @@ use serde::Serialize;
 use crate::project::{Project, UnitFiles};
 
 /// 产物版本：字段改名 / 语义变化时加一。
-pub const SCHEMA_VERSION: u32 = 2;
+pub const SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,6 +46,9 @@ pub struct GraphNode {
     pub renderer: Option<&'static str>,
     /// 声明并会被加载的组件（已排序去重）。
     pub deps: Vec<String>,
+    /// 真正在 WXML 里用到的组件（标签出现 + `generic:*` 传的实现）。
+    /// 与 `deps` 的差集就是「声明了但没渲染」。
+    pub used: Vec<String>,
     /// 被这个单元 `<import>` / `<include>` 的模板文件（含传递引入，已排序去重）。
     pub templates: Vec<String>,
     /// 这个单元引入的样式文件（`@import` 闭包；单元自己的 wxss 不算）。
@@ -103,6 +106,7 @@ impl DependencyGraph {
                         wxml,
                         renderer,
                         deps: deps.declared.iter().map(|dep| id_of(dep)).collect(),
+                        used: deps.used.iter().map(|dep| id_of(dep)).collect(),
                         templates: deps.templates.iter().map(|path| id_of(path)).collect(),
                         styles: deps.styles.iter().map(|path| id_of(path)).collect(),
                         consumers: Vec::new(),
@@ -129,6 +133,7 @@ impl DependencyGraph {
                     wxml: None,
                     renderer: None,
                     deps: Vec::new(),
+                    used: Vec::new(),
                     templates: Vec::new(),
                     styles: Vec::new(),
                     consumers: Vec::new(),
@@ -144,6 +149,7 @@ impl DependencyGraph {
                 wxml: None,
                 renderer: None,
                 deps: Vec::new(),
+                used: Vec::new(),
                 templates: Vec::new(),
                 styles: Vec::new(),
                 consumers: Vec::new(),
@@ -346,6 +352,7 @@ mod tests {
                     wxml: None,
                     renderer: None,
                     deps: deps.split_whitespace().map(str::to_string).collect(),
+                    used: Vec::new(),
                     templates: Vec::new(),
                     styles: Vec::new(),
                     consumers: Vec::new(),

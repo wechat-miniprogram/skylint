@@ -306,6 +306,7 @@ impl Loaded {
                 component_json: &component_json,
                 app: view.app,
                 template_files: &template_files,
+                template_scopes: &template_scopes,
             },
         );
         record_unparsed_templates(
@@ -319,11 +320,26 @@ impl Loaded {
             &mut warnings,
         );
 
+        let used = collect_used(
+            fs,
+            base,
+            &EnvView {
+                pages: &pages,
+                components: &components,
+                scripts: &scripts,
+                page_json: &page_json,
+                component_json: &component_json,
+                app: view.app,
+                template_files: &template_files,
+                template_scopes: &template_scopes,
+            },
+        );
         let deps = build_dependency_index(
             &pages,
             &components,
             app_key,
             &component_graph.deps,
+            &used,
             &template_scopes,
             &styles,
         );
@@ -486,6 +502,7 @@ fn build_dependency_index(
     components: &[ComponentUnit],
     app_key: &str,
     declared: &BTreeMap<String, Vec<String>>,
+    used: &BTreeMap<String, Vec<String>>,
     template_scopes: &BTreeMap<String, Vec<Scope>>,
     styles: &[StyleSheet],
 ) -> DependencyIndex {
@@ -534,6 +551,7 @@ fn build_dependency_index(
             unit,
             UnitDeps {
                 declared: targets,
+                used: used.get(unit).cloned().unwrap_or_default(),
                 templates: templates_of
                     .get(unit)
                     .map(|paths| paths.iter().map(|p| p.to_string()).collect())
@@ -623,6 +641,104 @@ fn generic_defaults(json: &Map<String, Value>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// 单元实际在 WXML 里用到的组件（标签出现 + `generic:*` 传的实现）。
+///
+/// 三条规则：
+/// - 单元自己的 wxml 与它 `<import>` / `<include>` 的模板都算它的使用点；模板里的
+///   标签按**引用方**的声明解析（同一模板被两个单元引用可以解析出不同组件）。
+/// - `generic:<slot>="x"` 的值可能是同单元已声明的标签名，也可能是组件路径。
+/// - 解析不到的一律不记（`view` 这类基础组件、缺文件的模板块），宁可少记。
+fn collect_used(fs: &LocalFs, base: &str, view: &EnvView<'_>) -> BTreeMap<String, Vec<String>> {
+    let EnvView {
+        pages,
+        components,
+        page_json,
+        component_json,
+        app,
+        template_scopes,
+        ..
+    } = view;
+    // 单元 → 自己的 wxml 与它那份 json（解析标签名的上下文）。
+    let units: Vec<UnitContext<'_>> = pages
+        .iter()
+        .filter_map(|page| {
+            Some((
+                page.route.as_str(),
+                page.files.wxml.as_deref()?,
+                page_json
+                    .iter()
+                    .find(|(route, _)| route == &page.route)
+                    .and_then(|(_, json)| json.as_ref()),
+            ))
+        })
+        .chain(components.iter().filter_map(|unit| {
+            Some((
+                unit.path.as_str(),
+                unit.files.wxml.as_deref()?,
+                component_json.get(&unit.path),
+            ))
+        }))
+        .collect();
+    let targets: BTreeMap<&str, BTreeMap<String, String>> = units
+        .iter()
+        .map(|(unit, wxml, json)| (*unit, tag_targets(fs, base, wxml, app, *json)))
+        .collect();
+
+    // 文件 → 引用它（因而共享它的使用点）的单元。
+    let mut owners: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (unit, wxml, _) in &units {
+        owners.entry(wxml).or_default().push(unit);
+    }
+    for (path, scopes) in *template_scopes {
+        for unit in scopes.iter().filter_map(unit_of) {
+            if targets.contains_key(unit) {
+                owners.entry(path.as_str()).or_default().push(unit);
+            }
+        }
+    }
+
+    let mut used: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+    for (path, mut owners) in owners {
+        owners.sort_unstable();
+        owners.dedup();
+        let Some(source) = fs.read_file(base, path) else {
+            continue;
+        };
+        let Ok(doc) = wxml::parse(path, &source, &Env::default()) else {
+            continue;
+        };
+        for unit in owners {
+            let Some(map) = targets.get(unit) else {
+                continue;
+            };
+            each_element(&doc.nodes, &mut |element| {
+                let tag = element.tag.to_ascii_lowercase();
+                if let Some(target) = map.get(&tag) {
+                    used.entry(unit).or_default().insert(target.clone());
+                }
+                for attribute in &element.attributes {
+                    if !attribute.name.starts_with("generic:") || !attribute.is_static {
+                        continue;
+                    }
+                    let Some(value) = attribute.value.as_deref() else {
+                        continue;
+                    };
+                    let target = map
+                        .get(&value.to_ascii_lowercase())
+                        .cloned()
+                        .or_else(|| resolve_component_route(fs, base, path, value));
+                    if let Some(target) = target {
+                        used.entry(unit).or_default().insert(target);
+                    }
+                }
+            });
+        }
+    }
+    used.into_iter()
+        .map(|(unit, targets)| (unit.to_string(), targets.into_iter().collect()))
+        .collect()
+}
+
 /// app.json 里本项目真正消费的部分：页面清单与分包。
 ///
 /// 用类型而不是 `Value::get` 读，是为了让「类型写错了」在加载阶段就失败：
@@ -697,7 +813,11 @@ struct EnvView<'a> {
     component_json: &'a BTreeMap<String, Map<String, Value>>,
     app: &'a Map<String, Value>,
     template_files: &'a [String],
+    template_scopes: &'a BTreeMap<String, Vec<Scope>>,
 }
+
+/// 扫描使用点时的单元上下文：key、它的 wxml、它那份 json。
+type UnitContext<'a> = (&'a str, &'a str, Option<&'a Map<String, Value>>);
 
 /// 每个 WXML 的常量环境。
 ///
@@ -716,6 +836,7 @@ fn collect_envs(fs: &LocalFs, base: &str, view: EnvView<'_>) -> BTreeMap<String,
         component_json,
         app,
         template_files,
+        template_scopes: _,
     } = view;
     let mut envs: BTreeMap<String, Env> = BTreeMap::new();
     for page in pages {

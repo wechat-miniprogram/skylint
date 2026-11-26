@@ -61,7 +61,7 @@ fn project(name: &str) -> Fixture {
     .write("miniprogram/app.wxss", ".global { color: #333; }\n")
     .write(
         "miniprogram/pages/index/index.json",
-        r#"{"usingComponents":{"card":"/components/card/index","loop":"/components/loop-a/index"}}"#,
+        r#"{"usingComponents":{"card":"/components/card/index","loop":"/components/loop-a/index","tpl-comp":"/components/tpl-comp/index"}}"#,
     )
     .write(
         "miniprogram/pages/index/index.wxml",
@@ -80,7 +80,13 @@ fn project(name: &str) -> Fixture {
         "miniprogram/templates/inner.wxml",
         "<template name=\"inner\"><view>i</view></template>\n",
     )
-    .write("miniprogram/partials/tip.wxml", "<view>tip</view>\n")
+    .write("miniprogram/partials/tip.wxml", "<tpl-comp/>\n")
+    .write(
+        "miniprogram/components/tpl-comp/index.json",
+        r#"{"component":true}"#,
+    )
+    .write("miniprogram/components/tpl-comp/index.wxml", "<view/>")
+    .write("miniprogram/components/tpl-comp/index.js", "Component({})")
     .write("miniprogram/styles/theme.wxss", ".t { color: blue; }\n")
     .write("miniprogram/pages/detail/index.json", r#"{}"#)
     .write("miniprogram/pages/detail/index.wxml", "<nav/>")
@@ -130,6 +136,7 @@ fn pages_components_and_app_are_separate_nodes() {
         vec![
             "components/card/index".to_string(),
             "components/loop-a/index".to_string(),
+            "components/tpl-comp/index".to_string(),
         ]
     );
     assert_eq!(page.wxml.as_deref(), Some("pages/index/index.wxml"));
@@ -246,6 +253,100 @@ fn file_nodes_are_part_of_the_tree() {
 }
 
 #[test]
+fn used_lists_only_components_written_in_wxml() {
+    let graph = project("used").graph();
+
+    // `loop` 只在 json 里声明（wxml 没写），不该进 used；`tpl-comp` 写在被 include
+    // 的片段里，算页面用到。
+    assert_eq!(
+        node(&graph, "pages/index/index").used,
+        vec![
+            "components/card/index".to_string(),
+            "components/tpl-comp/index".to_string(),
+        ]
+    );
+    assert_eq!(
+        node(&graph, "components/card/index").used,
+        vec!["components/icon/index".to_string()]
+    );
+    // app 级声明的组件按「页面实际写了这个标签」归到页面，不攒到 app 节点上。
+    assert_eq!(
+        node(&graph, "pages/detail/index").used,
+        vec!["components/nav/nav".to_string()]
+    );
+    assert!(
+        node(&graph, "app.json").used.is_empty(),
+        "app 没有 wxml，不该有任何使用点"
+    );
+}
+
+#[test]
+fn tags_written_in_included_templates_count_as_used() {
+    let graph = project("used-template").graph();
+    // `tpl-comp` 只在被 `<include>` 的片段里出现，仍然算页面用到了它。
+    assert!(
+        node(&graph, "pages/index/index")
+            .used
+            .contains(&"components/tpl-comp/index".to_string()),
+        "{:#?}",
+        node(&graph, "pages/index/index").used
+    );
+}
+
+#[test]
+fn generic_values_count_as_used() {
+    let f = Fixture::new("generic");
+    f.write("project.config.json", r#"{"miniprogramRoot":"miniprogram/"}"#)
+        .write(
+            "miniprogram/app.json",
+            r#"{"pages":["pages/index/index"]}"#,
+        )
+        .write("miniprogram/app.js", "App({})")
+        .write(
+            "miniprogram/pages/index/index.json",
+            r#"{"usingComponents":{"r-list":"/components/r-list/index","nearby-cell":"/components/nearby-cell/index"}}"#,
+        )
+        .write(
+            "miniprogram/pages/index/index.wxml",
+            "<r-list generic:listitem=\"nearby-cell\"/>\n",
+        )
+        .write("miniprogram/pages/index/index.js", "Page({})")
+        .write(
+            "miniprogram/components/r-list/index.json",
+            r#"{"component":true,"componentGenerics":{"listitem":true}}"#,
+        )
+        .write("miniprogram/components/r-list/index.wxml", "<view><listitem/></view>")
+        .write("miniprogram/components/r-list/index.js", "Component({})")
+        .write(
+            "miniprogram/components/nearby-cell/index.json",
+            r#"{"component":true}"#,
+        )
+        .write("miniprogram/components/nearby-cell/index.wxml", "<view/>")
+        .write("miniprogram/components/nearby-cell/index.js", "Component({})");
+
+    let graph = f.graph();
+    let page = node(&graph, "pages/index/index");
+    // `nearby-cell` 从不作为标签出现，只以泛型实现的值出现。
+    assert!(
+        page.used
+            .contains(&"components/nearby-cell/index".to_string()),
+        "{:#?}",
+        page.used
+    );
+    assert!(
+        page.used.contains(&"components/r-list/index".to_string()),
+        "{:#?}",
+        page.used
+    );
+    // 占位标签 `<listitem>` 是泛型名，不是组件，不该被归到 r-list 的 used 里。
+    assert!(
+        node(&graph, "components/r-list/index").used.is_empty(),
+        "{:#?}",
+        node(&graph, "components/r-list/index").used
+    );
+}
+
+#[test]
 fn plugin_view_nodes_are_prefixed_and_unique() {
     let f = Fixture::new("plugin");
     f.write(
@@ -280,7 +381,7 @@ fn plugin_view_nodes_are_prefixed_and_unique() {
 fn json_carries_schema_version_and_every_node() {
     let graph = project("json").graph();
     let parsed: serde_json::Value = serde_json::from_str(&graph.to_json()).unwrap();
-    assert_eq!(parsed["schemaVersion"], 2);
+    assert_eq!(parsed["schemaVersion"], 3);
     let ids: Vec<&str> = parsed["nodes"]
         .as_array()
         .unwrap()

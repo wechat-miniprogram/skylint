@@ -5,10 +5,12 @@
 //! 查询方法（[`DependencyIndex::reachable`] / [`Project::page_components`] /
 //! [`Project::component_pages`]）都落在它上面，`skylint graph` 只负责把它序列化。
 //!
-//! 两条边语义不同，不能合成一个集合：
+//! 三条边语义不同，不能合成一个集合：
 //! - [`UnitDeps::declared`]：单元声明并会被加载的组件（`usingComponents`、
 //!   `componentGenerics.*.default`、`componentPlaceholder` 的值）。影响面、构建行为、
 //!   迁移顺序都按它算——声明了即使没渲染，组件仍然进包。
+//! - [`UnitDeps::used`]：真正在 WXML 里出现的（标签 + `generic:*` 传的实现）。
+//!   回答「这个页面到底画了什么」，不参与任何现有判定。
 //! - [`UnitDeps::templates`] / [`UnitDeps::styles`]：文件级引用，闭包已展开。
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,6 +20,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct UnitDeps {
     /// 声明并会被加载的组件。
     pub declared: Vec<String>,
+    /// 真正在 WXML 里用到（标签出现、或作为泛型实现传进去）。
+    pub used: Vec<String>,
     /// `<import>` / `<include>` 的模板（传递闭包）。
     pub templates: Vec<String>,
     /// `@import` 的样式（传递闭包）；单元自己的 wxss 不算。
@@ -42,6 +46,10 @@ impl DependencyIndex {
     /// 声明的组件；没有这个单元时返回空切片。
     pub fn declared(&self, unit: &str) -> &[String] {
         self.get(unit).map_or(&[], |deps| &deps.declared)
+    }
+
+    pub fn used(&self, unit: &str) -> &[String] {
+        self.get(unit).map_or(&[], |deps| &deps.used)
     }
 
     pub fn templates(&self, unit: &str) -> &[String] {

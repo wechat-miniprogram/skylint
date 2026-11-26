@@ -73,12 +73,16 @@ skylint --min-severity error
 ```bash
 skylint graph              # 页面 → 组件 → 组件，模板 / 样式文件用 `⇢` 挂出来
 skylint graph --reverse    # 反着看：某个组件 / 模板 / 样式被哪些页面、组件引用
-skylint graph --json       # 节点、deps / templates / styles / consumers，给脚本用
+skylint graph --json       # 节点、deps / used / templates / styles / consumers
 ```
 
 app 级 `usingComponents` 挂在 `app.json` 节点上，不摊到每个页面：「页面能用哪些组件」
 与「页面声明了哪些组件」是两件事。模板（`<import>` / `<include>`）与样式（`@import`）
 是**文件级**引用，闭包已展开；反向落在这些节点上就是「改这个文件影响哪些页面」。
+
+JSON 里 `deps` 是**声明**（`usingComponents` + `componentGenerics` 默认实现 +
+`componentPlaceholder`），`used` 是 **wxml 里真的出现的**（标签与 `generic:*` 传的实现）；
+两者差集就是「声明了但没渲染」，全局组件按页面实际写的标签归到页面。
 
 从代码中导出的全部规则见 [docs/RULES.md](docs/RULES.md)。
 
