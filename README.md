@@ -68,15 +68,6 @@ skylint --changed --since origin/main
 skylint --min-severity error
 ```
 
-迁移命令按单元 / 分包 / 类型分工：
-
-```bash
-skylint migration plan --package mt            # 只看某个分包（root 或 name）
-skylint migration plan --kind component        # 只看页面 / 只看组件
-skylint migration plan --renderer webview      # 只看某渲染器下的单元
-skylint migration job --unit pages/detail/index
-```
-
 依赖关系只看 `usingComponents`，不跑规则：
 
 ```bash
