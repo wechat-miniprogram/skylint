@@ -646,7 +646,7 @@ fn generic_defaults(json: &Map<String, Value>) -> Vec<String> {
 /// 三条规则：
 /// - 单元自己的 wxml 与它 `<import>` / `<include>` 的模板都算它的使用点；模板里的
 ///   标签按**引用方**的声明解析（同一模板被两个单元引用可以解析出不同组件）。
-/// - `generic:<slot>="x"` 的值可能是同单元已声明的标签名，也可能是组件路径。
+/// - `generic:<slot>="x"` 的值是声明的标签名（单元级或 app 级）；写路径不在文法内，不认。
 /// - 解析不到的一律不记（`view` 这类基础组件、缺文件的模板块），宁可少记。
 fn collect_used(fs: &LocalFs, base: &str, view: &EnvView<'_>) -> BTreeMap<String, Vec<String>> {
     let EnvView {
@@ -723,13 +723,10 @@ fn collect_used(fs: &LocalFs, base: &str, view: &EnvView<'_>) -> BTreeMap<String
                     let Some(value) = attribute.value.as_deref() else {
                         continue;
                     };
-                    let target = map
-                        .get(&value.to_ascii_lowercase())
-                        .cloned()
-                        .or_else(|| resolve_component_route(fs, base, path, value));
-                    if let Some(target) = target {
-                        used.entry(unit).or_default().insert(target);
-                    }
+                    let Some(target) = map.get(&value.to_ascii_lowercase()) else {
+                        continue;
+                    };
+                    used.entry(unit).or_default().insert(target.clone());
                 }
             });
         }

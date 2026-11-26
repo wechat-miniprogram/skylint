@@ -47,7 +47,7 @@ pub struct GraphNode {
     /// 声明并会被加载的组件（已排序去重）。
     pub deps: Vec<String>,
     /// 真正在 WXML 里用到的组件（标签出现 + `generic:*` 传的实现）。
-    /// 与 `deps` 的差集就是「声明了但没渲染」。
+    /// 与 `deps` 的差集就是「声明了但没渲染」；全局组件在这里出现但不在 `deps` 里。
     pub used: Vec<String>,
     /// 被这个单元 `<import>` / `<include>` 的模板文件（含传递引入，已排序去重）。
     pub templates: Vec<String>,

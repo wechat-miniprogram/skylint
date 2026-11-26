@@ -83,6 +83,8 @@ app 级 `usingComponents` 挂在 `app.json` 节点上，不摊到每个页面：
 JSON 里 `deps` 是**声明**（`usingComponents` + `componentGenerics` 默认实现 +
 `componentPlaceholder`），`used` 是 **wxml 里真的出现的**（标签与 `generic:*` 传的实现）；
 两者差集就是「声明了但没渲染」，全局组件按页面实际写的标签归到页面。
+`used` 恒在「本单元声明 ∪ app 级声明」之内：泛型值只认声明的标签名，
+写成路径不算依赖（平台文法里它就是标签名）。
 
 从代码中导出的全部规则见 [docs/RULES.md](docs/RULES.md)。
 

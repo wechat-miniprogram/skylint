@@ -1,5 +1,6 @@
 //! `skylint graph` 的端到端语义：单元清单从真磁盘工程来，边只认 `usingComponents`。
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
@@ -343,6 +344,69 @@ fn generic_values_count_as_used() {
         node(&graph, "components/r-list/index").used.is_empty(),
         "{:#?}",
         node(&graph, "components/r-list/index").used
+    );
+}
+
+#[test]
+fn used_stays_within_own_or_app_declarations() {
+    let graph = project("used-scope").graph();
+    // app 级声明的组件会出现在页面的 used 里，但不在页面的 deps 里（deps 只记本单元声明的）。
+    let app: BTreeSet<String> = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "app")
+        .flat_map(|node| node.deps.iter().cloned())
+        .collect();
+    for node in &graph.nodes {
+        for used in &node.used {
+            assert!(
+                node.deps.contains(used) || app.contains(used),
+                "{} 用到了没有任何地方声明的 {used}",
+                node.id
+            );
+        }
+    }
+}
+
+#[test]
+fn generic_path_value_is_not_a_dependency() {
+    // 泛型实现按平台文档写标签名；写成路径不在文法内，不能凭空多出一条依赖。
+    let f = Fixture::new("generic-path");
+    f.write(
+        "project.config.json",
+        r#"{"miniprogramRoot":"miniprogram/"}"#,
+    )
+    .write("miniprogram/app.json", r#"{"pages":["pages/index/index"]}"#)
+    .write("miniprogram/app.js", "App({})")
+    .write(
+        "miniprogram/pages/index/index.json",
+        r#"{"usingComponents":{"r-list":"/components/r-list/index"}}"#,
+    )
+    .write(
+        "miniprogram/pages/index/index.wxml",
+        "<r-list generic:listitem=\"/components/cell/index\"/>\n",
+    )
+    .write("miniprogram/pages/index/index.js", "Page({})")
+    .write(
+        "miniprogram/components/r-list/index.json",
+        r#"{"component":true,"componentGenerics":{"listitem":true}}"#,
+    )
+    .write(
+        "miniprogram/components/r-list/index.wxml",
+        "<view><listitem/></view>",
+    )
+    .write("miniprogram/components/r-list/index.js", "Component({})")
+    .write(
+        "miniprogram/components/cell/index.json",
+        r#"{"component":true}"#,
+    )
+    .write("miniprogram/components/cell/index.wxml", "<view/>")
+    .write("miniprogram/components/cell/index.js", "Component({})");
+
+    let graph = f.graph();
+    assert_eq!(
+        node(&graph, "pages/index/index").used,
+        vec!["components/r-list/index".to_string()]
     );
 }
 

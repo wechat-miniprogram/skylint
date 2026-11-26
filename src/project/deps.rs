@@ -10,6 +10,8 @@
 //!   `componentGenerics.*.default`、`componentPlaceholder` 的值）。影响面、构建行为、
 //!   迁移顺序都按它算——声明了即使没渲染，组件仍然进包。
 //! - [`UnitDeps::used`]：真正在 WXML 里出现的（标签 + `generic:*` 传的实现）。
+//!   恒满足 `used ⊆ declared ∪ app 级 declared`：泛型值只认声明的标签名（写路径不在
+//!   文法内，不记），全局组件会在这里出现但不在单元自己的 `declared` 里。
 //!   回答「这个页面到底画了什么」，不参与任何现有判定。
 //! - [`UnitDeps::templates`] / [`UnitDeps::styles`]：文件级引用，闭包已展开。
 
