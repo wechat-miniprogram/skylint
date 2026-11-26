@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use super::deps::{DependencyIndex, UnitDeps};
 use super::fs::LocalFs;
 use super::paths::{posix_dirname, posix_join};
 use super::units::{Exts, resolve_unit};
@@ -198,8 +199,20 @@ impl Loaded {
             })
             .collect();
 
-        let component_graph =
-            collect_components(fs, base, view.app, &page_json, &view.seeds, &mut warnings);
+        let app_key = if view.plugin_view {
+            "plugin.json"
+        } else {
+            "app.json"
+        };
+        let component_graph = collect_components(
+            fs,
+            base,
+            view.app,
+            app_key,
+            &page_json,
+            &view.seeds,
+            &mut warnings,
+        );
         let ComponentGraph {
             paths: component_paths,
             declared: component_declared,
@@ -306,6 +319,15 @@ impl Loaded {
             &mut warnings,
         );
 
+        let deps = build_dependency_index(
+            &pages,
+            &components,
+            app_key,
+            &component_graph.deps,
+            &template_scopes,
+            &styles,
+        );
+
         Project {
             root: self.root.clone(),
             miniprogram_root: base.to_string(),
@@ -315,11 +337,7 @@ impl Loaded {
             report_prefix: view.report_prefix.to_string(),
             app_json: view.app.clone(),
             app_json_source: view.app_source.to_string(),
-            app_json_path: if view.plugin_view {
-                "plugin.json".to_string()
-            } else {
-                "app.json".to_string()
-            },
+            app_json_path: app_key.to_string(),
             renderer_options,
             project_config: self.config.clone(),
             project_config_source: self.config_source.clone(),
@@ -329,7 +347,7 @@ impl Loaded {
             components,
             component_json,
             component_json_source,
-            deps: component_graph.deps,
+            deps,
             page_json: page_json
                 .into_iter()
                 .filter_map(|(route, json)| Some((route, json?)))
@@ -406,6 +424,7 @@ fn collect_components(
     fs: &LocalFs,
     root: &str,
     app_json: &Map<String, Value>,
+    app_key: &str,
     page_json: &[(String, Option<Map<String, Value>>)],
     seeds: &[String],
     warnings: &mut Vec<Diagnostic>,
@@ -426,7 +445,7 @@ fn collect_components(
         .filter_map(|target| resolve_component_route(fs, root, "app.json", target))
         .collect();
     queue.extend(app_targets.iter().cloned());
-    deps.insert("app.json".to_string(), app_targets);
+    deps.insert(app_key.to_string(), app_targets);
     // 非声明式入口（custom-tab-bar / app-bar / agent.skills）不在任何 usingComponents 里。
     queue.extend(seeds.iter().cloned());
 
@@ -457,16 +476,138 @@ fn collect_components(
     }
 }
 
+/// 把组件闭包、模板闭包与样式图归并成一份依赖索引。
+///
+/// 只管归集，不判断语义：`declared` 来自组件闭包（已含 generics 默认实现与
+/// placeholder 占位），`templates` / `styles` 分别来自两侧闭包。`used` 留空给
+/// 扫描阶段填（见 `project::deps` 的模块文档）。
+fn build_dependency_index(
+    pages: &[PageUnit],
+    components: &[ComponentUnit],
+    app_key: &str,
+    declared: &BTreeMap<String, Vec<String>>,
+    template_scopes: &BTreeMap<String, Vec<Scope>>,
+    styles: &[StyleSheet],
+) -> DependencyIndex {
+    let mut templates_of: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for (path, scopes) in template_scopes {
+        for unit in scopes.iter().filter_map(unit_of) {
+            templates_of.entry(unit).or_default().insert(path);
+        }
+    }
+
+    // 单元自己的 wxss 是单元的一部分，不算「引用了某个样式文件」。
+    let own_style: BTreeMap<&str, &str> = pages
+        .iter()
+        .filter_map(|page| Some((page.route.as_str(), page.files.wxss.as_deref()?)))
+        .chain(
+            components
+                .iter()
+                .filter_map(|unit| Some((unit.path.as_str(), unit.files.wxss.as_deref()?))),
+        )
+        .collect();
+    let mut styles_of: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for sheet in styles {
+        let path = sheet.doc.path();
+        for owner in sheet.scopes.iter().filter_map(|scope| match scope {
+            Scope::Global => Some(app_key),
+            other => unit_of(other),
+        }) {
+            if own_style.get(owner) == Some(&path) {
+                continue;
+            }
+            styles_of.entry(owner).or_default().insert(path);
+        }
+    }
+
+    let mut index = DependencyIndex::default();
+    for unit in pages
+        .iter()
+        .map(|page| page.route.as_str())
+        .chain(components.iter().map(|unit| unit.path.as_str()))
+        .chain(std::iter::once(app_key))
+    {
+        let mut targets = declared.get(unit).cloned().unwrap_or_default();
+        targets.sort();
+        targets.dedup();
+        index.insert(
+            unit,
+            UnitDeps {
+                declared: targets,
+                templates: templates_of
+                    .get(unit)
+                    .map(|paths| paths.iter().map(|p| p.to_string()).collect())
+                    .unwrap_or_default(),
+                styles: styles_of
+                    .get(unit)
+                    .map(|paths| paths.iter().map(|p| p.to_string()).collect())
+                    .unwrap_or_default(),
+            },
+        );
+    }
+    index
+}
+
+/// 页面 / 组件作用域对应的单元 key；`Global` 与 `Loose` 不是单元。
+fn unit_of(scope: &Scope) -> Option<&str> {
+    match scope {
+        Scope::Page(route) | Scope::Component(route) => Some(route),
+        Scope::Global | Scope::Loose(_) => None,
+    }
+}
+
 /// 一个单元声明的组件引用解析后得到的根相对路径。
 ///
 /// `usingComponents` 之外还有 `componentGenerics.{key}.default`：默认实现同样会被
 /// 编译器（minidev）一并加载入队，
 /// 漏掉它这个组件就完全不参与检查。
+///
+/// `componentPlaceholder` 的值也是引用：写组件路径时是直接引用，写同单元已声明的
+/// 标签名时是「加载期用那个组件占位」。`view` 这类基础组件两种解析都落空，自然忽略。
 fn routes_of(fs: &LocalFs, root: &str, unit: &str, json: &Map<String, Value>) -> Vec<String> {
     using_components(json)
         .into_iter()
         .chain(generic_defaults(json))
+        .chain(placeholder_targets(fs, root, unit, json))
         .filter_map(|target| resolve_component_route(fs, root, unit, &target))
+        .collect()
+}
+
+/// `componentPlaceholder.<tag>` 的值 → 组件路径。
+///
+/// 值是标签名时按本单元的 `usingComponents` 查；值本身是路径（`./x/index`、
+/// `../y/index`）时按引用方解析。两种都不是就是基础组件占位（`view`），不产生边。
+fn placeholder_targets(
+    fs: &LocalFs,
+    root: &str,
+    unit: &str,
+    json: &Map<String, Value>,
+) -> Vec<String> {
+    let Some(placeholders) = json.get("componentPlaceholder").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let tags: BTreeMap<String, String> = json
+        .get("usingComponents")
+        .and_then(Value::as_object)
+        .map(|using| {
+            using
+                .iter()
+                .filter_map(|(tag, target)| {
+                    let route = resolve_component_route(fs, root, unit, target.as_str()?)?;
+                    Some((tag.to_ascii_lowercase(), route))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    placeholders
+        .values()
+        .filter_map(Value::as_str)
+        .filter_map(|value| {
+            if let Some(route) = tags.get(&value.to_ascii_lowercase()) {
+                return Some(route.clone());
+            }
+            resolve_component_route(fs, root, unit, value)
+        })
         .collect()
 }
 

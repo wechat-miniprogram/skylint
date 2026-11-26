@@ -1,10 +1,9 @@
 //! 单元依赖图：页面 / 组件之间通过 `usingComponents` 形成的引用关系，加上单元
 //! 与模板文件（`<import>` / `<include>`）、样式文件（`@import`）之间的文件级引用。
 //!
-//! 数据全部来自工程加载的结果，不重新解析工程，也不跑规则：
-//! [`Project::deps`]（组件闭包，npm 裸包名已回溯到 `miniprogram_npm`）、
-//! [`Project::template_scopes`]（模板 → 引用它的单元，已是传递闭包）、
-//! [`Project::styles`]（样式文件 → 引入它的单元，`@import` 同样展开）。
+//! 边不从零算——[`Project::deps`] 已经是一份归集好的依赖索引（见 `project::deps`
+//! 的模块文档）。这里只做两件事：把索引摊成带 `kind` / `renderer` 的节点，以及把
+//! 它们序列化成文本树或 JSON。解析、npm 回溯、模板闭包都在加载阶段完成。
 //!
 //! 五类节点：
 //! - 页面：key 是 app.json 里的 route（分包页已带 root 前缀）；
@@ -22,7 +21,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use crate::project::{Project, Scope, UnitFiles};
+use crate::project::{Project, UnitFiles};
 
 /// 产物版本：字段改名 / 语义变化时加一。
 pub const SCHEMA_VERSION: u32 = 2;
@@ -45,7 +44,7 @@ pub struct GraphNode {
     pub wxml: Option<String>,
     /// 页面是解析后的渲染器；组件与 app 只记自己 json 里写过的，未写为 `None`（继承）。
     pub renderer: Option<&'static str>,
-    /// 直接引用的单元（已排序去重）。
+    /// 声明并会被加载的组件（已排序去重）。
     pub deps: Vec<String>,
     /// 被这个单元 `<import>` / `<include>` 的模板文件（含传递引入，已排序去重）。
     pub templates: Vec<String>,
@@ -56,140 +55,59 @@ pub struct GraphNode {
 }
 
 impl DependencyGraph {
+    /// 直接读依赖索引：这里不做任何解析或归集，`Project` 已经把边算好了。
     pub fn of(views: &[Project]) -> Self {
         let mut nodes: BTreeMap<String, GraphNode> = BTreeMap::new();
+        let mut file_kinds: BTreeMap<String, &'static str> = BTreeMap::new();
         for view in views {
             let prefix = view.report_prefix.as_str();
             let id_of = |key: &str| format!("{prefix}{key}");
             let wxml_of =
                 |files: &UnitFiles| files.wxml.as_ref().map(|path| format!("{prefix}{path}"));
-            let deps_of = |key: &str| -> Vec<String> {
-                view.deps
-                    .get(key)
-                    .map(|deps| {
-                        deps.iter()
-                            .map(|dep| id_of(dep))
-                            .collect::<BTreeSet<_>>()
-                            .into_iter()
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            };
 
-            let app_id = id_of(&view.app_json_path);
-            nodes.insert(
-                app_id.clone(),
-                GraphNode {
-                    id: app_id.clone(),
-                    kind: "app",
-                    wxml: None,
-                    renderer: declared_renderer(&view.app_json),
-                    deps: deps_of(&view.app_json_path),
-                    templates: Vec::new(),
-                    styles: Vec::new(),
-                    consumers: Vec::new(),
-                },
-            );
-            for page in &view.pages {
-                nodes.insert(
-                    id_of(&page.route),
-                    GraphNode {
-                        id: id_of(&page.route),
-                        kind: "page",
-                        wxml: wxml_of(&page.files),
-                        renderer: Some(if page.is_skyline {
+            for (unit, deps) in view.deps.units() {
+                let (kind, wxml, renderer) = if unit == view.app_json_path {
+                    ("app", None, declared_renderer(&view.app_json))
+                } else if let Some(page) = view.pages.iter().find(|page| page.route == unit) {
+                    (
+                        "page",
+                        wxml_of(&page.files),
+                        Some(if page.is_skyline {
                             "skyline"
                         } else {
                             "webview"
                         }),
-                        deps: deps_of(&page.route),
-                        templates: Vec::new(),
-                        styles: Vec::new(),
-                        consumers: Vec::new(),
-                    },
-                );
-            }
-            for component in &view.components {
+                    )
+                } else if let Some(component) = view.components.iter().find(|c| c.path == unit) {
+                    (
+                        "component",
+                        wxml_of(&component.files),
+                        view.component_json.get(unit).and_then(declared_renderer),
+                    )
+                } else {
+                    // 有 json、没进组件清单的单元（缺 wxml 时闭包不收录）：仍然出节点。
+                    ("component", None, None)
+                };
+                for path in deps.templates.iter() {
+                    file_kinds.insert(id_of(path), "template");
+                }
+                for path in deps.styles.iter() {
+                    file_kinds.insert(id_of(path), "style");
+                }
+                let id = id_of(unit);
                 nodes.insert(
-                    id_of(&component.path),
+                    id.clone(),
                     GraphNode {
-                        id: id_of(&component.path),
-                        kind: "component",
-                        wxml: wxml_of(&component.files),
-                        renderer: view
-                            .component_json
-                            .get(&component.path)
-                            .and_then(declared_renderer),
-                        deps: deps_of(&component.path),
-                        templates: Vec::new(),
-                        styles: Vec::new(),
+                        id,
+                        kind,
+                        wxml,
+                        renderer,
+                        deps: deps.declared.iter().map(|dep| id_of(dep)).collect(),
+                        templates: deps.templates.iter().map(|path| id_of(path)).collect(),
+                        styles: deps.styles.iter().map(|path| id_of(path)).collect(),
                         consumers: Vec::new(),
                     },
                 );
-            }
-
-            // 单元自己的 wxss 是单元的一部分，不算「引用了某个样式文件」。
-            let own_wxss: BTreeMap<String, &str> = view
-                .pages
-                .iter()
-                .filter_map(|page| {
-                    page.files
-                        .wxss
-                        .as_deref()
-                        .map(|path| (id_of(&page.route), path))
-                })
-                .chain(view.components.iter().filter_map(|component| {
-                    component
-                        .files
-                        .wxss
-                        .as_deref()
-                        .map(|path| (id_of(&component.path), path))
-                }))
-                .collect();
-
-            // `template_scopes` 是「模板 → 引用它的单元」，反过来就是单元的模板清单，
-            // 且已经是沿 `<import>` / `<include>` 递归出来的传递闭包。
-            let mut templates_of: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-            for (path, scopes) in &view.template_scopes {
-                for scope in scopes {
-                    let Some(unit) = unit_of(scope) else {
-                        continue;
-                    };
-                    templates_of
-                        .entry(id_of(unit))
-                        .or_default()
-                        .insert(format!("{prefix}{path}"));
-                }
-            }
-            let mut styles_of: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-            for sheet in &view.styles {
-                let path = sheet.doc.path();
-                for scope in &sheet.scopes {
-                    let owner = match scope {
-                        Scope::Global => Some(app_id.clone()),
-                        other => unit_of(other).map(id_of),
-                    };
-                    let Some(owner) = owner else {
-                        continue;
-                    };
-                    if own_wxss.get(&owner) == Some(&path) {
-                        continue;
-                    }
-                    styles_of
-                        .entry(owner)
-                        .or_default()
-                        .insert(format!("{prefix}{path}"));
-                }
-            }
-            for (unit, files) in templates_of {
-                if let Some(node) = nodes.get_mut(&unit) {
-                    node.templates = files.into_iter().collect();
-                }
-            }
-            for (unit, files) in styles_of {
-                if let Some(node) = nodes.get_mut(&unit) {
-                    node.styles = files.into_iter().collect();
-                }
             }
         }
 
@@ -219,16 +137,7 @@ impl DependencyGraph {
         }
 
         // 模板 / 样式文件各成一个节点，边从引用它们的单元指过来。
-        let files: Vec<(String, &'static str)> = nodes
-            .values()
-            .flat_map(|node| {
-                node.templates
-                    .iter()
-                    .map(|id| (id.clone(), "template"))
-                    .chain(node.styles.iter().map(|id| (id.clone(), "style")))
-            })
-            .collect();
-        for (id, kind) in files {
+        for (id, kind) in file_kinds {
             nodes.entry(id.clone()).or_insert(GraphNode {
                 id,
                 kind,
@@ -295,14 +204,6 @@ impl DependencyGraph {
         };
         tree.render();
         tree.out
-    }
-}
-
-/// 页面 / 组件作用域对应的单元 key；`Global` 与 `Loose` 不是单元。
-fn unit_of(scope: &Scope) -> Option<&str> {
-    match scope {
-        Scope::Page(route) | Scope::Component(route) => Some(route),
-        Scope::Global | Scope::Loose(_) => None,
     }
 }
 

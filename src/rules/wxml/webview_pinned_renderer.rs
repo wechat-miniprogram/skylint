@@ -180,8 +180,8 @@ fn call_sites(
         return String::new();
     };
     let mut found: Vec<String> = Vec::new();
-    for (unit, deps) in &project.deps {
-        if !deps.contains(&component.path) {
+    for (unit, deps) in project.deps.units() {
+        if !deps.declared.contains(&component.path) {
             continue;
         }
         let Some(parent) = project.unit_wxml(unit) else {
@@ -253,9 +253,7 @@ fn reached_from_skyline_page(project: &Project, wxml_path: &str) -> bool {
         if !seen.insert(unit) {
             continue;
         }
-        if let Some(deps) = project.deps.get(unit) {
-            stack.extend(deps.iter().map(String::as_str));
-        }
+        stack.extend(project.deps.declared(unit).iter().map(String::as_str));
     }
     false
 }

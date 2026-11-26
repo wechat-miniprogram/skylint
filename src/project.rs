@@ -30,11 +30,13 @@ use crate::input::wxss::{self, ParseError, WxssDoc};
 use crate::wxml_graph::WxmlGraph;
 use crate::{Diagnostic, Severity};
 
+pub mod deps;
 mod fs;
 mod load;
 pub(crate) mod paths;
 mod units;
 
+use self::deps::DependencyIndex;
 use self::load::Loaded;
 use self::paths::{posix_dirname, posix_join};
 
@@ -167,11 +169,11 @@ pub struct Project {
     pub project_private_config_source: String,
     pub pages: Vec<PageUnit>,
     pub components: Vec<ComponentUnit>,
-    /// 单元 → 它**直接**引用的组件。页面用 route 作 key，组件用自身路径。
+    /// 单元依赖索引：声明的组件、实际用到的组件、模板与样式引用。
     ///
     /// 组件闭包本身是全局扁平表，看不出「这个页面到底用了哪些组件」；跨文件规则
-    /// （标签选择器跨组件、类名可达性）必须知道归属，所以边也一并记下来。
-    pub deps: BTreeMap<String, Vec<String>>,
+    /// （标签选择器跨组件、类名可达性）必须知道归属，所以边集中记在这里。
+    pub deps: DependencyIndex,
     /// 页面 json 原始对象（按 route），只读不改。配置类规则要判断「用户写了什么」。
     pub page_json: BTreeMap<String, Map<String, Value>>,
     /// 单元 WXML → 该单元（含 app 级）在 `usingComponents` 里声明的标签名。
@@ -398,7 +400,7 @@ impl Project {
             let mut closure = Closure::default();
             for page in &self.pages {
                 let components: Vec<String> = self
-                    .reachable(&[page.route.as_str(), "app.json"])
+                    .reachable(&[page.route.as_str(), self.app_json_path.as_str()])
                     .into_iter()
                     .filter(|unit| {
                         self.components
@@ -489,22 +491,11 @@ impl Project {
 
     /// 从若干单元出发，沿组件边可达的单元（不含起点本身）。
     fn reachable(&self, start: &[&str]) -> Vec<String> {
-        let mut out: Vec<String> = Vec::new();
-        let mut queue: Vec<String> = start.iter().map(|s| s.to_string()).collect();
-        for unit in &queue {
-            out.push(unit.clone());
-        }
-        while let Some(unit) = queue.pop() {
-            for target in self.deps.get(&unit).into_iter().flatten() {
-                if out.contains(target) {
-                    continue;
-                }
-                out.push(target.clone());
-                queue.push(target.clone());
-            }
-        }
-        out.retain(|unit| !start.contains(&unit.as_str()));
-        out
+        self.deps
+            .reachable(start)
+            .into_iter()
+            .filter(|unit| !start.contains(&unit.as_str()))
+            .collect()
     }
 
     /// 某份样式的全部引入方对应的 WXML（按路径去重）。规则拿它做选择器匹配；
@@ -841,7 +832,7 @@ impl Project {
             tag_targets: BTreeMap::new(),
             envs: BTreeMap::new(),
             components: Vec::new(),
-            deps: BTreeMap::new(),
+            deps: DependencyIndex::default(),
             page_json: BTreeMap::new(),
             page_json_source: BTreeMap::new(),
             styles: Vec::new(),
